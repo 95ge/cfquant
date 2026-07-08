@@ -549,6 +549,10 @@
                   <strong>快速开始</strong>
                   <span>从启动到完成连接验证</span>
                 </button>
+                <button class="tutorial-menu-item" type="button" data-guide="python">
+                  <strong>Python 接入</strong>
+                  <span>pip 安装和 xtquant 平替</span>
+                </button>
                 <button class="tutorial-menu-item" type="button" data-guide="deploy">
                   <strong>部署到 QMT</strong>
                   <span>复制目录、加载桥接脚本</span>
@@ -688,6 +692,92 @@
                       <span>接口</span>
                       <strong>给外部程序接入前，先在这里调试 HTTP 和 WebSocket 参数。</strong>
                     </div>
+                  </div>
+                </article>
+
+                <article class="tutorial-topic" data-guide-panel="python">
+                  <div class="guide-section">
+                    <h3>Python 接入前提</h3>
+                    <p>外部 Python 程序可以把 cfquant 当作 <code>xtquant</code> 兼容层使用。使用前需要先启动本地 <code>start_cfquant.bat</code>，并在 QMT 中加载 <code>CFQUANT.py</code> 和 <code>CFQUANT_TRADE_LOWLAT.py</code>。Web 控制台里也要先完成资金账号和桥接端绑定。</p>
+                    <div class="guide-callout">
+                      <strong>cfquant 不是直接连接柜台的独立交易客户端</strong>
+                      <span>外部 Python 请求会先连接本机 LTtx，再由 QMT 里的桥接脚本调用 QMT 原生能力。因此 QMT 必须登录账号并保持桥接脚本运行。</span>
+                    </div>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>安装方式</h3>
+                    <p>如果 cfquant 已发布到 PyPI 或内部 pip 源，可以直接安装：</p>
+                    <pre class="guide-code">pip install cfquant</pre>
+                    <p>当前源码仓库也支持从 GitHub 或本地源码安装：</p>
+                    <pre class="guide-code">pip install git+https://github.com/95ge/cfquant.git
+
+cd D:\cfquant
+pip install -e .</pre>
+                    <p>如果不想使用 pip，也可以把源码里的 <code>cfquant\</code> 和 <code>LTtx\</code> 两个目录复制到你的 Python 项目根目录，或复制到当前 Python 环境的 <code>site-packages</code> 目录。</p>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>替代 xtquant 导入</h3>
+                    <p>原来使用原生 <code>xtquant</code> 的代码：</p>
+                    <pre class="guide-code">from xtquant import xtdata
+from xtquant.xttrader import XtQuantTrader
+from xtquant.xttype import StockAccount</pre>
+                    <p>可以改成：</p>
+                    <pre class="guide-code">from cfquant import xtdata
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount</pre>
+                    <p>如果原项目里大量使用 <code>import xtquant</code>，可以用别名方式减少改动：</p>
+                    <pre class="guide-code">import cfquant as xtquant
+
+data = xtquant.xtdata.get_full_tick(["000001.SZ"])</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>连接配置</h3>
+                    <p>默认连接本机 LTtx，单 QMT 通常只需要保留默认桥接端 <code>default</code>。多 QMT 时，把 <code>bridge_id</code> 改成对应桥接端。</p>
+                    <pre class="guide-code">from cfquant import configure
+
+configure(
+    host="127.0.0.1",
+    port=2049,
+    token="LTtx",
+    bridge_id="default",
+    timeout=15,
+)</pre>
+                    <p>也可以通过环境变量配置：</p>
+                    <pre class="guide-code">CFQUANT_LTTX_HOST=127.0.0.1
+CFQUANT_LTTX_PORT=2049
+CFQUANT_LTTX_TOKEN=LTtx
+CFQUANT_BRIDGE_ID=default
+CFQUANT_TIMEOUT=15</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>行情与交易查询示例</h3>
+                    <pre class="guide-code">from cfquant import configure, xtdata
+
+configure(bridge_id="default")
+
+tick = xtdata.get_full_tick(["000001.SZ", "600000.SH"])
+bars = xtdata.get_market_data(
+    field_list=["open", "high", "low", "close", "volume"],
+    stock_list=["000001.SZ"],
+    period="1d",
+    count=5,
+)</pre>
+                    <pre class="guide-code">from cfquant import configure
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+configure(bridge_id="default")
+
+account = StockAccount("2220009880")
+trader = XtQuantTrader("", 0, account=account)
+trader.start()
+
+asset = trader.query_stock_asset(account)
+positions = trader.query_stock_positions(account)</pre>
                   </div>
                 </article>
 

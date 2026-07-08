@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cfquant"
+version = "0.1.0"
+description = "QMT local bridge and xtquant-compatible Python client."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+  "pandas>=1.0",
+]
+
+[tool.setuptools]
+packages = ["cfquant", "LTtx", "LTtx.tx"]

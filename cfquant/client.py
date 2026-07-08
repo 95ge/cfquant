@@ -171,9 +171,17 @@ class LTtxRpcClient(object):
     def _load_txl(self):
         try:
             from tx import txl
-        except Exception as e:
-            raise CfquantError("无法导入 LTtx txl，请确认 tx.py 在 Python 路径中: %s" % e)
-        return txl
+            return txl
+        except Exception as first_error:
+            try:
+                from LTtx.tx import txl
+                return txl
+            except Exception as second_error:
+                raise CfquantError(
+                    "failed to import LTtx txl; install cfquant with bundled LTtx "
+                    "or ensure tx.py is on Python path: %s; fallback: %s"
+                    % (first_error, second_error)
+                )
 
 
 _default_client = None
