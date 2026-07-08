@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 import itertools
+import json
 import os
 import threading
 import atexit
 
 from .client import LTtxRpcClient
 from .config import get_config
-from .channels import channels_for_bridge
+from .channels import channels_for_bridge, normalize_bridge_id
 from .protocol import new_id
 from . import xtconstant
 from .xttype import (
@@ -27,6 +28,8 @@ from .xttype import (
 
 _trade_client = None
 _trade_client_lock = threading.Lock()
+_account_bridge_cache = {}
+_account_bridge_lock = threading.RLock()
 
 
 def get_trade_client():
@@ -55,12 +58,10 @@ def _trade_request(action, params=None, timeout=None):
     return get_trade_client().request(action, params or {}, timeout=timeout)
 
 
-def _new_trade_client(client_id=None):
+def _new_trade_client(client_id=None, bridge_id=None):
     cfg = get_config()
-    trade_channel = os.environ.get(
-        "CFQUANT_TRADE_REQUEST_CHANNEL",
-        channels_for_bridge(cfg.get("bridge_id"))["trade"],
-    )
+    bridge_id = normalize_bridge_id(bridge_id or cfg.get("bridge_id"))
+    trade_channel = channels_for_bridge(bridge_id)["trade"]
     return LTtxRpcClient(
         host=cfg["host"],
         port=cfg["port"],
@@ -143,38 +144,38 @@ class XtQuantTrader(object):
         self.callback = callback or XtQuantTraderCallback()
         self.account = account
         self.account_id = _account_id(account)
+        self.bridge_id = normalize_bridge_id(_bridge_id_from_account(account) or get_config().get("bridge_id"))
         self.client_id = new_id("trade_client_%s" % _safe_client_part(self.account_id))
         self._client = None
+        self._clients = {}
         self.connected = False
         self._registered_events = set()
-        self._subscribed_accounts = set()
+        self._subscribed_accounts = {}
         self.timeout = 0
         self.relaxed_response_order_enabled = False
 
     def start(self):
         self._get_client().start()
         self._register_trader_events()
-        if self.account is not None and self.account_id not in self._subscribed_accounts:
+        if self.account is not None and _subscription_key(self.account) not in self._subscribed_accounts:
             self.subscribe(self.account)
         self.connected = True
 
     def stop(self):
         was_connected = self.connected
         self.connected = False
-        for account_id in list(self._subscribed_accounts):
+        for payload in list(self._subscribed_accounts.values()):
             try:
                 self._trade_request("xttrader.unsubscribe", {
-                    "account": {
-                        "account_id": account_id,
-                        "account_type": xtconstant.SECURITY_ACCOUNT,
-                    },
+                    "account": dict(payload),
                 }, timeout=2)
             except Exception:
                 pass
         self._subscribed_accounts.clear()
-        client = self._client
+        clients = list(self._clients.values())
         self._client = None
-        if client is not None:
+        self._clients.clear()
+        for client in clients:
             try:
                 client.close()
             except Exception:
@@ -203,25 +204,27 @@ class XtQuantTrader(object):
 
     def subscribe(self, account):
         account = self._resolve_account(account)
+        payload = _account_payload(account)
         result = self._trade_request("xttrader.subscribe", {
-            "account": _account_payload(account),
+            "account": payload,
         })
-        self._subscribed_accounts.add(_account_id(account))
+        self._subscribed_accounts[_subscription_key_from_payload(payload)] = payload
         return result
 
     def unsubscribe(self, account):
         account = self._resolve_account(account)
+        payload = _account_payload(account)
         result = self._trade_request("xttrader.unsubscribe", {
-            "account": _account_payload(account),
+            "account": payload,
         })
-        self._subscribed_accounts.discard(_account_id(account))
+        self._subscribed_accounts.pop(_subscription_key_from_payload(payload), None)
         return result
 
     def set_timeout(self, timeout=0):
         self.timeout = timeout
-        client = self._client
-        if client is not None and timeout:
-            client.timeout = float(timeout)
+        if timeout:
+            for client in self._clients.values():
+                client.timeout = float(timeout)
 
     def set_relaxed_response_order_enabled(self, enabled):
         self.relaxed_response_order_enabled = bool(enabled)
@@ -573,13 +576,14 @@ class XtQuantTrader(object):
         while True:
             time.sleep(1)
 
-    def _register_trader_events(self):
-        client = self._get_client()
+    def _register_trader_events(self, bridge_id=None):
+        bridge_id = normalize_bridge_id(bridge_id or self.bridge_id)
+        client = self._get_client(bridge_id)
         for name in self._event_types:
-            event_name = "trader:%s" % name
+            event_name = "%s:trader:%s" % (bridge_id, name)
             if event_name in self._registered_events:
                 continue
-            client.add_callback(event_name, self._make_trader_handler(name))
+            client.add_callback("trader:%s" % name, self._make_trader_handler(name))
             self._registered_events.add(event_name)
 
     def _make_trader_handler(self, name):
@@ -617,13 +621,26 @@ class XtQuantTrader(object):
 
         return handler
 
-    def _get_client(self):
-        if self._client is None:
-            self._client = _new_trade_client(client_id=self.client_id)
-        return self._client
+    def _get_client(self, bridge_id=None):
+        bridge_id = normalize_bridge_id(bridge_id or self.bridge_id)
+        client = self._clients.get(bridge_id)
+        if client is None:
+            client_id = self.client_id
+            if bridge_id != normalize_bridge_id(self.bridge_id):
+                client_id = "%s_%s" % (self.client_id, _safe_client_part(bridge_id))
+            client = _new_trade_client(client_id=client_id, bridge_id=bridge_id)
+            if self.timeout:
+                client.timeout = float(self.timeout)
+            self._clients[bridge_id] = client
+            if self._client is None:
+                self._client = client
+        return client
 
     def _trade_request(self, action, params=None, timeout=None):
-        return self._get_client().request(action, params or {}, timeout=timeout)
+        params = params or {}
+        bridge_id = _bridge_id_from_params(params) or self.bridge_id
+        self._register_trader_events(bridge_id)
+        return self._get_client(bridge_id).request(action, params, timeout=timeout)
 
     def _resolve_account(self, account):
         account = account or self.account
@@ -656,14 +673,128 @@ class XtQuantTrader(object):
 
 def _account_payload(account):
     if isinstance(account, dict):
-        return {
+        payload = {
             "account_id": account.get("account_id") or account.get("m_strAccountID") or "",
             "account_type": account.get("account_type", xtconstant.SECURITY_ACCOUNT),
         }
-    return {
-        "account_id": account.account_id,
-        "account_type": getattr(account, "account_type", xtconstant.SECURITY_ACCOUNT),
-    }
+    else:
+        payload = {
+            "account_id": account.account_id,
+            "account_type": getattr(account, "account_type", xtconstant.SECURITY_ACCOUNT),
+        }
+    bridge_id = _bridge_id_from_account(account)
+    if bridge_id:
+        payload["bridge_id"] = bridge_id
+    return payload
+
+
+def _bridge_id_from_params(params):
+    if not isinstance(params, dict):
+        return ""
+    bridge_id = _bridge_id_value(params.get("bridge_id") or params.get("qmt_bridge_id"))
+    if bridge_id:
+        return bridge_id
+    if "account" in params:
+        return _bridge_id_from_account(params.get("account")) or _default_bridge_id()
+    return ""
+
+
+def _bridge_id_from_account(account):
+    if account is None:
+        return ""
+    if isinstance(account, dict):
+        bridge_id = _bridge_id_value(account.get("bridge_id") or account.get("qmt_bridge_id"))
+        account_id = str(account.get("account_id") or account.get("m_strAccountID") or "").strip()
+    else:
+        bridge_id = _bridge_id_value(getattr(account, "bridge_id", "") or getattr(account, "qmt_bridge_id", ""))
+        account_id = _account_id(account)
+    if bridge_id:
+        return bridge_id
+    return _bridge_id_for_account_id(account_id)
+
+
+def _bridge_id_value(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    return normalize_bridge_id(value)
+
+
+def _subscription_key(account):
+    return _subscription_key_from_payload(_account_payload(account))
+
+
+def _subscription_key_from_payload(payload):
+    bridge_id = _bridge_id_from_account(payload) or _default_bridge_id()
+    return normalize_bridge_id(bridge_id), str(payload.get("account_id") or "").strip()
+
+
+def _default_bridge_id():
+    return normalize_bridge_id(get_config().get("bridge_id"))
+
+
+def _bridge_id_for_account_id(account_id):
+    account_id = str(account_id or "").strip()
+    if not account_id:
+        return ""
+    return _account_bridge_pairs().get(account_id, "")
+
+
+def _account_bridge_pairs():
+    paths = _account_bridge_config_paths()
+    stamp_parts = []
+    for path in paths:
+        try:
+            stat = os.stat(path)
+            stamp_parts.append((path, stat.st_mtime, stat.st_size))
+        except Exception:
+            stamp_parts.append((path, 0, 0))
+    stamp = tuple(stamp_parts)
+    with _account_bridge_lock:
+        cached = _account_bridge_cache.get("stamp")
+        if cached == stamp:
+            return dict(_account_bridge_cache.get("pairs") or {})
+        pairs = {}
+        for path, mtime, _size in stamp_parts:
+            if not mtime:
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                values = (raw.get("account_pairs") or {}) if isinstance(raw, dict) else {}
+                items = values.values() if isinstance(values, dict) else values
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    account_id = str(item.get("account_id") or "").strip()
+                    bridge_id = _bridge_id_value(item.get("bridge_id"))
+                    if account_id and bridge_id:
+                        pairs[account_id] = bridge_id
+            except Exception:
+                pass
+        _account_bridge_cache["stamp"] = stamp
+        _account_bridge_cache["pairs"] = pairs
+        return dict(pairs)
+
+
+def _account_bridge_config_paths():
+    paths = []
+    env_path = os.environ.get("CFQUANT_WEB_CONFIG_FILE")
+    if env_path:
+        paths.append(os.path.abspath(env_path))
+    paths.extend([
+        os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "cfquant_web_config.json")),
+        os.path.abspath(os.path.join(os.getcwd(), "cfquant_web_config.json")),
+    ])
+    result = []
+    seen = set()
+    for path in paths:
+        key = os.path.normcase(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
 
 
 def _account_id(account):

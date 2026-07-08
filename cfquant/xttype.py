@@ -26,17 +26,18 @@ class DictObject(object):
 
 
 class StockAccount(object):
-    def __new__(cls, account_id, account_type="STOCK"):
+    def __new__(cls, account_id, account_type="STOCK", bridge_id=None):
         if not isinstance(account_id, str):
             return "资金账号必须为字符串类型"
         return super(StockAccount, cls).__new__(cls)
 
-    def __init__(self, account_id, account_type="STOCK"):
+    def __init__(self, account_id, account_type="STOCK", bridge_id=None):
         account_type = account_type.upper()
         for int_type, str_type in xtconstant.ACCOUNT_TYPE_DICT.items():
             if account_type == str_type:
                 self.account_type = int_type
                 self.account_id = account_id
+                self.bridge_id = str(bridge_id or "").strip()
                 return
         raise Exception("不支持的账号类型：{}！".format(account_type))
 

@@ -734,29 +734,26 @@ data = xtquant.xtdata.get_full_tick(["000001.SZ"])</pre>
 
                   <div class="guide-section">
                     <h3>连接配置</h3>
-                    <p>默认连接本机 LTtx，单 QMT 通常只需要保留默认桥接端 <code>default</code>。多 QMT 时，把 <code>bridge_id</code> 改成对应桥接端。</p>
+                    <p>默认连接本机 LTtx。单 QMT 场景通常不需要手动调用 <code>configure</code>；只要 <code>start_cfquant.bat</code> 已启动、QMT 侧桥接脚本已加载，<code>xtdata</code> 可以像原生 <code>xtquant.xtdata</code> 一样直接使用。</p>
+                    <p>只有需要修改 LTtx 地址、端口、token、超时时间，或给没有账号映射的请求指定默认桥接端时，才需要调用 <code>configure</code>：</p>
                     <pre class="guide-code">from cfquant import configure
 
 configure(
     host="127.0.0.1",
     port=2049,
     token="LTtx",
-    bridge_id="default",
     timeout=15,
 )</pre>
                     <p>也可以通过环境变量配置：</p>
                     <pre class="guide-code">CFQUANT_LTTX_HOST=127.0.0.1
 CFQUANT_LTTX_PORT=2049
 CFQUANT_LTTX_TOKEN=LTtx
-CFQUANT_BRIDGE_ID=default
 CFQUANT_TIMEOUT=15</pre>
                   </div>
 
                   <div class="guide-section">
                     <h3>行情与交易查询示例</h3>
-                    <pre class="guide-code">from cfquant import configure, xtdata
-
-configure(bridge_id="default")
+                    <pre class="guide-code">from cfquant import xtdata
 
 tick = xtdata.get_full_tick(["000001.SZ", "600000.SH"])
 bars = xtdata.get_market_data(
@@ -765,11 +762,8 @@ bars = xtdata.get_market_data(
     period="1d",
     count=5,
 )</pre>
-                    <pre class="guide-code">from cfquant import configure
-from cfquant.xttrader import XtQuantTrader
+                    <pre class="guide-code">from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
-
-configure(bridge_id="default")
 
 account = StockAccount("2220009880")
 trader = XtQuantTrader("", 0, account=account)
@@ -777,6 +771,8 @@ trader.start()
 
 asset = trader.query_stock_asset(account)
 positions = trader.query_stock_positions(account)</pre>
+                    <p>交易侧按资金账号路由：外部 Python 会读取当前项目目录或 <code>CFQUANT_WEB_CONFIG_FILE</code> 指向的 <code>cfquant_web_config.json</code>，如果里面已有 Web 控制台保存的“资金账号 -&gt; 桥接端”绑定，只需要传同一个资金账号；如果不使用这份 Web 配置，也可以显式指定桥接端：</p>
+                    <pre class="guide-code">account = StockAccount("2220009880", bridge_id="qmt2")</pre>
                   </div>
                 </article>
 

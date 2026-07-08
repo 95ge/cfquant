@@ -109,7 +109,9 @@ data = xtquant.xtdata.get_full_tick(["000001.SZ"])
 
 ### 连接配置
 
-默认连接本机 LTtx：
+默认连接本机 LTtx。单 QMT 场景通常不需要手动调用 `configure`；只要 `start_cfquant.bat` 已启动、QMT 侧桥接脚本已加载，`xtdata` 可以像原生 `xtquant.xtdata` 一样直接使用。
+
+只有需要修改 LTtx 地址、端口、token、超时时间，或给没有账号映射的请求指定默认桥接端时，才需要调用 `configure`：
 
 ```python
 from cfquant import configure
@@ -118,7 +120,6 @@ configure(
     host="127.0.0.1",
     port=2049,
     token="LTtx",
-    bridge_id="default",
     timeout=15,
 )
 ```
@@ -129,16 +130,13 @@ configure(
 CFQUANT_LTTX_HOST=127.0.0.1
 CFQUANT_LTTX_PORT=2049
 CFQUANT_LTTX_TOKEN=LTtx
-CFQUANT_BRIDGE_ID=default
 CFQUANT_TIMEOUT=15
 ```
 
 ### 行情查询示例
 
 ```python
-from cfquant import configure, xtdata
-
-configure(bridge_id="default")
+from cfquant import xtdata
 
 tick = xtdata.get_full_tick(["000001.SZ", "600000.SH"])
 print(tick)
@@ -155,11 +153,8 @@ print(bars)
 ### 交易查询示例
 
 ```python
-from cfquant import configure
 from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
-
-configure(bridge_id="default")
 
 account = StockAccount("2220009880")
 trader = XtQuantTrader("", 0, account=account)
@@ -170,6 +165,12 @@ positions = trader.query_stock_positions(account)
 
 print(asset)
 print(positions)
+```
+
+交易侧按资金账号路由：外部 Python 会读取当前项目目录或 `CFQUANT_WEB_CONFIG_FILE` 指向的 `cfquant_web_config.json`，如果里面已有 Web 控制台保存的“资金账号 -> 桥接端”绑定，只需要传同一个资金账号；如果不使用这份 Web 配置，也可以显式指定桥接端：
+
+```python
+account = StockAccount("2220009880", bridge_id="qmt2")
 ```
 
 ## 目录结构
