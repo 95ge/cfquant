@@ -17,6 +17,7 @@ const state = {
   apiKey: '',
   apiSocket: null,
   serverAccess: null,
+  logCleanup: null,
   apiOpenGroups: new Set(['data', 'trade', 'system']),
   quoteRows: new Map(),
   quoteSeq: 0,
@@ -1086,6 +1087,46 @@ async function saveServerAccessFromUi(source = 'api') {
   log('访问设置已保存', { allow_remote: !!data.allow_remote, api_base_url: data.api_base_url || '', requires_restart: !!data.requires_restart });
 }
 
+function renderLogCleanup(info) {
+  state.logCleanup = info || {};
+  const enabled = !!state.logCleanup.qmt_userdata_log_cleanup_enabled;
+  const toggle = $('cleanupQmtUserdataLogs');
+  if (toggle) toggle.checked = enabled;
+  const status = $('logCleanupStatus');
+  if (!status) return;
+  const retentionDays = state.logCleanup.retention_days || 5;
+  const parts = [
+    `本地保留 ${retentionDays} 天`,
+    enabled ? 'QMT 清理已启用' : 'QMT 清理未启用',
+  ];
+  const last = state.logCleanup.last_result;
+  if (last && last.finished_at_text) {
+    parts.push(`上次 ${last.finished_at_text}`);
+  }
+  status.textContent = parts.join('，');
+}
+
+async function saveLogCleanupFromUi() {
+  const toggle = $('cleanupQmtUserdataLogs');
+  const data = await api('/api/log-cleanup', {
+    method: 'POST',
+    body: JSON.stringify({ qmt_userdata_log_cleanup_enabled: !!(toggle && toggle.checked) }),
+  });
+  renderLogCleanup(data);
+  log('日志清理设置已保存', { qmt_userdata_log_cleanup_enabled: !!data.qmt_userdata_log_cleanup_enabled });
+}
+
+async function runLogCleanupFromUi() {
+  const toggle = $('cleanupQmtUserdataLogs');
+  const data = await api('/api/log-cleanup/run', {
+    method: 'POST',
+    body: JSON.stringify({ qmt_userdata_log_cleanup_enabled: !!(toggle && toggle.checked) }),
+  });
+  const status = await api('/api/log-cleanup');
+  renderLogCleanup(status);
+  log('日志清理已执行', data);
+}
+
 function apiFieldHtml(fieldName) {
   const meta = API_FIELD_META[fieldName] || { label: fieldName, type: 'text' };
   const name = meta.param || fieldName;
@@ -1877,7 +1918,56 @@ function setStatus(id, online, detail) {
   const node = $(id);
   node.classList.toggle('online', !!online);
   node.classList.toggle('offline', !online);
-  node.title = detail || '';
+  const text = Array.isArray(detail) ? detail.filter(Boolean).join('\n') : (detail || '');
+  node.title = text;
+  if (text) {
+    node.setAttribute('data-tooltip', text);
+    node.setAttribute('tabindex', '0');
+  } else {
+    node.removeAttribute('data-tooltip');
+    node.removeAttribute('tabindex');
+  }
+}
+
+function boolText(value) {
+  if (value === true) return '是';
+  if (value === false) return '否';
+  return '--';
+}
+
+function statusTooltipLines(label, info, snapshot) {
+  const data = info || {};
+  const bridge = snapshot || {};
+  const lines = [
+    `${label}：${data.online ? '在线' : '离线或检测超时'}`,
+    `桥接端：${bridge.bridge_name || bridge.bridge_id || selectedBridge()}`,
+    `请求频道：${data.channel || '--'}`,
+    `检测动作：${data.probe_action || '--'}`,
+    `检测耗时：${data.latency_ms === undefined ? '--' : `${data.latency_ms} ms`}`,
+    `检测时间：${bridge.checked_at_text || '--'}`,
+  ];
+  if (bridge.monitor && bridge.monitor.cached) {
+    lines.push(`状态缓存：已缓存，监控间隔 ${bridge.monitor.interval_seconds || '--'} 秒`);
+  }
+  const status = data.status || {};
+  if (status.bridge || status.request_channel || status.context_ready !== undefined || status.tx_ready !== undefined) {
+    lines.push(`桥接类型：${status.bridge || '--'}`);
+    lines.push(`Context：${boolText(status.context_ready)}，TX：${boolText(status.tx_ready)}`);
+    if (status.request_queue_size !== undefined) {
+      lines.push(`请求队列：${status.request_queue_size}`);
+    }
+  }
+  if (data.status_error || (status && status.status_error)) {
+    lines.push(`状态探测提示：${data.status_error || status.status_error}`);
+  }
+  if (data.error) {
+    lines.push(`错误：${data.error}`);
+  }
+  if (label === '普通 QMT') {
+    lines.push('');
+    lines.push('提示：非交易时间普通 QMT 的回调触发可能较慢，状态检测或委托查询可能短暂超时并进入 cooldown；通常不影响使用，稍后刷新即可。');
+  }
+  return lines;
 }
 
 function renderBridgeSelect(bridges) {
@@ -1983,6 +2073,7 @@ async function loadConfig() {
     apiBaseInput.value = normalizeApiBaseUrl(savedBaseUrl);
   }
   renderServerAccess(data.server_access);
+  renderLogCleanup(data.log_cleanup);
   refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
   log('Web TX', { reply_channel: data.reply_channel });
 }
@@ -1992,13 +2083,23 @@ async function refreshStatus() {
   try {
     const data = await api(`/api/status?bridge_id=${encodeURIComponent(selectedBridge())}`);
     const lttx = await lttxPromise;
-    setStatus('normalStatus', data.normal.online, data.normal.error || data.normal.channel);
-    setStatus('tradeStatus', data.trade.online, data.trade.error || data.trade.channel);
+    setStatus('normalStatus', data.normal.online, statusTooltipLines('普通 QMT', data.normal, data));
+    setStatus('tradeStatus', data.trade.online, statusTooltipLines('极速交易端', data.trade, data));
     $('statusDetail').textContent = JSON.stringify({ lttx, bridge: data }, null, 2);
   } catch (error) {
     const lttx = await lttxPromise;
-    setStatus('normalStatus', false, error.message);
-    setStatus('tradeStatus', false, error.message);
+    setStatus('normalStatus', false, [
+      '普通 QMT：状态检查失败',
+      `桥接端：${selectedBridge()}`,
+      `错误：${error.message}`,
+      '',
+      '提示：非交易时间普通 QMT 的回调触发可能较慢，状态检测或委托查询可能短暂超时并进入 cooldown；通常不影响使用，稍后刷新即可。',
+    ]);
+    setStatus('tradeStatus', false, [
+      '极速交易端：状态检查失败',
+      `桥接端：${selectedBridge()}`,
+      `错误：${error.message}`,
+    ]);
     $('statusDetail').textContent = JSON.stringify({ lttx, error: error.message }, null, 2);
     log('状态检查失败', { error: error.message });
   }
@@ -2849,6 +2950,13 @@ async function boot() {
   $('apiServerForm').addEventListener('submit', (event) => {
     event.preventDefault();
     saveServerAccessFromUi('api').catch((error) => log('访问设置保存失败', { error: error.message }));
+  });
+  $('logCleanupForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveLogCleanupFromUi().catch((error) => log('日志清理设置保存失败', { error: error.message }));
+  });
+  $('runLogCleanupBtn').addEventListener('click', () => {
+    runLogCleanupFromUi().catch((error) => log('日志清理执行失败', { error: error.message }));
   });
   $('useCurrentOriginBtn').addEventListener('click', () => {
     $('apiBaseUrlInput').value = window.location.origin;

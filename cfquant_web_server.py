@@ -3,6 +3,7 @@ import argparse
 import base64
 import email.parser
 import email.policy
+import fnmatch
 import hashlib
 import json
 import math
@@ -25,31 +26,36 @@ import urllib.request
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-_ENTRY_DIR = os.path.dirname(os.path.abspath(__file__))
-_ENTRY_PARENT_DIR = os.path.dirname(_ENTRY_DIR)
-if os.path.basename(_ENTRY_DIR).lower() == "cfquant" and os.path.isdir(os.path.join(_ENTRY_DIR, "cfquant")):
-    sys.path = [
-        path for path in sys.path
-        if os.path.abspath(path or os.curdir).lower() != _ENTRY_DIR.lower()
-    ]
-    if _ENTRY_PARENT_DIR not in sys.path:
-        sys.path.insert(0, _ENTRY_PARENT_DIR)
-    for _extra_dir in (
-        os.path.join(_ENTRY_DIR, "qmt_scripts"),
-        os.path.join(_ENTRY_DIR, "LTtx", "tx"),
-    ):
-        if os.path.isdir(_extra_dir) and _extra_dir not in sys.path:
-            sys.path.insert(1, _extra_dir)
+_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+_LTTX_TX_DIR = os.path.join(_PROJECT_DIR, "LTtx", "tx")
 
-from cfquant.cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
-from cfquant.cfquant.channels import configured_bridges, normalize_bridge_id
-from cfquant.cfquant.protocol import new_id
+
+def _prepend_import_path(path):
+    path = os.path.abspath(path)
+    if not os.path.isdir(path):
+        return
+    normalized = path.lower()
+    sys.path = [
+        item for item in sys.path
+        if os.path.abspath(item or os.curdir).lower() != normalized
+    ]
+    sys.path.insert(0, path)
+
+
+_prepend_import_path(_PROJECT_DIR)
+_prepend_import_path(_LTTX_TX_DIR)
+
+from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
+from cfquant.channels import configured_bridges, normalize_bridge_id
+from cfquant.protocol import new_id
 from tx import txl
 
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = _PROJECT_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
 LOG_FILE = os.path.join(BASE_DIR, "cfquant_web_server.runtime.log")
+LOG_RETENTION_DAYS = int(os.environ.get("CFQUANT_LOG_RETENTION_DAYS", "5"))
+LOG_CLEANUP_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_LOG_CLEANUP_INTERVAL_SECONDS", "21600"))
 LTTX_HOST = os.environ.get("CFQUANT_LTTX_HOST", "127.0.0.1")
 LTTX_PORT = int(os.environ.get("CFQUANT_LTTX_PORT", "2049"))
 LTTX_DIR = os.path.join(BASE_DIR, "LTtx", "tx")
@@ -122,6 +128,7 @@ class WebRuntimeConfig(object):
             "api_key": "",
             "allow_remote": False,
             "api_base_url": "",
+            "cleanup_qmt_userdata_logs": False,
         }
         self.load()
 
@@ -205,6 +212,26 @@ class WebRuntimeConfig(object):
                 "api_base_url": self._data["api_base_url"],
             })
         return self.server_access_info()
+
+    def qmt_userdata_log_cleanup_enabled(self):
+        with self._lock:
+            return bool(self._data.get("cleanup_qmt_userdata_logs"))
+
+    def log_cleanup_info(self):
+        return {
+            "retention_days": LOG_RETENTION_DAYS,
+            "local_cfquant_logs_enabled": True,
+            "qmt_userdata_log_cleanup_enabled": self.qmt_userdata_log_cleanup_enabled(),
+        }
+
+    def set_log_cleanup_settings(self, cleanup_qmt_userdata_logs=None):
+        with self._lock:
+            if cleanup_qmt_userdata_logs is not None:
+                self._data["cleanup_qmt_userdata_logs"] = bool(cleanup_qmt_userdata_logs)
+            self._save_settings_locked({
+                "cleanup_qmt_userdata_logs": "1" if self._data.get("cleanup_qmt_userdata_logs") else "0",
+            })
+        return self.log_cleanup_info()
 
     def server_access_info(self, bound_host=None, bound_port=None):
         allow_remote = self.allow_remote()
@@ -329,6 +356,8 @@ class WebRuntimeConfig(object):
             self._data["allow_remote"] = self._settings_bool(settings.get("allow_remote"))
         if "api_base_url" in settings:
             self._data["api_base_url"] = settings.get("api_base_url") or ""
+        if "cleanup_qmt_userdata_logs" in settings:
+            self._data["cleanup_qmt_userdata_logs"] = self._settings_bool(settings.get("cleanup_qmt_userdata_logs"))
 
     def _save_settings_locked(self, values):
         self._ensure_settings_db_locked()
@@ -1088,6 +1117,70 @@ def safe_print(message):
             f.write(line + "\n")
     except Exception:
         pass
+
+
+def cleanup_files_by_age(root_dir, patterns=None, retention_days=LOG_RETENTION_DAYS, recursive=True):
+    root_dir = os.path.abspath(root_dir)
+    patterns = patterns or ["*"]
+    result = {
+        "root": root_dir,
+        "exists": os.path.isdir(root_dir),
+        "patterns": list(patterns),
+        "recursive": bool(recursive),
+        "scanned_files": 0,
+        "kept_files": 0,
+        "deleted_files": 0,
+        "failed_files": 0,
+        "deleted_bytes": 0,
+        "errors": [],
+    }
+    if not result["exists"]:
+        return result
+    cutoff = time.time() - max(1, int(retention_days)) * 86400
+    for current_root, dirs, files in os.walk(root_dir):
+        if not recursive:
+            dirs[:] = []
+        for name in files:
+            if not any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
+                continue
+            path = os.path.join(current_root, name)
+            result["scanned_files"] += 1
+            try:
+                stat_result = os.stat(path)
+                if stat_result.st_mtime >= cutoff:
+                    result["kept_files"] += 1
+                    continue
+                size = stat_result.st_size
+                os.remove(path)
+                result["deleted_files"] += 1
+                result["deleted_bytes"] += size
+            except Exception as e:
+                result["failed_files"] += 1
+                result["errors"].append("%s: %s" % (path, e))
+    return result
+
+
+def cleanup_cfquant_local_logs(retention_days=LOG_RETENTION_DAYS):
+    targets = [
+        (BASE_DIR, ["*.log"], False),
+        (os.path.join(BASE_DIR, "log_data"), ["*.log", "*.csv", "*.txt"], True),
+        (os.path.join(BASE_DIR, "tx_log"), ["*.log", "*.csv", "*.txt"], True),
+    ]
+    started = time.time()
+    results = [
+        cleanup_files_by_age(path, patterns=patterns, retention_days=retention_days, recursive=recursive)
+        for path, patterns, recursive in targets
+    ]
+    return {
+        "retention_days": int(retention_days),
+        "ran_at": started,
+        "ran_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started)),
+        "targets": results,
+        "scanned_files": sum(item.get("scanned_files", 0) for item in results),
+        "deleted_files": sum(item.get("deleted_files", 0) for item in results),
+        "failed_files": sum(item.get("failed_files", 0) for item in results),
+        "deleted_bytes": sum(item.get("deleted_bytes", 0) for item in results),
+    }
 
 
 WEB_CONFIG = WebRuntimeConfig(WEB_CONFIG_FILE)
@@ -2107,6 +2200,113 @@ class ChannelStatusMonitor(object):
 STATUS_MONITOR = ChannelStatusMonitor()
 
 
+class LogCleanupManager(object):
+    def __init__(self, interval=LOG_CLEANUP_INTERVAL_SECONDS):
+        self.interval = float(interval)
+        self._lock = threading.RLock()
+        self._last_result = None
+        self._thread = None
+        self._running = False
+        self._wake_event = threading.Event()
+
+    def start(self):
+        if self._running:
+            return
+        self._running = True
+        self._wake_event.clear()
+        self._thread = threading.Thread(target=self._loop)
+        self._thread.daemon = True
+        self._thread.start()
+        safe_print("cfquant log cleanup started retention_days=%s interval=%ss" % (LOG_RETENTION_DAYS, self.interval))
+
+    def close(self):
+        self._running = False
+        self._wake_event.set()
+
+    def wake(self):
+        self._wake_event.set()
+
+    def status(self):
+        with self._lock:
+            last_result = json.loads(json.dumps(self._last_result, ensure_ascii=False)) if self._last_result else None
+        info = WEB_CONFIG.log_cleanup_info()
+        info.update({
+            "running": self._running,
+            "interval_seconds": self.interval,
+            "last_result": last_result,
+        })
+        return info
+
+    def run_once(self, reason="manual"):
+        result = {
+            "reason": reason,
+            "retention_days": LOG_RETENTION_DAYS,
+            "started_at": time.time(),
+            "started_at_text": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "local": None,
+            "qmt": {
+                "enabled": WEB_CONFIG.qmt_userdata_log_cleanup_enabled(),
+                "bridges": [],
+            },
+        }
+        try:
+            result["local"] = cleanup_cfquant_local_logs(LOG_RETENTION_DAYS)
+        except Exception as e:
+            result["local"] = {"error": str(e)}
+            safe_print("cfquant local log cleanup failed: %s" % e)
+
+        if WEB_CONFIG.qmt_userdata_log_cleanup_enabled():
+            result["qmt"] = self._cleanup_qmt_userdata_logs()
+
+        result["finished_at"] = time.time()
+        result["finished_at_text"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(result["finished_at"]))
+        result["elapsed_ms"] = round((result["finished_at"] - result["started_at"]) * 1000, 2)
+        with self._lock:
+            self._last_result = result
+        return result
+
+    def _loop(self):
+        while self._running:
+            started = time.time()
+            try:
+                self.run_once(reason="auto")
+            except Exception as e:
+                safe_print("cfquant log cleanup loop failed: %s" % e)
+            elapsed = time.time() - started
+            delay = max(10.0, self.interval - elapsed)
+            self._wake_event.wait(delay)
+            self._wake_event.clear()
+
+    def _cleanup_qmt_userdata_logs(self):
+        result = {
+            "enabled": True,
+            "retention_days": LOG_RETENTION_DAYS,
+            "bridges": [],
+        }
+        for bridge_id in current_bridges():
+            bridge_result = {"bridge_id": bridge_id, "channels": {}}
+            for channel in ("normal", "trade"):
+                if channel_online(bridge_id, channel) is not True:
+                    bridge_result["channels"][channel] = {"skipped": True, "reason": "channel is not online"}
+                    continue
+                try:
+                    cleanup_result = CLIENTS.request(
+                        bridge_id,
+                        channel,
+                        "cfquant.cleanup_qmt_logs",
+                        {"retention_days": LOG_RETENTION_DAYS},
+                        timeout=8.0,
+                    )
+                    bridge_result["channels"][channel] = cleanup_result
+                except Exception as e:
+                    bridge_result["channels"][channel] = {"error": str(e)}
+            result["bridges"].append(bridge_result)
+        return result
+
+
+LOG_CLEANUP = LogCleanupManager()
+
+
 def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS):
     payload = account_payload(account_id)
     result = {"bridge_id": bridge_id, "account_id": account_id, "channel": channel}
@@ -2500,6 +2700,28 @@ def save_server_access(body):
     return WEB_CONFIG.set_allow_remote(parse_bool(body.get("allow_remote")), body.get("api_base_url"))
 
 
+def log_cleanup_info():
+    return LOG_CLEANUP.status()
+
+
+def save_log_cleanup_settings(body):
+    body = body or {}
+    WEB_CONFIG.set_log_cleanup_settings(
+        cleanup_qmt_userdata_logs=parse_bool(body.get("qmt_userdata_log_cleanup_enabled")),
+    )
+    LOG_CLEANUP.wake()
+    return LOG_CLEANUP.status()
+
+
+def run_log_cleanup(body):
+    body = body or {}
+    if "qmt_userdata_log_cleanup_enabled" in body:
+        WEB_CONFIG.set_log_cleanup_settings(
+            cleanup_qmt_userdata_logs=parse_bool(body.get("qmt_userdata_log_cleanup_enabled")),
+        )
+    return LOG_CLEANUP.run_once(reason="manual")
+
+
 def bridge_update_status(bridge_id=None):
     return UPDATER.status(bridge_id or DEFAULT_BRIDGE_ID)
 
@@ -2846,6 +3068,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(save_api_key(body)))
             elif parsed.path == "/api/server-access":
                 self._write_json(ok(save_server_access(body)))
+            elif parsed.path == "/api/log-cleanup":
+                self._write_json(ok(save_log_cleanup_settings(body)))
+            elif parsed.path == "/api/log-cleanup/run":
+                self._write_json(ok(run_log_cleanup(body)))
             elif parsed.path == "/api/updates/github":
                 self._write_json(ok(bridge_update_github(body)))
             elif parsed.path == "/api/updates/rollback":
@@ -2973,11 +3199,14 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "reply_channel": CLIENTS.client_id,
                     "api_key": WEB_CONFIG.api_key_info(),
                     "server_access": server_access_info(),
+                    "log_cleanup": log_cleanup_info(),
                 }))
             elif parsed.path == "/api/apikey":
                 self._write_json(ok(api_key_info()))
             elif parsed.path == "/api/server-access":
                 self._write_json(ok(server_access_info()))
+            elif parsed.path == "/api/log-cleanup":
+                self._write_json(ok(log_cleanup_info()))
             elif parsed.path == "/api/updates/status":
                 bridge_id = normalize_bridge_id((query.get("bridge_id") or [DEFAULT_BRIDGE_ID])[0])
                 self._write_json(ok(bridge_update_status(bridge_id)))
@@ -3234,6 +3463,9 @@ def main(argv=None):
     global WEB_BOUND_HOST, WEB_BOUND_PORT
     WEB_BOUND_HOST = args.host
     WEB_BOUND_PORT = args.port
+    probe_host = "127.0.0.1" if args.host in ("", "0.0.0.0") else args.host
+    if tcp_port_open(probe_host, args.port):
+        raise RuntimeError("cfquant web port %s is already listening, skip duplicate start" % args.port)
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
         CLIENTS.start()
@@ -3245,10 +3477,12 @@ def main(argv=None):
     ACCOUNT_CACHE.start()
     CALLBACKS.start()
     QUOTES.start()
+    LOG_CLEANUP.start()
     safe_print("cfquant web dashboard listening on http://%s:%s" % (args.host, args.port))
     try:
         server.serve_forever()
     finally:
+        LOG_CLEANUP.close()
         STATUS_MONITOR.close()
         ACCOUNT_CACHE.close()
         CALLBACKS.close()

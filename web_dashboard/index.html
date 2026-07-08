@@ -519,6 +519,18 @@
                   <span id="apiServerStatus" class="metric-note"></span>
                 </form>
               </section>
+              <section class="settings-section">
+                <h3>日志清理</h3>
+                <form id="logCleanupForm" class="api-serverbar">
+                  <label class="toggle api-remote-toggle">
+                    <input id="cleanupQmtUserdataLogs" type="checkbox">
+                    <span>清理 QMT userdata/log 过期日志</span>
+                  </label>
+                  <button id="saveLogCleanupBtn" class="primary" type="submit">保存日志设置</button>
+                  <button id="runLogCleanupBtn" type="button">立即清理</button>
+                  <span id="logCleanupStatus" class="metric-note"></span>
+                </form>
+              </section>
             </div>
           </div>
 

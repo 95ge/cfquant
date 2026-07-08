@@ -1001,6 +1001,19 @@ def load_config():
                 tem_dict[key] = value
     return tem_dict
 
+def tcp_port_open(host, port, timeout=0.3):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        return sock.connect_ex((host, int(port))) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
 def main():
     global tocken,ip,port,self_version
     self_version = 'V7.2.7'
@@ -1010,6 +1023,9 @@ def main():
     port = int(config['port'])
     tocken = config['token']
     ip = get_local_ip()
+    if tcp_port_open('127.0.0.1', port):
+        print('LTtx server port %s already listening, skip duplicate start.' % port)
+        return
     #ZMQ的订阅端口
     zmq_xsub_port = config['zmq_port1']
     #ZMQ的发布端口

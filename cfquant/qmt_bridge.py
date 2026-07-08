@@ -204,6 +204,16 @@ class CfquantQmtBridge(object):
     def _dispatch(self, action, params, msg):
         if action == "cfquant.ping":
             return {"pong": True, "ts": time.time(), "request_channel": self.request_channel}
+        if action == "cfquant.status":
+            return {
+                "bridge": type(self).__name__,
+                "running": self.running,
+                "request_channel": self.request_channel,
+                "context_ready": self.context is not None,
+                "tx_ready": self.tx is not None,
+                "subscriptions": len(self.subscriptions),
+                "ts": time.time(),
+            }
         if self.context is None:
             raise RuntimeError("QMT ContextInfo尚未绑定")
         if action == "xtdata.get_market_data":

@@ -148,6 +148,7 @@ h2 {
 }
 
 .status-pill {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -156,6 +157,7 @@ h2 {
   border: 1px solid rgba(255, 255, 255, 0.22);
   border-radius: 6px;
   color: #d7dee7;
+  outline: none;
 }
 
 .status-pill span {
@@ -171,6 +173,28 @@ h2 {
 
 .status-pill.offline span {
   background: var(--bad);
+}
+
+.status-pill[data-tooltip]:hover::after,
+.status-pill[data-tooltip]:focus-visible::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  z-index: 50;
+  width: max-content;
+  min-width: 300px;
+  max-width: min(460px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid #26384b;
+  border-radius: 6px;
+  background: #101820;
+  color: #f4f7fa;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-line;
+  pointer-events: none;
 }
 
 .shell {

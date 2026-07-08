@@ -108,6 +108,9 @@ class NormalQmtBridge(TxTradeBridge):
         if action == "cfquant.ping":
             self._send_response(msg, {"pong": True, "ts": time.time(), "request_channel": self.request_channel})
             return
+        if action == "cfquant.status":
+            self._send_response(msg, self._status())
+            return
         if action == "xtdata.subscribe_whole_quote":
             self._handle_whole_quote_publish_subscribe(msg)
             return

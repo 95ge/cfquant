@@ -153,6 +153,8 @@ class TxTradeBridge(object):
             }
         if action == "cfquant.status":
             return self._status()
+        if action == "cfquant.cleanup_qmt_logs":
+            return self._cleanup_qmt_userdata_logs(params)
         if action == "cfquant.query_info":
             return self._query_info(params)
         if action == "xttrader.subscribe":
@@ -227,6 +229,96 @@ class TxTradeBridge(object):
 
     def _status_extra(self):
         return {}
+
+    def _cleanup_qmt_userdata_logs(self, params):
+        params = params or {}
+        retention_days = self._retention_days(params.get("retention_days"), default=5)
+        dry_run = str(params.get("dry_run") or "").strip().lower() in ("1", "true", "yes", "on")
+        log_dir, candidate_dirs, python_dir, entry_file = self._qmt_userdata_log_dir()
+        result = {
+            "bridge_id": self.bridge_id,
+            "request_channel": self.request_channel,
+            "retention_days": retention_days,
+            "dry_run": dry_run,
+            "entry_file": entry_file,
+            "python_dir": python_dir,
+            "log_dir": log_dir,
+            "candidate_dirs": candidate_dirs,
+            "exists": bool(log_dir and os.path.isdir(log_dir)),
+            "scanned_files": 0,
+            "kept_files": 0,
+            "deleted_files": 0,
+            "would_delete_files": 0,
+            "failed_files": 0,
+            "deleted_bytes": 0,
+            "errors": [],
+            "ts": time.time(),
+        }
+        if not result["exists"]:
+            return result
+
+        cutoff = time.time() - retention_days * 86400
+        for current_root, dirs, files in os.walk(log_dir):
+            for name in files:
+                path = os.path.join(current_root, name)
+                result["scanned_files"] += 1
+                try:
+                    stat_result = os.stat(path)
+                    if stat_result.st_mtime >= cutoff:
+                        result["kept_files"] += 1
+                        continue
+                    if dry_run:
+                        result["would_delete_files"] += 1
+                        result["deleted_bytes"] += stat_result.st_size
+                    else:
+                        os.remove(path)
+                        result["deleted_files"] += 1
+                        result["deleted_bytes"] += stat_result.st_size
+                except Exception as e:
+                    result["failed_files"] += 1
+                    result["errors"].append("%s: %s" % (path, e))
+        self._log(
+            "qmt userdata log cleanup log_dir=%s retention_days=%s deleted=%s failed=%s dry_run=%s"
+            % (log_dir, retention_days, result["deleted_files"], result["failed_files"], dry_run)
+        )
+        return result
+
+    def _qmt_userdata_log_dir(self):
+        entry_file = self.globals_dict.get("__file__") or ""
+        if entry_file:
+            entry_file = os.path.abspath(entry_file)
+            python_dir = os.path.dirname(entry_file)
+        else:
+            python_dir = os.path.abspath(os.getcwd())
+        candidate_dirs = []
+        if os.path.basename(python_dir).lower() == "python":
+            candidate_dirs.append(os.path.join(os.path.dirname(python_dir), "userdata", "log"))
+        candidate_dirs.append(os.path.join(python_dir, "userdata", "log"))
+
+        normalized = []
+        seen = set()
+        for path in candidate_dirs:
+            path = os.path.abspath(path)
+            key = path.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(path)
+        for path in normalized:
+            if os.path.isdir(path):
+                return path, normalized, python_dir, entry_file
+        return normalized[0] if normalized else "", normalized, python_dir, entry_file
+
+    def _retention_days(self, value, default=5):
+        try:
+            days = int(value)
+        except Exception:
+            days = int(default)
+        if days < 1:
+            days = 1
+        if days > 3650:
+            days = 3650
+        return days
 
     def _query_info(self, params):
         return {
