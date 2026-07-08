@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.pyo
+
+*.log
+*.runtime.log
+*.err.log
+*.stdout.log
+*.stderr.log
+
+cfquant_web_config.db
+cfquant_web_config.json
+cfquant_hub_status.json
+
+.updates/
+.pytest_cache/
+.mypy_cache/
