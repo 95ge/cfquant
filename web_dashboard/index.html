@@ -707,13 +707,12 @@
 
                   <div class="guide-section">
                     <h3>安装方式</h3>
-                    <p>如果 cfquant 已发布到 PyPI 或内部 pip 源，可以直接安装：</p>
-                    <pre class="guide-code">pip install cfquant</pre>
-                    <p>当前源码仓库也支持从 GitHub 或本地源码安装：</p>
-                    <pre class="guide-code">pip install git+https://github.com/95ge/cfquant.git
+                    <p>cfquant 暂未发布到 PyPI，因此暂不支持 <code>pip install cfquant</code>。当前只支持从本地源码目录安装。</p>
+                    <pre class="guide-code">cd D:\cfquant
+pip install -e .
 
-cd D:\cfquant
-pip install -e .</pre>
+# 或安装当前源码版本
+pip install .</pre>
                     <p>如果不想使用 pip，也可以把源码里的 <code>cfquant\</code> 和 <code>LTtx\</code> 两个目录复制到你的 Python 项目根目录，或复制到当前 Python 环境的 <code>site-packages</code> 目录。</p>
                   </div>
 

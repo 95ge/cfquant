@@ -58,23 +58,20 @@ cfquant 是面向 QMT 的本地桥接项目，用于把 Web 控制台、外部 P
 
 ### 安装方式
 
-如果 cfquant 已发布到 PyPI 或你的内部 pip 源，可以直接安装：
-
-```powershell
-pip install cfquant
-```
-
-当前源码仓库也支持从 GitHub 或本地目录安装：
-
-```powershell
-pip install git+https://github.com/95ge/cfquant.git
-```
+cfquant 暂未发布到 PyPI，因此暂不支持 `pip install cfquant`。当前只支持从本地源码目录安装。
 
 开发调试时推荐使用 editable 安装：
 
 ```powershell
 cd D:\cfquant
 pip install -e .
+```
+
+如果不需要 editable 模式，也可以在源码目录直接安装当前版本：
+
+```powershell
+cd D:\cfquant
+pip install .
 ```
 
 如果不想使用 pip，也可以把源码里的 `cfquant/` 和 `LTtx/` 两个目录直接复制到你的 Python 项目根目录，或复制到当前 Python 环境的 `site-packages` 目录。复制后应能在目标 Python 中执行：
