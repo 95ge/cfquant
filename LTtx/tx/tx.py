@@ -231,7 +231,7 @@ class txl:
     
     def sys_print(self,data,show_force=False):
         msg = '%sLTtx[info]>>>>:%s,'%(self.get_nowtime(),data)
-        if self.sys_print_on or show_force:            
+        if self.sys_print_on:            
             print(msg)
         self.save_log(msg)
 
@@ -1309,10 +1309,10 @@ class txl:
                 self.sys_print(msg)
                 break
             time.sleep(1)
-        print('退出心跳------')
+        self.sys_print('退出心跳------')
         if who in self.txg_dict and not self.txg_dict[who]['txg_running']:
             self.__connect_txg(who,pwd=pwd)
-        print('我全退出了')
+        self.sys_print('我全退出了')
     
     
     def create_channel(self,num=30):
