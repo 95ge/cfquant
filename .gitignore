@@ -15,3 +15,4 @@ cfquant_hub_status.json
 .updates/
 .pytest_cache/
 .mypy_cache/
+log_data/
