@@ -93,6 +93,10 @@ DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://git
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
 WEB_BOUND_HOST = None
 WEB_BOUND_PORT = None
+WEB_RESTART_REQUEST = None
+WEB_RESTART_LOCK = threading.RLock()
+WEB_AUTH_TOKENS = {}
+WEB_AUTH_LOCK = threading.RLock()
 STOCK_BUY = 23
 STOCK_SELL = 24
 FIX_PRICE = 11
@@ -118,6 +122,129 @@ def get_lan_ip():
                 sock.close()
             except Exception:
                 pass
+
+
+def normalize_web_port(value, default=8765, strict=False):
+    if value is None or value == "":
+        if strict:
+            raise ValueError("web port is required")
+        return int(default)
+    try:
+        port = int(value)
+    except Exception:
+        if strict:
+            raise ValueError("web port must be an integer")
+        return int(default)
+    if port < 1 or port > 65535:
+        if strict:
+            raise ValueError("web port must be between 1 and 65535")
+        return int(default)
+    return port
+
+
+def normalize_domain_patterns(value):
+    if isinstance(value, str):
+        raw_items = re.split(r"[\s,;]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = []
+    result = []
+    for item in raw_items:
+        item = str(item or "").strip().lower()
+        if not item:
+            continue
+        if "://" in item:
+            parsed = urllib.parse.urlparse(item)
+            item = (parsed.hostname or "").lower()
+        if item.startswith("[") and item.endswith("]"):
+            item = item[1:-1]
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
+def extract_host_name(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    try:
+        if "://" in value:
+            return (urllib.parse.urlparse(value).hostname or "").lower()
+        if value.startswith("["):
+            end = value.find("]")
+            return value[1:end].lower() if end >= 0 else value.strip("[]").lower()
+        return value.split(":", 1)[0].lower()
+    except Exception:
+        return ""
+
+
+def is_loopback_host(host):
+    host = extract_host_name(host)
+    return host in ("localhost", "::1", "0:0:0:0:0:0:0:1") or host.startswith("127.")
+
+
+def host_matches_patterns(host, patterns):
+    host = extract_host_name(host)
+    if not host:
+        return True
+    if is_loopback_host(host):
+        return True
+    for pattern in normalize_domain_patterns(patterns):
+        if pattern == "*" or fnmatch.fnmatch(host, pattern):
+            return True
+    return False
+
+
+def web_password_hash(password, salt):
+    salt_bytes = bytes.fromhex(str(salt))
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        str(password or "").encode("utf-8"),
+        salt_bytes,
+        120000,
+    )
+    return digest.hex()
+
+
+def mask_text(value):
+    value = str(value or "")
+    if not value:
+        return ""
+    if len(value) <= 2:
+        return "*" * len(value)
+    return "%s%s" % (value[:1], "*" * (len(value) - 1))
+
+
+def clear_web_auth_tokens():
+    with WEB_AUTH_LOCK:
+        WEB_AUTH_TOKENS.clear()
+
+
+def issue_web_auth_token(username):
+    token = secrets.token_urlsafe(32)
+    with WEB_AUTH_LOCK:
+        WEB_AUTH_TOKENS[token] = {
+            "username": str(username or ""),
+            "created_at": time.time(),
+        }
+    return token
+
+
+def web_auth_token_info(token):
+    token = str(token or "").strip()
+    if not token:
+        return None
+    with WEB_AUTH_LOCK:
+        return dict(WEB_AUTH_TOKENS.get(token) or {}) or None
+
+
+def revoke_web_auth_token(token):
+    token = str(token or "").strip()
+    if not token:
+        return
+    with WEB_AUTH_LOCK:
+        WEB_AUTH_TOKENS.pop(token, None)
 
 
 class WebRuntimeConfig(object):
@@ -1465,6 +1592,7 @@ class CfquantUpdater(object):
             raise
 
     def _fetch_github(self, repo_url, ref, output_dir):
+        errors = []
         clone_cmd = ["git", "clone", "--depth", "1"]
         if ref:
             clone_cmd.extend(["--branch", ref])
@@ -1486,20 +1614,28 @@ class CfquantUpdater(object):
                     "stdout": completed.stdout[-1000:],
                     "stderr": completed.stderr[-1000:],
                 }
-            safe_print("git clone failed: %s" % (completed.stderr or "").strip())
+            git_error = (completed.stderr or completed.stdout or "").strip()
+            errors.append("git clone: %s" % (git_error or ("exit %s" % completed.returncode)))
+            safe_print("git clone failed: %s" % git_error)
         except Exception as e:
-            safe_print("git clone unavailable: %s" % e)
+            message = str(e) or repr(e)
+            errors.append("git clone: %s" % message)
+            safe_print("git clone unavailable: %s" % message)
         owner, repo = self._parse_github_repo(repo_url)
         owner_q = urllib.parse.quote(owner)
         repo_q = urllib.parse.quote(repo)
-        errors = []
         if ref:
+            ref_q = urllib.parse.quote(ref)
             candidates = [
-                ("zip-heads", "https://github.com/%s/%s/archive/refs/heads/%s.zip" % (owner_q, repo_q, urllib.parse.quote(ref))),
-                ("zip-tags", "https://github.com/%s/%s/archive/refs/tags/%s.zip" % (owner_q, repo_q, urllib.parse.quote(ref))),
+                ("zip-codeload-heads", "https://codeload.github.com/%s/%s/zip/refs/heads/%s" % (owner_q, repo_q, ref_q)),
+                ("zip-codeload-tags", "https://codeload.github.com/%s/%s/zip/refs/tags/%s" % (owner_q, repo_q, ref_q)),
+                ("zip-heads", "https://github.com/%s/%s/archive/refs/heads/%s.zip" % (owner_q, repo_q, ref_q)),
+                ("zip-tags", "https://github.com/%s/%s/archive/refs/tags/%s.zip" % (owner_q, repo_q, ref_q)),
             ]
         else:
             candidates = [
+                ("zip-codeload-main", "https://codeload.github.com/%s/%s/zip/refs/heads/main" % (owner_q, repo_q)),
+                ("zip-codeload-master", "https://codeload.github.com/%s/%s/zip/refs/heads/master" % (owner_q, repo_q)),
                 ("zip-main", "https://github.com/%s/%s/archive/refs/heads/main.zip" % (owner_q, repo_q)),
                 ("zip-master", "https://github.com/%s/%s/archive/refs/heads/master.zip" % (owner_q, repo_q)),
             ]
@@ -1507,8 +1643,8 @@ class CfquantUpdater(object):
             try:
                 return self._download_github_archive(archive_url, output_dir, method)
             except Exception as e:
-                errors.append("%s: %s" % (method, e))
-        raise RuntimeError("GitHub archive download failed: %s" % "; ".join(errors))
+                errors.append("%s %s: %s" % (method, archive_url, str(e) or repr(e)))
+        raise RuntimeError("GitHub fetch failed: %s" % "; ".join(errors))
 
     def _git_current_commit(self, repo_dir):
         try:
