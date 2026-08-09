@@ -33,6 +33,8 @@ const $ = (id) => document.getElementById(id);
 const ACCOUNT_PAIR_KEY = 'cfquant.account_bridge_pairs';
 const TUTORIAL_TOPIC_KEY = 'cfquant.tutorial_topic';
 const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups';
+const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
+const DEFAULT_UPDATE_REF = 'main';
 
 const API_GROUPS = [
   { id: 'data', title: '数据' },
@@ -1161,6 +1163,12 @@ function renderUpdateStatus(data) {
   const status = $('updateStatus');
   const select = $('rollbackBackupSelect');
   const backups = data && Array.isArray(data.backups) ? data.backups : [];
+  const repoInput = $('updateRepoInput');
+  const refInput = $('updateRefInput');
+  const defaultRepo = (data && data.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
+  const defaultRef = (data && data.default_ref) || DEFAULT_UPDATE_REF;
+  if (repoInput && !repoInput.value.trim()) repoInput.value = defaultRepo;
+  if (refInput && !refInput.value.trim()) refInput.value = defaultRef;
   if (select) {
     select.innerHTML = backups.length
       ? backups.map((row) => {
@@ -1184,6 +1192,7 @@ function renderUpdateStatus(data) {
       const layoutText = updateLayoutText(targets.layout);
       if (layoutText) parts.push(layoutText);
       if (data.current_version) parts.push(`版本 ${data.current_version}`);
+      if (defaultRepo) parts.push(`默认仓库 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}`);
       parts.push(`备份 ${backups.length} 个`);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
       if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
@@ -1208,8 +1217,10 @@ async function refreshUpdateStatus(options = {}) {
 async function runGithubUpdateFromUi() {
   const repoInput = $('updateRepoInput');
   const refInput = $('updateRefInput');
-  const repoUrl = repoInput ? repoInput.value.trim() : '';
-  const ref = refInput ? refInput.value.trim() : '';
+  const repoUrl = (repoInput && repoInput.value.trim()) || (state.updateStatus && state.updateStatus.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
+  const ref = (refInput && refInput.value.trim()) || (state.updateStatus && state.updateStatus.default_ref) || DEFAULT_UPDATE_REF;
+  if (repoInput && !repoInput.value.trim()) repoInput.value = repoUrl;
+  if (refInput && !refInput.value.trim()) refInput.value = ref;
   if (!repoUrl) {
     log('GitHub 仓库为空，无法更新');
     return;

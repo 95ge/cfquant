@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=20260809_update">
+  <link rel="stylesheet" href="/styles.css?v=20260809_update_repo">
 </head>
 <body>
   <div class="admin-layout">
@@ -544,11 +544,11 @@
                 <div class="api-serverbar update-bar">
                   <label class="field">
                     <span>GitHub 仓库</span>
-                    <input id="updateRepoInput" type="text" autocomplete="off" placeholder="owner/repo 或 https://github.com/owner/repo">
+                    <input id="updateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
                   </label>
                   <label class="field compact">
                     <span>分支 / 标签</span>
-                    <input id="updateRefInput" type="text" autocomplete="off" placeholder="main，可空">
+                    <input id="updateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
                   </label>
                   <button id="runGithubUpdateBtn" class="primary" type="button">从 GitHub 更新</button>
                 </div>
@@ -1212,6 +1212,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=20260809_update"></script>
+  <script src="/app.js?v=20260809_update_repo"></script>
 </body>
 </html>

@@ -89,6 +89,8 @@ STATUS_PROBE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_PROBE_TI
 ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
+DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://github.com/95ge/cfquant.git").strip()
+DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
 WEB_BOUND_HOST = None
 WEB_BOUND_PORT = None
 STOCK_BUY = 23
@@ -1279,6 +1281,9 @@ class CfquantUpdater(object):
             "targets": {},
             "backups": [],
             "current_version": "",
+            "last_update": {},
+            "default_repo_url": DEFAULT_UPDATE_REPO_URL,
+            "default_ref": DEFAULT_UPDATE_REF,
         }
         if not python_dir:
             result["errors"].append("桥接端未设置 Python 目录")
@@ -1288,6 +1293,7 @@ class CfquantUpdater(object):
             result["targets"] = target
             result["backups"] = self._list_backups(target["backup_dir"])
             result["current_version"] = self._read_version(target["current_core"])
+            result["last_update"] = self._read_install_meta(target["updates_dir"])
             if not os.path.isdir(target["python_dir"]):
                 result["errors"].append("Python 目录不存在: %s" % target["python_dir"])
             if not os.path.isdir(target["project_dir"]):
@@ -1474,7 +1480,12 @@ class CfquantUpdater(object):
                 timeout=120,
             )
             if completed.returncode == 0:
-                return {"method": "git", "stdout": completed.stdout[-1000:], "stderr": completed.stderr[-1000:]}
+                return {
+                    "method": "git",
+                    "commit": self._git_current_commit(output_dir),
+                    "stdout": completed.stdout[-1000:],
+                    "stderr": completed.stderr[-1000:],
+                }
             safe_print("git clone failed: %s" % (completed.stderr or "").strip())
         except Exception as e:
             safe_print("git clone unavailable: %s" % e)
@@ -1498,6 +1509,23 @@ class CfquantUpdater(object):
             except Exception as e:
                 errors.append("%s: %s" % (method, e))
         raise RuntimeError("GitHub archive download failed: %s" % "; ".join(errors))
+
+    def _git_current_commit(self, repo_dir):
+        try:
+            completed = subprocess.run(
+                ["git", "-C", repo_dir, "rev-parse", "HEAD"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+            )
+            if completed.returncode == 0:
+                return (completed.stdout or "").strip()
+        except Exception:
+            pass
+        return ""
 
     def _download_github_archive(self, url, output_dir, method):
         os.makedirs(output_dir, exist_ok=True)
@@ -1633,6 +1661,17 @@ class CfquantUpdater(object):
         os.makedirs(target["updates_dir"], exist_ok=True)
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+    def _read_install_meta(self, updates_dir):
+        meta_path = os.path.join(updates_dir, "last_update.json")
+        if not os.path.isfile(meta_path):
+            return {}
+        try:
+            with open(meta_path, "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            return {"error": str(e)}
 
     def _list_backups(self, backup_dir):
         if not os.path.isdir(backup_dir):
@@ -2761,10 +2800,12 @@ def bridge_update_status(bridge_id=None):
 def bridge_update_github(body):
     body = body or {}
     bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    repo_url = body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL
+    ref = body.get("ref") or body.get("branch") or body.get("tag") or DEFAULT_UPDATE_REF
     return UPDATER.update_from_github(
         bridge_id,
-        body.get("repo_url") or body.get("url"),
-        body.get("ref") or body.get("branch") or body.get("tag") or "",
+        repo_url,
+        ref,
     )
 
 
