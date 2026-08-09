@@ -469,6 +469,10 @@ th {
   padding: 14px;
 }
 
+.form-grid button.wide {
+  grid-column: 1 / -1;
+}
+
 .trade-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -611,6 +615,16 @@ th {
   display: block;
   color: var(--text);
   font-size: 13px;
+}
+
+.config-row small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .config-row button {
@@ -802,6 +816,32 @@ th {
 .settings-section .api-keybar,
 .settings-section .api-serverbar {
   margin-bottom: 0;
+}
+
+.update-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.update-status-row .metric-note {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-section .update-bar {
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 240px) auto auto;
+  margin-bottom: 10px;
+}
+
+input[type="file"] {
+  padding: 5px 10px;
+}
+
+.update-result {
+  min-height: 120px;
+  max-height: 260px;
 }
 
 .api-head {
@@ -1521,6 +1561,7 @@ tr.clickable:hover td {
   .api-preview,
   .api-keybar,
   .api-serverbar,
+  .update-bar,
   .api-doc-detail,
   .api-form,
   .verify-grid {

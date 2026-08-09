@@ -18,6 +18,8 @@ const state = {
   apiSocket: null,
   serverAccess: null,
   logCleanup: null,
+  updateStatus: null,
+  updateBusy: false,
   apiOpenGroups: new Set(['data', 'trade', 'system']),
   quoteRows: new Map(),
   quoteSeq: 0,
@@ -184,7 +186,7 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的资金信息。',
-    defaults: { sections: 'asset', force: '1' },
+    defaults: { sections: 'asset', force: '0' },
     fields: ['account_id'],
   },
   {
@@ -194,7 +196,7 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的持仓列表。',
-    defaults: { sections: 'positions', force: '1' },
+    defaults: { sections: 'positions', force: '0' },
     fields: ['account_id'],
   },
   {
@@ -204,7 +206,7 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的委托列表。',
-    defaults: { sections: 'orders', force: '1' },
+    defaults: { sections: 'orders', force: '0' },
     fields: ['account_id'],
   },
   {
@@ -214,7 +216,7 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的成交列表。',
-    defaults: { sections: 'trades', force: '1' },
+    defaults: { sections: 'trades', force: '0' },
     fields: ['account_id'],
   },
   {
@@ -1127,6 +1129,159 @@ async function runLogCleanupFromUi() {
   log('日志清理已执行', data);
 }
 
+function updateLayoutText(layout) {
+  if (layout === 'nested') return '旧嵌套目录';
+  if (layout === 'single') return '当前单层目录';
+  return '';
+}
+
+function setUpdateControlsBusy(busy = state.updateBusy) {
+  state.updateBusy = !!busy;
+  const ready = !!(state.updateStatus && state.updateStatus.ready);
+  const backups = state.updateStatus && Array.isArray(state.updateStatus.backups) ? state.updateStatus.backups : [];
+  const actionIds = ['runGithubUpdateBtn', 'uploadZipUpdateBtn'];
+  actionIds.forEach((id) => {
+    const button = $(id);
+    if (button) button.disabled = state.updateBusy || !ready;
+  });
+  const refreshButton = $('refreshUpdateStatusBtn');
+  if (refreshButton) refreshButton.disabled = state.updateBusy;
+  const rollbackButton = $('rollbackUpdateBtn');
+  if (rollbackButton) rollbackButton.disabled = state.updateBusy || !ready || !backups.length;
+}
+
+function renderUpdateResult(payload) {
+  const box = $('updateResultBox');
+  if (!box) return;
+  box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
+}
+
+function renderUpdateStatus(data) {
+  state.updateStatus = data || null;
+  const status = $('updateStatus');
+  const select = $('rollbackBackupSelect');
+  const backups = data && Array.isArray(data.backups) ? data.backups : [];
+  if (select) {
+    select.innerHTML = backups.length
+      ? backups.map((row) => {
+          const version = row.version ? ` / ${row.version}` : '';
+          const label = `${row.created_at_text || row.name}${version}`;
+          return `<option value="${esc(row.name)}">${esc(label)}</option>`;
+        }).join('')
+      : '<option value="">暂无备份</option>';
+    select.disabled = !backups.length;
+  }
+  if (status) {
+    if (!data) {
+      status.textContent = '未加载更新状态';
+      status.title = '';
+    } else {
+      const targets = data.targets || {};
+      const parts = [
+        `${data.bridge_name || data.bridge_id || selectedBridge()}：${data.ready ? '可更新' : '未就绪'}`,
+        data.python_dir ? `目录 ${data.python_dir}` : '未配置 QMT Python 目录',
+      ];
+      const layoutText = updateLayoutText(targets.layout);
+      if (layoutText) parts.push(layoutText);
+      if (data.current_version) parts.push(`版本 ${data.current_version}`);
+      parts.push(`备份 ${backups.length} 个`);
+      if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
+      if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
+      status.textContent = parts.join('，');
+      status.title = JSON.stringify(data, null, 2);
+    }
+  }
+  setUpdateControlsBusy(false);
+}
+
+async function refreshUpdateStatus(options = {}) {
+  const status = $('updateStatus');
+  if (status) status.textContent = '正在检查更新状态...';
+  const data = await api(`/api/updates/status?bridge_id=${encodeURIComponent(selectedBridge())}`);
+  renderUpdateStatus(data);
+  if (options.log !== false) {
+    log('更新状态已刷新', { bridge_id: data.bridge_id, ready: !!data.ready, python_dir: data.python_dir || '' });
+  }
+  return data;
+}
+
+async function runGithubUpdateFromUi() {
+  const repoInput = $('updateRepoInput');
+  const refInput = $('updateRefInput');
+  const repoUrl = repoInput ? repoInput.value.trim() : '';
+  const ref = refInput ? refInput.value.trim() : '';
+  if (!repoUrl) {
+    log('GitHub 仓库为空，无法更新');
+    return;
+  }
+  const confirmed = window.confirm('确认从 GitHub 更新当前桥接端核心代码？更新完成后需要重启 QMT 桥接脚本。');
+  if (!confirmed) return;
+  setUpdateControlsBusy(true);
+  try {
+    const data = await api('/api/updates/github', {
+      method: 'POST',
+      body: JSON.stringify({ bridge_id: selectedBridge(), repo_url: repoUrl, ref }),
+    });
+    renderUpdateResult(data);
+    await refreshUpdateStatus({ log: false });
+    log('核心代码已从 GitHub 更新', { bridge_id: data.bridge_id, version: data.current_version || '' });
+  } finally {
+    setUpdateControlsBusy(false);
+  }
+}
+
+async function uploadZipUpdateFromUi() {
+  const input = $('updateZipInput');
+  const file = input && input.files && input.files[0];
+  if (!file) {
+    log('未选择 zip 文件，无法更新');
+    return;
+  }
+  const confirmed = window.confirm('确认上传 zip 并更新当前桥接端核心代码？更新完成后需要重启 QMT 桥接脚本。');
+  if (!confirmed) return;
+  const formData = new FormData();
+  formData.append('bridge_id', selectedBridge());
+  formData.append('file', file, file.name);
+  const headers = {};
+  if (state.apiKey) headers['X-API-Key'] = state.apiKey;
+  setUpdateControlsBusy(true);
+  try {
+    const response = await fetch('/api/updates/upload', { method: 'POST', headers, body: formData });
+    const payload = await response.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+    renderUpdateResult(payload.data);
+    await refreshUpdateStatus({ log: false });
+    log('核心代码已通过 zip 更新', { bridge_id: payload.data.bridge_id, version: payload.data.current_version || '' });
+  } finally {
+    setUpdateControlsBusy(false);
+  }
+}
+
+async function rollbackUpdateFromUi() {
+  const select = $('rollbackBackupSelect');
+  const backup = select ? select.value : '';
+  if (!backup) {
+    log('没有可回滚的备份');
+    return;
+  }
+  const confirmed = window.confirm(`确认回滚到备份 ${backup}？回滚完成后需要重启 QMT 桥接脚本。`);
+  if (!confirmed) return;
+  setUpdateControlsBusy(true);
+  try {
+    const data = await api('/api/updates/rollback', {
+      method: 'POST',
+      body: JSON.stringify({ bridge_id: selectedBridge(), backup }),
+    });
+    renderUpdateResult(data);
+    await refreshUpdateStatus({ log: false });
+    log('核心代码已回滚', { bridge_id: data.bridge_id, version: data.current_version || '' });
+  } finally {
+    setUpdateControlsBusy(false);
+  }
+}
+
 function apiFieldHtml(fieldName) {
   const meta = API_FIELD_META[fieldName] || { label: fieldName, type: 'text' };
   const name = meta.param || fieldName;
@@ -1693,8 +1848,10 @@ function renderBridgeConfigList() {
     const label = document.createElement('span');
     const strong = document.createElement('strong');
     strong.textContent = `${plain(bridge.name || bridgeId)} (${plain(bridgeId)})`;
+    const dir = document.createElement('small');
+    dir.textContent = bridge.python_dir ? `Python 目录：${bridge.python_dir}` : 'Python 目录未设置';
     label.appendChild(strong);
-    label.appendChild(document.createTextNode('自动频道'));
+    label.appendChild(dir);
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.textContent = '编辑';
@@ -1720,6 +1877,7 @@ function fillBridgeForm(bridgeId) {
   const form = $('bridgeForm');
   form.id.value = bridgeId;
   form.name.value = bridge.name || bridgeId;
+  form.python_dir.value = bridge.python_dir || '';
 }
 
 async function submitBridgeForm(event) {
@@ -1728,6 +1886,7 @@ async function submitBridgeForm(event) {
   const body = {
     id: form.id.value.trim(),
     name: form.name.value.trim(),
+    python_dir: form.python_dir.value.trim(),
     channels: {},
   };
   try {
@@ -1800,6 +1959,7 @@ async function refreshConfig() {
   renderBridgeConfigList();
   renderApiDocs(state.apiEndpointId);
   await refreshBindingStatuses();
+  await refreshUpdateStatus({ log: false }).catch((error) => log('更新状态刷新失败', { error: error.message }));
 }
 
 async function refreshBindingStatuses() {
@@ -2074,6 +2234,7 @@ async function loadConfig() {
   }
   renderServerAccess(data.server_access);
   renderLogCleanup(data.log_cleanup);
+  refreshUpdateStatus({ log: false }).catch((error) => log('更新状态初始化失败', { error: error.message }));
   refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
   log('Web TX', { reply_channel: data.reply_channel });
 }
@@ -2184,6 +2345,7 @@ function handleBridgeChange() {
   syncBindingForm();
   resetSelectionState();
   refreshCurrentSelection('桥接端');
+  refreshUpdateStatus({ log: false }).catch((error) => log('桥接端更新状态刷新失败', { error: error.message }));
 }
 
 function handleAccountChange() {
@@ -2872,6 +3034,7 @@ function startTimers() {
 
 async function boot() {
   wireForms();
+  renderUpdateStatus(null);
   wireNavigation();
   wireDataTabs();
   wireTutorialNavigation();
@@ -2957,6 +3120,27 @@ async function boot() {
   });
   $('runLogCleanupBtn').addEventListener('click', () => {
     runLogCleanupFromUi().catch((error) => log('日志清理执行失败', { error: error.message }));
+  });
+  $('refreshUpdateStatusBtn').addEventListener('click', () => {
+    refreshUpdateStatus().catch((error) => log('更新状态刷新失败', { error: error.message }));
+  });
+  $('runGithubUpdateBtn').addEventListener('click', () => {
+    runGithubUpdateFromUi().catch((error) => {
+      renderUpdateResult({ error: error.message });
+      log('GitHub 更新失败', { error: error.message });
+    });
+  });
+  $('uploadZipUpdateBtn').addEventListener('click', () => {
+    uploadZipUpdateFromUi().catch((error) => {
+      renderUpdateResult({ error: error.message });
+      log('zip 更新失败', { error: error.message });
+    });
+  });
+  $('rollbackUpdateBtn').addEventListener('click', () => {
+    rollbackUpdateFromUi().catch((error) => {
+      renderUpdateResult({ error: error.message });
+      log('核心代码回滚失败', { error: error.message });
+    });
   });
   $('useCurrentOriginBtn').addEventListener('click', () => {
     $('apiBaseUrlInput').value = window.location.origin;

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20260809_update">
 </head>
 <body>
   <div class="admin-layout">
@@ -323,6 +323,10 @@
                 <span>显示名称</span>
                 <input name="name" placeholder="QMT 2" autocomplete="off">
               </label>
+              <label class="field wide">
+                <span>QMT Python 目录</span>
+                <input name="python_dir" placeholder="D:\兴业证券SMT-Q\python" autocomplete="off">
+              </label>
               <button class="primary wide" type="submit">保存桥接端</button>
             </form>
             <div id="bridgeConfigList" class="config-list"></div>
@@ -530,6 +534,37 @@
                   <button id="runLogCleanupBtn" type="button">立即清理</button>
                   <span id="logCleanupStatus" class="metric-note"></span>
                 </form>
+              </section>
+              <section class="settings-section">
+                <h3>核心更新</h3>
+                <div class="update-status-row">
+                  <span id="updateStatus" class="metric-note">未加载更新状态</span>
+                  <button id="refreshUpdateStatusBtn" type="button">刷新状态</button>
+                </div>
+                <div class="api-serverbar update-bar">
+                  <label class="field">
+                    <span>GitHub 仓库</span>
+                    <input id="updateRepoInput" type="text" autocomplete="off" placeholder="owner/repo 或 https://github.com/owner/repo">
+                  </label>
+                  <label class="field compact">
+                    <span>分支 / 标签</span>
+                    <input id="updateRefInput" type="text" autocomplete="off" placeholder="main，可空">
+                  </label>
+                  <button id="runGithubUpdateBtn" class="primary" type="button">从 GitHub 更新</button>
+                </div>
+                <div class="api-serverbar update-bar">
+                  <label class="field">
+                    <span>源码 zip</span>
+                    <input id="updateZipInput" type="file" accept=".zip,application/zip">
+                  </label>
+                  <button id="uploadZipUpdateBtn" class="primary" type="button">上传 zip 更新</button>
+                  <label class="field">
+                    <span>可回滚备份</span>
+                    <select id="rollbackBackupSelect"></select>
+                  </label>
+                  <button id="rollbackUpdateBtn" class="danger" type="button">回滚</button>
+                </div>
+                <pre id="updateResultBox" class="json-box small-json update-result"></pre>
               </section>
             </div>
           </div>
@@ -1177,6 +1212,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20260809_update"></script>
 </body>
 </html>

@@ -26,7 +26,7 @@ _ensure_path()
 
 
 def _load_bridge_starter():
-    import cfquant.cfquant.tx_trade_bridge as tx_trade_bridge
+    import cfquant.tx_trade_bridge as tx_trade_bridge
 
     try:
         tx_trade_bridge = importlib.reload(tx_trade_bridge)
@@ -37,7 +37,7 @@ def _load_bridge_starter():
 
 start_tx_trade_bridge = _load_bridge_starter()
 
-from cfquant.cfquant.channels import channels_for_bridge, normalize_bridge_id
+from cfquant.channels import channels_for_bridge, normalize_bridge_id
 
 BRIDGE_ID = normalize_bridge_id(BRIDGE_ID)
 BRIDGE_CHANNELS = channels_for_bridge(BRIDGE_ID)

@@ -85,8 +85,9 @@ if DEFAULT_BRIDGE_ID not in ENV_BRIDGES:
 CHANNELS = ENV_BRIDGES[DEFAULT_BRIDGE_ID]["channels"]
 CALLBACK_EVENT_CHANNEL = CHANNELS["callback"]
 STATUS_CHECK_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_INTERVAL", "15"))
+STATUS_PROBE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_PROBE_TIMEOUT", "8"))
 ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
-ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "12"))
+ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
 WEB_BOUND_HOST = None
 WEB_BOUND_PORT = None
@@ -1373,13 +1374,32 @@ class CfquantUpdater(object):
 
     def _target_paths(self, python_dir):
         python_dir = normalize_optional_path(python_dir)
-        project_dir = os.path.join(python_dir, "cfquant")
+        single_project_dir = python_dir
+        single_core = os.path.join(python_dir, "cfquant")
+        legacy_project_dir = os.path.join(python_dir, "cfquant")
+        legacy_core = os.path.join(legacy_project_dir, "cfquant")
+        if self._looks_like_core(single_core):
+            layout = "single"
+            project_dir = single_project_dir
+            current_core = single_core
+            updates_dir = os.path.join(python_dir, ".cfquant_updates")
+        elif self._looks_like_core(legacy_core):
+            layout = "nested"
+            project_dir = legacy_project_dir
+            current_core = legacy_core
+            updates_dir = os.path.join(legacy_project_dir, ".updates")
+        else:
+            layout = "single"
+            project_dir = single_project_dir
+            current_core = single_core
+            updates_dir = os.path.join(python_dir, ".cfquant_updates")
         return {
+            "layout": layout,
             "python_dir": python_dir,
             "project_dir": project_dir,
-            "current_core": os.path.join(project_dir, "cfquant"),
-            "updates_dir": os.path.join(project_dir, ".updates"),
-            "backup_dir": os.path.join(project_dir, ".updates", "backups"),
+            "current_core": current_core,
+            "updates_dir": updates_dir,
+            "backup_dir": os.path.join(updates_dir, "backups"),
             "entry_file": os.path.join(python_dir, "CFQUANT.py"),
         }
 
@@ -1403,7 +1423,7 @@ class CfquantUpdater(object):
         target = self._require_ready_target(bridge_id)
         source_core = self._find_source_core(source_dir)
         if not source_core:
-            raise RuntimeError("源码中未找到 cfquant/cfquant 核心目录")
+            raise RuntimeError("源码中未找到 cfquant 核心目录")
         self._validate_core_dir(source_core)
         os.makedirs(target["backup_dir"], exist_ok=True)
         backup = self._backup_current_core(target)
@@ -1420,6 +1440,7 @@ class CfquantUpdater(object):
             removed = self._prune_backups(target["backup_dir"])
             return {
                 "bridge_id": target["bridge_id"],
+                "layout": target.get("layout"),
                 "python_dir": target["python_dir"],
                 "updated": True,
                 "source": meta,
@@ -2010,7 +2031,7 @@ def parse_bool(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
-def probe_bridge_status(bridge_id=DEFAULT_BRIDGE_ID, timeout=2.5):
+def probe_bridge_status(bridge_id=DEFAULT_BRIDGE_ID, timeout=STATUS_PROBE_TIMEOUT_SECONDS):
     result = {}
     channels = bridge_channels(bridge_id)
     for name in ("normal", "trade"):
@@ -2018,7 +2039,7 @@ def probe_bridge_status(bridge_id=DEFAULT_BRIDGE_ID, timeout=2.5):
     return result
 
 
-def probe_bridge_channel_status(bridge_id, channel_key, channel, timeout=2.5):
+def probe_bridge_channel_status(bridge_id, channel_key, channel, timeout=STATUS_PROBE_TIMEOUT_SECONDS):
     started = time.perf_counter()
     try:
         status = CLIENTS.request(
@@ -2028,6 +2049,7 @@ def probe_bridge_channel_status(bridge_id, channel_key, channel, timeout=2.5):
             {},
             timeout=timeout,
             mark_offline_on_timeout=True,
+            ignore_cooldown=True,
         )
         return {
             "online": True,
@@ -2063,6 +2085,7 @@ def probe_bridge_channel_status(bridge_id, channel_key, channel, timeout=2.5):
                 {},
                 timeout=timeout,
                 mark_offline_on_timeout=True,
+                ignore_cooldown=True,
             )
             return {
                 "online": True,
@@ -2106,7 +2129,7 @@ def _status_probe_can_fallback(error):
 
 
 class ChannelStatusMonitor(object):
-    def __init__(self, interval=STATUS_CHECK_INTERVAL_SECONDS, timeout=2.5):
+    def __init__(self, interval=STATUS_CHECK_INTERVAL_SECONDS, timeout=STATUS_PROBE_TIMEOUT_SECONDS):
         self.interval = float(interval)
         self.timeout = float(timeout)
         self._lock = threading.RLock()
@@ -2323,7 +2346,7 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 action,
                 payload,
                 timeout=timeout,
-                mark_offline_on_timeout=True,
+                mark_offline_on_timeout=False,
             )
             result[section] = {
                 "ok": True,
@@ -2376,8 +2399,15 @@ class AccountDataCache(object):
 
         missing = self._missing_sections(bridge_id, channel, account_id, sections)
         if missing:
-            live = query_account_live(bridge_id, channel, account_id, missing)
-            self._store_result(bridge_id, channel, account_id, live, missing)
+            self._wake()
+            return self._build_result(
+                bridge_id,
+                channel,
+                account_id,
+                sections,
+                force=False,
+                refresh_queued=True,
+            )
         elif self._needs_refresh(bridge_id, channel, account_id, sections):
             self._wake()
         return self._build_result(bridge_id, channel, account_id, sections, force=False)
@@ -2421,7 +2451,7 @@ class AccountDataCache(object):
                 stored["checked_at_text"] = checked_at_text
                 self._entries[(bridge_id, channel, account_id, section)] = stored
 
-    def _build_result(self, bridge_id, channel, account_id, sections, force=False):
+    def _build_result(self, bridge_id, channel, account_id, sections, force=False, refresh_queued=False):
         now = time.time()
         result = {
             "bridge_id": bridge_id,
@@ -2432,6 +2462,7 @@ class AccountDataCache(object):
                 "enabled": True,
                 "force": bool(force),
                 "interval_seconds": self.interval,
+                "refresh_queued": bool(refresh_queued),
             },
         }
         ages = []
@@ -2443,6 +2474,7 @@ class AccountDataCache(object):
                         "ok": False,
                         "error": "account data cache is warming up",
                         "cached": True,
+                        "warming_up": True,
                     }
                     continue
                 age = max(0, now - entry.get("checked_at", now))

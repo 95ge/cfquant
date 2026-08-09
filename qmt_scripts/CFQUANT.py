@@ -4,10 +4,15 @@
 import os
 import sys
 import importlib
+import datetime as dt
 
 
 _cf_bridge = None
-_ENTRY_VERSION = "normal_bridge_20260707_10"
+_cf_timer_key = None
+_ENTRY_VERSION = "normal_bridge_20260809_02"
+_TIMER_INTERVAL_MS = 500
+_PUMP_MAX_COUNT = 20
+_PUMP_MAX_MS = 0
 DEFAULT_ACCOUNT_ID = ""
 USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
@@ -26,8 +31,8 @@ _ensure_path()
 
 
 def _load_bridge_starter():
-    import cfquant.cfquant.tx_trade_bridge as tx_trade_bridge
-    import cfquant.cfquant.normal_bridge as normal_bridge
+    import cfquant.tx_trade_bridge as tx_trade_bridge
+    import cfquant.normal_bridge as normal_bridge
 
     try:
         tx_trade_bridge = importlib.reload(tx_trade_bridge)
@@ -42,7 +47,7 @@ def _load_bridge_starter():
 
 start_normal_bridge = _load_bridge_starter()
 
-from cfquant.cfquant.channels import channels_for_bridge, normalize_bridge_id
+from cfquant.channels import channels_for_bridge, normalize_bridge_id
 
 BRIDGE_ID = normalize_bridge_id(BRIDGE_ID)
 BRIDGE_CHANNELS = channels_for_bridge(BRIDGE_ID)
@@ -57,6 +62,9 @@ _cf_bridge = start_normal_bridge(
     bridge_id=BRIDGE_ID,
     account_id=DEFAULT_ACCOUNT_ID,
     show=True,
+    schedule_timer=False,
+    pump_max_count=_PUMP_MAX_COUNT,
+    pump_max_ms=_PUMP_MAX_MS,
 )
 print("cfquant normal bridge module loaded")
 print("cfquant entry version:%s" % _ENTRY_VERSION)
@@ -65,11 +73,37 @@ print("cfquant bridge id:%s normal_channel:%s callback_channel:%s" % (
     BRIDGE_CHANNELS["normal"],
     BRIDGE_CHANNELS["callback"],
 ))
+print("cfquant normal bridge pump max_count:%s max_ms:%s" % (_PUMP_MAX_COUNT, _PUMP_MAX_MS))
+
+
+def cfquant_normal_timer(*args, **kwargs):
+    if _cf_bridge:
+        _cf_bridge.on_timer(*args, **kwargs)
+
+
+def _schedule_cf_timer(ContextInfo):
+    global _cf_timer_key
+
+    if _cf_timer_key or ContextInfo is None:
+        return
+    try:
+        first_time = dt.datetime.now() + dt.timedelta(seconds=1)
+        _cf_timer_key = ContextInfo.schedule_run(
+            cfquant_normal_timer,
+            first_time,
+            repeat_times=-1,
+            interval=dt.timedelta(milliseconds=_TIMER_INTERVAL_MS),
+            name="cfquant_normal_bridge_pump",
+        )
+        print("cfquant normal bridge timer scheduled key:%s interval_ms:%s" % (_cf_timer_key, _TIMER_INTERVAL_MS))
+    except Exception as e:
+        print("cfquant normal bridge timer schedule failed:%s" % e)
 
 
 def init(ContextInfo):
     if _cf_bridge:
         _cf_bridge.set_context(ContextInfo)
+    _schedule_cf_timer(ContextInfo)
     print("cfquant normal bridge context ready version:%s" % _ENTRY_VERSION)
 
 
@@ -79,7 +113,14 @@ def handlebar(ContextInfo):
 
 
 def stop(ContextInfo):
-    global _cf_bridge
+    global _cf_bridge, _cf_timer_key
+
+    if ContextInfo is not None and _cf_timer_key:
+        try:
+            ContextInfo.cancel_schedule_run(_cf_timer_key)
+        except Exception as e:
+            print("cfquant normal bridge timer cancel failed:%s" % e)
+        _cf_timer_key = None
 
     if _cf_bridge:
         _cf_bridge.close()

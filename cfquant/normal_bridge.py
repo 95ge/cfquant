@@ -9,6 +9,14 @@ from .protocol import loads_message, pack_event, pack_response
 from .tx_trade_bridge import TxTradeBridge
 
 
+COALESCED_QUERY_ACTIONS = set([
+    "xttrader.query_stock_asset",
+    "xttrader.query_stock_positions",
+    "xttrader.query_stock_orders",
+    "xttrader.query_stock_trades",
+])
+
+
 class NormalQmtBridge(TxTradeBridge):
     def __init__(
         self,
@@ -22,8 +30,9 @@ class NormalQmtBridge(TxTradeBridge):
         account_id="",
         show=True,
         globals_dict=None,
+        schedule_timer=True,
         pump_max_count=20,
-        pump_max_ms=10,
+        pump_max_ms=0,
     ):
         super(NormalQmtBridge, self).__init__(
             context,
@@ -44,6 +53,10 @@ class NormalQmtBridge(TxTradeBridge):
         self.worker_source_lock = threading.Lock()
         self.pump_max_count = int(pump_max_count)
         self.pump_max_ms = float(pump_max_ms)
+        self.coalesce_lock = threading.RLock()
+        self.coalesced_requests = {}
+        self.coalesce_join_count = 0
+        self.coalesce_dispatch_count = 0
         self.subscription_seq = 0
         self.quote_subscriptions = {}
         self.whole_quote_publish_sub_id = None
@@ -52,6 +65,7 @@ class NormalQmtBridge(TxTradeBridge):
         self.schedule_key = None
         self.callback_event_channel = callback_event_channel
         self.bridge_id = bridge_id or "default"
+        self.schedule_timer = bool(schedule_timer)
 
     def start(self):
         if self.running:
@@ -74,7 +88,8 @@ class NormalQmtBridge(TxTradeBridge):
         self.context = context
         self._subscribe_internal_whole_quote()
         self._start_worker_thread(context)
-        self._schedule_timer()
+        if self.schedule_timer:
+            self._schedule_timer()
         self._log("normal bridge worker is released by quote/timer/handlebar callbacks")
         self._log("normal bridge context ready")
 
@@ -120,8 +135,10 @@ class NormalQmtBridge(TxTradeBridge):
         if action == "xtdata.unsubscribe_quote":
             self._handle_quote_unsubscribe(msg)
             return
+        if self._try_enqueue_coalesced_request(msg):
+            return
         try:
-            self.request_queue.put_nowait((msg, time.time()))
+            self.request_queue.put_nowait((msg, time.time(), None))
             self._log(
                 "normal bridge request queued action=%s id=%s queue_size=%s"
                 % (msg.get("action"), msg.get("id"), self.request_queue.qsize())
@@ -189,9 +206,60 @@ class NormalQmtBridge(TxTradeBridge):
         self._send_response(msg, True)
         self._log("normal bridge quote unsubscribed id=%s" % sub_id)
 
+    def _try_enqueue_coalesced_request(self, msg):
+        coalesce_key = self._coalesce_key(msg)
+        if not coalesce_key:
+            return False
+        received_at = time.time()
+        action = msg.get("action")
+        with self.coalesce_lock:
+            current = self.coalesced_requests.get(coalesce_key)
+            if current is not None:
+                current["waiters"].append((msg, received_at))
+                self.coalesce_join_count += 1
+                self._log(
+                    "normal bridge request coalesced action=%s id=%s waiters=%s"
+                    % (action, msg.get("id"), len(current["waiters"]))
+                )
+                return True
+            entry = {
+                "key": coalesce_key,
+                "action": action,
+                "primary_id": msg.get("id"),
+                "waiters": [(msg, received_at)],
+            }
+            self.coalesced_requests[coalesce_key] = entry
+        try:
+            self.request_queue.put_nowait((msg, received_at, coalesce_key))
+            self._log(
+                "normal bridge request queued action=%s id=%s queue_size=%s coalesced=1"
+                % (action, msg.get("id"), self.request_queue.qsize())
+            )
+            return True
+        except queue.Full as e:
+            with self.coalesce_lock:
+                if self.coalesced_requests.get(coalesce_key) is entry:
+                    self.coalesced_requests.pop(coalesce_key, None)
+            self._send_error(msg, e)
+            return True
+
+    def _coalesce_key(self, msg):
+        action = msg.get("action")
+        if action not in COALESCED_QUERY_ACTIONS:
+            return None
+        params = msg.get("params") or {}
+        try:
+            params_key = json.dumps(params, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        except Exception:
+            params_key = repr(params)
+        return "%s|%s" % (action, params_key)
+
     def pump(self):
         self._release_worker("pump")
         return self.request_queue.qsize()
+
+    def on_timer(self, *args, **kwargs):
+        self._release_worker("timer")
 
     def _release_worker(self, source):
         with self.worker_source_lock:
@@ -219,27 +287,68 @@ class NormalQmtBridge(TxTradeBridge):
         start = time.perf_counter()
         count = 0
         while self.running and count < self.pump_max_count:
-            if (time.perf_counter() - start) * 1000 >= self.pump_max_ms:
+            if self.pump_max_ms > 0 and (time.perf_counter() - start) * 1000 >= self.pump_max_ms:
                 break
             try:
-                msg, received_at = self.request_queue.get_nowait()
+                item = self.request_queue.get_nowait()
             except queue.Empty:
                 break
-            try:
-                result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
-                self._send_response(msg, result)
-                self._log(
-                    "normal bridge worker response source=%s action=%s id=%s total_ms=%.2f"
-                    % (source, msg.get("action"), msg.get("id"), (time.time() - received_at) * 1000)
-                )
-            except Exception as e:
-                self._log(
-                    "normal bridge worker request_error source=%s action=%s id=%s error=%s"
-                    % (source, msg.get("action"), msg.get("id"), e)
-                )
-                self._send_error(msg, e)
+            msg, received_at, coalesce_key = self._queue_item_parts(item)
+            if coalesce_key:
+                self._drain_coalesced_request(source, msg, received_at, coalesce_key)
+            else:
+                self._drain_single_request(source, msg, received_at)
             count += 1
         return count
+
+    def _queue_item_parts(self, item):
+        try:
+            if len(item) == 3:
+                return item
+        except Exception:
+            pass
+        msg, received_at = item
+        return msg, received_at, None
+
+    def _drain_single_request(self, source, msg, received_at):
+        try:
+            result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
+            self._send_response(msg, result)
+            self._log(
+                "normal bridge worker response source=%s action=%s id=%s total_ms=%.2f"
+                % (source, msg.get("action"), msg.get("id"), (time.time() - received_at) * 1000)
+            )
+        except Exception as e:
+            self._log(
+                "normal bridge worker request_error source=%s action=%s id=%s error=%s"
+                % (source, msg.get("action"), msg.get("id"), e)
+            )
+            self._send_error(msg, e)
+
+    def _drain_coalesced_request(self, source, msg, received_at, coalesce_key):
+        try:
+            result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
+            with self.coalesce_lock:
+                entry = self.coalesced_requests.pop(coalesce_key, None)
+                self.coalesce_dispatch_count += 1
+            waiters = entry.get("waiters", []) if entry else [(msg, received_at)]
+            for waiter_msg, _ in waiters:
+                self._send_response(waiter_msg, result)
+            self._log(
+                "normal bridge worker coalesced_response source=%s action=%s id=%s waiters=%s total_ms=%.2f"
+                % (source, msg.get("action"), msg.get("id"), len(waiters), (time.time() - received_at) * 1000)
+            )
+        except Exception as e:
+            with self.coalesce_lock:
+                entry = self.coalesced_requests.pop(coalesce_key, None)
+                self.coalesce_dispatch_count += 1
+            waiters = entry.get("waiters", []) if entry else [(msg, received_at)]
+            self._log(
+                "normal bridge worker coalesced_error source=%s action=%s id=%s waiters=%s error=%s"
+                % (source, msg.get("action"), msg.get("id"), len(waiters), e)
+            )
+            for waiter_msg, _ in waiters:
+                self._send_error(waiter_msg, e)
 
     def _on_whole_quote(self, data):
         self._release_worker("whole_quote")
@@ -268,7 +377,7 @@ class NormalQmtBridge(TxTradeBridge):
             self.tx.push("event", event, client_id)
 
     def _on_timer(self, *args, **kwargs):
-        self._release_worker("timer")
+        self.on_timer(*args, **kwargs)
 
     def _subscribe_internal_whole_quote(self):
         if self.context is None or self.whole_quote_sub_id:
@@ -391,6 +500,9 @@ class NormalQmtBridge(TxTradeBridge):
         return str(self.account_id or "").strip()
 
     def _status_extra(self):
+        with self.coalesce_lock:
+            coalesced_waiters = sum(len(item.get("waiters", [])) for item in self.coalesced_requests.values())
+            coalesced_group_count = len(self.coalesced_requests)
         return {
             "request_queue_size": self.request_queue.qsize(),
             "recv_thread_alive": self.recv_thread.is_alive() if self.recv_thread else False,
@@ -400,8 +512,13 @@ class NormalQmtBridge(TxTradeBridge):
             "quote_subscription_count": len(self.quote_subscriptions),
             "whole_quote_publish_enabled": self.whole_quote_publish_enabled,
             "whole_quote_publish_sub_id": self.whole_quote_publish_sub_id,
+            "schedule_timer": self.schedule_timer,
             "pump_max_count": self.pump_max_count,
             "pump_max_ms": self.pump_max_ms,
+            "coalesced_group_count": coalesced_group_count,
+            "coalesced_waiter_count": coalesced_waiters,
+            "coalesce_join_count": self.coalesce_join_count,
+            "coalesce_dispatch_count": self.coalesce_dispatch_count,
         }
 
 
@@ -415,6 +532,9 @@ def start_normal_bridge(
     bridge_id="default",
     account_id="",
     show=True,
+    schedule_timer=True,
+    pump_max_count=20,
+    pump_max_ms=0,
 ):
     import sys
 
@@ -433,4 +553,7 @@ def start_normal_bridge(
         account_id=account_id,
         show=show,
         globals_dict=globals_dict,
+        schedule_timer=schedule_timer,
+        pump_max_count=pump_max_count,
+        pump_max_ms=pump_max_ms,
     ).start()
