@@ -232,7 +232,3 @@ LTtx/
 ## 说明
 
 详细教程以 Web 控制台的“教程”页面为准；`docs/` 目录保留部分兼容说明和补充文档。
-
-## GitHub Stars
-
-[![Star History Chart](https://api.star-history.com/svg?repos=95ge/cfquant&type=Date)](https://star-history.com/#95ge/cfquant&Date)
