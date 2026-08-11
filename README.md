@@ -2,10 +2,6 @@
 
 cfquant 是面向 QMT 的本地桥接项目，用于把 Web 控制台、外部 Python 程序和 QMT 策略脚本连接起来，统一转发行情订阅、交易请求、账户查询和回调事件。
 
-## GitHub Stars
-
-[![Star History Chart](https://api.star-history.com/svg?repos=95ge/cfquant&type=Date)](https://star-history.com/#95ge/cfquant&Date)
-
 ## 重要前提：建议两端都部署
 
 cfquant 的完整功能依赖两端同时运行：
@@ -236,3 +232,7 @@ LTtx/
 ## 说明
 
 详细教程以 Web 控制台的“教程”页面为准；`docs/` 目录保留部分兼容说明和补充文档。
+
+## GitHub Stars
+
+[![Star History Chart](https://api.star-history.com/svg?repos=95ge/cfquant&type=Date)](https://star-history.com/#95ge/cfquant&Date)
