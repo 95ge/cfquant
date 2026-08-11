@@ -91,6 +91,8 @@ ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
 DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://github.com/95ge/cfquant.git").strip()
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
+UPDATE_REMOTE_CACHE_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_CACHE_SECONDS", "300"))
+UPDATE_REMOTE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_TIMEOUT_SECONDS", "12"))
 WEB_BOUND_HOST = None
 WEB_BOUND_PORT = None
 WEB_RESTART_REQUEST = None
@@ -258,6 +260,12 @@ class WebRuntimeConfig(object):
             "api_key": "",
             "allow_remote": False,
             "api_base_url": "",
+            "web_port": normalize_web_port(os.environ.get("CFQUANT_WEB_PORT"), default=8765),
+            "web_allowed_domains": "",
+            "web_auth_enabled": False,
+            "web_auth_username": "",
+            "web_auth_salt": "",
+            "web_auth_hash": "",
             "cleanup_qmt_userdata_logs": False,
         }
         self.load()
@@ -272,6 +280,11 @@ class WebRuntimeConfig(object):
                     if isinstance(raw, dict):
                         self._data["bridges"] = self._normalize_bridges(raw.get("bridges") or {})
                         self._data["account_pairs"] = self._normalize_pairs(raw.get("account_pairs") or {})
+                        web_server = raw.get("web_server") if isinstance(raw.get("web_server"), dict) else {}
+                        web_port = raw.get("web_port")
+                        if web_port in (None, ""):
+                            web_port = web_server.get("port")
+                        self._data["web_port"] = normalize_web_port(web_port, default=self._data["web_port"])
                         legacy_settings = {
                             "api_key": str(raw.get("api_key") or "").strip(),
                             "allow_remote": "1" if bool(raw.get("allow_remote")) else "0",
@@ -305,7 +318,7 @@ class WebRuntimeConfig(object):
         with self._lock:
             return str(self._data.get("api_key") or "").strip()
 
-    def api_key_info(self):
+    def api_key_info(self, include_secret=True):
         api_key = self.api_key()
         if not api_key:
             return {"enabled": False, "masked": "", "api_key": ""}
@@ -313,7 +326,7 @@ class WebRuntimeConfig(object):
             masked = "*" * len(api_key)
         else:
             masked = "%s%s" % (api_key[:4], "*" * (len(api_key) - 8) + api_key[-4:])
-        return {"enabled": True, "masked": masked, "api_key": api_key}
+        return {"enabled": True, "masked": masked, "api_key": api_key if include_secret else ""}
 
     def set_api_key(self, api_key):
         api_key = str(api_key or "").strip()
@@ -332,6 +345,47 @@ class WebRuntimeConfig(object):
         with self._lock:
             return bool(self._data.get("allow_remote"))
 
+    def web_port(self):
+        with self._lock:
+            return normalize_web_port(self._data.get("web_port"), default=8765)
+
+    def allowed_domains(self):
+        with self._lock:
+            return normalize_domain_patterns(self._data.get("web_allowed_domains") or "")
+
+    def web_auth_enabled(self):
+        with self._lock:
+            return bool(self._data.get("web_auth_enabled"))
+
+    def web_auth_info(self, include_username=True):
+        with self._lock:
+            username = str(self._data.get("web_auth_username") or "").strip()
+            enabled = bool(self._data.get("web_auth_enabled"))
+            configured = bool(self._data.get("web_auth_hash"))
+        return {
+            "enabled": enabled,
+            "configured": configured,
+            "username": username if include_username else "",
+            "username_masked": mask_text(username),
+        }
+
+    def verify_web_auth(self, username, password):
+        with self._lock:
+            if not self._data.get("web_auth_enabled"):
+                return False
+            expected_user = str(self._data.get("web_auth_username") or "").strip()
+            salt = str(self._data.get("web_auth_salt") or "").strip()
+            expected_hash = str(self._data.get("web_auth_hash") or "").strip()
+        if not expected_user or not salt or not expected_hash:
+            return False
+        if str(username or "").strip() != expected_user:
+            return False
+        try:
+            actual_hash = web_password_hash(password, salt)
+        except Exception:
+            return False
+        return secrets.compare_digest(actual_hash, expected_hash)
+
     def set_allow_remote(self, value, api_base_url=None):
         with self._lock:
             self._data["allow_remote"] = bool(value)
@@ -341,6 +395,94 @@ class WebRuntimeConfig(object):
                 "allow_remote": "1" if self._data["allow_remote"] else "0",
                 "api_base_url": self._data["api_base_url"],
             })
+        return self.server_access_info()
+
+    def set_server_access_settings(
+        self,
+        allow_remote=None,
+        api_base_url=None,
+        web_port=None,
+        allowed_domains=None,
+        web_auth_enabled=None,
+        web_auth_username=None,
+        web_auth_password=None,
+    ):
+        auth_changed = False
+        with self._lock:
+            settings_values = {}
+            json_dirty = False
+
+            next_allow_remote = bool(self._data.get("allow_remote"))
+            next_api_base_url = str(self._data.get("api_base_url") or "").strip()
+            next_web_port = normalize_web_port(self._data.get("web_port"), default=8765)
+            next_domains_text = ",".join(self.allowed_domains())
+
+            next_auth_enabled = bool(self._data.get("web_auth_enabled"))
+            next_auth_username = str(self._data.get("web_auth_username") or "").strip()
+            next_auth_salt = str(self._data.get("web_auth_salt") or "").strip()
+            next_auth_hash = str(self._data.get("web_auth_hash") or "").strip()
+
+            if allow_remote is not None:
+                next_allow_remote = bool(allow_remote)
+            if api_base_url is not None:
+                next_api_base_url = str(api_base_url or "").strip()
+            if web_port is not None:
+                next_web_port = normalize_web_port(web_port, default=8765, strict=True)
+            if allowed_domains is not None:
+                next_domains_text = ",".join(normalize_domain_patterns(allowed_domains))
+
+            if web_auth_enabled is not None:
+                next_auth_enabled = bool(web_auth_enabled)
+            if web_auth_username is not None:
+                next_auth_username = str(web_auth_username or "").strip()
+            if next_auth_enabled and not next_auth_username:
+                next_auth_username = "admin"
+            if web_auth_password is not None and str(web_auth_password) != "":
+                next_auth_salt = secrets.token_hex(16)
+                next_auth_hash = web_password_hash(web_auth_password, next_auth_salt)
+            if next_auth_enabled and not next_auth_hash:
+                raise ValueError("web auth password is required when web auth is enabled")
+
+            if bool(self._data.get("allow_remote")) != next_allow_remote:
+                self._data["allow_remote"] = next_allow_remote
+                settings_values["allow_remote"] = "1" if next_allow_remote else "0"
+            if str(self._data.get("api_base_url") or "").strip() != next_api_base_url:
+                self._data["api_base_url"] = next_api_base_url
+                settings_values["api_base_url"] = next_api_base_url
+            if normalize_web_port(self._data.get("web_port"), default=8765) != next_web_port:
+                self._data["web_port"] = next_web_port
+                json_dirty = True
+            if str(self._data.get("web_allowed_domains") or "") != next_domains_text:
+                self._data["web_allowed_domains"] = next_domains_text
+                settings_values["web_allowed_domains"] = next_domains_text
+
+            current_auth = (
+                bool(self._data.get("web_auth_enabled")),
+                str(self._data.get("web_auth_username") or "").strip(),
+                str(self._data.get("web_auth_salt") or "").strip(),
+                str(self._data.get("web_auth_hash") or "").strip(),
+            )
+            next_auth = (next_auth_enabled, next_auth_username, next_auth_salt, next_auth_hash)
+            if current_auth != next_auth:
+                auth_changed = True
+                self._data["web_auth_enabled"] = next_auth_enabled
+                self._data["web_auth_username"] = next_auth_username
+                self._data["web_auth_salt"] = next_auth_salt
+                self._data["web_auth_hash"] = next_auth_hash
+                settings_values.update({
+                    "web_auth_enabled": "1" if next_auth_enabled else "0",
+                    "web_auth_username": next_auth_username,
+                    "web_auth_salt": next_auth_salt,
+                    "web_auth_hash": next_auth_hash,
+                })
+
+            if settings_values:
+                self._save_settings_locked(settings_values)
+            if json_dirty:
+                self._save_locked()
+
+        if auth_changed:
+            clear_web_auth_tokens()
         return self.server_access_info()
 
     def qmt_userdata_log_cleanup_enabled(self):
@@ -363,25 +505,46 @@ class WebRuntimeConfig(object):
             })
         return self.log_cleanup_info()
 
-    def server_access_info(self, bound_host=None, bound_port=None):
+    def server_access_info(self, bound_host=None, bound_port=None, include_auth_details=True):
         allow_remote = self.allow_remote()
         with self._lock:
             api_base_url = str(self._data.get("api_base_url") or "").strip()
-        host = bound_host if bound_host is not None else ("0.0.0.0" if allow_remote else "127.0.0.1")
+        configured_host = "0.0.0.0" if allow_remote else "127.0.0.1"
+        configured_port = self.web_port()
+        host = bound_host if bound_host is not None else configured_host
+        active_port = normalize_web_port(bound_port, default=configured_port) if bound_port else configured_port
         lan_ip = get_lan_ip()
-        port_part = ":%s" % bound_port if bound_port else ""
+        port_part = ":%s" % active_port if active_port else ""
         local_url = "http://127.0.0.1%s" % port_part if bound_port else ""
         lan_url = "http://%s%s" % (lan_ip, port_part) if bound_port and lan_ip != "127.0.0.1" else ""
+        configured_local_url = "http://127.0.0.1:%s/" % configured_port
+        configured_lan_url = "http://%s:%s/" % (lan_ip, configured_port) if lan_ip != "127.0.0.1" else ""
+        host_needs_restart = bound_host is not None and host != configured_host
+        port_needs_restart = bound_port is not None and int(bound_port) != int(configured_port)
+        domains = self.allowed_domains()
+        web_auth = self.web_auth_info(include_username=include_auth_details)
         return {
             "allow_remote": allow_remote,
-            "configured_host": "0.0.0.0" if allow_remote else "127.0.0.1",
+            "configured_host": configured_host,
+            "configured_port": configured_port,
+            "web_port": configured_port,
             "bound_host": host,
             "bound_port": bound_port,
             "local_ip": lan_ip,
             "local_url": local_url,
             "lan_url": lan_url,
+            "configured_local_url": configured_local_url,
+            "configured_lan_url": configured_lan_url,
+            "next_url": configured_local_url,
             "api_base_url": api_base_url,
-            "requires_restart": bound_host is not None and host != ("0.0.0.0" if allow_remote else "127.0.0.1"),
+            "allowed_domains": domains,
+            "allowed_domains_text": ",".join(domains),
+            "web_auth": web_auth,
+            "web_auth_enabled": web_auth["enabled"],
+            "web_auth_username": web_auth["username"],
+            "web_auth_username_masked": web_auth["username_masked"],
+            "requires_restart": host_needs_restart or port_needs_restart,
+            "restart_required": host_needs_restart or port_needs_restart,
         }
 
     def save_bridge(self, bridge):
@@ -486,6 +649,16 @@ class WebRuntimeConfig(object):
             self._data["allow_remote"] = self._settings_bool(settings.get("allow_remote"))
         if "api_base_url" in settings:
             self._data["api_base_url"] = settings.get("api_base_url") or ""
+        if "web_allowed_domains" in settings:
+            self._data["web_allowed_domains"] = settings.get("web_allowed_domains") or ""
+        if "web_auth_enabled" in settings:
+            self._data["web_auth_enabled"] = self._settings_bool(settings.get("web_auth_enabled"))
+        if "web_auth_username" in settings:
+            self._data["web_auth_username"] = settings.get("web_auth_username") or ""
+        if "web_auth_salt" in settings:
+            self._data["web_auth_salt"] = settings.get("web_auth_salt") or ""
+        if "web_auth_hash" in settings:
+            self._data["web_auth_hash"] = settings.get("web_auth_hash") or ""
         if "cleanup_qmt_userdata_logs" in settings:
             self._data["cleanup_qmt_userdata_logs"] = self._settings_bool(settings.get("cleanup_qmt_userdata_logs"))
 
@@ -509,6 +682,7 @@ class WebRuntimeConfig(object):
             json.dump({
                 "bridges": self._data.get("bridges") or {},
                 "account_pairs": self._data.get("account_pairs") or {},
+                "web_port": normalize_web_port(self._data.get("web_port"), default=8765),
             }, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(temp_path, self.path)
 
@@ -1392,11 +1566,15 @@ class CfquantUpdater(object):
     def __init__(self, config):
         self.config = config
         self._lock = threading.RLock()
+        self._remote_cache = {}
+        self._remote_lock = threading.RLock()
 
-    def status(self, bridge_id=None):
+    def status(self, bridge_id=None, repo_url=None, ref=None):
         bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
         bridge = bridge_config(bridge_id)
         python_dir = normalize_optional_path(bridge.get("python_dir"))
+        repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
+        ref = str(ref or DEFAULT_UPDATE_REF).strip()
         result = {
             "bridge_id": bridge_id,
             "bridge_name": bridge.get("name") or bridge_id,
@@ -1409,8 +1587,9 @@ class CfquantUpdater(object):
             "backups": [],
             "current_version": "",
             "last_update": {},
-            "default_repo_url": DEFAULT_UPDATE_REPO_URL,
-            "default_ref": DEFAULT_UPDATE_REF,
+            "version_status": self._build_version_status(None, "", {}, repo_url, ref),
+            "default_repo_url": repo_url,
+            "default_ref": ref,
         }
         if not python_dir:
             result["errors"].append("桥接端未设置 Python 目录")
@@ -1421,6 +1600,13 @@ class CfquantUpdater(object):
             result["backups"] = self._list_backups(target["backup_dir"])
             result["current_version"] = self._read_version(target["current_core"])
             result["last_update"] = self._read_install_meta(target["updates_dir"])
+            result["version_status"] = self._build_version_status(
+                target,
+                result["current_version"],
+                result["last_update"],
+                repo_url,
+                ref,
+            )
             if not os.path.isdir(target["python_dir"]):
                 result["errors"].append("Python 目录不存在: %s" % target["python_dir"])
             if not os.path.isdir(target["project_dir"]):
@@ -1590,6 +1776,143 @@ class CfquantUpdater(object):
                 self._remove_tree(temp_new)
             self._restore_backup_dir(backup, current)
             raise
+
+    def _build_version_status(self, target, current_version, last_update, repo_url, ref):
+        current = self._current_version_info(target, current_version, last_update)
+        remote = self._remote_version_info(repo_url, ref)
+        matches_remote = None
+        current_commit = (current.get("commit") or "").lower()
+        remote_commit = (remote.get("commit") or "").lower()
+        if current_commit and remote_commit:
+            matches_remote = current_commit == remote_commit
+        return {
+            "current": current,
+            "remote": remote,
+            "matches_remote": matches_remote,
+        }
+
+    def _current_version_info(self, target, current_version, last_update):
+        last_update = last_update if isinstance(last_update, dict) else {}
+        source = last_update.get("source") if isinstance(last_update.get("source"), dict) else {}
+        fetch = source.get("fetch") if isinstance(source.get("fetch"), dict) else {}
+        commit = str(fetch.get("commit") or source.get("commit") or last_update.get("commit") or "").strip()
+        source_name = "last_update" if commit else ""
+        if not commit and target:
+            commit = self._git_commit_near(target.get("project_dir") or target.get("python_dir") or "")
+            if commit:
+                source_name = "git"
+        updated_at_text = str(last_update.get("updated_at_text") or "").strip()
+        return {
+            "version": str(current_version or "").strip(),
+            "commit": commit,
+            "short_commit": self._short_commit(commit),
+            "source": source_name,
+            "updated_at_text": updated_at_text,
+        }
+
+    def _remote_version_info(self, repo_url, ref):
+        repo_url = str(repo_url or "").strip()
+        ref = str(ref or "").strip()
+        cache_key = "%s#%s" % (repo_url, ref)
+        now = time.time()
+        with self._remote_lock:
+            cached = self._remote_cache.get(cache_key)
+            if cached and now - float(cached.get("checked_at") or 0) < UPDATE_REMOTE_CACHE_SECONDS:
+                result = dict(cached)
+                result["cached"] = True
+                return result
+        result = {
+            "repo_url": repo_url,
+            "ref": ref,
+            "remote_ref": "",
+            "commit": "",
+            "short_commit": "",
+            "checked_at": now,
+            "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "cached": False,
+            "error": "",
+        }
+        if not repo_url:
+            result["error"] = "未配置 GitHub 仓库"
+        else:
+            errors = []
+            for ref_name in self._remote_ref_candidates(ref):
+                try:
+                    completed = subprocess.run(
+                        ["git", "ls-remote", repo_url, ref_name],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=UPDATE_REMOTE_TIMEOUT_SECONDS,
+                    )
+                    output = (completed.stdout or "").strip()
+                    if completed.returncode == 0 and output:
+                        first = output.splitlines()[0].split()
+                        if first:
+                            result["commit"] = first[0]
+                            result["short_commit"] = self._short_commit(first[0])
+                            result["remote_ref"] = first[1] if len(first) > 1 else ref_name
+                            result["source"] = "git ls-remote"
+                            break
+                    message = (completed.stderr or completed.stdout or "").strip()
+                    errors.append("%s: %s" % (ref_name, message or ("exit %s" % completed.returncode)))
+                except Exception as e:
+                    errors.append("%s: %s" % (ref_name, str(e) or repr(e)))
+            if not result["commit"]:
+                result["error"] = "; ".join(errors) or "未获取到远端版本"
+        with self._remote_lock:
+            self._remote_cache[cache_key] = dict(result)
+        return result
+
+    def _remote_ref_candidates(self, ref):
+        ref = str(ref or "").strip()
+        if not ref:
+            return ["HEAD"]
+        candidates = []
+        if ref.startswith("refs/"):
+            candidates.append(ref)
+        else:
+            candidates.extend(["refs/heads/%s" % ref, "refs/tags/%s^{}" % ref, "refs/tags/%s" % ref, ref])
+        result = []
+        for item in candidates:
+            if item not in result:
+                result.append(item)
+        return result
+
+    def _git_commit_near(self, path):
+        path = normalize_optional_path(path)
+        if not path:
+            return ""
+        current = os.path.abspath(path)
+        if os.path.isfile(current):
+            current = os.path.dirname(current)
+        for _ in range(8):
+            if os.path.isdir(os.path.join(current, ".git")):
+                try:
+                    completed = subprocess.run(
+                        ["git", "-C", current, "rev-parse", "HEAD"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=10,
+                    )
+                    if completed.returncode == 0:
+                        return (completed.stdout or "").strip()
+                except Exception:
+                    return ""
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            current = parent
+        return ""
+
+    def _short_commit(self, commit):
+        commit = str(commit or "").strip()
+        return commit[:7] if len(commit) >= 7 else commit
 
     def _fetch_github(self, repo_url, ref, output_dir):
         errors = []
@@ -2887,8 +3210,8 @@ def verify_account_pair(body):
     }
 
 
-def api_key_info():
-    return WEB_CONFIG.api_key_info()
+def api_key_info(include_secret=True):
+    return WEB_CONFIG.api_key_info(include_secret=include_secret)
 
 
 def save_api_key(body):
@@ -2898,13 +3221,93 @@ def save_api_key(body):
     return WEB_CONFIG.set_api_key(body.get("api_key"))
 
 
-def server_access_info():
-    return WEB_CONFIG.server_access_info(bound_host=WEB_BOUND_HOST, bound_port=WEB_BOUND_PORT)
+def server_access_info(include_auth_details=True):
+    return WEB_CONFIG.server_access_info(
+        bound_host=WEB_BOUND_HOST,
+        bound_port=WEB_BOUND_PORT,
+        include_auth_details=include_auth_details,
+    )
 
 
 def save_server_access(body):
     body = body or {}
-    return WEB_CONFIG.set_allow_remote(parse_bool(body.get("allow_remote")), body.get("api_base_url"))
+    allow_remote = parse_bool(body.get("allow_remote")) if "allow_remote" in body else None
+    web_auth_enabled = parse_bool(body.get("web_auth_enabled")) if "web_auth_enabled" in body else None
+    web_auth_password = body.get("web_auth_password") if "web_auth_password" in body else None
+    return WEB_CONFIG.set_server_access_settings(
+        allow_remote=allow_remote,
+        api_base_url=body.get("api_base_url") if "api_base_url" in body else None,
+        web_port=body.get("web_port") if "web_port" in body else body.get("port"),
+        allowed_domains=(
+            body.get("allowed_domains")
+            if "allowed_domains" in body
+            else body.get("domain_whitelist") if "domain_whitelist" in body else None
+        ),
+        web_auth_enabled=web_auth_enabled,
+        web_auth_username=body.get("web_auth_username") if "web_auth_username" in body else body.get("username"),
+        web_auth_password=web_auth_password,
+    )
+
+
+def web_auth_status(token=None):
+    enabled = WEB_CONFIG.web_auth_enabled()
+    token_info = web_auth_token_info(token)
+    authenticated = bool(token_info)
+    return {
+        "enabled": enabled,
+        "authenticated": authenticated,
+        "username": token_info.get("username") if token_info else "",
+        "created_at": token_info.get("created_at") if token_info else 0,
+    }
+
+
+def web_auth_login(body):
+    body = body or {}
+    if not WEB_CONFIG.web_auth_enabled():
+        return web_auth_status()
+    username = str(body.get("username") or body.get("web_auth_username") or "").strip()
+    password = str(body.get("password") or body.get("web_auth_password") or "")
+    if not WEB_CONFIG.verify_web_auth(username, password):
+        raise PermissionError("invalid username or password")
+    token = issue_web_auth_token(username)
+    result = web_auth_status(token)
+    result["token"] = token
+    return result
+
+
+def web_auth_logout(token):
+    revoke_web_auth_token(token)
+    return web_auth_status()
+
+
+def web_reload_info(reason="settings"):
+    access = server_access_info()
+    return {
+        "restarting": True,
+        "reason": reason,
+        "requested_at": time.time(),
+        "next_url": access.get("next_url") or access.get("configured_local_url") or "",
+        "server_access": access,
+    }
+
+
+def schedule_web_reload(server, reload_info):
+    global WEB_RESTART_REQUEST
+    if server is None:
+        raise RuntimeError("web server instance is not available")
+    with WEB_RESTART_LOCK:
+        WEB_RESTART_REQUEST = dict(reload_info or {})
+
+    def shutdown_later():
+        time.sleep(0.7)
+        try:
+            server.shutdown()
+        except Exception as e:
+            safe_print("cfquant web reload shutdown failed: %s" % e)
+
+    thread = threading.Thread(target=shutdown_later)
+    thread.daemon = True
+    thread.start()
 
 
 def log_cleanup_info():
@@ -2929,8 +3332,8 @@ def run_log_cleanup(body):
     return LOG_CLEANUP.run_once(reason="manual")
 
 
-def bridge_update_status(bridge_id=None):
-    return UPDATER.status(bridge_id or DEFAULT_BRIDGE_ID)
+def bridge_update_status(bridge_id=None, repo_url=None, ref=None):
+    return UPDATER.status(bridge_id or DEFAULT_BRIDGE_ID, repo_url=repo_url, ref=ref)
 
 
 def bridge_update_github(body):
@@ -3229,6 +3632,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
+        if not self._request_allowed():
+            self._write_json(fail("request host is not allowed", 403), status=403)
+            return
         if parsed.path == "/ws/callbacks":
             self._handle_ws_callbacks(parsed)
         elif parsed.path == "/ws/quotes":
@@ -3240,6 +3646,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         parsed = urllib.parse.urlparse(self.path)
+        if not self._request_allowed():
+            self._write_json(fail("request host is not allowed", 403), status=403)
+            return
         if not parsed.path.startswith("/api/"):
             self._write_json(fail("not found", 404), status=404)
             return
@@ -3250,19 +3659,29 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
+        if not self._request_allowed():
+            self._write_json(fail("request host is not allowed", 403), status=403)
+            return
         if not parsed.path.startswith("/api/"):
             self._write_json(fail("not found", 404), status=404)
             return
+        if parsed.path == "/api/web-auth/login":
+            try:
+                body = self._read_json_body()
+                self._write_json(ok(web_auth_login(body)))
+            except PermissionError as e:
+                self._write_json(fail(e, 401), status=401)
+            except Exception as e:
+                self._write_json(fail(e, 400), status=400)
+            return
         if not self._authorized(parsed):
-            self._write_json(fail("invalid api key", 401), status=401)
+            self._write_json(fail("invalid credentials", 401), status=401)
             return
         if parsed.path == "/api/updates/upload":
             self._handle_update_upload(parsed)
             return
         try:
-            length = int(self.headers.get("Content-Length") or 0)
-            raw = self.rfile.read(length) if length else b"{}"
-            body = json.loads(raw.decode("utf-8"))
+            body = self._read_json_body()
         except Exception as e:
             self._write_json(fail("invalid json: %s" % e, 400), status=400)
             return
@@ -3276,7 +3695,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/apikey":
                 self._write_json(ok(save_api_key(body)))
             elif parsed.path == "/api/server-access":
-                self._write_json(ok(save_server_access(body)))
+                result = save_server_access(body)
+                reload_requested = parse_bool(body.get("reload"))
+                if reload_requested:
+                    result["reload"] = web_reload_info(reason="settings")
+                self._write_json(ok(result))
+                if reload_requested:
+                    schedule_web_reload(self.server, result["reload"])
             elif parsed.path == "/api/log-cleanup":
                 self._write_json(ok(save_log_cleanup_settings(body)))
             elif parsed.path == "/api/log-cleanup/run":
@@ -3321,17 +3746,35 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(delete_account_pair(body)))
             elif parsed.path == "/api/account-pairs/verify":
                 self._write_json(ok(verify_account_pair(body)))
+            elif parsed.path == "/api/web-auth/logout":
+                self._write_json(ok(web_auth_logout(self._provided_web_token(parsed))))
             else:
                 self._write_json(fail("not found", 404), status=404)
         except Exception as e:
             self._write_json(fail(e, 400), status=400)
 
-    def _authorized(self, parsed):
-        if parsed.path in ("/api/config", "/api/apikey"):
-            return True
-        api_key = WEB_CONFIG.api_key()
-        if not api_key:
-            return True
+    def _read_json_body(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        raw = self.rfile.read(length) if length else b"{}"
+        return json.loads(raw.decode("utf-8"))
+
+    def _request_allowed(self):
+        allow_remote = WEB_CONFIG.allow_remote()
+        domains = WEB_CONFIG.allowed_domains()
+        hosts = [
+            extract_host_name(self.headers.get("Host") or ""),
+            extract_host_name(self.headers.get("Origin") or ""),
+        ]
+        for host in [item for item in hosts if item]:
+            if is_loopback_host(host):
+                continue
+            if not allow_remote:
+                return False
+            if domains and not host_matches_patterns(host, domains):
+                return False
+        return True
+
+    def _provided_api_key(self, parsed):
         query = urllib.parse.parse_qs(parsed.query)
         provided = (
             self.headers.get("X-API-Key")
@@ -3341,7 +3784,39 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         auth = self.headers.get("Authorization") or ""
         if not provided and auth.lower().startswith("bearer "):
             provided = auth[7:].strip()
-        return bool(provided) and secrets.compare_digest(str(provided), api_key)
+        return str(provided or "").strip()
+
+    def _provided_web_token(self, parsed):
+        query = urllib.parse.parse_qs(parsed.query)
+        provided = (
+            self.headers.get("X-CFQUANT-WEB-TOKEN")
+            or self.headers.get("x-cfquant-web-token")
+            or (query.get("web_token") or query.get("web_auth_token") or [""])[0]
+        )
+        return str(provided or "").strip()
+
+    def _api_key_valid(self, parsed):
+        api_key = WEB_CONFIG.api_key()
+        provided = self._provided_api_key(parsed)
+        return bool(api_key and provided) and secrets.compare_digest(provided, api_key)
+
+    def _web_token_valid(self, parsed):
+        return bool(web_auth_token_info(self._provided_web_token(parsed)))
+
+    def _has_access_token(self, parsed):
+        return self._web_token_valid(parsed) or self._api_key_valid(parsed)
+
+    def _authorized(self, parsed):
+        if parsed.path == "/api/config":
+            return True
+        if parsed.path == "/api/apikey" and not WEB_CONFIG.web_auth_enabled():
+            return True
+        if WEB_CONFIG.web_auth_enabled():
+            return self._has_access_token(parsed)
+        api_key = WEB_CONFIG.api_key()
+        if not api_key:
+            return True
+        return self._api_key_valid(parsed)
 
     def _handle_update_upload(self, parsed):
         try:
@@ -3393,11 +3868,22 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
     def _handle_api_get(self, parsed):
         if not self._authorized(parsed):
-            self._write_json(fail("invalid api key", 401), status=401)
+            self._write_json(fail("invalid credentials", 401), status=401)
             return
         query = urllib.parse.parse_qs(parsed.query)
         try:
             if parsed.path == "/api/config":
+                has_access = self._has_access_token(parsed)
+                auth_required = WEB_CONFIG.web_auth_enabled() and not has_access
+                if auth_required:
+                    access = server_access_info(include_auth_details=False)
+                    self._write_json(ok({
+                        "auth_required": True,
+                        "server_access": access,
+                        "web_auth": access.get("web_auth") or {},
+                        "api_key": api_key_info(include_secret=False),
+                    }))
+                    return
                 self._write_json(ok({
                     "default_account_id": DEFAULT_ACCOUNT_ID,
                     "default_bridge_id": DEFAULT_BRIDGE_ID,
@@ -3406,19 +3892,24 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "account_pairs": WEB_CONFIG.account_pairs(),
                     "channels": bridge_channels(DEFAULT_BRIDGE_ID),
                     "reply_channel": CLIENTS.client_id,
-                    "api_key": WEB_CONFIG.api_key_info(),
-                    "server_access": server_access_info(),
+                    "api_key": WEB_CONFIG.api_key_info(include_secret=True),
+                    "server_access": server_access_info(include_auth_details=True),
+                    "web_auth": WEB_CONFIG.web_auth_info(include_username=True),
                     "log_cleanup": log_cleanup_info(),
                 }))
             elif parsed.path == "/api/apikey":
                 self._write_json(ok(api_key_info()))
             elif parsed.path == "/api/server-access":
                 self._write_json(ok(server_access_info()))
+            elif parsed.path == "/api/web-auth/status":
+                self._write_json(ok(web_auth_status(self._provided_web_token(parsed))))
             elif parsed.path == "/api/log-cleanup":
                 self._write_json(ok(log_cleanup_info()))
             elif parsed.path == "/api/updates/status":
                 bridge_id = normalize_bridge_id((query.get("bridge_id") or [DEFAULT_BRIDGE_ID])[0])
-                self._write_json(ok(bridge_update_status(bridge_id)))
+                repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
+                ref = (query.get("ref") or query.get("branch") or query.get("tag") or [""])[0]
+                self._write_json(ok(bridge_update_status(bridge_id, repo_url=repo_url, ref=ref)))
             elif parsed.path == "/api/quotes/status":
                 self._write_json(ok(quote_status()))
             elif parsed.path == "/api/quotes/latest":
@@ -3476,7 +3967,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self.send_response(401)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(json.dumps(fail("invalid api key", 401), ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(json.dumps(fail("invalid credentials", 401), ensure_ascii=False).encode("utf-8"))
             return
         key = self.headers.get("Sec-WebSocket-Key")
         upgrade = (self.headers.get("Upgrade") or "").lower()
@@ -3534,7 +4025,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self.send_response(401)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()
-            self.wfile.write(json.dumps(fail("invalid api key", 401), ensure_ascii=False).encode("utf-8"))
+            self.wfile.write(json.dumps(fail("invalid credentials", 401), ensure_ascii=False).encode("utf-8"))
             return
         key = self.headers.get("Sec-WebSocket-Key")
         upgrade = (self.headers.get("Upgrade") or "").lower()
@@ -3653,19 +4144,53 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         safe_print("%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), fmt % args))
 
     def _send_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin") or ""
+        if origin and self._request_allowed():
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        elif not origin:
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, X-CFQUANT-WEB-TOKEN, Authorization")
         self.send_header("Access-Control-Max-Age", "600")
+
+
+def spawn_reloaded_web_server(reload_request):
+    reload_request = reload_request or {}
+    command = [sys.executable, os.path.abspath(__file__)]
+    creationflags = 0
+    if os.name == "nt":
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    safe_print("cfquant web reload spawning next process url=%s" % (reload_request.get("next_url") or ""))
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=BASE_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            close_fds=False if os.name == "nt" else True,
+        )
+        safe_print("cfquant web reload spawned pid=%s" % process.pid)
+        return {"pid": process.pid, "command": command}
+    except Exception as e:
+        safe_print("cfquant web reload spawn failed: %s" % e)
+        return {"error": str(e), "command": command}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Run cfquant local web dashboard.")
     parser.add_argument("--host", default=None)
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=None)
     args = parser.parse_args(argv)
     if not args.host:
-        args.host = "0.0.0.0" if WEB_CONFIG.allow_remote() else "127.0.0.1"
+        args.host = os.environ.get("CFQUANT_WEB_HOST") or ("0.0.0.0" if WEB_CONFIG.allow_remote() else "127.0.0.1")
+    if args.port is None:
+        args.port = normalize_web_port(os.environ.get("CFQUANT_WEB_PORT"), default=WEB_CONFIG.web_port())
+    else:
+        args.port = normalize_web_port(args.port, default=WEB_CONFIG.web_port(), strict=True)
 
     if not os.path.isdir(STATIC_DIR):
         raise RuntimeError("static directory not found: %s" % STATIC_DIR)
@@ -3698,6 +4223,12 @@ def main(argv=None):
         QUOTES.close()
         CLIENTS.close()
         server.server_close()
+        restart_request = None
+        with WEB_RESTART_LOCK:
+            if WEB_RESTART_REQUEST:
+                restart_request = dict(WEB_RESTART_REQUEST)
+        if restart_request:
+            spawn_reloaded_web_server(restart_request)
 
 
 if __name__ == "__main__":

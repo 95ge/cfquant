@@ -25,6 +25,40 @@ body {
   font-size: 14px;
 }
 
+.auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(15, 23, 32, 0.72);
+}
+
+.auth-overlay.hidden {
+  display: none;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 18px 60px rgba(15, 23, 32, 0.26);
+}
+
+.auth-card h2 {
+  margin: 0 0 14px;
+  font-size: 18px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 12px;
+}
+
 .admin-layout {
   min-height: 100vh;
   display: grid;
@@ -261,6 +295,18 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.metric-note.is-ok {
+  color: #0f7b46;
+}
+
+.metric-note.is-error {
+  color: var(--danger);
+}
+
+.metric-note.is-busy {
+  color: var(--accent);
 }
 
 .head-actions {
@@ -797,6 +843,108 @@ th {
   border-bottom: 1px solid var(--line);
 }
 
+.server-settings-form {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.server-access-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.server-access-summary div {
+  min-width: 0;
+}
+
+.server-access-summary span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.server-access-summary strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-settings-groups {
+  display: grid;
+  gap: 16px;
+}
+
+.server-settings-group {
+  display: grid;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.server-settings-group:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.server-settings-group h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.server-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.server-settings-grid .field.wide {
+  grid-column: 1 / -1;
+}
+
+.server-url-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.server-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.server-settings-actions .metric-note {
+  flex: 1 1 320px;
+  min-width: 0;
+  line-height: 1.5;
+  white-space: normal;
+}
+
+.server-action-buttons {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
 .api-remote-toggle {
   min-height: 34px;
   align-items: center;
@@ -828,6 +976,56 @@ th {
 .update-status-row .metric-note {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.update-version-info {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.update-version-item {
+  min-width: 0;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.update-version-item span,
+.update-version-item strong,
+.update-version-item small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.update-version-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.update-version-item strong {
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.update-version-item small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.update-version-compare.match strong {
+  color: var(--good);
+}
+
+.update-version-compare.diff strong {
+  color: var(--warn);
+}
+
+.update-version-compare.unknown strong {
+  color: var(--muted);
 }
 
 .settings-section .update-bar {
@@ -1561,7 +1759,11 @@ tr.clickable:hover td {
   .api-preview,
   .api-keybar,
   .api-serverbar,
+  .server-access-summary,
+  .server-settings-grid,
+  .server-url-row,
   .update-bar,
+  .update-version-info,
   .api-doc-detail,
   .api-form,
   .verify-grid {

@@ -2,6 +2,15 @@
 
 cfquant 是面向 QMT 的本地桥接项目，用于把 Web 控制台、外部 Python 程序和 QMT 策略脚本连接起来，统一转发行情订阅、交易请求、账户查询和回调事件。
 
+## 重要前提：建议两端都部署
+
+cfquant 的完整功能依赖两端同时运行：
+
+- **本地服务端**：运行 `start_cfquant.bat`，启动 LTtx、本地 Web 控制台和 HTTP/WebSocket 接口。
+- **QMT 桥接端**：把 `cfquant/`、`LTtx/` 和 `qmt_scripts/` 中的桥接脚本部署到 QMT 的 Python 策略目录，并在 QMT 中加载 `CFQUANT.py`、`CFQUANT_TRADE_LOWLAT.py`。
+
+只启动 Web 控制台时，可以看到页面和配置项，但无法真正调用 QMT 的行情、交易和账号能力；只在 QMT 里放桥接脚本而不启动本地服务端，外部 Python 和网页也无法连接。实际使用时建议两端都部署、都保持运行，然后在 Web 控制台完成桥接端和资金账号绑定。
+
 ## 快速开始
 
 1. 从 GitHub 下载源码 zip，解压到一个固定目录，例如：
@@ -52,9 +61,11 @@ cfquant 是面向 QMT 的本地桥接项目，用于把 Web 控制台、外部 P
 
 6. 在 QMT 中加载 `CFQUANT.py` 和 `CFQUANT_TRADE_LOWLAT.py`，然后回到 Web 控制台检查桥接端状态并完成账号绑定。
 
+   这一步和第 2 步必须同时完成：本地服务端负责接收网页和外部 Python 请求，QMT 桥接端负责真正调用 QMT 原生行情和交易能力。
+
 ## 外部 Python 使用
 
-外部 Python 程序可以把 cfquant 当作 `xtquant` 兼容层使用。使用前需要先保证本地 `start_cfquant.bat` 已启动，QMT 侧桥接脚本已加载，并且 Web 控制台里已经完成账号和桥接端绑定。
+外部 Python 程序可以把 cfquant 当作 `xtquant` 兼容层使用。使用前需要先保证本地 `start_cfquant.bat` 已启动，QMT 侧桥接脚本已加载，并且 Web 控制台里已经完成账号和桥接端绑定。缺少任意一端时，外部 Python 通常只能导入包，无法完成真实行情查询、交易请求或回调接收。
 
 ### 安装方式
 
@@ -189,7 +200,7 @@ cfquant/
 
 ## QMT 部署
 
-本地服务先运行在用户电脑上，负责启动 LTtx 和 Web 控制台；QMT 侧只需要加载桥接脚本。
+本地服务先运行在用户电脑上，负责启动 LTtx 和 Web 控制台；QMT 侧需要加载桥接脚本。两端都部署后，网页和外部 Python 请求才会通过 LTtx 转发到 QMT，并由 QMT 完成真实查询和交易。
 
 QMT Python 策略目录最终应包含：
 

@@ -2,6 +2,11 @@ __pycache__/
 *.py[cod]
 *.pyo
 
+.vscode/
+file_data/
+log_data/
+tx_log/
+
 *.log
 *.runtime.log
 *.err.log
@@ -13,5 +18,6 @@ cfquant_web_config.json
 cfquant_hub_status.json
 
 .updates/
+.cfquant_updates/
 .pytest_cache/
 .mypy_cache/

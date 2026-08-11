@@ -139,6 +139,7 @@ class NormalQmtBridge(TxTradeBridge):
             return
         try:
             self.request_queue.put_nowait((msg, time.time(), None))
+            self._release_worker("enqueue")
             self._log(
                 "normal bridge request queued action=%s id=%s queue_size=%s"
                 % (msg.get("action"), msg.get("id"), self.request_queue.qsize())
@@ -231,6 +232,7 @@ class NormalQmtBridge(TxTradeBridge):
             self.coalesced_requests[coalesce_key] = entry
         try:
             self.request_queue.put_nowait((msg, received_at, coalesce_key))
+            self._release_worker("enqueue")
             self._log(
                 "normal bridge request queued action=%s id=%s queue_size=%s coalesced=1"
                 % (action, msg.get("id"), self.request_queue.qsize())

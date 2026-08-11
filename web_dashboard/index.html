@@ -5,9 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=20260809_update_repo">
+  <link rel="stylesheet" href="/styles.css?v=20260809_access_settings_2">
 </head>
 <body>
+  <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
+    <div class="auth-card">
+      <h2>网页登录</h2>
+      <form id="webAuthForm" class="auth-form">
+        <label class="field wide">
+          <span>账号</span>
+          <input id="webAuthLoginUserInput" autocomplete="username">
+        </label>
+        <label class="field wide">
+          <span>密码</span>
+          <input id="webAuthLoginPasswordInput" type="password" autocomplete="current-password">
+        </label>
+        <button class="primary wide" type="submit">登录</button>
+        <span id="webAuthLoginStatus" class="metric-note"></span>
+      </form>
+    </div>
+  </div>
   <div class="admin-layout">
     <aside class="sidebar">
       <div class="side-brand">
@@ -507,20 +524,80 @@
                 </form>
               </section>
               <section class="settings-section">
-                <h3>IP 访问策略</h3>
-                <form id="apiServerForm" class="api-serverbar">
-                  <label class="field">
-                    <span>接口访问地址</span>
-                    <input id="apiBaseUrlInput" type="text" autocomplete="off" placeholder="http://192.168.1.70:8765">
-                  </label>
-                  <label class="toggle api-remote-toggle">
-                    <input id="allowApiRemoteAccess" type="checkbox">
-                    <span>允许任意 IP 访问</span>
-                  </label>
-                  <button id="useCurrentOriginBtn" type="button">使用当前地址</button>
-                  <button id="useLanOriginBtn" type="button">使用局域网地址</button>
-                  <button id="saveApiServerBtn" class="primary" type="submit">保存访问设置</button>
-                  <span id="apiServerStatus" class="metric-note"></span>
+                <h3>Web 访问</h3>
+                <form id="apiServerForm" class="server-settings-form">
+                  <div class="server-access-summary" aria-live="polite">
+                    <div>
+                      <span>当前监听</span>
+                      <strong id="webCurrentListenValue">--</strong>
+                    </div>
+                    <div>
+                      <span>配置端口</span>
+                      <strong id="webConfiguredPortValue">--</strong>
+                    </div>
+                    <div>
+                      <span>访问范围</span>
+                      <strong id="webAccessScopeValue">--</strong>
+                    </div>
+                    <div>
+                      <span>网页登录</span>
+                      <strong id="webAuthStateValue">--</strong>
+                    </div>
+                  </div>
+                  <div class="server-settings-groups">
+                    <div class="server-settings-group">
+                      <h4>监听与访问</h4>
+                      <div class="server-settings-grid">
+                        <label class="field">
+                          <span>网页端口</span>
+                          <input id="webPortInput" type="number" min="1" max="65535" step="1" autocomplete="off" placeholder="8765">
+                        </label>
+                        <label class="toggle api-remote-toggle">
+                          <input id="allowApiRemoteAccess" type="checkbox">
+                          <span>允许外网访问</span>
+                        </label>
+                        <label class="field wide">
+                          <span>域名白名单</span>
+                          <input id="webAllowedDomainsInput" type="text" autocomplete="off" placeholder="example.com,*.example.com,192.168.1.70">
+                        </label>
+                      </div>
+                      <div class="server-settings-actions">
+                        <span id="apiServerStatus" class="metric-note"></span>
+                        <div class="server-action-buttons">
+                          <button id="saveApiServerBtn" class="primary" type="submit">保存设置</button>
+                          <button id="reloadWebServerBtn" type="button">保存并重载</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="server-settings-group">
+                      <h4>网页登录</h4>
+                      <div class="server-settings-grid">
+                        <label class="toggle api-remote-toggle">
+                          <input id="webAuthEnabledInput" type="checkbox">
+                          <span>需要账号密码</span>
+                        </label>
+                        <label class="field">
+                          <span>账号</span>
+                          <input id="webAuthUsernameInput" autocomplete="username" placeholder="admin">
+                        </label>
+                        <label class="field">
+                          <span>密码</span>
+                          <input id="webAuthPasswordInput" type="password" autocomplete="new-password" placeholder="留空则保持不变">
+                        </label>
+                      </div>
+                    </div>
+                    <div class="server-settings-group">
+                      <h4>外部 API 地址</h4>
+                      <div class="server-url-row">
+                        <label class="field">
+                          <span>接口访问地址</span>
+                          <input id="apiBaseUrlInput" type="text" autocomplete="off" placeholder="http://192.168.1.70:8765">
+                        </label>
+                        <button id="useCurrentOriginBtn" type="button">当前地址</button>
+                        <button id="useLanOriginBtn" type="button">局域网地址</button>
+                      </div>
+                    </div>
+                  </div>
                 </form>
               </section>
               <section class="settings-section">
@@ -541,6 +618,7 @@
                   <span id="updateStatus" class="metric-note">未加载更新状态</span>
                   <button id="refreshUpdateStatusBtn" type="button">刷新状态</button>
                 </div>
+                <div id="updateVersionInfo" class="update-version-info"></div>
                 <div class="api-serverbar update-bar">
                   <label class="field">
                     <span>GitHub 仓库</span>
@@ -623,6 +701,10 @@
                   <div class="guide-section">
                     <h3>项目介绍</h3>
                     <p>cfquant 是一个运行在本机的 QMT 交易桥接控制台。它把网页控制台、外部 Python 程序和 QMT 策略脚本连接起来，让外部程序可以通过统一接口完成资金查询、持仓查询、委托查询、下单、撤单和实时回调接收。</p>
+                    <div class="guide-callout">
+                      <strong>建议两端都部署并保持运行</strong>
+                      <span>完整功能依赖本地服务端和 QMT 桥接端同时在线。本地服务端负责 LTtx、Web 控制台、HTTP API 和 WebSocket；QMT 桥接端负责真正调用 QMT 的行情、账号、交易和回调能力。只启动网页端只能查看和配置，不能完成真实 QMT 调用；只部署 QMT 脚本但不启动本地服务端，网页和外部 Python 也无法连接。</span>
+                    </div>
                     <p>系统里最重要的概念是桥接端和账号绑定。桥接端表示一套 QMT 入口，通常对应一个正在运行的 QMT 客户端；账号绑定表示某个资金账号应该走哪个桥接端。这样在多账号、多 QMT 同时运行时，请求仍然可以被准确转发到正确终端。</p>
                   </div>
 
@@ -704,7 +786,7 @@
                 <article class="tutorial-topic" data-guide-panel="quickstart">
                   <div class="guide-section">
                     <h3>快速开始</h3>
-                    <p>README 只负责帮助你启动本地 Web 控制台。真正接入 QMT 时，需要在本页继续完成部署、桥接端配置、账号绑定和验证。</p>
+                    <p>README 会先帮助你启动本地服务端；真正接入 QMT 时，还需要在 QMT 端部署并加载桥接脚本。建议两端都部署完成后，再继续做桥接端配置、账号绑定和验证。</p>
                     <ol class="guide-list detailed">
                       <li><strong>启动 Web：</strong>双击 <code>cfquant\start_cfquant.bat</code>，打开 <code>http://127.0.0.1:8765/</code>。</li>
                       <li><strong>部署到 QMT：</strong>按左侧“部署到 QMT”章节，把依赖目录和桥接脚本放到 QMT 的 Python 策略目录。</li>
@@ -814,6 +896,10 @@ positions = trader.query_stock_positions(account)</pre>
                 <article class="tutorial-topic" data-guide-panel="deploy">
                   <div class="guide-section">
                     <h3>部署到 QMT</h3>
+                    <div class="guide-callout">
+                      <strong>部署目标是打通两端</strong>
+                      <span>本地服务端需要运行 <code>start_cfquant.bat</code>；QMT 端需要能导入 <code>cfquant</code>、<code>LTtx</code> 和 <code>tx.py</code>，并保持 <code>CFQUANT.py</code>、<code>CFQUANT_TRADE_LOWLAT.py</code> 两个桥接脚本运行。两端缺一端时，行情、交易、账号查询和回调链路都无法完整工作。</span>
+                    </div>
                     <p>QMT 策略脚本运行时，只能稳定导入它所在 Python 策略目录下的文件。部署 cfquant 时，需要把桥接脚本依赖的包和通信文件放到 QMT 能导入的位置。</p>
                     <p>发布包的外层 <code>cfquant</code> 目录用于启动 Web；其中 <code>cfquant\cfquant\</code> 是要复制到 QMT 的依赖包，<code>cfquant\qmt_scripts\</code> 是要放进 QMT 并加载运行的入口脚本。</p>
                     <p>实际部署时，请找到目标 QMT 安装目录下的 <code>python</code> 文件夹，里面通常会放置各类 <code>.py</code> 策略文件。常见示例是 <code>D:\兴业证券SMT-Q\python</code>、<code>D:\国金证券QMT交易端\python</code>。</p>
@@ -891,7 +977,7 @@ USER_BRIDGE_ID = "qmt2"</pre>
                     <h3>QMT 图文部署指南</h3>
                     <div class="guide-recommend">
                       <strong>推荐按本页顺序操作</strong>
-                      <span>先在 QMT 下载 Python 库，再创建两个 Python 策略，确认 <code>tx.py</code> 已放到 QMT 的 <code>python</code> 目录，最后启动本地交易端并回到网页验证。截图来自 <code>cfquant\docs\部署指南.md</code>，适合作为新用户部署时的主要教程。</span>
+                      <span>先在 QMT 下载 Python 库，再创建两个 Python 策略，确认 <code>tx.py</code> 已放到 QMT 的 <code>python</code> 目录，最后启动本地服务端并回到网页验证。截图来自 <code>cfquant\docs\部署指南.md</code>，适合作为新用户部署时的主要教程。</span>
                     </div>
                     <p>复制文件时，目标目录一般是 QMT 安装目录下的 <code>python</code> 文件夹，例如 <code>D:\兴业证券SMT-Q\python</code> 或 <code>D:\国金证券QMT交易端\python</code>。文件放好后，再按下面的截图流程在 QMT 里完成策略创建和启动。</p>
                   </div>
@@ -1212,6 +1298,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=20260809_update_repo"></script>
+  <script src="/app.js?v=20260809_access_settings_2"></script>
 </body>
 </html>

@@ -17,6 +17,9 @@ const state = {
   apiKey: '',
   apiSocket: null,
   serverAccess: null,
+  webAuthToken: '',
+  webAuthStatus: null,
+  appStarted: false,
   logCleanup: null,
   updateStatus: null,
   updateBusy: false,
@@ -33,6 +36,7 @@ const $ = (id) => document.getElementById(id);
 const ACCOUNT_PAIR_KEY = 'cfquant.account_bridge_pairs';
 const TUTORIAL_TOPIC_KEY = 'cfquant.tutorial_topic';
 const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups';
+const WEB_AUTH_TOKEN_KEY = 'cfquant.web_auth_token';
 const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
 const DEFAULT_UPDATE_REF = 'main';
 
@@ -707,7 +711,14 @@ function apiUrl(path) {
 function apiWsUrl(path) {
   const base = new URL(currentApiBaseUrl());
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${base.protocol}//${base.host}${path}`;
+  const url = new URL(`${base.protocol}//${base.host}${path}`);
+  const token = state.webAuthToken || '';
+  if (webAuthEnabled() && token) {
+    url.searchParams.set('web_token', token);
+  } else if (!webAuthEnabled() && state.apiKey) {
+    url.searchParams.set('apikey', state.apiKey);
+  }
+  return url.toString();
 }
 
 function log(message, data) {
@@ -721,17 +732,54 @@ function log(message, data) {
 
 async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  const apiKey = state.apiKey || '';
-  if (apiKey) headers['X-API-Key'] = apiKey;
+  Object.assign(headers, authHeaders());
   const response = await fetch(path, {
     headers,
     ...options,
   });
   const payload = await response.json();
+  if (response.status === 401 && webAuthEnabled()) {
+    clearWebAuthToken();
+    showWebAuthOverlay('请先登录');
+  }
   if (!payload.ok) {
     throw new Error(payload.error || `HTTP ${response.status}`);
   }
   return payload.data;
+}
+
+function webAuthEnabled() {
+  return !!(state.serverAccess && state.serverAccess.web_auth_enabled);
+}
+
+function authHeaders() {
+  if (webAuthEnabled()) {
+    return state.webAuthToken ? { 'X-CFQUANT-WEB-TOKEN': state.webAuthToken } : {};
+  }
+  return state.apiKey ? { 'X-API-Key': state.apiKey } : {};
+}
+
+function authQueryString() {
+  const params = new URLSearchParams();
+  if (webAuthEnabled() && state.webAuthToken) {
+    params.set('web_token', state.webAuthToken);
+  } else if (!webAuthEnabled() && state.apiKey) {
+    params.set('apikey', state.apiKey);
+  }
+  return params.toString();
+}
+
+function setWebAuthToken(token) {
+  state.webAuthToken = String(token || '');
+  if (state.webAuthToken) {
+    localStorage.setItem(WEB_AUTH_TOKEN_KEY, state.webAuthToken);
+  } else {
+    localStorage.removeItem(WEB_AUTH_TOKEN_KEY);
+  }
+}
+
+function clearWebAuthToken() {
+  setWebAuthToken('');
 }
 
 function apiEndpointById(id) {
@@ -1043,7 +1091,7 @@ async function copyApiKey() {
   log('API Key 已复制');
 }
 
-function renderServerAccess(info) {
+function renderServerAccessLegacy(info) {
   state.serverAccess = info || {};
   const allowRemote = !!state.serverAccess.allow_remote;
   const configuredHost = state.serverAccess.configured_host || (allowRemote ? '0.0.0.0' : '127.0.0.1');
@@ -1073,7 +1121,7 @@ function renderServerAccess(info) {
   updateApiRequestPreview();
 }
 
-async function saveServerAccessFromUi(source = 'api') {
+async function saveServerAccessFromUiLegacy(source = 'api') {
   const allowToggle = source === 'overview' ? $('allowRemoteAccess') : $('allowApiRemoteAccess');
   const allowRemote = !!(allowToggle && allowToggle.checked);
   const baseInput = $('apiBaseUrlInput');
@@ -1089,6 +1137,250 @@ async function saveServerAccessFromUi(source = 'api') {
   });
   renderServerAccess(data);
   log('访问设置已保存', { allow_remote: !!data.allow_remote, api_base_url: data.api_base_url || '', requires_restart: !!data.requires_restart });
+}
+
+function setServerAccessStatus(message = '', level = '') {
+  const status = $('apiServerStatus');
+  if (!status) return;
+  status.textContent = message;
+  status.classList.remove('is-ok', 'is-error', 'is-busy');
+  if (level) status.classList.add(`is-${level}`);
+}
+
+function setServerAccessBusy(busy, mode = 'save') {
+  const activeId = mode === 'reload' ? 'reloadWebServerBtn' : 'saveApiServerBtn';
+  ['saveApiServerBtn', 'reloadWebServerBtn'].forEach((id) => {
+    const button = $(id);
+    if (!button) return;
+    if (!button.dataset.idleText) button.dataset.idleText = button.textContent;
+    button.disabled = !!busy;
+    if (button.id === activeId) {
+      button.textContent = busy
+        ? (mode === 'reload' ? '正在重载...' : '正在保存...')
+        : button.dataset.idleText;
+    } else if (!busy) {
+      button.textContent = button.dataset.idleText;
+    }
+  });
+}
+
+function renderServerAccess(info) {
+  state.serverAccess = info || {};
+  const allowRemote = !!state.serverAccess.allow_remote;
+  const configuredHost = state.serverAccess.configured_host || (allowRemote ? '0.0.0.0' : '127.0.0.1');
+  const boundHost = state.serverAccess.bound_host || configuredHost;
+  const configuredPort = state.serverAccess.configured_port || state.serverAccess.web_port || 8765;
+  const boundPort = state.serverAccess.bound_port || window.location.port || configuredPort;
+  const domains = state.serverAccess.allowed_domains || [];
+  const authEnabled = !!state.serverAccess.web_auth_enabled;
+  const restartRequired = !!(state.serverAccess.requires_restart || state.serverAccess.restart_required);
+  const statusParts = [
+    `当前监听 ${boundHost}${boundPort ? `:${boundPort}` : ''}`,
+    `配置端口 ${configuredPort}`,
+    allowRemote ? '外网访问已开启' : '仅本机访问',
+    domains.length ? `白名单 ${domains.join(',')}` : '未设置白名单',
+    authEnabled ? '网页登录已启用' : '网页登录未启用',
+  ];
+  if (restartRequired) statusParts.push('需要重载');
+
+  const listenText = `${boundHost}${boundPort ? `:${boundPort}` : ''}`;
+  const scopeText = allowRemote ? '允许外网访问' : '仅本机访问';
+  const authText = authEnabled ? '已启用' : '未启用';
+  const currentListenValue = $('webCurrentListenValue');
+  if (currentListenValue) currentListenValue.textContent = listenText;
+  const configuredPortValue = $('webConfiguredPortValue');
+  if (configuredPortValue) configuredPortValue.textContent = String(configuredPort);
+  const accessScopeValue = $('webAccessScopeValue');
+  if (accessScopeValue) accessScopeValue.textContent = domains.length ? `${scopeText}，${domains.length} 条白名单` : scopeText;
+  const authStateValue = $('webAuthStateValue');
+  if (authStateValue) authStateValue.textContent = authText;
+
+  const overviewToggle = $('allowRemoteAccess');
+  if (overviewToggle) overviewToggle.checked = allowRemote;
+  const apiToggle = $('allowApiRemoteAccess');
+  if (apiToggle) apiToggle.checked = allowRemote;
+  const portInput = $('webPortInput');
+  if (portInput) portInput.value = configuredPort;
+  const domainsInput = $('webAllowedDomainsInput');
+  if (domainsInput) domainsInput.value = state.serverAccess.allowed_domains_text || domains.join(',');
+  const authToggle = $('webAuthEnabledInput');
+  if (authToggle) authToggle.checked = authEnabled;
+  const usernameInput = $('webAuthUsernameInput');
+  if (usernameInput) {
+    usernameInput.value = state.serverAccess.web_auth_username || (state.serverAccess.web_auth && state.serverAccess.web_auth.username) || '';
+  }
+  const passwordInput = $('webAuthPasswordInput');
+  if (passwordInput && !passwordInput.matches(':focus')) passwordInput.value = '';
+
+  const overviewStatus = $('serverAccessStatus');
+  if (overviewStatus) overviewStatus.textContent = statusParts.join('；');
+  const apiStatus = $('apiServerStatus');
+  if (apiStatus && !apiStatus.textContent) {
+    setServerAccessStatus(statusParts.join('；'));
+  }
+
+  const baseInput = $('apiBaseUrlInput');
+  if (baseInput && !baseInput.value.trim()) {
+    const currentUrl = state.serverAccess.api_base_url || state.serverAccess.local_url || window.location.origin;
+    baseInput.value = normalizeApiBaseUrl(currentUrl);
+  }
+  if (!authEnabled) {
+    clearWebAuthToken();
+    hideWebAuthOverlay();
+  }
+  updateApiRequestPreview();
+}
+
+async function saveServerAccessFromUi(source = 'api', options = {}) {
+  const mode = options.reload ? 'reload' : 'save';
+  const allowToggle = source === 'overview' ? $('allowRemoteAccess') : $('allowApiRemoteAccess');
+  const allowRemote = !!(allowToggle && allowToggle.checked);
+  const portInput = $('webPortInput');
+  const configuredPort = Number(portInput && portInput.value ? portInput.value : 8765);
+  if (!Number.isInteger(configuredPort) || configuredPort < 1 || configuredPort > 65535) {
+    setServerAccessStatus('保存失败：网页端口必须是 1 到 65535。', 'error');
+    if (portInput) portInput.focus();
+    log('网页端口无效', { port: portInput ? portInput.value : '' });
+    return;
+  }
+  const baseInput = $('apiBaseUrlInput');
+  let apiBaseUrl = '';
+  if (baseInput) {
+    const normalized = normalizeApiBaseUrl(baseInput.value);
+    baseInput.value = normalized;
+    apiBaseUrl = normalized;
+  }
+  const authEnabled = !!($('webAuthEnabledInput') && $('webAuthEnabledInput').checked);
+  const authUsername = $('webAuthUsernameInput') ? $('webAuthUsernameInput').value.trim() : '';
+  const authPassword = $('webAuthPasswordInput') ? $('webAuthPasswordInput').value : '';
+  const authConfigured = !!(state.serverAccess && state.serverAccess.web_auth && state.serverAccess.web_auth.configured);
+  if (authEnabled && !authConfigured && !authPassword) {
+    setServerAccessStatus('保存失败：首次启用网页登录需要填写密码。', 'error');
+    const passwordInput = $('webAuthPasswordInput');
+    if (passwordInput) passwordInput.focus();
+    log('首次启用网页登录需要填写密码');
+    return;
+  }
+  const previousAuthEnabled = !!(state.serverAccess && state.serverAccess.web_auth_enabled);
+  const previousAuthUsername = state.serverAccess ? (state.serverAccess.web_auth_username || '') : '';
+  const authChanged = previousAuthEnabled !== authEnabled || (authEnabled && authUsername && authUsername !== previousAuthUsername) || !!authPassword;
+  const body = {
+    allow_remote: allowRemote,
+    api_base_url: apiBaseUrl,
+    web_port: configuredPort,
+    allowed_domains: $('webAllowedDomainsInput') ? $('webAllowedDomainsInput').value.trim() : '',
+    web_auth_enabled: authEnabled,
+    web_auth_username: authUsername,
+    web_auth_password: authPassword,
+    reload: !!options.reload,
+  };
+  setServerAccessBusy(true, mode);
+  setServerAccessStatus(options.reload ? '正在保存设置并重载 Web 服务...' : '正在保存设置...', 'busy');
+  try {
+    const data = await api('/api/server-access', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    if ($('webAuthPasswordInput')) $('webAuthPasswordInput').value = '';
+    if (authChanged) clearWebAuthToken();
+    renderServerAccess(data);
+    const reloadInfo = data.reload || null;
+    if (reloadInfo) {
+      const nextUrl = reloadInfo.next_url || data.next_url || '';
+      setServerAccessStatus(nextUrl ? `已保存，Web 正在重载；稍后跳转到 ${nextUrl}` : '已保存，Web 正在重载；请稍后刷新页面。', 'ok');
+    } else {
+      const restartText = data.requires_restart || data.restart_required ? '，端口或监听地址变更需重载后生效。' : '。';
+      setServerAccessStatus(`已保存${restartText}`, 'ok');
+    }
+    log(reloadInfo ? '访问设置已保存，Web 正在重载' : '访问设置已保存', {
+      allow_remote: !!data.allow_remote,
+      web_port: data.web_port || data.configured_port,
+      requires_restart: !!data.requires_restart,
+    });
+    if (reloadInfo && reloadInfo.next_url) {
+      setTimeout(() => {
+        window.location.href = reloadInfo.next_url;
+      }, 1200);
+      return;
+    }
+    if (authEnabled && authChanged) {
+      showWebAuthOverlay('请使用当前账号密码登录');
+    }
+  } catch (error) {
+    setServerAccessStatus(`保存失败：${error.message}`, 'error');
+    log(options.reload ? 'Web 重载失败' : '访问设置保存失败', { error: error.message });
+  } finally {
+    setServerAccessBusy(false, mode);
+  }
+}
+
+function showWebAuthOverlay(message = '') {
+  const overlay = $('webAuthOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  const status = $('webAuthLoginStatus');
+  if (status) status.textContent = message;
+  const userInput = $('webAuthLoginUserInput');
+  if (userInput && !userInput.value) {
+    userInput.value = state.serverAccess && state.serverAccess.web_auth_username ? state.serverAccess.web_auth_username : '';
+  }
+  const passwordInput = $('webAuthLoginPasswordInput');
+  if (passwordInput) passwordInput.value = '';
+  if (userInput) userInput.focus();
+}
+
+function hideWebAuthOverlay() {
+  const overlay = $('webAuthOverlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+async function loginWebAuth(event) {
+  if (event) event.preventDefault();
+  const username = $('webAuthLoginUserInput') ? $('webAuthLoginUserInput').value.trim() : '';
+  const password = $('webAuthLoginPasswordInput') ? $('webAuthLoginPasswordInput').value : '';
+  const status = $('webAuthLoginStatus');
+  if (status) status.textContent = '登录中...';
+  try {
+    const response = await fetch('/api/web-auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    setWebAuthToken(payload.data.token || '');
+    state.webAuthStatus = payload.data;
+    hideWebAuthOverlay();
+    await loadConfig();
+    await startAuthenticatedApp();
+    log('网页登录成功', { username: payload.data.username || username });
+  } catch (error) {
+    clearWebAuthToken();
+    if (status) status.textContent = error.message;
+  }
+}
+
+async function ensureWebAuth() {
+  if (!webAuthEnabled()) {
+    clearWebAuthToken();
+    hideWebAuthOverlay();
+    return true;
+  }
+  const savedToken = localStorage.getItem(WEB_AUTH_TOKEN_KEY) || state.webAuthToken || '';
+  if (!savedToken) {
+    showWebAuthOverlay('请登录');
+    return false;
+  }
+  setWebAuthToken(savedToken);
+  try {
+    state.webAuthStatus = await api('/api/web-auth/status');
+    hideWebAuthOverlay();
+    return true;
+  } catch (error) {
+    clearWebAuthToken();
+    showWebAuthOverlay('登录已失效');
+    return false;
+  }
 }
 
 function renderLogCleanup(info) {
@@ -1158,6 +1450,55 @@ function renderUpdateResult(payload) {
   box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
 }
 
+function updateVersionLabel(info) {
+  if (!info) return '--';
+  const parts = [];
+  if (info.version) parts.push(`版本 ${info.version}`);
+  if (info.short_commit) parts.push(`commit ${info.short_commit}`);
+  if (info.updated_at_text) parts.push(info.updated_at_text);
+  return parts.length ? parts.join(' / ') : '--';
+}
+
+function updateCompareText(value) {
+  if (value === true) return '一致';
+  if (value === false) return '可更新';
+  return '无法判断';
+}
+
+function updateCompareClass(value) {
+  if (value === true) return 'match';
+  if (value === false) return 'diff';
+  return 'unknown';
+}
+
+function renderUpdateVersionInfo(data) {
+  const box = $('updateVersionInfo');
+  if (!box) return;
+  const version = data && data.version_status ? data.version_status : {};
+  const current = version.current || {};
+  const remote = version.remote || {};
+  const compareClass = updateCompareClass(version.matches_remote);
+  const remoteDetail = remote.error
+    ? `获取失败：${remote.error}`
+    : `${remote.repo_url || DEFAULT_UPDATE_REPO_URL}${remote.ref ? `#${remote.ref}` : ''}${remote.checked_at_text ? ` / ${remote.checked_at_text}` : ''}${remote.cached ? ' / 缓存' : ''}`;
+  box.innerHTML = `
+    <div class="update-version-item">
+      <span>当前版本</span>
+      <strong>${esc(updateVersionLabel(current))}</strong>
+      <small>${esc(current.source ? `来源：${current.source}` : '未检测到本地版本号或更新记录')}</small>
+    </div>
+    <div class="update-version-item">
+      <span>GitHub 版本</span>
+      <strong>${esc(updateVersionLabel(remote))}</strong>
+      <small>${esc(remoteDetail)}</small>
+    </div>
+    <div class="update-version-item update-version-compare ${compareClass}">
+      <span>版本对比</span>
+      <strong>${esc(updateCompareText(version.matches_remote))}</strong>
+      <small>${version.matches_remote === false ? 'GitHub 上有不同提交' : '基于 commit 判断'}</small>
+    </div>`;
+}
+
 function renderUpdateStatus(data) {
   state.updateStatus = data || null;
   const status = $('updateStatus');
@@ -1192,6 +1533,7 @@ function renderUpdateStatus(data) {
       const layoutText = updateLayoutText(targets.layout);
       if (layoutText) parts.push(layoutText);
       if (data.current_version) parts.push(`版本 ${data.current_version}`);
+      if (data.version_status) parts.push(`版本对比 ${updateCompareText(data.version_status.matches_remote)}`);
       if (defaultRepo) parts.push(`默认仓库 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}`);
       parts.push(`备份 ${backups.length} 个`);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
@@ -1200,13 +1542,18 @@ function renderUpdateStatus(data) {
       status.title = JSON.stringify(data, null, 2);
     }
   }
+  renderUpdateVersionInfo(data);
   setUpdateControlsBusy(false);
 }
 
 async function refreshUpdateStatus(options = {}) {
   const status = $('updateStatus');
   if (status) status.textContent = '正在检查更新状态...';
-  const data = await api(`/api/updates/status?bridge_id=${encodeURIComponent(selectedBridge())}`);
+  const repoInput = $('updateRepoInput');
+  const refInput = $('updateRefInput');
+  const repoUrl = (repoInput && repoInput.value.trim()) || DEFAULT_UPDATE_REPO_URL;
+  const ref = (refInput && refInput.value.trim()) || DEFAULT_UPDATE_REF;
+  const data = await api(`/api/updates/status?bridge_id=${encodeURIComponent(selectedBridge())}&repo_url=${encodeURIComponent(repoUrl)}&ref=${encodeURIComponent(ref)}`);
   renderUpdateStatus(data);
   if (options.log !== false) {
     log('更新状态已刷新', { bridge_id: data.bridge_id, ready: !!data.ready, python_dir: data.python_dir || '' });
@@ -1253,8 +1600,7 @@ async function uploadZipUpdateFromUi() {
   const formData = new FormData();
   formData.append('bridge_id', selectedBridge());
   formData.append('file', file, file.name);
-  const headers = {};
-  if (state.apiKey) headers['X-API-Key'] = state.apiKey;
+  const headers = authHeaders();
   setUpdateControlsBusy(true);
   try {
     const response = await fetch('/api/updates/upload', { method: 'POST', headers, body: formData });
@@ -1404,7 +1750,6 @@ function currentApiRequest() {
   });
   if (params.incrementally === '') delete params.incrementally;
   if (endpoint.method === 'WS') {
-    if (state.apiKey) params.apikey = state.apiKey;
     const query = new URLSearchParams();
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== '') query.set(key, value);
@@ -1437,6 +1782,9 @@ function currentApiRequest() {
 }
 
 function apiPreviewHeaders() {
+  if (webAuthEnabled() && state.webAuthToken) {
+    return { 'X-CFQUANT-WEB-TOKEN': maskApiKey(state.webAuthToken) };
+  }
   return state.apiKey ? { 'X-API-Key': maskApiKey(state.apiKey) } : {};
 }
 
@@ -1472,7 +1820,7 @@ async function sendApiDebugRequest(event) {
       method: request.method,
       headers: {
         'Content-Type': 'application/json',
-        ...(state.apiKey ? { 'X-API-Key': state.apiKey } : {}),
+        ...authHeaders(),
       },
       body: request.body ? JSON.stringify(request.body) : undefined,
     });
@@ -1537,7 +1885,8 @@ function stopQuoteLive(options = {}) {
   };
   if (options.beacon && navigator.sendBeacon) {
     try {
-      const url = apiUrl(`/api/quotes/unsubscribe${state.apiKey ? `?apikey=${encodeURIComponent(state.apiKey)}` : ''}`);
+      const authQuery = authQueryString();
+      const url = apiUrl(`/api/quotes/unsubscribe${authQuery ? `?${authQuery}` : ''}`);
       const blob = new Blob([JSON.stringify(body)], { type: 'application/json' });
       navigator.sendBeacon(url, blob);
       return;
@@ -1549,7 +1898,7 @@ function stopQuoteLive(options = {}) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...(state.apiKey ? { 'X-API-Key': state.apiKey } : {}),
+      ...authHeaders(),
     },
     body: JSON.stringify(body),
     keepalive: !!options.beacon,
@@ -1559,7 +1908,6 @@ function stopQuoteLive(options = {}) {
 function connectQuoteWebSocket(subscribeId = '') {
   const params = new URLSearchParams();
   if (subscribeId) params.set('subscribe_id', subscribeId);
-  if (state.apiKey) params.set('apikey', state.apiKey);
   state.quoteLiveActive = !!subscribeId;
   const request = {
     method: 'WS',
@@ -2210,7 +2558,7 @@ async function refreshLttxStatus(options = {}) {
   }
 }
 
-async function loadConfig() {
+async function loadConfigLegacy() {
   const data = await api('/api/config');
   state.accountId = localStorage.getItem('cfquant.account') || data.default_account_id || '';
   $('accountInput').value = state.accountId;
@@ -2248,6 +2596,58 @@ async function loadConfig() {
   refreshUpdateStatus({ log: false }).catch((error) => log('更新状态初始化失败', { error: error.message }));
   refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
   log('Web TX', { reply_channel: data.reply_channel });
+}
+
+async function loadConfig() {
+  const data = await api('/api/config');
+  state.accountId = localStorage.getItem('cfquant.account') || data.default_account_id || '';
+  $('accountInput').value = state.accountId;
+  const bridges = data.bridges || {};
+  state.envBridges = data.env_bridges || {};
+  state.accountPairs = data.account_pairs || {};
+  state.bridgeId = localStorage.getItem('cfquant.bridge_id') || data.default_bridge_id || 'default';
+  if (!bridges[state.bridgeId]) {
+    state.bridgeId = data.default_bridge_id || Object.keys(bridges)[0] || 'default';
+  }
+  renderBridgeSelect(bridges);
+  applyAccountPair(state.accountId);
+  syncBindingForm();
+  const queryChannel = localStorage.getItem('cfquant.query_channel');
+  if (queryChannel && $('queryChannel').querySelector(`option[value="${queryChannel}"]`)) {
+    $('queryChannel').value = queryChannel;
+    state.queryChannel = queryChannel;
+  }
+  const tradeChannel = localStorage.getItem('cfquant.trade_channel');
+  if (tradeChannel && $('tradeChannel').querySelector(`option[value="${tradeChannel}"]`)) {
+    $('tradeChannel').value = tradeChannel;
+  }
+  renderAccountPairs();
+  renderBridgeConfigList();
+  renderApiKeyStatus(data.api_key);
+  const apiBaseInput = $('apiBaseUrlInput');
+  if (apiBaseInput && !apiBaseInput.value.trim()) {
+    const savedBaseUrl = data.server_access && data.server_access.api_base_url
+      ? data.server_access.api_base_url
+      : window.location.origin;
+    apiBaseInput.value = normalizeApiBaseUrl(savedBaseUrl);
+  }
+  renderServerAccess(data.server_access);
+  renderLogCleanup(data.log_cleanup);
+  log('Web TX', { reply_channel: data.reply_channel || '', auth_required: !!data.auth_required });
+  return data;
+}
+
+async function startAuthenticatedApp() {
+  if (state.appStarted) return;
+  state.appStarted = true;
+  renderApiDocs();
+  await refreshStatus();
+  await refreshAccount('asset,positions').catch((error) => log('初始化查询失败', { error: error.message }));
+  refreshAccount('orders').catch((error) => log('委托初始化失败', { error: error.message }));
+  refreshAccount('trades').catch((error) => log('成交初始化失败', { error: error.message }));
+  refreshUpdateStatus({ log: false }).catch((error) => log('更新状态初始化失败', { error: error.message }));
+  refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
+  startTimers();
 }
 
 async function refreshStatus() {
@@ -3125,6 +3525,10 @@ async function boot() {
     event.preventDefault();
     saveServerAccessFromUi('api').catch((error) => log('访问设置保存失败', { error: error.message }));
   });
+  $('reloadWebServerBtn').addEventListener('click', () => {
+    saveServerAccessFromUi('api', { reload: true }).catch((error) => log('Web 重载失败', { error: error.message }));
+  });
+  $('webAuthForm').addEventListener('submit', loginWebAuth);
   $('logCleanupForm').addEventListener('submit', (event) => {
     event.preventDefault();
     saveLogCleanupFromUi().catch((error) => log('日志清理设置保存失败', { error: error.message }));
@@ -3181,14 +3585,13 @@ async function boot() {
   $('accountInput').addEventListener('change', handleAccountChange);
   $('queryChannel').addEventListener('change', selectedChannel);
   $('tradeChannel').addEventListener('change', selectedTradeChannel);
+  state.webAuthToken = localStorage.getItem(WEB_AUTH_TOKEN_KEY) || '';
   await loadConfig();
   loadApiOpenGroups();
   renderApiDocs();
-  await refreshStatus();
-  await refreshAccount('asset,positions').catch((error) => log('初始化查询失败', { error: error.message }));
-  refreshAccount('orders').catch((error) => log('委托初始化失败', { error: error.message }));
-  refreshAccount('trades').catch((error) => log('成交初始化失败', { error: error.message }));
-  startTimers();
+  if (await ensureWebAuth()) {
+    await startAuthenticatedApp();
+  }
 }
 
 boot().catch((error) => log('启动失败', { error: error.message }));
