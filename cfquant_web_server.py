@@ -24,6 +24,7 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
+from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -47,21 +48,34 @@ _prepend_import_path(_LTTX_TX_DIR)
 
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
 from cfquant.channels import configured_bridges, normalize_bridge_id
+from cfquant.config import get_config as get_cfquant_config
+from cfquant.logging_i18n import normalize_log_language
+from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import new_id
 from tx import txl
 
 
 BASE_DIR = _PROJECT_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
-LOG_FILE = os.path.join(BASE_DIR, "cfquant_web_server.runtime.log")
-LOG_RETENTION_DAYS = int(os.environ.get("CFQUANT_LOG_RETENTION_DAYS", "5"))
+LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
+try:
+    os.makedirs(LOG_DIR, exist_ok=True)
+except Exception:
+    LOG_DIR = BASE_DIR
+LOG_FILE = os.path.join(LOG_DIR, "cfquant_web_server.runtime.log")
+LOG_RETENTION_DAYS = int(os.environ.get("CFQUANT_LOG_RETENTION_DAYS", "30"))
 LOG_CLEANUP_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_LOG_CLEANUP_INTERVAL_SECONDS", "21600"))
 LTTX_HOST = os.environ.get("CFQUANT_LTTX_HOST", "127.0.0.1")
 LTTX_PORT = int(os.environ.get("CFQUANT_LTTX_PORT", "2049"))
 LTTX_DIR = os.path.join(BASE_DIR, "LTtx", "tx")
 LTTX_ENTRY = os.environ.get("CFQUANT_LTTX_ENTRY") or os.path.join(LTTX_DIR, "LTtx_server.py")
-LTTX_STDOUT_LOG = os.path.join(BASE_DIR, "lttx_server.stdout.log")
-LTTX_STDERR_LOG = os.path.join(BASE_DIR, "lttx_server.stderr.log")
+LTTX_STDOUT_LOG = os.path.join(LOG_DIR, "lttx_server.stdout.log")
+LTTX_STDERR_LOG = os.path.join(LOG_DIR, "lttx_server.stderr.log")
+PIPE_HUB_ENTRY = os.environ.get("CFQUANT_PIPE_HUB_ENTRY") or os.path.join(BASE_DIR, "cfquant_pipe_hub.py")
+PIPE_HUB_STDOUT_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stdout.log")
+PIPE_HUB_STDERR_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stderr.log")
+PIPE_HUB_STATUS_FILE = os.path.join(BASE_DIR, "cfquant_pipe_hub_status.json")
+QMT_BRIDGE_CONFIG_FILENAME = os.environ.get("CFQUANT_QMT_BRIDGE_CONFIG_FILENAME", "cfquant_bridge_config.json")
 try:
     _LOG_FP = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
     _WINDOWLESS = os.path.basename(sys.executable).lower() == "pythonw.exe"
@@ -99,6 +113,8 @@ WEB_RESTART_REQUEST = None
 WEB_RESTART_LOCK = threading.RLock()
 WEB_AUTH_TOKENS = {}
 WEB_AUTH_LOCK = threading.RLock()
+WEB_AUTH_COOKIE_NAME = "cfquant_web_token"
+WEB_AUTH_SESSION_TTL_SECONDS = float(os.environ.get("CFQUANT_WEB_AUTH_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
 STOCK_BUY = 23
 STOCK_SELL = 24
 FIX_PRICE = 11
@@ -108,6 +124,8 @@ ACCOUNT_ACTIONS = {
     "orders": "xttrader.query_stock_orders",
     "trades": "xttrader.query_stock_trades",
 }
+DOWNLOAD_CALLBACK_EVENT = "xtdata:download_progress"
+DOWNLOAD_EVENT_PREFIX = "xtdata:download"
 
 
 def get_lan_ip():
@@ -221,15 +239,102 @@ def mask_text(value):
 def clear_web_auth_tokens():
     with WEB_AUTH_LOCK:
         WEB_AUTH_TOKENS.clear()
+        _delete_persistent_web_auth_sessions_locked()
 
 
-def issue_web_auth_token(username):
+def _web_auth_token_hash(token):
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _web_auth_settings_db_path():
+    config = globals().get("WEB_CONFIG")
+    return getattr(config, "settings_db_path", WEB_SETTINGS_DB_FILE)
+
+
+def _ensure_web_auth_session_store_locked(conn):
+    conn.execute(
+        "create table if not exists web_auth_sessions ("
+        "token_hash text primary key,"
+        "username text not null,"
+        "created_at real not null,"
+        "expires_at real not null,"
+        "last_seen_at real not null)"
+    )
+
+
+def _delete_persistent_web_auth_sessions_locked():
+    try:
+        with sqlite3.connect(_web_auth_settings_db_path()) as conn:
+            _ensure_web_auth_session_store_locked(conn)
+            conn.execute("delete from web_auth_sessions")
+    except Exception as e:
+        safe_print("web auth persistent sessions clear failed: %s" % e)
+
+
+def _delete_persistent_web_auth_session_locked(token):
+    try:
+        with sqlite3.connect(_web_auth_settings_db_path()) as conn:
+            _ensure_web_auth_session_store_locked(conn)
+            conn.execute("delete from web_auth_sessions where token_hash = ?", (_web_auth_token_hash(token),))
+    except Exception as e:
+        safe_print("web auth persistent session revoke failed: %s" % e)
+
+
+def _save_persistent_web_auth_session_locked(token, username, created_at, expires_at):
+    try:
+        with sqlite3.connect(_web_auth_settings_db_path()) as conn:
+            _ensure_web_auth_session_store_locked(conn)
+            conn.execute("delete from web_auth_sessions where expires_at <= ?", (time.time(),))
+            conn.execute(
+                "insert or replace into web_auth_sessions "
+                "(token_hash, username, created_at, expires_at, last_seen_at) "
+                "values (?, ?, ?, ?, ?)",
+                (_web_auth_token_hash(token), str(username or ""), created_at, expires_at, created_at),
+            )
+    except Exception as e:
+        safe_print("web auth persistent session save failed: %s" % e)
+
+
+def _persistent_web_auth_token_info_locked(token):
+    try:
+        now = time.time()
+        with sqlite3.connect(_web_auth_settings_db_path()) as conn:
+            _ensure_web_auth_session_store_locked(conn)
+            conn.execute("delete from web_auth_sessions where expires_at <= ?", (now,))
+            row = conn.execute(
+                "select username, created_at, expires_at from web_auth_sessions where token_hash = ?",
+                (_web_auth_token_hash(token),),
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute(
+                "update web_auth_sessions set last_seen_at = ? where token_hash = ?",
+                (now, _web_auth_token_hash(token)),
+            )
+        return {
+            "username": str(row[0] or ""),
+            "created_at": float(row[1] or 0),
+            "expires_at": float(row[2] or 0),
+            "persistent": True,
+        }
+    except Exception as e:
+        safe_print("web auth persistent session lookup failed: %s" % e)
+        return None
+
+
+def issue_web_auth_token(username, remember=False):
     token = secrets.token_urlsafe(32)
+    created_at = time.time()
+    expires_at = created_at + WEB_AUTH_SESSION_TTL_SECONDS if remember else 0
     with WEB_AUTH_LOCK:
         WEB_AUTH_TOKENS[token] = {
             "username": str(username or ""),
-            "created_at": time.time(),
+            "created_at": created_at,
+            "expires_at": expires_at,
+            "persistent": bool(remember),
         }
+        if remember:
+            _save_persistent_web_auth_session_locked(token, username, created_at, expires_at)
     return token
 
 
@@ -238,7 +343,20 @@ def web_auth_token_info(token):
     if not token:
         return None
     with WEB_AUTH_LOCK:
-        return dict(WEB_AUTH_TOKENS.get(token) or {}) or None
+        info = WEB_AUTH_TOKENS.get(token)
+        now = time.time()
+        if info:
+            expires_at = float(info.get("expires_at") or 0)
+            if expires_at and expires_at <= now:
+                WEB_AUTH_TOKENS.pop(token, None)
+                _delete_persistent_web_auth_session_locked(token)
+                return None
+            return dict(info)
+        info = _persistent_web_auth_token_info_locked(token)
+        if info:
+            WEB_AUTH_TOKENS[token] = dict(info)
+            return dict(info)
+        return None
 
 
 def revoke_web_auth_token(token):
@@ -247,6 +365,7 @@ def revoke_web_auth_token(token):
         return
     with WEB_AUTH_LOCK:
         WEB_AUTH_TOKENS.pop(token, None)
+        _delete_persistent_web_auth_session_locked(token)
 
 
 class WebRuntimeConfig(object):
@@ -257,6 +376,10 @@ class WebRuntimeConfig(object):
         self._data = {
             "bridges": {},
             "account_pairs": {},
+            "account_configs": {},
+            "default_account_id": DEFAULT_ACCOUNT_ID,
+            "initialized": False,
+            "data_provider_account_id": "",
             "api_key": "",
             "allow_remote": False,
             "api_base_url": "",
@@ -267,6 +390,8 @@ class WebRuntimeConfig(object):
             "web_auth_salt": "",
             "web_auth_hash": "",
             "cleanup_qmt_userdata_logs": False,
+            "qmt_log_language": os.environ.get("CFQUANT_QMT_LOG_LANGUAGE", "zh"),
+            "transport_mode": os.environ.get("CFQUANT_WEB_TRANSPORT_MODE", os.environ.get("CFQUANT_TRANSPORT", "ctypes")),
         }
         self.load()
 
@@ -280,6 +405,14 @@ class WebRuntimeConfig(object):
                     if isinstance(raw, dict):
                         self._data["bridges"] = self._normalize_bridges(raw.get("bridges") or {})
                         self._data["account_pairs"] = self._normalize_pairs(raw.get("account_pairs") or {})
+                        self._data["account_configs"] = self._normalize_account_configs(raw.get("account_configs") or {})
+                        self._data["default_account_id"] = str(
+                            raw.get("default_account_id") or DEFAULT_ACCOUNT_ID
+                        ).strip() or DEFAULT_ACCOUNT_ID
+                        self._data["initialized"] = bool(raw.get("initialized"))
+                        self._data["data_provider_account_id"] = str(
+                            raw.get("data_provider_account_id") or ""
+                        ).strip()
                         web_server = raw.get("web_server") if isinstance(raw.get("web_server"), dict) else {}
                         web_port = raw.get("web_port")
                         if web_port in (None, ""):
@@ -313,6 +446,227 @@ class WebRuntimeConfig(object):
     def account_pairs(self):
         with self._lock:
             return dict(self._data.get("account_pairs") or {})
+
+    def account_configs(self):
+        with self._lock:
+            return json.loads(json.dumps(self._data.get("account_configs") or {}, ensure_ascii=False))
+
+    def account_config(self, account_id):
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            return None
+        with self._lock:
+            value = (self._data.get("account_configs") or {}).get(account_id)
+            return json.loads(json.dumps(value, ensure_ascii=False)) if value else None
+
+    def initialized(self):
+        with self._lock:
+            return bool(self._data.get("initialized"))
+
+    def data_provider_account_id(self):
+        with self._lock:
+            return str(self._data.get("data_provider_account_id") or "").strip()
+
+    def set_data_provider_account_id(self, account_id):
+        account_id = str(account_id or "").strip()
+        with self._lock:
+            configs = self._data.setdefault("account_configs", {})
+            if account_id and account_id not in configs:
+                raise ValueError("unknown account_id: %s" % account_id)
+            for key, item in configs.items():
+                if isinstance(item, dict):
+                    item["data_provider"] = key == account_id
+            self._data["data_provider_account_id"] = account_id
+            self._save_locked()
+        return self.setup_info()
+
+    def setup_info(self):
+        with self._lock:
+            configs = json.loads(json.dumps(self._data.get("account_configs") or {}, ensure_ascii=False))
+            default_account_id = str(
+                self._data.get("default_account_id") or DEFAULT_ACCOUNT_ID
+            ).strip() or DEFAULT_ACCOUNT_ID
+            provider = str(self._data.get("data_provider_account_id") or "").strip()
+            initialized = bool(self._data.get("initialized"))
+        default_config = configs.get(default_account_id) or {}
+        return {
+            "initialized": initialized,
+            "setup_required": not initialized,
+            "default_account_id": default_account_id,
+            "default_qmt_dir": default_config.get("qmt_dir") or "",
+            "default_mode": normalize_transport_mode(
+                default_config.get("mode") or self.transport_mode()
+            ),
+            "data_provider_account_id": provider,
+            "account_configs": configs,
+        }
+
+    def save_account_config(
+        self,
+        account_id,
+        bridge_id=None,
+        qmt_dir=None,
+        mode="ctypes",
+        data_provider=False,
+        enabled=True,
+    ):
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            raise ValueError("account_id is required")
+        qmt_dir = normalize_optional_path(qmt_dir)
+        mode = normalize_transport_mode(mode)
+        now = time.time()
+        with self._lock:
+            configs = self._data.setdefault("account_configs", {})
+            bridge_id = self._account_bridge_id_locked(account_id, bridge_id, qmt_dir)
+            if bridge_id not in self.bridges():
+                self._data.setdefault("bridges", {})[bridge_id] = self._bridge_row(
+                    bridge_id,
+                    self._account_bridge_name(account_id, bridge_id),
+                    qmt_dir,
+                    {},
+                )
+            else:
+                bridge = self._data.setdefault("bridges", {}).get(bridge_id)
+                if bridge is None:
+                    self._data.setdefault("bridges", {})[bridge_id] = self._bridge_row(
+                        bridge_id,
+                        self._account_bridge_name(account_id, bridge_id),
+                        qmt_dir,
+                        {},
+                    )
+                elif qmt_dir and self._can_update_bridge_python_dir_locked(bridge_id, account_id, qmt_dir):
+                    bridge["python_dir"] = qmt_dir
+            row = {
+                "account_id": account_id,
+                "bridge_id": bridge_id,
+                "qmt_dir": qmt_dir,
+                "mode": mode,
+                "data_provider": bool(data_provider),
+                "enabled": bool(enabled),
+                "updated_at": now,
+            }
+            if data_provider:
+                for item in configs.values():
+                    if isinstance(item, dict):
+                        item["data_provider"] = False
+                self._data["data_provider_account_id"] = account_id
+            elif self._data.get("data_provider_account_id") == account_id:
+                self._data["data_provider_account_id"] = ""
+            configs[account_id] = row
+            self._data.setdefault("account_pairs", {})[account_id] = {
+                "account_id": account_id,
+                "bridge_id": bridge_id,
+                "updated_at": now,
+            }
+            self._data["initialized"] = True
+            if len(configs) == 1:
+                self._data["default_account_id"] = account_id
+                self._data["transport_mode"] = mode
+            self._save_locked()
+            self._save_settings_locked({"transport_mode": self._data["transport_mode"]})
+        return row
+
+    def _account_bridge_id_locked(self, account_id, requested_bridge_id=None, qmt_dir=""):
+        requested = str(requested_bridge_id or "").strip()
+        if requested:
+            return normalize_bridge_id(requested)
+
+        configs = self._data.setdefault("account_configs", {})
+        qmt_dir_key = normalize_optional_path(qmt_dir).lower()
+        existing = configs.get(account_id)
+        if isinstance(existing, dict) and existing.get("bridge_id"):
+            existing_bridge_id = normalize_bridge_id(existing.get("bridge_id"))
+            existing_qmt_dir_key = normalize_optional_path(
+                existing.get("qmt_dir") or existing.get("python_dir")
+            ).lower()
+            if not qmt_dir_key or not existing_qmt_dir_key or qmt_dir_key == existing_qmt_dir_key:
+                return existing_bridge_id
+            same_dir_bridge = self._bridge_id_for_qmt_dir_locked(qmt_dir_key)
+            if same_dir_bridge:
+                return same_dir_bridge
+            if not self._bridge_has_other_account_locked(existing_bridge_id, account_id):
+                return existing_bridge_id
+            return self._new_account_bridge_id_locked(account_id)
+
+        if qmt_dir_key:
+            same_dir_bridge = self._bridge_id_for_qmt_dir_locked(qmt_dir_key)
+            if same_dir_bridge:
+                return same_dir_bridge
+
+        if not configs:
+            return DEFAULT_BRIDGE_ID
+
+        if not qmt_dir_key:
+            return DEFAULT_BRIDGE_ID
+
+        return self._new_account_bridge_id_locked(account_id)
+
+    def _bridge_id_for_qmt_dir_locked(self, qmt_dir_key):
+        for item in self._data.setdefault("account_configs", {}).values():
+            if not isinstance(item, dict):
+                continue
+            item_qmt_dir = normalize_optional_path(item.get("qmt_dir") or item.get("python_dir")).lower()
+            if item_qmt_dir and item_qmt_dir == qmt_dir_key and item.get("bridge_id"):
+                return normalize_bridge_id(item.get("bridge_id"))
+        return ""
+
+    def _bridge_has_other_account_locked(self, bridge_id, account_id):
+        bridge_id = normalize_bridge_id(bridge_id)
+        for key, item in self._data.setdefault("account_configs", {}).items():
+            if key == account_id or not isinstance(item, dict):
+                continue
+            if normalize_bridge_id(item.get("bridge_id")) == bridge_id:
+                return True
+        return False
+
+    def _can_update_bridge_python_dir_locked(self, bridge_id, account_id, qmt_dir):
+        qmt_dir_key = normalize_optional_path(qmt_dir).lower()
+        if not qmt_dir_key:
+            return False
+        bridge = self._data.setdefault("bridges", {}).get(normalize_bridge_id(bridge_id)) or {}
+        bridge_qmt_dir_key = normalize_optional_path(bridge.get("python_dir")).lower()
+        if bridge_qmt_dir_key == qmt_dir_key:
+            return False
+        for key, item in self._data.setdefault("account_configs", {}).items():
+            if key == account_id or not isinstance(item, dict):
+                continue
+            if normalize_bridge_id(item.get("bridge_id")) != normalize_bridge_id(bridge_id):
+                continue
+            item_qmt_dir_key = normalize_optional_path(item.get("qmt_dir") or item.get("python_dir")).lower()
+            if item_qmt_dir_key and item_qmt_dir_key != qmt_dir_key:
+                return False
+        return True
+
+    def _new_account_bridge_id_locked(self, account_id):
+        prefix = "acct_%s" % hashlib.sha1(account_id.encode("utf-8")).hexdigest()[:10]
+        bridge_id = normalize_bridge_id(prefix)
+        used = set(self.bridges().keys())
+        if bridge_id not in used:
+            return bridge_id
+        index = 2
+        while True:
+            candidate = normalize_bridge_id("%s_%s" % (bridge_id, index))
+            if candidate not in used:
+                return candidate
+            index += 1
+
+    def _account_bridge_name(self, account_id, bridge_id):
+        if bridge_id == DEFAULT_BRIDGE_ID:
+            return "默认账号"
+        return "账号 %s" % mask_text(account_id)
+
+    def reset_setup(self):
+        with self._lock:
+            self._data["initialized"] = False
+            self._data["account_configs"] = {}
+            self._data["account_pairs"] = {}
+            self._data["default_account_id"] = DEFAULT_ACCOUNT_ID
+            self._data["data_provider_account_id"] = ""
+            self._data["transport_mode"] = "ctypes"
+            self._save_locked()
+            self._save_settings_locked({"transport_mode": "ctypes"})
+        return self.setup_info()
 
     def api_key(self):
         with self._lock:
@@ -505,6 +859,45 @@ class WebRuntimeConfig(object):
             })
         return self.log_cleanup_info()
 
+    def qmt_log_language(self):
+        with self._lock:
+            return normalize_log_language(self._data.get("qmt_log_language") or "zh")
+
+    def qmt_log_language_info(self):
+        language = self.qmt_log_language()
+        return {
+            "language": language,
+            "label": "中文" if language == "zh" else "English",
+        }
+
+    def transport_mode(self):
+        with self._lock:
+            return normalize_transport_mode(self._data.get("transport_mode") or "ctypes")
+
+    def transport_info(self):
+        mode = self.transport_mode()
+        return {
+            "mode": mode,
+            "label": transport_mode_label(mode),
+            "detail_label": transport_mode_detail_label(mode),
+            "summary": transport_mode_summary(mode),
+            "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
+        }
+
+    def set_transport_mode(self, mode):
+        mode = normalize_transport_mode(mode)
+        with self._lock:
+            self._data["transport_mode"] = mode
+            self._save_settings_locked({"transport_mode": mode})
+        return self.transport_info()
+
+    def set_qmt_log_language(self, language):
+        language = normalize_log_language(language)
+        with self._lock:
+            self._data["qmt_log_language"] = language
+            self._save_settings_locked({"qmt_log_language": language})
+        return self.qmt_log_language_info()
+
     def server_access_info(self, bound_host=None, bound_port=None, include_auth_details=True):
         allow_remote = self.allow_remote()
         with self._lock:
@@ -569,6 +962,28 @@ class WebRuntimeConfig(object):
             self._save_locked()
         return row
 
+    def _bridge_row(self, bridge_id, name, python_dir, channels):
+        channels = channels or {}
+        return {
+            "id": bridge_id,
+            "name": name,
+            "python_dir": normalize_optional_path(python_dir),
+            "channels": {
+                "normal": str(channels.get("normal") or (
+                    "cfquant.%s.normal.request" % bridge_id
+                    if bridge_id != "default" else CHANNELS["normal"]
+                )).strip(),
+                "trade": str(channels.get("trade") or (
+                    "cfquant.%s.trade.request" % bridge_id
+                    if bridge_id != "default" else CHANNELS["trade"]
+                )).strip(),
+                "callback": str(channels.get("callback") or (
+                    "cfquant.%s.callback.event" % bridge_id
+                    if bridge_id != "default" else CHANNELS["callback"]
+                )).strip(),
+            },
+        }
+
     def delete_bridge(self, bridge_id):
         bridge_id = normalize_bridge_id(bridge_id)
         if bridge_id in ENV_BRIDGES:
@@ -615,6 +1030,7 @@ class WebRuntimeConfig(object):
                 "value text not null,"
                 "updated_at real not null)"
             )
+            _ensure_web_auth_session_store_locked(conn)
 
     def _settings_keys_locked(self):
         self._ensure_settings_db_locked()
@@ -661,6 +1077,10 @@ class WebRuntimeConfig(object):
             self._data["web_auth_hash"] = settings.get("web_auth_hash") or ""
         if "cleanup_qmt_userdata_logs" in settings:
             self._data["cleanup_qmt_userdata_logs"] = self._settings_bool(settings.get("cleanup_qmt_userdata_logs"))
+        if "qmt_log_language" in settings:
+            self._data["qmt_log_language"] = normalize_log_language(settings.get("qmt_log_language"))
+        if "transport_mode" in settings:
+            self._data["transport_mode"] = normalize_transport_mode(settings.get("transport_mode"))
 
     def _save_settings_locked(self, values):
         self._ensure_settings_db_locked()
@@ -682,6 +1102,10 @@ class WebRuntimeConfig(object):
             json.dump({
                 "bridges": self._data.get("bridges") or {},
                 "account_pairs": self._data.get("account_pairs") or {},
+                "account_configs": self._data.get("account_configs") or {},
+                "default_account_id": self._data.get("default_account_id") or DEFAULT_ACCOUNT_ID,
+                "initialized": bool(self._data.get("initialized")),
+                "data_provider_account_id": self._data.get("data_provider_account_id") or "",
                 "web_port": normalize_web_port(self._data.get("web_port"), default=8765),
             }, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(temp_path, self.path)
@@ -732,6 +1156,33 @@ class WebRuntimeConfig(object):
                 }
         return result
 
+    def _normalize_account_configs(self, value):
+        result = {}
+        if isinstance(value, list):
+            items = value
+        elif isinstance(value, dict):
+            items = value.values()
+        else:
+            items = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            account_id = str(item.get("account_id") or "").strip()
+            if not account_id:
+                continue
+            bridge_id = normalize_bridge_id(item.get("bridge_id") or DEFAULT_BRIDGE_ID)
+            qmt_dir = normalize_optional_path(item.get("qmt_dir") or item.get("python_dir"))
+            result[account_id] = {
+                "account_id": account_id,
+                "bridge_id": bridge_id,
+                "qmt_dir": qmt_dir,
+                "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
+                "data_provider": bool(item.get("data_provider")),
+                "enabled": item.get("enabled", True) is not False,
+                "updated_at": float(item.get("updated_at") or 0),
+            }
+        return result
+
 
 WEB_CONFIG = None
 
@@ -740,6 +1191,13 @@ def current_bridges():
     if WEB_CONFIG is not None:
         return WEB_CONFIG.bridges()
     return dict(ENV_BRIDGES)
+
+
+def configured_default_account_id():
+    if WEB_CONFIG is not None:
+        info = WEB_CONFIG.setup_info()
+        return str(info.get("default_account_id") or DEFAULT_ACCOUNT_ID).strip() or DEFAULT_ACCOUNT_ID
+    return DEFAULT_ACCOUNT_ID
 
 
 def bridge_config(bridge_id=None):
@@ -754,16 +1212,159 @@ def bridge_channels(bridge_id=None):
     return bridge_config(bridge_id)["channels"]
 
 
+def normalize_transport_mode(value):
+    value = str(value or "ctypes").strip().lower()
+    if value in ("pipe", "ctypes", "named_pipe", "named-pipe", "universal", "universal_ctypes"):
+        return "ctypes"
+    if value in ("lttx", "socket", "normal", "default"):
+        return "lttx"
+    raise ValueError("unknown transport mode: %s" % value)
+
+
+def transport_mode_label(mode):
+    mode = normalize_transport_mode(mode)
+    return "通用模式" if mode == "ctypes" else "高级模式"
+
+
+def transport_mode_detail_label(mode):
+    mode = normalize_transport_mode(mode)
+    return "ctypes 通用版" if mode == "ctypes" else "LTtx 普通/极速双桥"
+
+
+def transport_mode_summary(mode):
+    mode = normalize_transport_mode(mode)
+    return {
+        "mode": mode,
+        "label": transport_mode_label(mode),
+        "detail_label": transport_mode_detail_label(mode),
+        "request_scope": "单文件双通道" if mode == "ctypes" else "普通桥 + 交易桥",
+    }
+
+
+def _advanced_mode_readiness(bridge_id=None):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    cfg = get_cfquant_config()
+    probe_client = LTtxRpcClient(
+        host=cfg.get("host") or LTTX_HOST,
+        port=cfg.get("port") or LTTX_PORT,
+        token=cfg.get("token") or "LTtx",
+        client_id=new_id("cfquant_advanced_probe"),
+    )
+    try:
+        try:
+            probe_client.start()
+            snapshot = probe_bridge_status(bridge_id=bridge_id, client=probe_client)
+        except Exception as error:
+            channels = bridge_channels(bridge_id)
+            snapshot = {
+                "normal": {
+                    "online": False,
+                    "channel": channels["normal"],
+                    "error": str(error),
+                },
+                "trade": {
+                    "online": False,
+                    "channel": channels["trade"],
+                    "error": str(error),
+                },
+            }
+    finally:
+        probe_client.close()
+    normal = snapshot.get("normal") or {}
+    trade = snapshot.get("trade") or {}
+    missing = []
+    if not normal.get("online"):
+        missing.append("普通通道")
+    if not trade.get("online"):
+        missing.append("交易通道")
+    return {
+        "bridge_id": bridge_id,
+        "bridge_name": bridge_config(bridge_id)["name"],
+        "ready": not missing,
+        "missing": missing,
+        "status": snapshot,
+    }
+
+
 def resolve_bridge_id(account_id=None, bridge_id=None):
-    raw_bridge_id = str(bridge_id or "").strip()
-    if raw_bridge_id:
-        return normalize_bridge_id(raw_bridge_id)
     account_id = str(account_id or "").strip()
     if account_id:
+        runtime = WEB_CONFIG.account_config(account_id) if WEB_CONFIG is not None else None
+        if runtime and runtime.get("bridge_id"):
+            return normalize_bridge_id(runtime.get("bridge_id"))
         pair = WEB_CONFIG.account_pairs().get(account_id)
         if pair and pair.get("bridge_id"):
             return normalize_bridge_id(pair.get("bridge_id"))
+    raw_bridge_id = str(bridge_id or "").strip()
+    if raw_bridge_id:
+        return normalize_bridge_id(raw_bridge_id)
     return DEFAULT_BRIDGE_ID
+
+
+def resolve_account_mode(account_id=None, requested_mode=None):
+    requested_mode = str(requested_mode or "").strip()
+    if requested_mode:
+        return normalize_transport_mode(requested_mode)
+    account_id = str(account_id or "").strip()
+    if account_id and WEB_CONFIG is not None:
+        runtime = WEB_CONFIG.account_config(account_id)
+        if runtime and runtime.get("mode"):
+            return normalize_transport_mode(runtime.get("mode"))
+    return WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes"
+
+
+def enabled_account_configs():
+    configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
+    result = {}
+    for account_id, config in configs.items():
+        if not isinstance(config, dict):
+            continue
+        if config.get("enabled", True) is False:
+            continue
+        result[str(account_id)] = config
+    return result
+
+
+def configured_runtime_modes():
+    configs = enabled_account_configs()
+    modes = set()
+    for config in configs.values():
+        modes.add(normalize_transport_mode(config.get("mode") or "ctypes"))
+    if not modes:
+        modes.add(WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes")
+    return modes
+
+
+def bridge_has_lttx_account(bridge_id=None):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    configs = enabled_account_configs()
+    if not configs:
+        return (WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes") == "lttx"
+    for config in configs.values():
+        if normalize_transport_mode(config.get("mode") or "ctypes") != "lttx":
+            continue
+        if normalize_bridge_id(config.get("bridge_id") or DEFAULT_BRIDGE_ID) == bridge_id:
+            return True
+    return False
+
+
+def lttx_runtime_enabled():
+    return "lttx" in configured_runtime_modes()
+
+
+def default_runtime_client_mode():
+    modes = configured_runtime_modes()
+    if modes == {"lttx"}:
+        return "lttx"
+    return "ctypes"
+
+
+def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None):
+    default = normalize_channel(default, "normal")
+    mode = normalize_transport_mode(mode or resolve_account_mode(account_id))
+    if mode == "ctypes":
+        return default
+    return normalize_channel(requested_channel, default)
 
 
 def callback_channels():
@@ -778,22 +1379,34 @@ def callback_channels():
 class GlobalTxClient(object):
     def __init__(self):
         self._lock = threading.RLock()
-        self._client = None
+        self._clients = {}
+        self._callbacks = {}
         self.client_id = os.environ.get("CFQUANT_WEB_CLIENT_ID") or new_id("cfquant_web")
         self._cooldown_until = {}
         self._last_error = {}
 
-    def start(self):
-        self._get_client().start()
+    def start(self, mode=None):
+        self._get_client(mode).start()
 
-    def request(self, bridge_id, channel_key, action, params=None, timeout=8.0, mark_offline_on_timeout=False, ignore_cooldown=False):
+    def request(
+        self,
+        bridge_id,
+        channel_key,
+        action,
+        params=None,
+        timeout=8.0,
+        mark_offline_on_timeout=False,
+        ignore_cooldown=False,
+        mode=None,
+    ):
         channels = bridge_channels(bridge_id)
         if channel_key not in ("normal", "trade"):
             raise ValueError("unknown channel: %s" % channel_key)
-        cooldown_key = (normalize_bridge_id(bridge_id), channel_key)
+        mode = normalize_transport_mode(mode or resolve_account_mode())
+        cooldown_key = (mode, normalize_bridge_id(bridge_id), channel_key)
         if not ignore_cooldown:
             self._check_cooldown(cooldown_key)
-        client = self._get_client()
+        client = self._get_client(mode)
         try:
             result = client.request(
                 action,
@@ -812,14 +1425,16 @@ class GlobalTxClient(object):
             raise
         except Exception as e:
             self._mark_failed(cooldown_key, e)
-            self.close()
+            self.close(mode)
             raise
 
-    def close(self):
+    def close(self, mode=None):
+        modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lttx"]
         with self._lock:
-            client = self._client
-            self._client = None
-        if client is not None:
+            clients = [self._clients.pop(item, None) for item in modes]
+        for client in clients:
+            if client is None:
+                continue
             try:
                 client.close()
             except Exception:
@@ -831,18 +1446,36 @@ class GlobalTxClient(object):
         if now < cooldown_until:
             last_error = self._last_error.get(cooldown_key, "previous connection failed")
             raise RuntimeError(
-                "bridge %s channel %s is in reconnect cooldown %.1fs: %s"
-                % (cooldown_key[0], cooldown_key[1], cooldown_until - now, last_error)
+                "mode %s bridge %s channel %s is in reconnect cooldown %.1fs: %s"
+                % (cooldown_key[0], cooldown_key[1], cooldown_key[2], cooldown_until - now, last_error)
             )
 
-    def _get_client(self):
+    def _get_client(self, mode=None):
+        mode = normalize_transport_mode(mode or default_runtime_client_mode())
         with self._lock:
-            if self._client is None:
-                self._client = LTtxRpcClient(
-                    request_channel=CHANNELS["normal"],
-                    client_id=self.client_id,
-                )
-            return self._client
+            client = self._clients.get(mode)
+            if client is None:
+                if mode == "ctypes":
+                    cfg = get_cfquant_config()
+                    from cfquant.pipe_client import PipeRpcClient
+
+                    client = PipeRpcClient(
+                        pipe_name=os.environ.get("CFQUANT_PIPE_NAME") or cfg.get("pipe_name") or DEFAULT_PIPE_NAME,
+                        request_channel=CHANNELS["normal"],
+                        timeout=cfg.get("timeout"),
+                        client_id="%s_ctypes" % self.client_id,
+                        connect_timeout_ms=cfg.get("pipe_connect_timeout_ms"),
+                    )
+                else:
+                    client = LTtxRpcClient(
+                        request_channel=CHANNELS["normal"],
+                        client_id="%s_lttx" % self.client_id,
+                    )
+                self._clients[mode] = client
+                for event, callbacks in self._callbacks.items():
+                    for callback in callbacks:
+                        client.add_callback(event, callback)
+            return client
 
     def _mark_failed(self, cooldown_key, error=None):
         self._cooldown_until[cooldown_key] = time.time() + RECONNECT_COOLDOWN_SECONDS
@@ -850,29 +1483,443 @@ class GlobalTxClient(object):
             self._last_error[cooldown_key] = str(error)
 
     def add_callback(self, event, callback):
-        self._get_client().add_callback(event, callback)
+        if callback is None:
+            return
+        with self._lock:
+            callbacks = self._callbacks.setdefault(event, [])
+            if callback not in callbacks:
+                callbacks.append(callback)
+            clients = list(self._clients.values())
+        for client in clients:
+            client.add_callback(event, callback)
 
     def remove_callback(self, event, callback):
-        client = self._client
-        if client is not None:
+        with self._lock:
+            callbacks = self._callbacks.get(event) or []
+            if callback in callbacks:
+                callbacks.remove(callback)
+            clients = list(self._clients.values())
+        for client in clients:
             client.remove_callback(event, callback)
+
+
+def account_request(
+    account_id,
+    bridge_id,
+    requested_channel,
+    action,
+    params=None,
+    default_channel="normal",
+    timeout=8.0,
+    mark_offline_on_timeout=True,
+    ignore_cooldown=False,
+):
+    account_id = str(account_id or "").strip()
+    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id)
+    preferred_mode = resolve_account_mode(account_id)
+    modes = [preferred_mode]
+    if preferred_mode == "lttx":
+        modes.append("ctypes")
+    attempts = []
+    last_error = None
+    for mode in modes:
+        channel = route_channel_for_account(
+            account_id,
+            requested_channel=requested_channel,
+            default=default_channel,
+            mode=mode,
+        )
+        started = time.perf_counter()
+        try:
+            result = CLIENTS.request(
+                bridge_id,
+                channel,
+                action,
+                params,
+                timeout=timeout,
+                mark_offline_on_timeout=mark_offline_on_timeout,
+                ignore_cooldown=ignore_cooldown,
+                mode=mode,
+            )
+            return {
+                "result": result,
+                "mode": mode,
+                "channel": channel,
+                "bridge_id": bridge_id,
+                "account_id": account_id,
+                "fallback": bool(attempts),
+                "fallback_reason": str(last_error or ""),
+                "attempts": attempts + [{
+                    "mode": mode,
+                    "channel": channel,
+                    "ok": True,
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                }],
+            }
+        except Exception as error:
+            last_error = error
+            attempts.append({
+                "mode": mode,
+                "channel": channel,
+                "ok": False,
+                "error": str(error),
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            })
+    detail = "; ".join(
+        "%s/%s: %s" % (row["mode"], row["channel"], row.get("error") or "")
+        for row in attempts
+    )
+    raise RuntimeError(
+        "%s failed for account %s: %s" % (action, account_id or "--", detail or "no route attempted")
+    )
+
+
+def data_provider_candidates():
+    configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
+    preferred = WEB_CONFIG.data_provider_account_id() if WEB_CONFIG is not None else ""
+    default_account_id = configured_default_account_id()
+    result = []
+    if preferred and preferred in configs and configs[preferred].get("enabled", True):
+        result.append(preferred)
+    if default_account_id in configs and configs[default_account_id].get("enabled", True):
+        if default_account_id not in result:
+            result.append(default_account_id)
+    for account_id, config in configs.items():
+        if config.get("enabled", True) and account_id not in result:
+            result.append(account_id)
+    if not result:
+        result.append(default_account_id)
+    return result
+
+
+def data_provider_request(
+    action,
+    params,
+    requested_channel=None,
+    default_channel="normal",
+    timeout=12.0,
+    bridge_id=None,
+):
+    attempts = []
+    last_error = None
+    for account_id in data_provider_candidates():
+        target_bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id)
+        try:
+            route = account_request(
+                account_id,
+                target_bridge_id,
+                requested_channel,
+                action,
+                params,
+                default_channel=default_channel,
+                timeout=timeout,
+                mark_offline_on_timeout=True,
+                ignore_cooldown=True,
+            )
+            route["data_provider"] = account_id
+            route["provider_fallback"] = bool(attempts)
+            route["provider_attempts"] = attempts + [{
+                "account_id": account_id,
+                "ok": True,
+                "mode": route["mode"],
+                "channel": route["channel"],
+            }]
+            return route
+        except Exception as error:
+            last_error = error
+            attempts.append({
+                "account_id": account_id,
+                "ok": False,
+                "error": str(error),
+            })
+    detail = "; ".join(
+        "%s: %s" % (row["account_id"], row.get("error") or "")
+        for row in attempts
+    )
+    raise RuntimeError(
+        "%s failed for all data providers: %s" % (action, detail or str(last_error or "no provider"))
+    )
+
+
+def account_route_status(account_id, bridge_id=None):
+    account_id = str(account_id or "").strip() or configured_default_account_id()
+    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id)
+    preferred_mode = resolve_account_mode(account_id)
+    ctypes_status = ctypes_bridge_status(bridge_id)
+    if preferred_mode == "lttx":
+        advanced = _advanced_mode_readiness(bridge_id)
+    else:
+        advanced = {
+            "bridge_id": bridge_id,
+            "bridge_name": bridge_config(bridge_id)["name"],
+            "ready": False,
+            "missing": [],
+            "skipped": True,
+            "reason": "当前账号为通用模式，LTtx 不参与状态探测",
+            "status": {},
+        }
+    advanced_status = advanced.get("status") or {}
+    ctypes_ready = bool(
+        (ctypes_status.get("normal") or {}).get("online")
+        and (ctypes_status.get("trade") or {}).get("online")
+    )
+    advanced_ready = bool(advanced.get("ready"))
+    effective_mode = preferred_mode
+    fallback = False
+    if preferred_mode == "lttx" and not advanced_ready and ctypes_ready:
+        effective_mode = "ctypes"
+        fallback = True
+    selected = advanced_status if effective_mode == "lttx" else ctypes_status
+    return {
+        "account_id": account_id,
+        "bridge_id": bridge_id,
+        "preferred_mode": preferred_mode,
+        "effective_mode": effective_mode,
+        "fallback": fallback,
+        "qmt_dir": (WEB_CONFIG.account_config(account_id) or {}).get("qmt_dir", ""),
+        "data_provider": account_id == (WEB_CONFIG.data_provider_account_id() if WEB_CONFIG else ""),
+        "ready": advanced_ready if effective_mode == "lttx" else ctypes_ready,
+        "status": selected,
+        "modes": {
+            "ctypes": {"ready": ctypes_ready, "status": ctypes_status},
+            "lttx": {
+                "ready": advanced_ready,
+                "status": advanced_status,
+                "skipped": bool(advanced.get("skipped")),
+                "reason": advanced.get("reason") or "",
+            },
+        },
+    }
+
+
+class PipeHubManager(object):
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._process = None
+        self._status = None
+        self._last_error = ""
+
+    def _python_exe(self):
+        return sys.executable
+
+    def status(self):
+        data = self._read_status_file()
+        if data:
+            self._status = data
+        running = False
+        process_pid = None
+        if self._process is not None and getattr(self._process, "poll", lambda: 1)() is None:
+            process_pid = self._process.pid
+            running = True
+        if not running:
+            try:
+                status_pid = int((self._status or {}).get("pid") or 0)
+            except Exception:
+                status_pid = 0
+            if status_pid:
+                status_details = process_details_by_pid([status_pid])
+                status_command = (status_details.get(status_pid) or {}).get("command_line") or ""
+                if os.path.basename(os.path.abspath(PIPE_HUB_ENTRY)).lower() in status_command.lower():
+                    process_pid = status_pid
+                    running = True
+        if not running:
+            entry_name = os.path.basename(os.path.abspath(PIPE_HUB_ENTRY)).lower()
+            rows = run_powershell_json(
+                "$name='%s'; "
+                "$rows=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+                "Where-Object { $_.Name -like 'python*.exe' -and $_.CommandLine -and $_.CommandLine.ToLower().Contains($name) } | "
+                "ForEach-Object { [pscustomobject]@{ pid=$_.ProcessId; command_line=$_.CommandLine } }); "
+                "if ($null -eq $rows) { '[]' } else { @($rows) | ConvertTo-Json -Compress }"
+                % entry_name.replace("'", "''"),
+                timeout=5.0,
+            )
+            for row in rows:
+                try:
+                    candidate_pid = int(row.get("pid") or 0)
+                except Exception:
+                    candidate_pid = 0
+                if candidate_pid:
+                    process_pid = candidate_pid
+                    running = True
+                    break
+        return {
+            "running": running,
+            "pipe_name": (self._status or {}).get("pipe_name") or normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
+            "status_file": PIPE_HUB_STATUS_FILE,
+            "process_pid": process_pid,
+            "last_error": self._last_error,
+            "status": self._status or {},
+            "entry": os.path.abspath(PIPE_HUB_ENTRY),
+            "checked_at": time.time(),
+        }
+
+    def start(self):
+        with self._lock:
+            if self._process is not None and getattr(self._process, "poll", lambda: 1)() is None:
+                return self.status()
+            current = self.status()
+            if current.get("running"):
+                return current
+            entry = os.path.abspath(PIPE_HUB_ENTRY)
+            if not os.path.isfile(entry):
+                raise RuntimeError("pipe hub entry not found: %s" % entry)
+            creationflags = 0
+            if os.name == "nt":
+                creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+            env = os.environ.copy()
+            env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
+            env.setdefault("CFQUANT_LOG_RETENTION_DAYS", str(LOG_RETENTION_DAYS))
+            env.setdefault("CFQUANT_PIPE_HUB_STATUS_FILE", PIPE_HUB_STATUS_FILE)
+            stdout = open(PIPE_HUB_STDOUT_LOG, "a", encoding="utf-8", buffering=1)
+            stderr = open(PIPE_HUB_STDERR_LOG, "a", encoding="utf-8", buffering=1)
+            try:
+                self._process = subprocess.Popen(
+                    [self._python_exe(), entry],
+                    cwd=BASE_DIR,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout,
+                    stderr=stderr,
+                    env=env,
+                    creationflags=creationflags,
+                    close_fds=False if os.name == "nt" else True,
+                )
+            finally:
+                try:
+                    stdout.close()
+                    stderr.close()
+                except Exception:
+                    pass
+            time.sleep(0.8)
+            return self.status()
+
+    def stop(self):
+        with self._lock:
+            process = self._process
+            self._process = None
+        pid = int(self.status().get("process_pid") or 0)
+        if process is not None and getattr(process, "poll", lambda: 1)() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        elif pid > 0:
+            try:
+                completed = subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=6.0,
+                )
+                if completed.returncode != 0:
+                    self._last_error = (completed.stderr or completed.stdout or "").strip()
+            except Exception as e:
+                self._last_error = str(e)
+        return self.status()
+
+    def _read_status_file(self):
+        if not os.path.isfile(PIPE_HUB_STATUS_FILE):
+            return {}
+        try:
+            with open(PIPE_HUB_STATUS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            self._last_error = str(e)
+            return {}
+
+
+PIPE_HUB = PipeHubManager()
 
 
 CLIENTS = GlobalTxClient()
 
 
+def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
+    bridge_id = normalize_bridge_id(bridge_id)
+    channels = bridge_channels(bridge_id)
+    hub = PIPE_HUB.status()
+    hub_status = hub.get("status") or {}
+    connected_channels = set(hub_status.get("qmt_channels") or [])
+    now = time.time()
+    result = {
+        "bridge_id": bridge_id,
+        "bridge_name": bridge_config(bridge_id)["name"],
+        "normal": {
+            "online": bool(hub.get("running") and channels["normal"] in connected_channels),
+            "channel": channels["normal"],
+            "probe_action": "pipe_hub.status",
+            "status": {
+                "bridge": "PipeNormalQmtBridge",
+                "transport": "pipe",
+                "pipe_name": hub.get("pipe_name"),
+                "request_channel": channels["normal"],
+                "pipe_connected": channels["normal"] in connected_channels,
+            },
+        },
+        "trade": {
+            "online": bool(hub.get("running") and channels["trade"] in connected_channels),
+            "channel": channels["trade"],
+            "probe_action": "pipe_hub.status",
+            "status": {
+                "bridge": "PipeTradeBridge",
+                "transport": "pipe",
+                "pipe_name": hub.get("pipe_name"),
+                "request_channel": channels["trade"],
+                "pipe_connected": channels["trade"] in connected_channels,
+            },
+        },
+        "checked_at": now,
+        "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+        "monitor": {
+            "running": True,
+            "interval_seconds": 0,
+            "cached": False,
+            "ready": True,
+            "transport_mode": "ctypes",
+            "pipe_hub": hub,
+        },
+    }
+    for channel_name in ("normal", "trade"):
+        row = result[channel_name]
+        row["latency_ms"] = 0
+        if not row["online"]:
+            row["error"] = "ctypes PipeHub channel is offline"
+    return result
+
+
 class WebSocketCallbackClient(object):
-    def __init__(self, sock, bridge_id="", account_id=""):
+    def __init__(self, sock, bridge_id="", account_id="", event_name="", event_prefix="", job_id=""):
         self.sock = sock
         self.bridge_id = normalize_bridge_id(bridge_id) if bridge_id else ""
         self.account_id = str(account_id or "").strip()
+        self.event_name = str(event_name or "").strip()
+        self.event_prefix = str(event_prefix or "").strip()
+        self.job_id = str(job_id or "").strip()
         self._lock = threading.RLock()
         self.alive = True
 
     def matches(self, event):
-        if self.bridge_id and normalize_bridge_id(event.get("bridge_id") or "default") != self.bridge_id:
+        if self.bridge_id and normalize_bridge_id(CallbackEventStore.event_bridge_id_static(event) or "default") != self.bridge_id:
             return False
         if self.account_id and CallbackEventStore.event_account_id_static(event) != self.account_id:
+            return False
+        event_name = str(event.get("event") or "")
+        if self.event_name and event_name != self.event_name:
+            return False
+        if self.event_prefix and not event_name.startswith(self.event_prefix):
+            return False
+        if self.job_id and CallbackEventStore.event_job_id_static(event) != self.job_id:
             return False
         return True
 
@@ -1026,11 +2073,8 @@ class QuoteSubscriptionStore(object):
 
     def subscribe_whole(self, body):
         body = body or {}
-        bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
         markets = self._normalize_markets(body.get("markets") or body.get("code_list") or ["SH", "SZ"])
-        channel = normalize_channel(body.get("channel"), "normal")
-        if channel != "normal":
-            raise ValueError("subscribe whole quote only supports normal QMT channel")
+        requested_channel = body.get("channel")
         started = time.perf_counter()
         self.start()
         with self._lock:
@@ -1047,9 +2091,10 @@ class QuoteSubscriptionStore(object):
                     row["created_at"] = time.time()
                     self._whole_subscribed_at = row["created_at"]
                     self._schedule_idle_release_locked()
+                    existing_bridge_id = row.get("bridge_id") or DEFAULT_BRIDGE_ID
                     return {
                         "subscribe_id": existing_id,
-                        "bridge_id": row.get("bridge_id") or bridge_id,
+                        "bridge_id": existing_bridge_id,
                         "channel": row.get("channel") or "normal",
                         "kind": "whole_quote",
                         "markets": row.get("markets") or markets,
@@ -1059,21 +2104,25 @@ class QuoteSubscriptionStore(object):
                     }
             if existing_id is None:
                 self._clear_events_locked(None)
-        result = CLIENTS.request(
-            bridge_id,
-            channel,
+        route = data_provider_request(
             "xtdata.subscribe_whole_quote",
             {"code_list": markets},
+            requested_channel=requested_channel,
+            default_channel="normal",
             timeout=12.0,
-            mark_offline_on_timeout=True,
-            ignore_cooldown=True,
+            bridge_id=body.get("bridge_id"),
         )
+        result = route["result"]
+        bridge_id = route["bridge_id"]
+        channel = route["channel"]
         subscribe_id = str(result.get("subscribe_id") if isinstance(result, dict) else result)
         with self._lock:
             self._subscriptions[subscribe_id] = {
                 "subscribe_id": subscribe_id,
                 "bridge_id": bridge_id,
                 "channel": channel,
+                "mode": route["mode"],
+                "account_id": route.get("data_provider") or "",
                 "kind": "whole_quote",
                 "markets": markets,
                 "created_at": time.time(),
@@ -1099,11 +2148,22 @@ class QuoteSubscriptionStore(object):
 
     def unsubscribe(self, body):
         subscribe_id = str((body or {}).get("subscribe_id") or "").strip()
-        bridge_id = normalize_bridge_id((body or {}).get("bridge_id") or DEFAULT_BRIDGE_ID)
-        channel = normalize_channel((body or {}).get("channel"), "normal")
         if not subscribe_id:
             raise ValueError("subscribe_id is required")
-        result = self._request_unsubscribe(bridge_id, channel, subscribe_id, timeout=8.0)
+        with self._lock:
+            row = dict(self._subscriptions.get(subscribe_id) or {})
+        bridge_id = normalize_bridge_id(
+            row.get("bridge_id") or (body or {}).get("bridge_id") or DEFAULT_BRIDGE_ID
+        )
+        channel = row.get("channel") or (body or {}).get("channel") or "normal"
+        account_id = row.get("account_id") or ""
+        result = self._request_unsubscribe(
+            bridge_id,
+            channel,
+            subscribe_id,
+            account_id=account_id,
+            timeout=8.0,
+        )
         with self._lock:
             self._remove_subscription_locked(subscribe_id)
         return {
@@ -1127,7 +2187,13 @@ class QuoteSubscriptionStore(object):
         bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
         channel = normalize_channel(row.get("channel"), "normal")
         try:
-            result = self._request_unsubscribe(bridge_id, channel, subscribe_id, timeout=5.0)
+            result = self._request_unsubscribe(
+                bridge_id,
+                channel,
+                subscribe_id,
+                account_id=row.get("account_id") or "",
+                timeout=5.0,
+            )
             error = ""
         except Exception as e:
             result = None
@@ -1145,15 +2211,18 @@ class QuoteSubscriptionStore(object):
             "error": error,
         }
 
-    def _request_unsubscribe(self, bridge_id, channel, subscribe_id, timeout=8.0):
-        return CLIENTS.request(
+    def _request_unsubscribe(self, bridge_id, channel, subscribe_id, account_id="", timeout=8.0):
+        route = account_request(
+            account_id,
             bridge_id,
             channel,
             "xtdata.unsubscribe_quote",
             {"subscribe_id": subscribe_id},
             timeout=timeout,
+            default_channel="normal",
             ignore_cooldown=True,
         )
+        return route["result"]
 
     def _remove_subscription_locked(self, subscribe_id):
         subscribe_id = str(subscribe_id or "")
@@ -1289,24 +2358,37 @@ class CallbackEventStore(object):
         self._tx = None
         self._thread = None
         self._running = False
+        self._pipe_clients = {}
+        self._mode = None
 
     def start(self):
         if self._running:
             return
+        self._mode = "mixed"
         self._running = True
         try:
-            self._tx = txl("127.0.0.1", 2049, "LTtx")
-            self._tx.start_txg("@".join(self.channels))
-            self._thread = threading.Thread(target=self._loop)
-            self._thread.daemon = True
-            self._thread.start()
-            safe_print("cfquant callback listener started channels=%s" % ",".join(self.channels))
+            CLIENTS.add_callback("__event__", self._on_client_event)
+            safe_print("cfquant callback listeners started in mixed mode")
         except Exception as e:
             self._running = False
             safe_print("cfquant callback listener start failed: %s" % e)
 
     def close(self):
         self._running = False
+        try:
+            CLIENTS.remove_callback("__event__", self._on_client_event)
+        except Exception:
+            pass
+        for client in list(self._pipe_clients.values()):
+            try:
+                client.remove_callback("__event__", self._on_client_event)
+            except Exception:
+                pass
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._pipe_clients = {}
         tx = self._tx
         self._tx = None
         if tx is not None:
@@ -1317,28 +2399,66 @@ class CallbackEventStore(object):
 
     def refresh_channels(self, channels):
         channels = channels or callback_channels()
-        if channels == self.channels and self._running:
+        mode = "mixed"
+        if channels == self.channels and self._running and mode == self._mode:
             return
         self.close()
         self.channels = channels
         self.start()
 
-    def latest(self, since=0, limit=200, bridge_id=None, account_id=None):
+    def attach_pipe_client(self, client):
+        if client is None:
+            return
+        try:
+            client.add_callback("__event__", self._on_client_event)
+        except Exception as e:
+            safe_print("callback pipe attach failed: %s" % e)
+
+    def detach_pipe_client(self, client):
+        if client is None:
+            return
+        try:
+            client.remove_callback("__event__", self._on_client_event)
+        except Exception:
+            pass
+
+    def latest(self, since=0, limit=200, bridge_id=None, account_id=None, event_name=None, event_prefix=None, job_id=None):
         bridge_id = normalize_bridge_id(bridge_id) if bridge_id else None
         account_id = str(account_id or "").strip()
+        event_name = str(event_name or "").strip()
+        event_prefix = str(event_prefix or "").strip()
+        job_id = str(job_id or "").strip()
         with self._lock:
             rows = [row for row in self._events if row.get("seq", 0) > since]
             if bridge_id:
                 rows = [
                     row
                     for row in rows
-                    if normalize_bridge_id(row.get("bridge_id") or "default") == bridge_id
+                    if normalize_bridge_id(self.event_bridge_id_static(row) or "default") == bridge_id
                 ]
             if account_id:
                 rows = [
                     row
                     for row in rows
                     if self._event_account_id(row) == account_id
+                ]
+            if event_name:
+                rows = [
+                    row
+                    for row in rows
+                    if str(row.get("event") or "") == event_name
+                ]
+            if event_prefix:
+                rows = [
+                    row
+                    for row in rows
+                    if str(row.get("event") or "").startswith(event_prefix)
+                ]
+            if job_id:
+                rows = [
+                    row
+                    for row in rows
+                    if self.event_job_id_static(row) == job_id
                 ]
             return rows[-int(limit):]
 
@@ -1373,12 +2493,57 @@ class CallbackEventStore(object):
         with self._lock:
             self._seq += 1
             row = dict(event)
+            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+            if not row.get("bridge_id") and meta.get("bridge_id"):
+                row["bridge_id"] = meta.get("bridge_id")
             row["seq"] = self._seq
             row["received_at"] = time.time()
             self._events.append(row)
             if len(self._events) > self.max_events:
                 self._events = self._events[-self.max_events:]
         WS_CALLBACKS.broadcast(row)
+
+    def _on_client_event(self, event):
+        if not isinstance(event, dict):
+            return
+        if event.get("type") != "event":
+            return
+        self._append(event)
+
+    def _start_pipe_clients(self):
+        from cfquant.pipe_client import PipeRpcClient
+
+        cfg = get_cfquant_config()
+        pipe_name = os.environ.get("CFQUANT_PIPE_NAME") or cfg.get("pipe_name") or DEFAULT_PIPE_NAME
+        connect_timeout_ms = cfg.get("pipe_connect_timeout_ms")
+        timeout = cfg.get("timeout")
+        started = 0
+        errors = []
+        for channel in self.channels:
+            if not channel:
+                continue
+            client = PipeRpcClient(
+                pipe_name=pipe_name,
+                request_channel=channel,
+                timeout=timeout,
+                client_id=channel,
+                connect_timeout_ms=connect_timeout_ms,
+            )
+            try:
+                client.start()
+                client.add_callback("__event__", self._on_client_event)
+                self._pipe_clients[channel] = client
+                started += 1
+            except Exception as e:
+                errors.append("%s: %s" % (channel, e))
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                safe_print("callback pipe client start failed channel=%s error=%s" % (channel, e))
+        if started <= 0:
+            detail = "; ".join(errors)
+            raise RuntimeError("no callback pipe clients started%s" % (": " + detail if detail else ""))
 
     def _event_account_id(self, event):
         return self.event_account_id_static(event)
@@ -1399,6 +2564,41 @@ class CallbackEventStore(object):
                 return str(value).strip()
         return ""
 
+    @staticmethod
+    def event_bridge_id_static(event):
+        if not isinstance(event, dict):
+            return ""
+        meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        candidates = [
+            event.get("bridge_id"),
+            meta.get("bridge_id"),
+            data.get("bridge_id"),
+        ]
+        for value in candidates:
+            if value:
+                return str(value).strip()
+        return ""
+
+    @staticmethod
+    def event_job_id_static(event):
+        if not isinstance(event, dict):
+            return ""
+        meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        candidates = [
+            event.get("job_id"),
+            event.get("download_job_id"),
+            meta.get("job_id"),
+            meta.get("download_job_id"),
+            data.get("job_id"),
+            data.get("download_job_id"),
+        ]
+        for value in candidates:
+            if value:
+                return str(value).strip()
+        return ""
+
 
 CALLBACKS = CallbackEventStore()
 
@@ -1412,10 +2612,14 @@ def normalize_optional_path(value):
 
 def safe_print(message):
     line = str(message)
+    printed_to_log = False
     try:
         print(line)
+        printed_to_log = getattr(sys, "stdout", None) is _LOG_FP
     except Exception:
         pass
+    if printed_to_log:
+        return
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(line + "\n")
@@ -1466,9 +2670,12 @@ def cleanup_files_by_age(root_dir, patterns=None, retention_days=LOG_RETENTION_D
 
 def cleanup_cfquant_local_logs(retention_days=LOG_RETENTION_DAYS):
     targets = [
+        (LOG_DIR, ["*.log", "*.csv", "*.txt"], True),
         (BASE_DIR, ["*.log"], False),
         (os.path.join(BASE_DIR, "log_data"), ["*.log", "*.csv", "*.txt"], True),
         (os.path.join(BASE_DIR, "tx_log"), ["*.log", "*.csv", "*.txt"], True),
+        (os.path.join(BASE_DIR, "LTtx", "tx", "log_data"), ["*.log", "*.csv", "*.txt"], True),
+        (os.path.join(BASE_DIR, "LTtx", "tx", "tx_log"), ["*.log", "*.csv", "*.txt"], True),
     ]
     started = time.time()
     results = [
@@ -1592,7 +2799,7 @@ class CfquantUpdater(object):
             "default_ref": ref,
         }
         if not python_dir:
-            result["errors"].append("桥接端未设置 Python 目录")
+            result["errors"].append("桥接端未设置 QMT 核心目录")
             return result
         try:
             target = self._target_paths(python_dir)
@@ -1608,7 +2815,7 @@ class CfquantUpdater(object):
                 ref,
             )
             if not os.path.isdir(target["python_dir"]):
-                result["errors"].append("Python 目录不存在: %s" % target["python_dir"])
+                result["errors"].append("QMT 核心目录不存在: %s" % target["python_dir"])
             if not os.path.isdir(target["project_dir"]):
                 result["errors"].append("项目目录不存在: %s" % target["project_dir"])
             if not os.path.isdir(target["current_core"]):
@@ -1616,7 +2823,7 @@ class CfquantUpdater(object):
             if os.path.isfile(target["entry_file"]):
                 result["entry_file"] = target["entry_file"]
             else:
-                result["warnings"].append("未找到 CFQUANT.py，常规核心更新仍可继续")
+                result["warnings"].append("未找到 QMT 入口脚本 CFQUANT.py，核心包更新仍可继续")
             result["ready"] = not result["errors"]
         except Exception as e:
             result["errors"].append(str(e))
@@ -1692,7 +2899,9 @@ class CfquantUpdater(object):
             }
 
     def _target_paths(self, python_dir):
-        python_dir = normalize_optional_path(python_dir)
+        configured_dir = normalize_optional_path(python_dir)
+        python_dir = self._resolve_qmt_core_dir(configured_dir)
+        script_dir = self._resolve_qmt_script_dir(configured_dir, python_dir)
         single_project_dir = python_dir
         single_core = os.path.join(python_dir, "cfquant")
         legacy_project_dir = os.path.join(python_dir, "cfquant")
@@ -1714,24 +2923,55 @@ class CfquantUpdater(object):
             updates_dir = os.path.join(python_dir, ".cfquant_updates")
         return {
             "layout": layout,
+            "configured_dir": configured_dir,
             "python_dir": python_dir,
+            "script_dir": script_dir,
             "project_dir": project_dir,
             "current_core": current_core,
             "updates_dir": updates_dir,
             "backup_dir": os.path.join(updates_dir, "backups"),
-            "entry_file": os.path.join(python_dir, "CFQUANT.py"),
+            "entry_file": os.path.join(script_dir or python_dir, "CFQUANT.py"),
         }
+
+    def _resolve_qmt_core_dir(self, configured_dir):
+        configured_dir = normalize_optional_path(configured_dir)
+        if not configured_dir:
+            return ""
+        base_name = os.path.basename(configured_dir).lower()
+        if base_name == "python":
+            sibling_bin = os.path.join(os.path.dirname(configured_dir), "bin.x64")
+            if os.path.isdir(sibling_bin):
+                return sibling_bin
+        child_bin = os.path.join(configured_dir, "bin.x64")
+        if os.path.isdir(child_bin):
+            return child_bin
+        return configured_dir
+
+    def _resolve_qmt_script_dir(self, configured_dir, core_dir):
+        configured_dir = normalize_optional_path(configured_dir)
+        core_dir = normalize_optional_path(core_dir)
+        if not configured_dir:
+            return ""
+        if os.path.basename(configured_dir).lower() == "python":
+            return configured_dir
+        sibling_python = os.path.join(os.path.dirname(core_dir or configured_dir), "python")
+        if os.path.isdir(sibling_python):
+            return sibling_python
+        child_python = os.path.join(configured_dir, "python")
+        if os.path.isdir(child_python):
+            return child_python
+        return configured_dir
 
     def _require_ready_target(self, bridge_id):
         bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
         bridge = bridge_config(bridge_id)
         python_dir = normalize_optional_path(bridge.get("python_dir"))
         if not python_dir:
-            raise RuntimeError("桥接端未设置 Python 目录")
+            raise RuntimeError("桥接端未设置 QMT 核心目录")
         target = self._target_paths(python_dir)
         target["bridge_id"] = bridge_id
         if not os.path.isdir(target["python_dir"]):
-            raise RuntimeError("Python 目录不存在: %s" % target["python_dir"])
+            raise RuntimeError("QMT 核心目录不存在: %s" % target["python_dir"])
         if not os.path.isdir(target["project_dir"]):
             raise RuntimeError("项目目录不存在: %s" % target["project_dir"])
         if not os.path.isdir(target["current_core"]):
@@ -2194,6 +3434,87 @@ class CfquantUpdater(object):
 UPDATER = CfquantUpdater(WEB_CONFIG)
 
 
+def write_qmt_bridge_identity(row):
+    row = row or {}
+    bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
+    result = {
+        "written": False,
+        "bridge_id": bridge_id,
+        "account_id": str(row.get("account_id") or ""),
+        "qmt_dir": qmt_dir,
+        "path": "",
+        "error": "",
+        "warning": "",
+    }
+    if not qmt_dir:
+        result["warning"] = "QMT 核心目录未填写，无法自动写入 ctypes 身份配置"
+        return result
+    try:
+        target = UPDATER._target_paths(qmt_dir) if UPDATER is not None else {"python_dir": qmt_dir, "script_dir": ""}
+        core_dir = normalize_optional_path(target.get("python_dir") or qmt_dir)
+        if not core_dir or not os.path.isdir(core_dir):
+            result["error"] = "QMT 核心目录不存在: %s" % (core_dir or qmt_dir)
+            return result
+        channels = bridge_channels(bridge_id)
+        payload = {
+            "config_version": 1,
+            "bridge_id": bridge_id,
+            "account_id": str(row.get("account_id") or ""),
+            "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
+            "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
+            "channels": channels,
+            "updated_at": time.time(),
+            "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "source": "cfquant_web_account_binding",
+        }
+        path = os.path.join(core_dir, QMT_BRIDGE_CONFIG_FILENAME)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+        result.update({
+            "written": True,
+            "path": path,
+            "core_dir": core_dir,
+            "script_dir": normalize_optional_path(target.get("script_dir")),
+            "channels": channels,
+        })
+        return result
+    except Exception as e:
+        result["error"] = str(e)
+        safe_print("cfquant QMT bridge identity write failed bridge_id=%s qmt_dir=%s error=%s" % (bridge_id, qmt_dir, e))
+        return result
+
+
+def sync_qmt_bridge_identities():
+    results = []
+    try:
+        configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
+        for row in configs.values():
+            if not isinstance(row, dict):
+                continue
+            if not normalize_optional_path(row.get("qmt_dir") or row.get("python_dir")):
+                continue
+            result = write_qmt_bridge_identity(row)
+            results.append(result)
+            if result.get("written"):
+                safe_print(
+                    "cfquant QMT bridge identity synced bridge_id=%s path=%s"
+                    % (result.get("bridge_id"), result.get("path"))
+                )
+            elif result.get("error"):
+                safe_print(
+                    "cfquant QMT bridge identity sync failed bridge_id=%s error=%s"
+                    % (result.get("bridge_id"), result.get("error"))
+                )
+        return results
+    except Exception as e:
+        safe_print("cfquant QMT bridge identity sync failed: %s" % e)
+        return results
+
+
+sync_qmt_bridge_identities()
+
+
 def tcp_port_open(host, port, timeout=0.35):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(float(timeout))
@@ -2376,14 +3697,19 @@ def lttx_status():
 
 
 def refresh_global_tx_client():
-    CLIENTS.close()
+    return refresh_tx_client()
+
+
+def refresh_tx_client(mode=None):
+    mode = normalize_transport_mode(mode or default_runtime_client_mode())
+    CLIENTS.close(mode)
     try:
-        CLIENTS.start()
-        return {"ok": True, "reply_channel": CLIENTS.client_id}
+        CLIENTS.start(mode)
+        return {"ok": True, "mode": mode, "reply_channel": CLIENTS.client_id}
     except Exception as e:
-        CLIENTS.close()
-        safe_print("cfquant web global tx restart failed: %s" % e)
-        return {"ok": False, "error": str(e), "reply_channel": CLIENTS.client_id}
+        CLIENTS.close(mode)
+        safe_print("cfquant web %s tx restart failed: %s" % (mode, e))
+        return {"ok": False, "mode": mode, "error": str(e), "reply_channel": CLIENTS.client_id}
 
 
 def start_lttx_server():
@@ -2403,6 +3729,9 @@ def start_lttx_server():
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    env = os.environ.copy()
+    env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
+    env.setdefault("CFQUANT_LOG_RETENTION_DAYS", str(LOG_RETENTION_DAYS))
     stdout = open(LTTX_STDOUT_LOG, "a", encoding="utf-8", buffering=1)
     stderr = open(LTTX_STDERR_LOG, "a", encoding="utf-8", buffering=1)
     try:
@@ -2412,6 +3741,7 @@ def start_lttx_server():
             stdin=subprocess.DEVNULL,
             stdout=stdout,
             stderr=stderr,
+            env=env,
             creationflags=creationflags,
             close_fds=False if os.name == "nt" else True,
         )
@@ -2430,7 +3760,7 @@ def start_lttx_server():
 
     time.sleep(1.0)
     status = lttx_status()
-    client = refresh_global_tx_client() if status["running"] else {"ok": False, "error": "LTtx not ready"}
+    client = refresh_tx_client("lttx") if status["running"] else {"ok": False, "mode": "lttx", "error": "LTtx not ready"}
     return {
         "started": True,
         "pid": process.pid,
@@ -2471,7 +3801,7 @@ def stop_lttx_server():
             "stderr": (completed.stderr or "").strip(),
         })
     time.sleep(0.8)
-    CLIENTS.close()
+    CLIENTS.close("lttx")
     return {
         "stopped": True,
         "results": results,
@@ -2514,6 +3844,13 @@ def normalize_channel(value, default="normal"):
     return value
 
 
+def web_request_channel(value=None, default="normal"):
+    default = normalize_channel(default, "normal")
+    if WEB_CONFIG.transport_mode() == "ctypes":
+        return default
+    return normalize_channel(value, default)
+
+
 def parse_sections(value):
     if not value:
         return ["asset", "positions", "orders", "trades"]
@@ -2529,26 +3866,54 @@ def parse_bool(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
 
 
-def probe_bridge_status(bridge_id=DEFAULT_BRIDGE_ID, timeout=STATUS_PROBE_TIMEOUT_SECONDS):
+def probe_bridge_status(bridge_id=DEFAULT_BRIDGE_ID, timeout=STATUS_PROBE_TIMEOUT_SECONDS, client=None, mode=None):
     result = {}
     channels = bridge_channels(bridge_id)
     for name in ("normal", "trade"):
-        result[name] = probe_bridge_channel_status(bridge_id, name, channels[name], timeout=timeout)
+        result[name] = probe_bridge_channel_status(
+            bridge_id,
+            name,
+            channels[name],
+            timeout=timeout,
+            client=client,
+            mode=mode,
+        )
     return result
 
 
-def probe_bridge_channel_status(bridge_id, channel_key, channel, timeout=STATUS_PROBE_TIMEOUT_SECONDS):
+def probe_bridge_channel_status(
+    bridge_id,
+    channel_key,
+    channel,
+    timeout=STATUS_PROBE_TIMEOUT_SECONDS,
+    client=None,
+    mode=None,
+):
     started = time.perf_counter()
-    try:
-        status = CLIENTS.request(
-            bridge_id,
-            channel_key,
-            "cfquant.status",
+    use_global_client = client is None
+    client = client or CLIENTS
+
+    def request(action):
+        if use_global_client:
+            return client.request(
+                bridge_id,
+                channel_key,
+                action,
+                {},
+                timeout=timeout,
+                mark_offline_on_timeout=True,
+                ignore_cooldown=True,
+                mode=mode,
+            )
+        return client.request(
+            action,
             {},
             timeout=timeout,
-            mark_offline_on_timeout=True,
-            ignore_cooldown=True,
+            request_channel=channel,
         )
+
+    try:
+        status = request("cfquant.status")
         return {
             "online": True,
             "channel": channel,
@@ -2573,18 +3938,10 @@ def probe_bridge_channel_status(bridge_id, channel_key, channel, timeout=STATUS_
                 "error": str(status_error),
                 "probe_action": "cfquant.status",
                 "latency_ms": status_elapsed_ms,
-            }
+        }
         try:
             ping_started = time.perf_counter()
-            ping = CLIENTS.request(
-                bridge_id,
-                channel_key,
-                "cfquant.ping",
-                {},
-                timeout=timeout,
-                mark_offline_on_timeout=True,
-                ignore_cooldown=True,
-            )
+            ping = request("cfquant.ping")
             return {
                 "online": True,
                 "channel": channel,
@@ -2660,6 +4017,8 @@ class ChannelStatusMonitor(object):
 
     def latest(self, bridge_id=DEFAULT_BRIDGE_ID):
         bridge_id = normalize_bridge_id(bridge_id)
+        if not bridge_has_lttx_account(bridge_id):
+            return ctypes_bridge_status(bridge_id)
         channels = bridge_channels(bridge_id)
         with self._lock:
             if bridge_id in self._snapshots:
@@ -2694,7 +4053,10 @@ class ChannelStatusMonitor(object):
             try:
                 for bridge_id in current_bridges():
                     bridge_started = time.time()
-                    snapshot = probe_bridge_status(bridge_id=bridge_id, timeout=self.timeout)
+                    if not bridge_has_lttx_account(bridge_id):
+                        snapshot = ctypes_bridge_status(bridge_id)
+                    else:
+                        snapshot = probe_bridge_status(bridge_id=bridge_id, timeout=self.timeout, mode="lttx")
                     snapshot["bridge_id"] = bridge_id
                     snapshot["bridge_name"] = bridge_config(bridge_id)["name"]
                     snapshot["checked_at"] = time.time()
@@ -2838,7 +4200,8 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
             continue
         started = time.perf_counter()
         try:
-            data = CLIENTS.request(
+            route = account_request(
+                account_id,
                 bridge_id,
                 channel,
                 action,
@@ -2846,9 +4209,14 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 timeout=timeout,
                 mark_offline_on_timeout=False,
             )
+            data = route["result"]
             result[section] = {
                 "ok": True,
                 "data": data,
+                "mode": route["mode"],
+                "channel": route["channel"],
+                "fallback": route["fallback"],
+                "fallback_reason": route["fallback_reason"],
                 "latency_ms": round((time.perf_counter() - started) * 1000, 2),
             }
         except Exception as e:
@@ -3022,7 +4390,6 @@ ACCOUNT_CACHE = AccountDataCache()
 
 
 def submit_order(body):
-    channel = normalize_channel(body.get("channel"), "trade")
     account_id = str(body.get("account_id") or "").strip()
     bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
@@ -3059,18 +4426,28 @@ def submit_order(body):
         "order_remark": remark,
     }
     started = time.perf_counter()
-    result = CLIENTS.request(bridge_id, channel, "xttrader.order_stock", params, timeout=12.0)
+    route = account_request(
+        account_id,
+        bridge_id,
+        body.get("channel"),
+        "xttrader.order_stock",
+        params,
+        default_channel="trade",
+        timeout=12.0,
+    )
     return {
-        "bridge_id": bridge_id,
-        "channel": channel,
-        "result": result,
+        "bridge_id": route["bridge_id"],
+        "channel": route["channel"],
+        "mode": route["mode"],
+        "fallback": route["fallback"],
+        "fallback_reason": route["fallback_reason"],
+        "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         "order_remark": remark,
     }
 
 
 def submit_batch_orders(body):
-    channel = normalize_channel(body.get("channel"), "trade")
     account_id = str(body.get("account_id") or "").strip()
     bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
@@ -3112,18 +4489,28 @@ def submit_batch_orders(body):
         "order_remark": body.get("order_remark") or "cfquant_batch_%s" % int(time.time() * 1000),
     }
     started = time.perf_counter()
-    result = CLIENTS.request(bridge_id, channel, "xttrader.order_stock_batch", params, timeout=max(12.0, len(orders) * 3.0))
+    route = account_request(
+        account_id,
+        bridge_id,
+        body.get("channel"),
+        "xttrader.order_stock_batch",
+        params,
+        default_channel="trade",
+        timeout=max(12.0, len(orders) * 3.0),
+    )
     return {
-        "bridge_id": bridge_id,
-        "channel": channel,
+        "bridge_id": route["bridge_id"],
+        "channel": route["channel"],
+        "mode": route["mode"],
+        "fallback": route["fallback"],
+        "fallback_reason": route["fallback_reason"],
         "account_id": account_id,
-        "result": result,
+        "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
     }
 
 
 def cancel_order(body):
-    channel = normalize_channel(body.get("channel"), "trade")
     account_id = str(body.get("account_id") or "").strip()
     bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
@@ -3139,11 +4526,22 @@ def cancel_order(body):
         "order_id": order_id,
     }
     started = time.perf_counter()
-    result = CLIENTS.request(bridge_id, channel, "xttrader.cancel_order_stock", params, timeout=12.0)
+    route = account_request(
+        account_id,
+        bridge_id,
+        body.get("channel"),
+        "xttrader.cancel_order_stock",
+        params,
+        default_channel="trade",
+        timeout=12.0,
+    )
     return {
-        "bridge_id": bridge_id,
-        "channel": channel,
-        "result": result,
+        "bridge_id": route["bridge_id"],
+        "channel": route["channel"],
+        "mode": route["mode"],
+        "fallback": route["fallback"],
+        "fallback_reason": route["fallback_reason"],
+        "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
     }
 
@@ -3179,6 +4577,124 @@ def save_account_pair(body):
     }
 
 
+def ensure_account_runtime(mode):
+    mode = normalize_transport_mode(mode)
+    results = {"mode": mode, "ctypes": None, "lttx": None}
+    try:
+        results["ctypes"] = start_pipe_hub()
+    except Exception as error:
+        results["ctypes"] = {"ok": False, "error": str(error)}
+        safe_print("cfquant account config ctypes runtime start failed: %s" % error)
+    if mode == "lttx":
+        try:
+            status = lttx_status()
+            results["lttx"] = (
+                {"started": False, "status": status}
+                if status.get("running")
+                else start_lttx_server()
+            )
+        except Exception as error:
+            results["lttx"] = {"ok": False, "error": str(error)}
+            safe_print("cfquant account config LTtx runtime start failed: %s" % error)
+    try:
+        CLIENTS.start(mode)
+    except Exception as error:
+        results["client"] = {"ok": False, "error": str(error)}
+        safe_print("cfquant account config %s client start failed: %s" % (mode, error))
+    else:
+        results["client"] = {"ok": True, "mode": mode}
+    return results
+
+
+def save_account_runtime_config(body):
+    body = body or {}
+    account_id = str(body.get("account_id") or "").strip()
+    bridge_id = body.get("bridge_id")
+    qmt_dir = body.get("qmt_dir") or body.get("python_dir")
+    mode = body.get("mode") or body.get("transport_mode") or "ctypes"
+    row = WEB_CONFIG.save_account_config(
+        account_id=account_id,
+        bridge_id=bridge_id,
+        qmt_dir=qmt_dir,
+        mode=mode,
+        data_provider=parse_bool(body.get("data_provider")),
+        enabled=body.get("enabled", True) is not False,
+    )
+    identity = write_qmt_bridge_identity(row)
+    STATUS_MONITOR.wake()
+    CALLBACKS.refresh_channels(callback_channels())
+    return {
+        "account": row,
+        "qmt_bridge_identity": identity,
+        "runtime": ensure_account_runtime(row["mode"]),
+        "setup": WEB_CONFIG.setup_info(),
+        "account_pairs": WEB_CONFIG.account_pairs(),
+        "account_configs": WEB_CONFIG.account_configs(),
+        "bridges": WEB_CONFIG.bridges(),
+    }
+
+
+def delete_account_runtime_config(body):
+    account_id = str((body or {}).get("account_id") or "").strip()
+    if not account_id:
+        raise ValueError("account_id is required")
+    WEB_CONFIG.delete_pair(account_id)
+    with WEB_CONFIG._lock:
+        configs = WEB_CONFIG._data.setdefault("account_configs", {})
+        configs.pop(account_id, None)
+        if WEB_CONFIG._data.get("data_provider_account_id") == account_id:
+            WEB_CONFIG._data["data_provider_account_id"] = ""
+        if not configs:
+            WEB_CONFIG._data["initialized"] = False
+            WEB_CONFIG._data["default_account_id"] = DEFAULT_ACCOUNT_ID
+            WEB_CONFIG._data["transport_mode"] = "ctypes"
+            WEB_CONFIG._save_settings_locked({"transport_mode": "ctypes"})
+        elif WEB_CONFIG._data.get("default_account_id") == account_id:
+            WEB_CONFIG._data["default_account_id"] = next(iter(configs.keys()))
+        WEB_CONFIG._save_locked()
+    return {
+        "setup": WEB_CONFIG.setup_info(),
+        "account_pairs": WEB_CONFIG.account_pairs(),
+        "account_configs": WEB_CONFIG.account_configs(),
+    }
+
+
+def initialize_web_setup(body):
+    body = body or {}
+    account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
+    if not account_id:
+        raise ValueError("account_id is required")
+    row = WEB_CONFIG.save_account_config(
+        account_id=account_id,
+        bridge_id=body.get("bridge_id"),
+        qmt_dir=body.get("qmt_dir") or body.get("python_dir"),
+        mode=body.get("mode") or "ctypes",
+        data_provider=True,
+        enabled=True,
+    )
+    identity = write_qmt_bridge_identity(row)
+    runtime = ensure_account_runtime(row["mode"])
+    return {
+        "initialized": True,
+        "account": row,
+        "qmt_bridge_identity": identity,
+        "runtime": runtime,
+        "setup": WEB_CONFIG.setup_info(),
+        "bridges": WEB_CONFIG.bridges(),
+        "account_pairs": WEB_CONFIG.account_pairs(),
+        "account_configs": WEB_CONFIG.account_configs(),
+    }
+
+
+def reset_web_setup():
+    return WEB_CONFIG.reset_setup()
+
+
+def set_data_provider(body):
+    body = body or {}
+    return WEB_CONFIG.set_data_provider_account_id(body.get("account_id"))
+
+
 def delete_account_pair(body):
     WEB_CONFIG.delete_pair((body or {}).get("account_id"))
     return {
@@ -3188,12 +4704,15 @@ def delete_account_pair(body):
 
 def verify_account_pair(body):
     account_id = str((body or {}).get("account_id") or "").strip()
-    bridge_id = normalize_bridge_id((body or {}).get("bridge_id") or DEFAULT_BRIDGE_ID)
-    channel = normalize_channel((body or {}).get("channel"), "normal")
+    bridge_id = resolve_bridge_id(
+        account_id=account_id,
+        bridge_id=(body or {}).get("bridge_id"),
+    )
+    channel = (body or {}).get("channel") or "normal"
     if not account_id:
         raise ValueError("account_id is required")
     bridge_config(bridge_id)
-    status = STATUS_MONITOR.latest(bridge_id=bridge_id)
+    status = account_route_status(account_id, bridge_id=bridge_id)
     account = ACCOUNT_CACHE.get(
         bridge_id,
         channel,
@@ -3229,6 +4748,58 @@ def server_access_info(include_auth_details=True):
     )
 
 
+def transport_info():
+    mode = default_runtime_client_mode()
+    return {
+        "transport": WEB_CONFIG.transport_info(),
+        "client": {
+            "mode": mode,
+            "request_channel": CHANNELS["normal"],
+        },
+    }
+
+
+def save_transport(body):
+    body = body or {}
+    mode = body.get("mode") or body.get("transport") or body.get("transport_mode")
+    bridge_id = body.get("bridge_id") or DEFAULT_BRIDGE_ID
+    mode = normalize_transport_mode(mode)
+    if mode == "lttx":
+        lttx_started = False
+        if not lttx_status().get("running"):
+            start_lttx_server()
+            lttx_started = True
+        readiness = _advanced_mode_readiness(bridge_id)
+        if not readiness["ready"]:
+            missing = "、".join(readiness["missing"]) or "普通通道、交易通道"
+            raise RuntimeError("高级模式需要%s都在线后才能启用，当前缺少：%s" % ("普通通道和交易通道", missing))
+    info = WEB_CONFIG.set_transport_mode(mode)
+    # 高级模式也保留 PipeHub，账号级 LTtx 失败时需要无感回退到 ctypes。
+    hub = start_pipe_hub()
+    CLIENTS.close(mode)
+    CLIENTS.start(mode)
+    STATUS_MONITOR.wake()
+    CALLBACKS.refresh_channels(callback_channels())
+    return {
+        "transport": info,
+        "client": transport_info()["client"],
+        "readiness": _advanced_mode_readiness(bridge_id) if mode == "lttx" else {"ready": True, "mode": "ctypes"},
+        "pipe_hub": hub,
+    }
+
+
+def pipe_hub_info():
+    return PIPE_HUB.status()
+
+
+def start_pipe_hub():
+    return PIPE_HUB.start()
+
+
+def stop_pipe_hub():
+    return PIPE_HUB.stop()
+
+
 def save_server_access(body):
     body = body or {}
     allow_remote = parse_bool(body.get("allow_remote")) if "allow_remote" in body else None
@@ -3258,6 +4829,8 @@ def web_auth_status(token=None):
         "authenticated": authenticated,
         "username": token_info.get("username") if token_info else "",
         "created_at": token_info.get("created_at") if token_info else 0,
+        "expires_at": token_info.get("expires_at") if token_info else 0,
+        "persistent": bool(token_info.get("persistent")) if token_info else False,
     }
 
 
@@ -3269,9 +4842,11 @@ def web_auth_login(body):
     password = str(body.get("password") or body.get("web_auth_password") or "")
     if not WEB_CONFIG.verify_web_auth(username, password):
         raise PermissionError("invalid username or password")
-    token = issue_web_auth_token(username)
+    remember = True
+    token = issue_web_auth_token(username, remember=remember)
     result = web_auth_status(token)
     result["token"] = token
+    result["remember"] = remember
     return result
 
 
@@ -3332,6 +4907,44 @@ def run_log_cleanup(body):
     return LOG_CLEANUP.run_once(reason="manual")
 
 
+def qmt_log_language_info():
+    return WEB_CONFIG.qmt_log_language_info()
+
+
+def save_qmt_log_language(body):
+    body = body or {}
+    info = WEB_CONFIG.set_qmt_log_language(body.get("language") or body.get("lang"))
+    bridge_id = body.get("bridge_id")
+    targets = [normalize_bridge_id(bridge_id)] if bridge_id else list(current_bridges().keys())
+    results = []
+    for target_bridge_id in targets:
+        for channel in ("normal", "trade"):
+            try:
+                result = CLIENTS.request(
+                    target_bridge_id,
+                    channel,
+                    "cfquant.set_log_language",
+                    {"language": info["language"]},
+                    timeout=3.0,
+                    ignore_cooldown=True,
+                )
+                results.append({
+                    "bridge_id": target_bridge_id,
+                    "channel": channel,
+                    "ok": True,
+                    "result": result,
+                })
+            except Exception as e:
+                results.append({
+                    "bridge_id": target_bridge_id,
+                    "channel": channel,
+                    "ok": False,
+                    "error": str(e),
+                })
+    info["dispatch_results"] = results
+    return info
+
+
 def bridge_update_status(bridge_id=None, repo_url=None, ref=None):
     return UPDATER.status(bridge_id or DEFAULT_BRIDGE_ID, repo_url=repo_url, ref=ref)
 
@@ -3388,75 +5001,55 @@ def channel_online(bridge_id, channel):
         return None
 
 
-def data_channel_request(body, action, params):
+def data_channel_request(body, action, params, default_channel="trade", force_channel=None):
     body = body or {}
-    bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
-    preferred_channel = normalize_channel(body.get("channel"), "trade")
+    account_id = str(body.get("account_id") or "").strip()
+    preferred_channel = force_channel or body.get("channel")
     timeout = float(body.get("timeout") or 12.0)
     started = time.perf_counter()
-    attempts = []
-    skipped = []
-    if preferred_channel == "trade":
-        online = channel_online(bridge_id, "trade")
-        if online is False:
-            skipped.append({
-                "channel": "trade",
-                "reason": "trade channel is offline",
-            })
-            attempts.append("normal")
-        else:
-            attempts.extend(["trade", "normal"])
+    requested_default = force_channel or preferred_channel or default_channel
+    if account_id:
+        route = account_request(
+            account_id,
+            body.get("bridge_id"),
+            preferred_channel,
+            action,
+            params,
+            default_channel=requested_default,
+            timeout=timeout,
+            mark_offline_on_timeout=True,
+        )
+        provider_account_id = account_id
+        provider_fallback = False
+        provider_attempts = []
     else:
-        attempts.append("normal")
-
-    errors = []
-    for channel in attempts:
-        attempt_started = time.perf_counter()
-        try:
-            result = CLIENTS.request(
-                bridge_id,
-                channel,
-                action,
-                params,
-                timeout=timeout,
-                mark_offline_on_timeout=True,
-            )
-            fallback_reason = ""
-            if channel != preferred_channel:
-                if skipped:
-                    fallback_reason = skipped[-1].get("reason", "")
-                elif errors:
-                    fallback_reason = errors[-1].get("error", "")
-            return {
-                "bridge_id": bridge_id,
-                "preferred_channel": preferred_channel,
-                "channel": channel,
-                "fallback": channel != preferred_channel,
-                "fallback_reason": fallback_reason,
-                "action": action,
-                "result": result,
-                "attempts": skipped + errors + [{
-                    "channel": channel,
-                    "ok": True,
-                    "latency_ms": round((time.perf_counter() - attempt_started) * 1000, 2),
-                }],
-                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-            }
-        except Exception as e:
-            errors.append({
-                "channel": channel,
-                "ok": False,
-                "error": str(e),
-                "latency_ms": round((time.perf_counter() - attempt_started) * 1000, 2),
-            })
-            if channel == "normal":
-                break
-
-    details = "; ".join(
-        "%s: %s" % (row.get("channel"), row.get("reason") or row.get("error"))
-        for row in (skipped + errors)
-    )
-    raise RuntimeError("%s failed on data channels: %s" % (action, details or "no channel attempted"))
+        route = data_provider_request(
+            action,
+            params,
+            requested_channel=preferred_channel,
+            default_channel=requested_default,
+            timeout=timeout,
+            bridge_id=body.get("bridge_id"),
+        )
+        provider_account_id = route.get("data_provider") or configured_default_account_id()
+        provider_fallback = bool(route.get("provider_fallback"))
+        provider_attempts = route.get("provider_attempts") or []
+    return {
+        "bridge_id": route["bridge_id"],
+        "account_id": provider_account_id,
+        "preferred_channel": preferred_channel or default_channel,
+        "channel": route["channel"],
+        "mode": route["mode"],
+        "fallback": route["fallback"],
+        "fallback_reason": route["fallback_reason"],
+        "data_provider": not account_id,
+        "provider_fallback": provider_fallback,
+        "provider_attempts": provider_attempts,
+        "action": action,
+        "result": route["result"],
+        "attempts": route["attempts"],
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
 
 
 def financial_stock_list(body):
@@ -3495,6 +5088,63 @@ def financial_table_list(body):
     )
 
 
+def default_financial_field(table):
+    table = str(table or "").strip().upper()
+    defaults = {
+        "ASHAREBALANCESHEET": "fix_assets",
+        "ASHAREINCOME": "net_profit_excl_min_int_inc",
+        "ASHARECASHFLOW": "net_cash_flows_oper_act",
+        "CAPITALSTRUCTURE": "capital",
+        "PERSHAREINDEX": "eps",
+    }
+    return defaults.get(table, "fix_assets")
+
+
+def financial_probe_field_list(body):
+    fields = financial_field_list(body)
+    if fields:
+        return fields
+    tables = financial_table_list(body) or ["ASHAREBALANCESHEET"]
+    return ["%s.%s" % (tables[0], default_financial_field(tables[0]))]
+
+
+def summarize_data_result(value):
+    if value is None:
+        return {"type": "None", "empty": True}
+    type_name = value.__class__.__name__
+    if type_name == "DataFrame":
+        shape = list(getattr(value, "shape", []) or [])
+        columns = [str(item) for item in list(getattr(value, "columns", []) or [])[:20]]
+        return {
+            "type": "DataFrame",
+            "shape": shape,
+            "columns": columns,
+            "empty": bool(getattr(value, "empty", False)),
+        }
+    if type_name == "Series":
+        size = int(getattr(value, "size", 0) or 0)
+        return {"type": "Series", "count": size, "empty": size <= 0}
+    if isinstance(value, dict):
+        keys = [str(item) for item in list(value.keys())[:20]]
+        return {
+            "type": "dict",
+            "count": len(value),
+            "keys": keys,
+            "empty": len(value) <= 0,
+        }
+    if isinstance(value, (list, tuple, set)):
+        return {
+            "type": type_name,
+            "count": len(value),
+            "empty": len(value) <= 0,
+        }
+    return {
+        "type": type_name,
+        "preview": str(value)[:200],
+        "empty": False,
+    }
+
+
 def get_full_tick(body):
     body = body or {}
     return data_channel_request(body, "xtdata.get_full_tick", {
@@ -3522,32 +5172,51 @@ def subscribe_single_quote(body):
     stock_code = str(body.get("stock_code") or "").strip()
     if not stock_code:
         raise ValueError("stock_code is required")
-    bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
-    channel = normalize_channel(body.get("channel"), "normal")
+    account_id = str(body.get("account_id") or "").strip()
     started = time.perf_counter()
     QUOTES.start()
-    result = CLIENTS.request(
-        bridge_id,
-        channel,
-        "xtdata.subscribe_quote",
-        {
-            "stock_code": stock_code,
-            "period": str(body.get("period") or "1d"),
-            "start_time": str(body.get("start_time") or ""),
-            "end_time": str(body.get("end_time") or ""),
-            "count": int(body.get("count") if str(body.get("count") or "") else 0),
-            "dividend_type": str(body.get("dividend_type") or "none"),
-        },
-        timeout=12.0,
-        mark_offline_on_timeout=True,
-        ignore_cooldown=True,
-    )
+    params = {
+        "stock_code": stock_code,
+        "period": str(body.get("period") or "1d"),
+        "start_time": str(body.get("start_time") or ""),
+        "end_time": str(body.get("end_time") or ""),
+        "count": int(body.get("count") if str(body.get("count") or "") else 0),
+        "dividend_type": str(body.get("dividend_type") or "none"),
+    }
+    if account_id:
+        route = account_request(
+            account_id,
+            body.get("bridge_id"),
+            body.get("channel"),
+            "xtdata.subscribe_quote",
+            params,
+            default_channel="normal",
+            timeout=12.0,
+            mark_offline_on_timeout=True,
+            ignore_cooldown=True,
+        )
+        provider_account_id = account_id
+    else:
+        route = data_provider_request(
+            "xtdata.subscribe_quote",
+            params,
+            requested_channel=body.get("channel"),
+            default_channel="normal",
+            timeout=12.0,
+            bridge_id=body.get("bridge_id"),
+        )
+        provider_account_id = route.get("data_provider") or configured_default_account_id()
+    result = route["result"]
+    channel = route["channel"]
+    bridge_id = route["bridge_id"]
     subscribe_id = str(result.get("subscribe_id") if isinstance(result, dict) else result)
     with QUOTES._lock:
         QUOTES._subscriptions[subscribe_id] = {
             "subscribe_id": subscribe_id,
             "bridge_id": bridge_id,
             "channel": channel,
+            "mode": route["mode"],
+            "account_id": provider_account_id,
             "kind": "quote",
             "stock_code": stock_code,
             "period": str(body.get("period") or "1d"),
@@ -3558,6 +5227,9 @@ def subscribe_single_quote(body):
         "subscribe_id": subscribe_id,
         "bridge_id": bridge_id,
         "channel": channel,
+        "mode": route["mode"],
+        "account_id": provider_account_id,
+        "fallback": route["fallback"],
         "kind": "quote",
         "stock_code": stock_code,
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
@@ -3582,18 +5254,148 @@ def get_stock_list_in_sector(body):
     })
 
 
+def download_job_id(body, prefix):
+    value = str((body or {}).get("job_id") or (body or {}).get("download_job_id") or "").strip()
+    return value or new_id(prefix)
+
+
+def download_progress_path(job_id, bridge_id="", account_id=""):
+    query = urllib.parse.urlencode({
+        key: value
+        for key, value in {
+            "event_prefix": DOWNLOAD_EVENT_PREFIX,
+            "job_id": job_id,
+            "bridge_id": bridge_id,
+            "account_id": account_id,
+        }.items()
+        if value
+    })
+    return "/ws/callbacks?%s" % query if query else "/ws/callbacks"
+
+
+def with_download_response(route, job_id, download_type, fallback_note=""):
+    route["job_id"] = job_id
+    route["download_type"] = download_type
+    route["callback_event"] = DOWNLOAD_CALLBACK_EVENT
+    route["progress_event_prefix"] = DOWNLOAD_EVENT_PREFIX
+    route["progress_ws_path"] = download_progress_path(
+        job_id,
+        bridge_id=route.get("bridge_id") or "",
+    )
+    route["progress_supported"] = True
+    if fallback_note:
+        route["progress_note"] = fallback_note
+    return route
+
+
+def emit_download_progress(job_id, download_type, stage, data=None, bridge_id="", account_id=""):
+    meta = {
+        "download": True,
+        "download_kind": download_type,
+        "stage": stage,
+        "job_id": str(job_id or ""),
+        "source": "web",
+    }
+    if bridge_id:
+        meta["bridge_id"] = bridge_id
+    event = {
+        "type": "event",
+        "event": DOWNLOAD_CALLBACK_EVENT,
+        "bridge_id": bridge_id,
+        "account_id": str(account_id or ""),
+        "data": data if data is not None else {},
+        "meta": meta,
+    }
+    CALLBACKS._append(event)
+    return event
+
+
+def download_cached_event_count(job_id, bridge_id="", account_id=""):
+    return len(CALLBACKS.latest(
+        since=0,
+        limit=20,
+        bridge_id=bridge_id,
+        account_id=account_id,
+        event_prefix=DOWNLOAD_EVENT_PREFIX,
+        job_id=job_id,
+    ))
+
+
+def should_fallback_history_download(error):
+    text = str(error or "").lower()
+    if "download_history_data2" not in text and "down_history_data2" not in text:
+        return False
+    return (
+        "not found" in text
+        or "not implemented" in text
+        or "notimplemented" in text
+        or "未提供" in text
+        or "不支持" in text
+        or "argument" in text
+        or "positional" in text
+        or "takes" in text
+        or "参数" in text
+    )
+
+
 def download_history_data(body):
     body = body or {}
     stock_code = str(body.get("stock_code") or "").strip()
     if not stock_code:
         raise ValueError("stock_code is required")
-    return data_channel_request(body, "xtdata.download_history_data", {
-        "stock_code": stock_code,
+    job_id = download_job_id(body, "download_history")
+    stock_list = parse_csv_list(body.get("stock_list") or body.get("code_list") or stock_code)
+    common = {
         "period": str(body.get("period") or "1d"),
         "start_time": str(body.get("start_time") or ""),
         "end_time": str(body.get("end_time") or ""),
         "incrementally": body.get("incrementally"),
+        "callback_event": DOWNLOAD_CALLBACK_EVENT,
+        "download_job_id": job_id,
+        "download_emit_lifecycle": True,
+    }
+    params2 = dict(common)
+    params2.update({
+        "stock_code": stock_code,
+        "stock_list": stock_list or [stock_code],
     })
+    try:
+        route = data_channel_request(body, "xtdata.download_history_data2", params2, force_channel="normal")
+        if not download_cached_event_count(job_id, bridge_id=route.get("bridge_id") or ""):
+            emit_download_progress(job_id, "history", "submitted", {
+                "stage": "submitted",
+                "message": "历史数据下载请求已提交。",
+            }, bridge_id=route.get("bridge_id") or "", account_id=route.get("account_id") or "")
+            emit_download_progress(job_id, "history", "request_done", {
+                "stage": "request_done",
+                "message": "历史数据下载请求已返回。",
+                "result": route.get("result"),
+            }, bridge_id=route.get("bridge_id") or "", account_id=route.get("account_id") or "")
+        return with_download_response(route, job_id, "history")
+    except Exception as error:
+        if not should_fallback_history_download(error):
+            raise
+    params = dict(common)
+    params.update({
+        "stock_code": stock_code,
+    })
+    route = data_channel_request(body, "xtdata.download_history_data", params, force_channel="normal")
+    if not download_cached_event_count(job_id, bridge_id=route.get("bridge_id") or ""):
+        emit_download_progress(job_id, "history", "submitted", {
+            "stage": "submitted",
+            "message": "历史数据下载请求已提交。",
+        }, bridge_id=route.get("bridge_id") or "", account_id=route.get("account_id") or "")
+        emit_download_progress(job_id, "history", "request_done", {
+            "stage": "request_done",
+            "message": "历史数据下载请求已返回。当前 QMT 旧接口未提供百分比进度。",
+            "result": route.get("result"),
+        }, bridge_id=route.get("bridge_id") or "", account_id=route.get("account_id") or "")
+    return with_download_response(
+        route,
+        job_id,
+        "history",
+        fallback_note="当前 QMT 未提供 download_history_data2，已回退到旧下载接口；只能显示请求生命周期，无法保证底层提供逐步进度。",
+    )
 
 
 def get_financial_data(body):
@@ -3618,13 +5420,63 @@ def get_financial_data(body):
 
 def download_financial_data(body):
     body = body or {}
+    job_id = download_job_id(body, "download_financial")
+    mode = str(body.get("mode") or body.get("financial_mode") or "raw").strip().lower()
+    raw = parse_bool(body.get("raw")) or mode in ("raw", "origin", "original", "ori")
+    field_list = financial_probe_field_list(body)
+    table_list = financial_table_list(body) or ["ASHAREBALANCESHEET"]
     params = {
         "stock_list": financial_stock_list(body),
-        "table_list": financial_table_list(body),
+        "field_list": field_list,
+        "table_list": table_list,
         "start_time": str(body.get("start_time") or body.get("start_date") or ""),
         "end_time": str(body.get("end_time") or body.get("end_date") or ""),
+        "report_type": str(body.get("report_type") or "report_time"),
     }
-    return data_channel_request(body, "xtdata.download_financial_data", params)
+    bridge_id = resolve_bridge_id(
+        account_id=str(body.get("account_id") or "").strip(),
+        bridge_id=body.get("bridge_id"),
+    )
+    emit_download_progress(job_id, "financial_check", "submitted", {
+        "stage": "submitted",
+        "message": "开始校验本地财务数据。QMT 官方脚本接口不提供财务下载，请先在 QMT 客户端的数据管理中下载财务数据。",
+        "stock_list": params["stock_list"],
+        "table_list": table_list,
+        "field_list": field_list,
+    }, bridge_id=bridge_id)
+    action = "xtdata.get_raw_financial_data" if raw else "xtdata.get_financial_data"
+    try:
+        route = data_channel_request(body, action, params, force_channel="normal")
+    except Exception as error:
+        emit_download_progress(job_id, "financial_check", "error", {
+            "stage": "error",
+            "error": str(error),
+            "message": "本地财务数据校验失败，请先确认 QMT 客户端已下载财务数据。",
+        }, bridge_id=bridge_id)
+        raise
+    summary = summarize_data_result(route.get("result"))
+    route["query_summary"] = summary
+    route["result"] = True
+    route["replacement"] = True
+    route["download_supported"] = False
+    route["manual_download_required"] = True
+    route["manual_download_hint"] = "QMT 官方脚本侧未提供财务数据下载函数；请在 QMT 客户端 数据管理 - 财务数据下载 中先下载，再用本接口校验本地数据。"
+    route["query_action"] = action
+    route["field_list"] = field_list
+    route["table_list"] = table_list
+    route["stock_list"] = params["stock_list"]
+    emit_download_progress(job_id, "financial_check", "request_done", {
+        "stage": "request_done",
+        "message": "本地财务数据校验已返回。",
+        "summary": summary,
+        "available": not bool(summary.get("empty")),
+    }, bridge_id=route.get("bridge_id") or bridge_id, account_id=route.get("account_id") or "")
+    return with_download_response(
+        route,
+        job_id,
+        "financial_check",
+        fallback_note="QMT 官方脚本侧未提供财务数据下载函数；此入口已替换为本地财务数据校验/预加载读取。",
+    )
 
 
 class CfquantWebHandler(BaseHTTPRequestHandler):
@@ -3668,7 +5520,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/web-auth/login":
             try:
                 body = self._read_json_body()
-                self._write_json(ok(web_auth_login(body)))
+                result = web_auth_login(body)
+                self._write_json(ok(result), extra_headers=self._web_auth_cookie_headers(result.get("token") or ""))
             except PermissionError as e:
                 self._write_json(fail(e, 401), status=401)
             except Exception as e:
@@ -3702,8 +5555,16 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(result))
                 if reload_requested:
                     schedule_web_reload(self.server, result["reload"])
+            elif parsed.path == "/api/transport":
+                self._write_json(ok(save_transport(body)))
+            elif parsed.path == "/api/pipe-hub/start":
+                self._write_json(ok(start_pipe_hub()))
+            elif parsed.path == "/api/pipe-hub/stop":
+                self._write_json(ok(stop_pipe_hub()))
             elif parsed.path == "/api/log-cleanup":
                 self._write_json(ok(save_log_cleanup_settings(body)))
+            elif parsed.path == "/api/qmt-log-language":
+                self._write_json(ok(save_qmt_log_language(body)))
             elif parsed.path == "/api/log-cleanup/run":
                 self._write_json(ok(run_log_cleanup(body)))
             elif parsed.path == "/api/updates/github":
@@ -3746,8 +5607,21 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(delete_account_pair(body)))
             elif parsed.path == "/api/account-pairs/verify":
                 self._write_json(ok(verify_account_pair(body)))
+            elif parsed.path == "/api/account-config":
+                self._write_json(ok(save_account_runtime_config(body)))
+            elif parsed.path == "/api/account-config/delete":
+                self._write_json(ok(delete_account_runtime_config(body)))
+            elif parsed.path == "/api/setup/initialize":
+                self._write_json(ok(initialize_web_setup(body)))
+            elif parsed.path == "/api/setup/reset":
+                self._write_json(ok(reset_web_setup()))
+            elif parsed.path == "/api/setup/data-provider":
+                self._write_json(ok(set_data_provider(body)))
             elif parsed.path == "/api/web-auth/logout":
-                self._write_json(ok(web_auth_logout(self._provided_web_token(parsed))))
+                self._write_json(
+                    ok(web_auth_logout(self._provided_web_token(parsed))),
+                    extra_headers=self._web_auth_clear_cookie_headers(),
+                )
             else:
                 self._write_json(fail("not found", 404), status=404)
         except Exception as e:
@@ -3792,8 +5666,38 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self.headers.get("X-CFQUANT-WEB-TOKEN")
             or self.headers.get("x-cfquant-web-token")
             or (query.get("web_token") or query.get("web_auth_token") or [""])[0]
+            or self._provided_web_cookie_token()
         )
         return str(provided or "").strip()
+
+    def _provided_web_cookie_token(self):
+        raw = self.headers.get("Cookie") or ""
+        if not raw:
+            return ""
+        try:
+            jar = cookies.SimpleCookie()
+            jar.load(raw)
+            item = jar.get(WEB_AUTH_COOKIE_NAME)
+            return item.value if item else ""
+        except Exception:
+            return ""
+
+    def _web_auth_cookie_headers(self, token):
+        token = str(token or "").strip()
+        if not token:
+            return []
+        max_age = max(1, int(WEB_AUTH_SESSION_TTL_SECONDS))
+        return [(
+            "Set-Cookie",
+            "%s=%s; Path=/; Max-Age=%s; SameSite=Lax; HttpOnly"
+            % (WEB_AUTH_COOKIE_NAME, token, max_age),
+        )]
+
+    def _web_auth_clear_cookie_headers(self):
+        return [(
+            "Set-Cookie",
+            "%s=; Path=/; Max-Age=0; SameSite=Lax; HttpOnly" % WEB_AUTH_COOKIE_NAME,
+        )]
 
     def _api_key_valid(self, parsed):
         api_key = WEB_CONFIG.api_key()
@@ -3882,29 +5786,43 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                         "server_access": access,
                         "web_auth": access.get("web_auth") or {},
                         "api_key": api_key_info(include_secret=False),
+                        "transport": WEB_CONFIG.transport_info(),
+                        "pipe_hub": PIPE_HUB.status(),
+                        "qmt_log_language": WEB_CONFIG.qmt_log_language_info(),
                     }))
                     return
                 self._write_json(ok({
-                    "default_account_id": DEFAULT_ACCOUNT_ID,
+                    "default_account_id": configured_default_account_id(),
                     "default_bridge_id": DEFAULT_BRIDGE_ID,
                     "bridges": WEB_CONFIG.bridges(),
                     "env_bridges": ENV_BRIDGES,
                     "account_pairs": WEB_CONFIG.account_pairs(),
+                    "account_configs": WEB_CONFIG.account_configs(),
+                    "setup": WEB_CONFIG.setup_info(),
                     "channels": bridge_channels(DEFAULT_BRIDGE_ID),
                     "reply_channel": CLIENTS.client_id,
                     "api_key": WEB_CONFIG.api_key_info(include_secret=True),
                     "server_access": server_access_info(include_auth_details=True),
                     "web_auth": WEB_CONFIG.web_auth_info(include_username=True),
+                    "transport": WEB_CONFIG.transport_info(),
+                    "pipe_hub": PIPE_HUB.status(),
                     "log_cleanup": log_cleanup_info(),
+                    "qmt_log_language": qmt_log_language_info(),
                 }))
             elif parsed.path == "/api/apikey":
                 self._write_json(ok(api_key_info()))
             elif parsed.path == "/api/server-access":
                 self._write_json(ok(server_access_info()))
+            elif parsed.path == "/api/transport":
+                self._write_json(ok(transport_info()))
+            elif parsed.path == "/api/pipe-hub":
+                self._write_json(ok(pipe_hub_info()))
             elif parsed.path == "/api/web-auth/status":
                 self._write_json(ok(web_auth_status(self._provided_web_token(parsed))))
             elif parsed.path == "/api/log-cleanup":
                 self._write_json(ok(log_cleanup_info()))
+            elif parsed.path == "/api/qmt-log-language":
+                self._write_json(ok(qmt_log_language_info()))
             elif parsed.path == "/api/updates/status":
                 bridge_id = normalize_bridge_id((query.get("bridge_id") or [DEFAULT_BRIDGE_ID])[0])
                 repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
@@ -3923,9 +5841,16 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/lttx":
                 self._write_json(ok(lttx_status()))
             elif parsed.path == "/api/status":
-                bridge_id = normalize_bridge_id((query.get("bridge_id") or [DEFAULT_BRIDGE_ID])[0])
+                account_id = str((query.get("account_id") or [""])[0] or "").strip()
+                bridge_id = resolve_bridge_id(
+                    account_id=account_id,
+                    bridge_id=(query.get("bridge_id") or [""])[0],
+                )
                 bridge_config(bridge_id)
-                self._write_json(ok(STATUS_MONITOR.latest(bridge_id=bridge_id)))
+                self._write_json(ok(
+                    account_route_status(account_id, bridge_id=bridge_id)
+                    if account_id else STATUS_MONITOR.latest(bridge_id=bridge_id)
+                ))
             elif parsed.path == "/api/callbacks":
                 account_id = (query.get("account_id") or [""])[0]
                 bridge_id = resolve_bridge_id(
@@ -3935,25 +5860,34 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 bridge = bridge_config(bridge_id)
                 since = int((query.get("since") or ["0"])[0] or 0)
                 limit = int((query.get("limit") or ["200"])[0] or 200)
+                event_name = (query.get("event") or [""])[0]
+                event_prefix = (query.get("event_prefix") or [""])[0]
+                job_id = (query.get("job_id") or [""])[0]
                 self._write_json(ok({
                     "bridge_id": bridge_id,
                     "account_id": account_id,
                     "channel": bridge["channels"]["callback"],
+                    "event": event_name,
+                    "event_prefix": event_prefix,
+                    "job_id": job_id,
                     "events": CALLBACKS.latest(
                         since=since,
                         limit=limit,
                         bridge_id=bridge_id,
                         account_id=account_id,
+                        event_name=event_name,
+                        event_prefix=event_prefix,
+                        job_id=job_id,
                     ),
                 }))
             elif parsed.path == "/api/account":
-                account_id = (query.get("account_id") or [DEFAULT_ACCOUNT_ID])[0]
+                account_id = (query.get("account_id") or [configured_default_account_id()])[0]
                 bridge_id = resolve_bridge_id(
                     account_id=account_id,
                     bridge_id=(query.get("bridge_id") or [""])[0],
                 )
                 bridge_config(bridge_id)
-                channel = normalize_channel((query.get("channel") or ["normal"])[0], "normal")
+                channel = (query.get("channel") or ["normal"])[0]
                 sections = parse_sections((query.get("sections") or [""])[0])
                 force = parse_bool((query.get("force") or ["0"])[0])
                 self._write_json(ok(ACCOUNT_CACHE.get(bridge_id, channel, account_id, sections, force=force)))
@@ -3986,15 +5920,25 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
         query = urllib.parse.parse_qs(parsed.query)
         account_id = (query.get("account_id") or [""])[0]
+        event_name = (query.get("event") or [""])[0]
+        event_prefix = (query.get("event_prefix") or [""])[0]
+        job_id = (query.get("job_id") or [""])[0]
         bridge_id = resolve_bridge_id(
             account_id=account_id,
             bridge_id=(query.get("bridge_id") or [""])[0],
         ) if account_id or query.get("bridge_id") else ""
-        client = WebSocketCallbackClient(self.request, bridge_id=bridge_id, account_id=account_id)
+        client = WebSocketCallbackClient(
+            self.request,
+            bridge_id=bridge_id,
+            account_id=account_id,
+            event_name=event_name,
+            event_prefix=event_prefix,
+            job_id=job_id,
+        )
         WS_CALLBACKS.add(client)
         safe_print(
-            "websocket callbacks connected bridge=%s account=%s clients=%s"
-            % (bridge_id or "*", account_id or "*", WS_CALLBACKS.count())
+            "websocket callbacks connected bridge=%s account=%s event=%s prefix=%s job=%s clients=%s"
+            % (bridge_id or "*", account_id or "*", event_name or "*", event_prefix or "*", job_id or "*", WS_CALLBACKS.count())
         )
         try:
             client.send_json({
@@ -4002,8 +5946,27 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 "channel": "callbacks",
                 "bridge_id": bridge_id,
                 "account_id": account_id,
+                "event": event_name,
+                "event_prefix": event_prefix,
+                "job_id": job_id,
                 "clients": WS_CALLBACKS.count(),
             })
+            cached_events = CALLBACKS.latest(
+                since=0,
+                limit=100,
+                bridge_id=bridge_id,
+                account_id=account_id,
+                event_name=event_name,
+                event_prefix=event_prefix,
+                job_id=job_id,
+            )
+            for event in cached_events:
+                client.send_json({
+                    "type": "callback",
+                    "channel": "callbacks",
+                    "cached": True,
+                    "event": event,
+                })
             self.request.settimeout(30)
             while client.alive:
                 frame = self._read_ws_frame()
@@ -4128,12 +6091,14 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError) as e:
             safe_print("client disconnected while writing static response: %s" % e)
 
-    def _write_json(self, payload, status=200):
+    def _write_json(self, payload, status=200, extra_headers=None):
         raw = json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         try:
             self.send_response(status)
             self._send_cors_headers()
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            for key, value in extra_headers or []:
+                self.send_header(str(key), str(value))
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             self.wfile.write(raw)
@@ -4202,7 +6167,38 @@ def main(argv=None):
         raise RuntimeError("cfquant web port %s is already listening, skip duplicate start" % args.port)
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
-        CLIENTS.start()
+        configured_modes = configured_runtime_modes()
+        if "lttx" in configured_modes:
+            # 高级模式故障时需要立即回退到 ctypes，因此即使没有独立通用账号也要启动 PipeHub。
+            configured_modes.add("ctypes")
+        if "ctypes" in configured_modes:
+            try:
+                safe_print("cfquant ctypes 通用版模式已启用，正在启动 PipeHub")
+                PIPE_HUB.start()
+            except Exception as e:
+                safe_print("cfquant PipeHub 自动启动失败: %s" % e)
+        auto_start_lttx = str(os.environ.get("CFQUANT_AUTO_START_LTTX", "1")).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        if auto_start_lttx or "lttx" in configured_modes:
+            try:
+                lttx = lttx_status()
+                if not lttx.get("running"):
+                    started = start_lttx_server()
+                    reason = "高级模式已启用" if "lttx" in configured_modes else "默认预启动"
+                    safe_print("cfquant %s，LTtx 自动启动结果=%s" % (reason, bool(started.get("started"))))
+                else:
+                    safe_print("cfquant LTtx 已在运行，跳过自动启动")
+            except Exception as e:
+                safe_print("cfquant LTtx 自动启动失败: %s" % e)
+        for client_mode in configured_modes:
+            try:
+                CLIENTS.start(client_mode)
+            except Exception as e:
+                safe_print("cfquant %s client start failed: %s" % (client_mode, e))
         safe_print("cfquant web global tx started reply_channel=%s" % CLIENTS.client_id)
     except Exception as e:
         CLIENTS.close()

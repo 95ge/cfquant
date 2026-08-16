@@ -1,8 +1,11 @@
 const state = {
   accountId: '',
+  defaultAccountId: '',
   bridgeId: 'default',
+  defaultBridgeId: 'default',
   queryChannel: 'normal',
   currentView: 'overview',
+  settingsTab: 'api-key',
   refreshTimer: null,
   statusTimer: null,
   lastOrderConfirm: '',
@@ -12,38 +15,83 @@ const state = {
   lttxStatus: null,
   bridges: {},
   accountPairs: {},
+  accountConfigs: {},
+  setup: null,
+  accountRouteMode: null,
+  accountRouteFallback: false,
   envBridges: {},
   apiEndpointId: 'quote_subscribe_whole',
   apiKey: '',
   apiSocket: null,
+  downloadSocket: null,
+  downloadJobId: '',
+  downloadJobStatus: 'idle',
+  downloadEvents: [],
+  downloadStartedAt: 0,
+  downloadRequestDoneAt: 0,
   serverAccess: null,
   webAuthToken: '',
   webAuthStatus: null,
   appStarted: false,
   logCleanup: null,
+  qmtLogLanguage: null,
+  transportMode: 'ctypes',
+  bridgeStatus: null,
+  pipeHubStatus: null,
   updateStatus: null,
   updateBusy: false,
-  apiOpenGroups: new Set(['data', 'trade', 'system']),
+  apiOpenGroups: new Set(['data', 'trade', 'system', 'transport']),
   quoteRows: new Map(),
   quoteSeq: 0,
   quoteEventCount: 0,
   quoteSubscribeId: '',
   quoteConnectionText: '未连接',
   quoteLiveActive: false,
+  quoteRenderTimer: null,
+  quoteSocketLogCount: 0,
+  quoteSocketMessageCount: 0,
+  onboardingStep: 'intro',
+  onboardingDoneSteps: new Set(),
+  lastLogKey: '',
+  lastLogAt: 0,
+  lastLogNode: null,
+  lastLogRepeat: 0,
+  statusRefreshInFlight: false,
+  callbackRefreshInFlight: false,
+  bindingStatusRefreshInFlight: false,
+  orderRefreshInFlight: false,
+  lastAutoOrderRefreshAt: 0,
 };
 
 const $ = (id) => document.getElementById(id);
 const ACCOUNT_PAIR_KEY = 'cfquant.account_bridge_pairs';
 const TUTORIAL_TOPIC_KEY = 'cfquant.tutorial_topic';
+const ONBOARDING_AUTO_SHOWN_KEY = 'cfquant.onboarding_auto_shown.v3';
+const SETTINGS_TAB_KEY = 'cfquant.settings_tab';
 const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups';
 const WEB_AUTH_TOKEN_KEY = 'cfquant.web_auth_token';
+const WEB_AUTH_SESSION_TOKEN_KEY = 'cfquant.web_auth_session_token';
+const WEB_AUTH_REMEMBER_KEY = 'cfquant.web_auth_remember';
 const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
 const DEFAULT_UPDATE_REF = 'main';
+const QUOTE_RENDER_INTERVAL_MS = 500;
+const QUOTE_RESPONSE_LOG_LIMIT = 20;
+const QUOTE_EVENT_PROCESS_LIMIT = 160;
+const LOG_ENTRY_LIMIT = 180;
+const LOG_REPEAT_WINDOW_MS = 5000;
+const STATUS_REFRESH_INTERVAL_MS = 30000;
+const CALLBACK_POLL_INTERVAL_MS = 3000;
+const AUTO_ORDER_REFRESH_INTERVAL_MS = 4000;
+const HOME_ORDER_REFRESH_INTERVAL_MS = 15000;
+const ORDER_SNAPSHOT_LIMIT = 500;
+const DOWNLOAD_EVENT_PREFIX = 'xtdata:download';
+const DOWNLOAD_EVENT_LIMIT = 80;
 
 const API_GROUPS = [
   { id: 'data', title: '数据' },
   { id: 'trade', title: '交易' },
   { id: 'system', title: '系统' },
+  { id: 'transport', title: '通信' },
 ];
 
 const API_ENDPOINTS = [
@@ -53,7 +101,7 @@ const API_ENDPOINTS = [
     title: '订阅全推行情',
     method: 'POST',
     path: '/api/quotes/whole/subscribe',
-    desc: '打开普通 QMT 已订阅全推行情的外部推送。同一时间只允许一个全推订阅，成功后可通过 WebSocket 实时接收行情事件。',
+    desc: '通过当前模式订阅全推行情。同一时间只允许一个全推订阅，成功后可通过 WebSocket 实时接收行情事件；通用模式由 ctypes 单桥统一转发。',
     defaults: { channel: 'normal', markets: 'SH,SZ' },
     fields: ['bridge_id', 'whole_quote_channel', 'markets'],
   },
@@ -73,7 +121,7 @@ const API_ENDPOINTS = [
     title: '实时 Tick',
     method: 'POST',
     path: '/api/data/full-tick',
-    desc: '查询指定证券的实时全推快照。数据查询默认极速优先，极速离线或失败时回退普通 QMT。',
+    desc: '查询指定证券的实时全推快照。通用模式走 ctypes 单桥， 高级模式按所选通道请求。',
     defaults: { channel: 'trade', code_list: '000001.SZ,600000.SH' },
     fields: ['bridge_id', 'channel', 'code_list'],
   },
@@ -83,7 +131,7 @@ const API_ENDPOINTS = [
     title: '行情数据',
     method: 'POST',
     path: '/api/data/market',
-    desc: '查询行情数据，字段、证券列表、周期和区间可配置。数据查询默认极速优先，极速离线或失败时回退普通 QMT。',
+    desc: '查询行情数据，字段、证券列表、周期和区间可配置。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
     defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1' },
     fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data'],
   },
@@ -93,7 +141,7 @@ const API_ENDPOINTS = [
     title: '扩展行情数据',
     method: 'POST',
     path: '/api/data/market-ex',
-    desc: '调用 QMT get_market_data_ex，适合读取本地缓存行情数据。数据查询默认极速优先，极速离线或失败时回退普通 QMT。',
+    desc: '调用 QMT get_market_data_ex，适合读取本地缓存行情数据。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
     defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1' },
     fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data'],
   },
@@ -103,7 +151,7 @@ const API_ENDPOINTS = [
     title: '订阅单股行情',
     method: 'POST',
     path: '/api/quotes/subscribe',
-    desc: '订阅单只证券行情，订阅事件同样通过 WebSocket 行情接收。',
+    desc: '通过当前模式订阅单只证券行情，订阅事件同样通过 WebSocket 行情接收。',
     defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', count: '0' },
     fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'count', 'dividend_type'],
   },
@@ -122,7 +170,7 @@ const API_ENDPOINTS = [
     title: '合约详情',
     method: 'POST',
     path: '/api/data/instrument',
-    desc: '查询证券合约详情。数据查询默认极速优先，极速离线或失败时回退普通 QMT。',
+    desc: '查询证券合约详情。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
     defaults: { channel: 'trade', stock_code: '000001.SZ', iscomplete: '0' },
     fields: ['bridge_id', 'channel', 'stock_code', 'iscomplete'],
   },
@@ -132,7 +180,7 @@ const API_ENDPOINTS = [
     title: '板块成分',
     method: 'POST',
     path: '/api/data/sector',
-    desc: '查询指定板块的证券列表。数据查询默认极速优先，极速离线或失败时回退普通 QMT。',
+    desc: '查询指定板块的证券列表。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
     defaults: { channel: 'trade', sector_name: '沪深A股' },
     fields: ['bridge_id', 'channel', 'sector_name'],
   },
@@ -142,8 +190,8 @@ const API_ENDPOINTS = [
     title: '下载历史数据',
     method: 'POST',
     path: '/api/data/history/download',
-    desc: '触发 QMT 下载指定证券历史行情数据。数据查询默认极速优先，极速离线或失败时回退普通 QMT。',
-    defaults: { channel: 'trade', stock_code: '000001.SZ', period: '1d', incrementally: '' },
+    desc: '触发 QMT 下载指定证券历史行情数据。下载请求固定通过普通 QMT 发送，便于接收下载进度回调。',
+    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', incrementally: '' },
     fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'incrementally'],
   },
   {
@@ -152,19 +200,19 @@ const API_ENDPOINTS = [
     title: '财务数据',
     method: 'POST',
     path: '/api/data/financial',
-    desc: '读取财务数据，支持填充数据和原始数据两种模式。数据查询默认极速优先，极速离线或失败时回退普通 QMT。',
+    desc: '读取财务数据，支持填充数据和原始数据两种模式。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
     defaults: { channel: 'trade', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'filled', report_type: 'announce_time' },
     fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type'],
   },
   {
     id: 'financial_download',
     group: 'data',
-    title: '下载财务数据',
+    title: '校验财务本地数据',
     method: 'POST',
     path: '/api/data/financial/download',
-    desc: '触发 QMT 补充本地财务数据。财务查询依赖本地已有数据，缺失时先下载。',
-    defaults: { channel: 'trade', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'start_time', 'end_time'],
+    desc: '按大 QMT 官方能力读取并校验本地财务数据。财务数据需要先在 QMT 客户端“数据管理 - 财务数据下载”中下载，脚本侧不提供真正下载函数。',
+    defaults: { channel: 'normal', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'raw', report_type: 'report_time' },
+    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type'],
   },
   {
     id: 'quote_unsubscribe',
@@ -235,12 +283,30 @@ const API_ENDPOINTS = [
     fields: [],
   },
   {
+    id: 'transport_mode',
+    group: 'transport',
+    title: '通信模式',
+    method: 'GET',
+    path: '/api/transport',
+    desc: '查看或切换当前网页通信模式：通用模式使用 ctypes 单桥，高级模式使用两个 QMT 终端的普通桥和极速交易桥。',
+    fields: [],
+  },
+  {
+    id: 'pipe_hub',
+    group: 'transport',
+    title: 'PipeHub 状态',
+    method: 'GET',
+    path: '/api/pipe-hub',
+    desc: '查看 ctypes 通用版 PipeHub 是否在线，以及当前 pipe 状态文件内容。',
+    fields: [],
+  },
+  {
     id: 'status',
     group: 'system',
     title: '通道状态',
     method: 'GET',
     path: '/api/status',
-    desc: '查看桥接端普通 QMT 和极速交易端状态。',
+    desc: '查看高级模式所需的普通 QMT 和极速交易端状态；通用模式仍可通过 PipeHub 状态确认单桥是否接入。',
     fields: ['bridge_id'],
   },
   {
@@ -249,7 +315,7 @@ const API_ENDPOINTS = [
     title: '查回调',
     method: 'GET',
     path: '/api/callbacks',
-    desc: '按账号拉取委托/成交回调事件，桥接端由账号绑定自动决定。',
+    desc: '按账号拉取委托/成交回调事件，内部通道由账号配置自动决定。',
     defaults: { since: '0', limit: '50' },
     fields: ['account_id', 'since', 'limit'],
   },
@@ -268,7 +334,7 @@ const API_ENDPOINTS = [
     title: '提交委托',
     method: 'POST',
     path: '/api/order',
-    desc: '按账号绑定的桥接端提交买入或卖出委托。后端要求确认文本完全匹配。',
+    desc: '按账号配置对应的内部通道提交买入或卖出委托。后端要求确认文本完全匹配。',
     fields: ['account_id', 'side', 'stock_code', 'price', 'volume', 'confirm_text'],
   },
   {
@@ -277,7 +343,7 @@ const API_ENDPOINTS = [
     title: '批量委托',
     method: 'POST',
     path: '/api/orders/batch',
-    desc: '按账号绑定的桥接端批量提交委托。orders 使用 JSON 数组，后端内部逐笔调用 QMT 下单。',
+    desc: '按账号配置对应的内部通道批量提交委托。orders 使用 JSON 数组，后端内部逐笔调用 QMT 下单。',
     defaults: {
       orders_json: '[{"stock_code":"000001.SZ","price":10.0,"volume":100},{"stock_code":"600000.SH","price":8.5,"volume":200}]',
       confirm_text: 'BATCH 2',
@@ -290,7 +356,7 @@ const API_ENDPOINTS = [
     title: '撤单',
     method: 'POST',
     path: '/api/cancel',
-    desc: '按账号绑定的桥接端撤销指定委托。后端要求确认文本完全匹配。',
+    desc: '按账号配置对应的内部通道撤销指定委托。后端要求确认文本完全匹配。',
     fields: ['account_id', 'order_id', 'cancel_confirm_text'],
   },
   {
@@ -305,7 +371,7 @@ const API_ENDPOINTS = [
 ];
 
 const API_FIELD_META = {
-  bridge_id: { label: '桥接端', type: 'bridge' },
+  bridge_id: { label: '内部通道', type: 'bridge' },
   account_id: { label: '账号', type: 'text', placeholder: '2220009880' },
   channel: { label: '查询通道', type: 'channel' },
   whole_quote_channel: { label: '订阅通道', type: 'fixed_channel', param: 'channel' },
@@ -339,12 +405,13 @@ const API_FIELD_META = {
   financial_fields: { label: '财务字段', type: 'text', placeholder: 'fix_assets 或 ASHAREBALANCESHEET.fix_assets', param: 'fields' },
   financial_mode: { label: '财务模式', type: 'financial_mode', param: 'mode' },
   report_type: { label: '报表时间', type: 'report_type' },
+  transport_mode: { label: '通信模式', type: 'transport_mode' },
 };
 
 const API_PARAM_DOCS = {
-  bridge_id: '桥接端 ID。账号接口通常不用填，会按账号绑定自动决定。',
+  bridge_id: '内部通道 ID。账号接口通常不用填，会按账号配置自动决定。',
   account_id: '资金账号。',
-  channel: '请求通道，normal 为普通 QMT，trade 为极速交易端。数据查询选择 trade 时会极速优先并在失败或离线时回退普通 QMT；全推订阅固定使用 normal。',
+  channel: '高级模式下 normal 为普通 QMT，trade 为极速交易端；通用模式由后端按操作类型自动路由到 ctypes 单桥。',
   sections: '账号数据段，asset/positions/orders/trades。',
   force: '是否强制刷新缓存，1 表示立即查询。',
   since: '回调起始序号。',
@@ -374,6 +441,7 @@ const API_PARAM_DOCS = {
   fields: '财务字段列表，多个字段用英文逗号分隔。可填 fix_assets，服务端会与 table 组合；也可直接填 ASHAREBALANCESHEET.fix_assets。',
   mode: '财务查询模式，filled 调用 get_financial_data，raw 调用 get_raw_financial_data。',
   report_type: '报表时间类型，announce_time 按公告日期，report_time 按报告期。',
+  transport_mode: '通信模式，ctypes 表示通用模式单文件桥，lttx 表示高级模式两个 QMT 终端双桥。',
 };
 
 const API_RETURN_DOCS = {
@@ -419,6 +487,9 @@ const API_RETURN_DOCS = {
     ['latency_ms', '请求耗时'],
   ],
   history_download: [
+    ['job_id', '下载任务 ID，用于匹配实时进度回调'],
+    ['callback_event', '下载进度事件名，当前为 xtdata:download_progress'],
+    ['progress_ws_path', '本次任务对应的 WebSocket 进度地址'],
     ['result', '下载任务返回值'],
     ['latency_ms', '请求耗时'],
   ],
@@ -428,7 +499,14 @@ const API_RETURN_DOCS = {
     ['fallback', '是否从极速回退到普通 QMT'],
   ],
   financial_download: [
-    ['result', '底层下载函数返回值'],
+    ['job_id', '校验任务 ID，用于匹配实时进度回调'],
+    ['download_supported', '固定为 false，表示 QMT 官方脚本侧没有财务下载函数'],
+    ['manual_download_required', '是否需要先在 QMT 客户端手工下载财务数据'],
+    ['manual_download_hint', '手工下载提示'],
+    ['query_action', '实际调用的本地财务读取接口'],
+    ['query_summary', '本地财务数据返回摘要'],
+    ['callback_event', '进度事件名，当前为 xtdata:download_progress'],
+    ['progress_ws_path', '本次任务对应的 WebSocket 进度地址'],
     ['channel', '实际调用通道'],
     ['fallback', '是否从极速回退到普通 QMT'],
   ],
@@ -476,6 +554,19 @@ const API_RETURN_DOCS = {
     ['trade.online', '极速交易端是否在线'],
     ['checked_at_text', '检测时间'],
   ],
+  transport_mode: [
+    ['transport.mode', '当前通信模式，lttx 或 ctypes'],
+    ['transport.label', '展示名称'],
+    ['client.mode', '请求客户端模式'],
+    ['client.request_channel', '默认请求频道'],
+  ],
+  pipe_hub: [
+    ['running', 'PipeHub 是否运行'],
+    ['pipe_name', '命名管道名称'],
+    ['status.pipe_name', '状态文件中的管道名'],
+    ['status.qmt_connected', '是否已连接 QMT 桥'],
+    ['status.pending_count', '待处理请求数'],
+  ],
   callbacks: [
     ['events[].event', '回调类型'],
     ['events[].account_id', '账号'],
@@ -484,12 +575,12 @@ const API_RETURN_DOCS = {
   ws_callbacks: [
     ['type', '消息类型。hello 表示连接成功，callback 表示实时回调。'],
     ['channel', 'hello 消息中的通道名称，固定为 callbacks。'],
-    ['bridge_id', '当前连接过滤的桥接端。按账号连接时由后端自动解析。'],
+    ['bridge_id', '当前连接过滤的内部通道。按账号连接时由后端自动解析。'],
     ['account_id', '当前连接过滤的账号。为空表示不过滤账号。'],
     ['event.seq', '服务端回调序号，用于排序和断点拉取。'],
     ['event.event', '回调事件名，例如 trader:on_stock_order。'],
     ['event.account_id', '回调所属账号。'],
-    ['event.bridge_id', '回调所属桥接端。'],
+    ['event.bridge_id', '回调所属内部通道。'],
     ['event.received_at', '服务端收到回调的时间戳，单位秒。'],
     ['event.data', 'QMT 回调对象转换后的字段数据。'],
   ],
@@ -526,6 +617,7 @@ const WS_CALLBACK_EVENT_DOCS = [
   ['trader:on_cancel_error', '撤单错误回调'],
   ['trader:on_order_stock_async_response', '异步下单响应'],
   ['trader:on_cancel_order_stock_async_response', '异步撤单响应'],
+    ['xtdata:download_progress', '历史下载进度或财务本地校验进度回调，按 meta.job_id 匹配任务'],
 ];
 
 const WS_CALLBACK_DATA_DOCS = [
@@ -548,6 +640,9 @@ const WS_CALLBACK_DATA_DOCS = [
   ['m_dAvailable', '可用资金。'],
   ['m_dInstrumentValue', '证券市值。'],
   ['m_dPositionProfit', '持仓盈亏。'],
+  ['meta.job_id', '下载任务 ID，仅下载进度事件使用。'],
+  ['meta.stage', '下载阶段，例如 submitted、progress、request_done、error。'],
+    ['meta.download_kind', '任务类型，例如 history、financial_check。'],
 ];
 
 const WS_CALLBACK_EXAMPLE = {
@@ -632,7 +727,9 @@ function mappedStatus(value, map) {
 }
 
 function signedClass(value) {
-  const number = Number(value);
+  const number = typeof value === 'string'
+    ? Number.parseFloat(value.replace(/,/g, '').replace(/%$/, ''))
+    : Number(value);
   if (!Number.isFinite(number) || number === 0) return '';
   return number > 0 ? 'positive' : 'negative';
 }
@@ -723,11 +820,42 @@ function apiWsUrl(path) {
 
 function log(message, data) {
   const box = $('logBox');
+  if (!box) return;
+  let suffix = '';
+  if (data !== undefined) {
+    try {
+      suffix = ` ${JSON.stringify(data)}`;
+    } catch (error) {
+      suffix = ` ${String(data)}`;
+    }
+    if (suffix.length > 1200) {
+      suffix = `${suffix.slice(0, 1200)}...`;
+    }
+  }
+  const key = `${message}${suffix}`;
+  const now = Date.now();
+  if (
+    state.lastLogKey === key
+    && state.lastLogNode
+    && state.lastLogNode.parentNode === box
+    && now - state.lastLogAt <= LOG_REPEAT_WINDOW_MS
+  ) {
+    state.lastLogRepeat += 1;
+    state.lastLogAt = now;
+    state.lastLogNode.textContent = `[${nowText()}] ${message}${suffix}（重复 ${state.lastLogRepeat} 次）`;
+    return;
+  }
   const line = document.createElement('div');
   line.className = 'log-entry';
-  const suffix = data === undefined ? '' : ` ${JSON.stringify(data)}`;
   line.textContent = `[${nowText()}] ${message}${suffix}`;
   box.prepend(line);
+  state.lastLogKey = key;
+  state.lastLogAt = now;
+  state.lastLogNode = line;
+  state.lastLogRepeat = 1;
+  while (box.children.length > LOG_ENTRY_LIMIT) {
+    box.removeChild(box.lastElementChild);
+  }
 }
 
 async function api(path, options = {}) {
@@ -743,13 +871,19 @@ async function api(path, options = {}) {
     showWebAuthOverlay('请先登录');
   }
   if (!payload.ok) {
-    throw new Error(payload.error || `HTTP ${response.status}`);
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload.data;
 }
 
 function webAuthEnabled() {
-  return !!(state.serverAccess && state.serverAccess.web_auth_enabled);
+  if (state.serverAccess && Object.prototype.hasOwnProperty.call(state.serverAccess, 'web_auth_enabled')) {
+    return !!state.serverAccess.web_auth_enabled;
+  }
+  return !!state.webAuthToken;
 }
 
 function authHeaders() {
@@ -769,12 +903,38 @@ function authQueryString() {
   return params.toString();
 }
 
-function setWebAuthToken(token) {
+function savedWebAuthTokenInfo() {
+  const persistentToken = localStorage.getItem(WEB_AUTH_TOKEN_KEY) || '';
+  if (persistentToken) return { token: persistentToken, remember: true };
+  const sessionToken = sessionStorage.getItem(WEB_AUTH_SESSION_TOKEN_KEY) || '';
+  if (sessionToken) return { token: sessionToken, remember: false };
+  return { token: state.webAuthToken || '', remember: savedWebAuthRememberPreference() };
+}
+
+function savedWebAuthToken() {
+  return savedWebAuthTokenInfo().token;
+}
+
+function savedWebAuthRememberPreference() {
+  return localStorage.getItem(WEB_AUTH_REMEMBER_KEY) !== '0';
+}
+
+function setWebAuthToken(token, options = {}) {
+  const remember = options.remember !== false;
   state.webAuthToken = String(token || '');
   if (state.webAuthToken) {
-    localStorage.setItem(WEB_AUTH_TOKEN_KEY, state.webAuthToken);
+    if (remember) {
+      localStorage.setItem(WEB_AUTH_TOKEN_KEY, state.webAuthToken);
+      localStorage.setItem(WEB_AUTH_REMEMBER_KEY, '1');
+      sessionStorage.removeItem(WEB_AUTH_SESSION_TOKEN_KEY);
+    } else {
+      sessionStorage.setItem(WEB_AUTH_SESSION_TOKEN_KEY, state.webAuthToken);
+      localStorage.removeItem(WEB_AUTH_TOKEN_KEY);
+      localStorage.setItem(WEB_AUTH_REMEMBER_KEY, '0');
+    }
   } else {
     localStorage.removeItem(WEB_AUTH_TOKEN_KEY);
+    sessionStorage.removeItem(WEB_AUTH_SESSION_TOKEN_KEY);
   }
 }
 
@@ -784,6 +944,14 @@ function clearWebAuthToken() {
 
 function apiEndpointById(id) {
   return API_ENDPOINTS.find((item) => item.id === id) || API_ENDPOINTS[0];
+}
+
+function isQuoteEndpoint(endpoint) {
+  return !!endpoint && (endpoint.group || '') === 'data' && (endpoint.id.includes('quote') || endpoint.id === 'full_tick');
+}
+
+function isDownloadEndpoint(endpoint) {
+  return !!endpoint && (endpoint.id === 'history_download' || endpoint.id === 'financial_download');
 }
 
 function apiGroupForEndpoint(endpointId) {
@@ -803,10 +971,10 @@ function loadApiOpenGroups() {
       const validGroups = new Set(API_GROUPS.map((group) => group.id));
       state.apiOpenGroups = new Set(saved.filter((id) => validGroups.has(id)));
     } else {
-      state.apiOpenGroups = new Set(['data', 'trade', 'system']);
+      state.apiOpenGroups = new Set(['data', 'trade', 'system', 'transport']);
     }
   } catch (error) {
-    state.apiOpenGroups = new Set(['data', 'trade', 'system']);
+    state.apiOpenGroups = new Set(['data', 'trade', 'system', 'transport']);
   }
 }
 
@@ -861,32 +1029,313 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   }
   renderApiDocDetail(endpoint);
   updateQuoteLivePanel(endpoint);
+  updateDownloadProgressPanel(endpoint);
   updateApiRequestPreview();
 }
 
 function updateQuoteLivePanel(endpoint) {
   const panel = $('quoteLivePanel');
   if (!panel) return;
-  const show = (endpoint.group || '') === 'data' && (endpoint.id.includes('quote') || endpoint.id === 'full_tick');
+  const show = isQuoteEndpoint(endpoint);
   panel.classList.toggle('hidden', !show);
   if (!show) {
-    resetQuoteLive('');
+    stopQuoteLive();
     return;
   }
-  if (!state.quoteLiveActive) {
-    resetQuoteLive('');
-  } else {
-    renderQuoteLiveTable();
+  renderQuoteLiveTable();
+}
+
+function updateDownloadProgressPanel(endpoint) {
+  const panel = $('downloadProgressPanel');
+  if (!panel) return;
+  const show = isDownloadEndpoint(endpoint) || !!state.downloadJobId;
+  panel.classList.toggle('hidden', !show);
+  if (show) renderDownloadProgress();
+}
+
+function newDownloadJobId(endpointId) {
+  return `${endpointId || 'download'}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function closeDownloadSocket() {
+  if (!state.downloadSocket) return;
+  try {
+    state.downloadSocket.close();
+  } catch (error) {
+    // ignore stale sockets
+  }
+  state.downloadSocket = null;
+}
+
+function beginDownloadProgress(jobId, requestBody = {}, endpoint = apiEndpointById(state.apiEndpointId)) {
+  closeDownloadSocket();
+  state.downloadJobId = String(jobId || '');
+  state.downloadJobStatus = 'connecting';
+  state.downloadEvents = [];
+  state.downloadStartedAt = Date.now();
+  state.downloadRequestDoneAt = 0;
+  updateDownloadProgressPanel(endpoint);
+  renderDownloadProgress();
+  if (!state.downloadJobId) return;
+
+  const params = new URLSearchParams();
+  params.set('event_prefix', DOWNLOAD_EVENT_PREFIX);
+  params.set('job_id', state.downloadJobId);
+  if (requestBody.bridge_id) params.set('bridge_id', requestBody.bridge_id);
+  if (requestBody.account_id) params.set('account_id', requestBody.account_id);
+  const url = apiWsUrl(`/ws/callbacks?${params.toString()}`);
+  const socket = new WebSocket(url);
+  state.downloadSocket = socket;
+  socket.onopen = () => {
+    if (state.downloadSocket !== socket) return;
+    state.downloadJobStatus = 'waiting';
+    renderDownloadProgress();
+  };
+  socket.onmessage = (event) => {
+    if (state.downloadSocket !== socket) return;
+    try {
+      handleDownloadSocketPayload(JSON.parse(event.data));
+    } catch (error) {
+      appendDownloadEvent({
+        event: 'download:raw',
+        data: { raw: event.data },
+        received_at: Date.now() / 1000,
+      });
+    }
+  };
+  socket.onerror = () => {
+    if (state.downloadSocket !== socket) return;
+    state.downloadJobStatus = 'socket_error';
+    renderDownloadProgress();
+  };
+  socket.onclose = () => {
+    if (state.downloadSocket !== socket) return;
+    state.downloadSocket = null;
+    if (!downloadStatusIsTerminal(state.downloadJobStatus)) {
+      state.downloadJobStatus = 'socket_closed';
+      renderDownloadProgress();
+    }
+  };
+}
+
+function handleDownloadSocketPayload(payload) {
+  if (!payload || payload.type === 'hello') {
+    renderDownloadProgress();
+    return;
+  }
+  if (payload.type === 'history' && Array.isArray(payload.events)) {
+    payload.events.forEach((event) => appendDownloadEvent(event));
+    return;
+  }
+  if (payload.type === 'callback' && payload.event) {
+    appendDownloadEvent(payload.event);
   }
 }
 
-function resetQuoteLive(subscribeId = '') {
+function appendDownloadEvent(event) {
+  if (!event || typeof event !== 'object') return;
+  const jobId = downloadEventJobId(event);
+  if (state.downloadJobId && jobId && jobId !== state.downloadJobId) return;
+  const eventKey = downloadEventKey(event);
+  if (eventKey && state.downloadEvents.some((row) => downloadEventKey(row) === eventKey)) return;
+  state.downloadEvents.unshift(event);
+  state.downloadEvents = state.downloadEvents.slice(0, DOWNLOAD_EVENT_LIMIT);
+  const stage = downloadEventStage(event);
+  if (stage === 'error' || stage === 'failed' || stage === 'fail') {
+    state.downloadJobStatus = 'error';
+  } else if (['done', 'finished', 'complete', 'completed', 'success', 'request_done'].includes(stage)) {
+    state.downloadJobStatus = 'done';
+    state.downloadRequestDoneAt = Date.now();
+  } else {
+    state.downloadJobStatus = 'running';
+  }
+  renderDownloadProgress();
+}
+
+function downloadEventKey(event) {
+  if (!event || typeof event !== 'object') return '';
+  if (event.seq !== undefined && event.seq !== null) return `seq:${event.seq}`;
+  const meta = event.meta && typeof event.meta === 'object' ? event.meta : {};
+  const data = event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  return [
+    event.event || '',
+    meta.job_id || data.job_id || '',
+    meta.stage || data.stage || '',
+    event.received_at || '',
+  ].join('|');
+}
+
+async function refreshDownloadProgressEvents(source = {}) {
+  if (!state.downloadJobId) return;
+  const params = new URLSearchParams();
+  params.set('event_prefix', DOWNLOAD_EVENT_PREFIX);
+  params.set('job_id', state.downloadJobId);
+  const data = source && source.data && typeof source.data === 'object' ? source.data : source;
+  const bridgeId = data.bridge_id || selectedBridge();
+  const accountId = data.account_id || '';
+  if (bridgeId) params.set('bridge_id', bridgeId);
+  if (accountId) params.set('account_id', accountId);
+  const payload = await api(`/api/callbacks?${params.toString()}`);
+  (payload.events || []).forEach((event) => appendDownloadEvent(event));
+}
+
+function finishDownloadRequest(payload, error = null) {
+  if (!state.downloadJobId) return;
+  state.downloadRequestDoneAt = Date.now();
+  if (error) {
+    state.downloadJobStatus = 'error';
+    appendDownloadEvent({
+      event: 'xtdata:download_progress',
+      meta: { job_id: state.downloadJobId, stage: 'error' },
+      data: { error: error.message },
+      received_at: Date.now() / 1000,
+    });
+    return;
+  }
+  if (!state.downloadEvents.length || !downloadStatusIsTerminal(state.downloadJobStatus)) {
+    state.downloadJobStatus = payload && payload.ok === false ? 'error' : 'request_done';
+    renderDownloadProgress();
+  }
+  refreshDownloadProgressEvents(payload && payload.data ? payload.data : {})
+    .catch((pollError) => log('下载进度拉取失败', { error: pollError.message }));
+}
+
+function clearDownloadProgress() {
+  closeDownloadSocket();
+  state.downloadJobId = '';
+  state.downloadJobStatus = 'idle';
+  state.downloadEvents = [];
+  state.downloadStartedAt = 0;
+  state.downloadRequestDoneAt = 0;
+  renderDownloadProgress();
+  updateDownloadProgressPanel(apiEndpointById(state.apiEndpointId));
+}
+
+function downloadStatusIsTerminal(status) {
+  return ['done', 'error'].includes(String(status || ''));
+}
+
+function downloadEventJobId(event) {
+  const meta = event && event.meta && typeof event.meta === 'object' ? event.meta : {};
+  const data = event && event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  return String(event.job_id || event.download_job_id || meta.job_id || meta.download_job_id || data.job_id || data.download_job_id || '');
+}
+
+function downloadEventStage(event) {
+  const meta = event && event.meta && typeof event.meta === 'object' ? event.meta : {};
+  const data = event && event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  return String(meta.stage || data.stage || data.status || data.progress_status || event.event || '').trim().toLowerCase();
+}
+
+function downloadEventPercent(event) {
+  const meta = event && event.meta && typeof event.meta === 'object' ? event.meta : {};
+  const data = event && event.data && typeof event.data === 'object' && !Array.isArray(event.data) ? event.data : {};
+  const direct = [
+    data.percent,
+    data.percentage,
+    data.progress,
+    data.rate,
+    data.finished_percent,
+    meta.percent,
+    meta.progress,
+  ].find((value) => value !== undefined && value !== null && value !== '');
+  if (direct !== undefined) {
+    const number = Number(String(direct).replace('%', ''));
+    if (Number.isFinite(number)) return Math.max(0, Math.min(100, number <= 1 ? number * 100 : number));
+  }
+  const done = Number(data.done ?? data.finished ?? data.current ?? data.completed ?? data.downloaded);
+  const total = Number(data.total ?? data.count ?? data.all ?? data.task_count);
+  if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
+    return Math.max(0, Math.min(100, (done / total) * 100));
+  }
+  const stage = downloadEventStage(event);
+  if (['done', 'finished', 'complete', 'completed', 'success', 'request_done'].includes(stage)) return 100;
+  return null;
+}
+
+function downloadEventSummary(event) {
+  const meta = event && event.meta && typeof event.meta === 'object' ? event.meta : {};
+  const data = event && event.data !== undefined ? event.data : {};
+  const parts = [];
+  const stage = downloadEventStage(event);
+  if (stage) parts.push(stage);
+  if (meta.download_kind) parts.push(meta.download_kind);
+  if (meta.stock_code) parts.push(meta.stock_code);
+  if (Array.isArray(meta.stock_list) && meta.stock_list.length) parts.push(meta.stock_list.slice(0, 3).join(','));
+  if (Array.isArray(meta.table_list) && meta.table_list.length) parts.push(meta.table_list.slice(0, 3).join(','));
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    const message = data.message || data.msg || data.error || data.status_msg || '';
+    if (message) parts.push(message);
+  }
+  if (!parts.length) {
+    try {
+      parts.push(JSON.stringify(data).slice(0, 160));
+    } catch (error) {
+      parts.push(String(data).slice(0, 160));
+    }
+  }
+  return parts.filter(Boolean).join(' / ');
+}
+
+function downloadStatusText() {
+  const map = {
+    idle: '未开始',
+    connecting: '正在连接进度回调',
+    waiting: '等待 QMT 回调',
+    running: '下载中',
+    request_done: '请求已返回，等待底层进度回调',
+    done: '已完成或底层请求已返回',
+    error: '失败',
+    socket_error: '进度连接错误',
+    socket_closed: '进度连接已断开',
+  };
+  return map[state.downloadJobStatus] || state.downloadJobStatus || '未开始';
+}
+
+function renderDownloadProgress() {
+  const panel = $('downloadProgressPanel');
+  if (!panel) return;
+  const status = $('downloadProgressStatus');
+  const job = $('downloadProgressJob');
+  const meta = $('downloadProgressMeta');
+  const bar = $('downloadProgressBar');
+  const eventsBox = $('downloadProgressEvents');
+  const latest = state.downloadEvents[0] || null;
+  const percent = latest ? downloadEventPercent(latest) : null;
+  if (status) status.textContent = downloadStatusText();
+  if (job) job.textContent = state.downloadJobId || '--';
+  if (bar) {
+    bar.style.width = percent === null ? '0%' : `${percent.toFixed(0)}%`;
+    bar.classList.toggle('is-indeterminate', percent === null && ['connecting', 'waiting', 'running', 'request_done'].includes(state.downloadJobStatus));
+  }
+  if (meta) {
+    const elapsed = state.downloadStartedAt ? `${((Date.now() - state.downloadStartedAt) / 1000).toFixed(1)}s` : '--';
+    const percentText = percent === null ? '未返回百分比' : `${percent.toFixed(0)}%`;
+    meta.textContent = `耗时 ${elapsed}，事件 ${state.downloadEvents.length} 条，进度 ${percentText}`;
+  }
+  if (eventsBox) {
+    eventsBox.innerHTML = state.downloadEvents.slice(0, 8).map((event) => {
+      const time = event.received_at ? new Date(Number(event.received_at) * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : nowText();
+      return `<div><span>${esc(time)}</span><strong>${esc(downloadEventSummary(event))}</strong></div>`;
+    }).join('') || '<div><span>--</span><strong>暂无下载回调</strong></div>';
+  }
+}
+
+function resetQuoteLive(subscribeId = '', options = {}) {
+  if (state.quoteRenderTimer) {
+    clearTimeout(state.quoteRenderTimer);
+    state.quoteRenderTimer = null;
+  }
   state.quoteRows.clear();
   state.quoteSeq = 0;
   state.quoteEventCount = 0;
+  state.quoteSocketLogCount = 0;
+  state.quoteSocketMessageCount = 0;
   state.quoteSubscribeId = String(subscribeId || '');
-  state.quoteLiveActive = !!subscribeId;
-  state.quoteConnectionText = subscribeId ? `连接中 #${subscribeId}` : '未订阅';
+  state.quoteLiveActive = !!(options.active && subscribeId);
+  state.quoteConnectionText = subscribeId
+    ? (state.quoteLiveActive ? `连接中 #${subscribeId}` : `已订阅，未推送 #${subscribeId}`)
+    : '未订阅';
   renderQuoteLiveTable();
 }
 
@@ -895,6 +1344,32 @@ function renderApiDocDetail(endpoint) {
   if (!box) return;
   if (endpoint.id === 'xttrader_compat') {
     box.innerHTML = xttraderCompatDocHtml();
+    return;
+  }
+  if (endpoint.id === 'transport_mode') {
+    box.innerHTML = `
+      <div class="api-doc-extra">
+        <h3>模式说明</h3>
+        <p>通用模式只需要加载一个 ctypes QMT 文件，行情、查询、交易、撤单和回调都通过同一座桥接入，适合快速部署和功能验证。</p>
+        <p>高级模式需要两个 QMT 终端：普通 QMT 运行查询桥，极速交易端 QMT 运行交易桥。只有两者都在线时才允许启用，适合追求更低交易延迟和分别控制请求通道的场景。</p>
+      </div>
+      <div class="api-doc-extra">
+        <h3>返回字段</h3>
+        ${apiDocTable(API_RETURN_DOCS.transport_mode)}
+      </div>`;
+    return;
+  }
+  if (endpoint.id === 'pipe_hub') {
+    box.innerHTML = `
+      <div class="api-doc-extra">
+        <h3>说明</h3>
+        <p>PipeHub 只在通用模式下有意义。它负责把 QMT 端 named pipe 的请求、响应和回调转成 Web 能识别的标准事件。</p>
+        <p>如果这里显示未运行，说明通用版还没启动，或 QMT 端桥接脚本没有连上 PipeHub。</p>
+      </div>
+      <div class="api-doc-extra">
+        <h3>返回字段</h3>
+        ${apiDocTable(API_RETURN_DOCS.pipe_hub)}
+      </div>`;
     return;
   }
   const paramRows = [];
@@ -935,7 +1410,7 @@ function wsCallbackDocHtml() {
     <div class="api-doc-extra">
       <h3>连接说明</h3>
       <p>连接成功后会先收到 <code>hello</code> 消息。后续 QMT 有委托、成交、资金、持仓等回调时，会收到 <code>callback</code> 消息。</p>
-      <p>只填写 <code>account_id</code> 时，后端会按账号绑定自动找到桥接端。启用 API Key 后，浏览器 WebSocket 会通过 <code>apikey</code> 查询参数传入。</p>
+      <p>只填写 <code>account_id</code> 时，后端会按账号配置自动找到内部通道。启用 API Key 后，浏览器 WebSocket 会通过 <code>apikey</code> 查询参数传入。</p>
     </div>
     <div class="api-doc-extra">
       <h3>事件类型</h3>
@@ -955,8 +1430,9 @@ function wsQuoteDocHtml() {
   return `
     <div class="api-doc-extra">
       <h3>接收说明</h3>
-      <p>先调用订阅全推行情接口获取 <code>subscribe_id</code>。WebSocket 连接成功后会先收到 <code>hello</code> 消息，后续行情推送会收到 <code>quote</code> 消息。</p>
-      <p><code>subscribe_id</code> 为空时接收当前 Web 服务内全部行情订阅事件；填写后只接收对应订阅。</p>
+      <p>先调用订阅全推行情或订阅单股行情接口获取 <code>subscribe_id</code>，再点击实时行情里的“连接推送”。</p>
+      <p>网页调试端不会自动连接行情 WebSocket，也不允许空 <code>subscribe_id</code> 接收全部行情，避免全推行情长时间压垮浏览器。</p>
+      <p>程序化调用仍可直接连接 <code>/ws/quotes</code>；浏览器页面只保留少量连接日志，实时表格按固定频率批量刷新。</p>
     </div>`;
 }
 
@@ -984,29 +1460,31 @@ function xttraderCompatDocHtml() {
   const dataImplementedRows = [
     ['行情查询', 'get_market_data、get_market_data_ex、get_full_tick、get_local_data'],
     ['行情订阅', 'subscribe_quote、subscribe_quote2、subscribe_whole_quote、unsubscribe_quote'],
-    ['历史数据', 'download_history_data、download_history_data2'],
-    ['基础资料', 'get_instrument_detail、get_stock_list_in_sector'],
+    ['历史下载/财务校验', 'download_history_data、download_history_data2；财务按官方脚本能力通过 get_financial_data、get_raw_financial_data 读取本地已下载数据'],
+    ['基础资料', 'get_instrument_detail、get_stock_list_in_sector、get_trading_dates'],
+    ['证券/合约基础', 'is_stock、is_fund、is_future、get_stock_type、get_stock_name、get_open_date、get_contract_expire_date、get_contract_multiplier'],
+    ['ETF/期权/因子', 'get_ETF_list、get_etf_list、get_option_detail_data、get_option_list、get_option_undl、get_option_undl_data、get_weight_in_index、get_turnover_rate、get_his_st_data、get_his_index_data、get_factor_data'],
     ['运行/客户端', 'get_client、run；额外提供 configure 用于配置 cfquant 客户端'],
   ];
   const dataWebRows = [
     ['实时行情', 'POST /api/data/full-tick、POST /api/data/market、POST /api/data/market-ex'],
     ['基础资料', 'POST /api/data/instrument、POST /api/data/sector'],
-    ['历史/财务', 'POST /api/data/history/download、POST /api/data/financial、POST /api/data/financial/download'],
+    ['历史下载/财务读取', 'POST /api/data/history/download、POST /api/data/financial、POST /api/data/financial/download'],
     ['订阅推送', 'POST /api/quotes/whole/subscribe、POST /api/quotes/subscribe、POST /api/quotes/unsubscribe、GET /api/quotes/latest、WS /ws/quotes'],
   ];
   const dataMissingRows = [
-    ['财务数据 Python 封装', 'get_financial_data、get_financial_data_ori、download_financial_data、download_financial_data2 尚未在 cfquant.cfquant.xtdata 中补齐；Web 端已通过桥接端直接开放财务查询/下载。'],
-    ['交易日历/交易时段', 'get_trading_dates、get_trading_calendar、get_trading_period、get_kline_trading_period 等未平替。'],
-    ['L2/ETF/期权/可转债', 'get_l2_quote、get_l2_order、get_etf_info、get_option_list、bnd_get_* 等未平替。'],
+    ['交易日历/交易时段', 'get_trading_calendar、get_trading_period、get_kline_trading_period、get_all_trading_periods、get_period_list 等仍未平替。'],
     ['板块维护/公式系统', 'create_sector、add_sector、create_formula、call_formula、subscribe_formula 等未平替。'],
+    ['L2 行情', 'get_l2_quote、get_l2_order、get_l2_transaction、subscribe_l2thousand、get_l2thousand_queue 等未平替。'],
     ['行情服务器/外部数据', 'connect、disconnect、reconnect、get_quote_server_status、read_feather、write_feather、push_custom_data 等未平替。'],
+    ['下载类补充', 'download_sector_data、download_index_weight、download_history_contracts、download_holiday_data、download_etf_info、download_cb_data、download_his_st_data、download_metatable_data、download_tabular_data 等未平替。'],
   ];
   return `
     <div class="api-doc-extra xt-compat-doc">
       <section>
         <h3>总体进度</h3>
         <p><code>xttrader</code> 已补齐原版 75 个公开方法的同名入口，签名已对齐；已补齐 <code>XtQuantTraderCallback</code> 原版 14 个公开回调方法。</p>
-        <p><code>xtdata</code> 原版当前检测到 138 个公开函数，cfquant 当前暴露 15 个公开函数，其中 14 个与原版同名。核心行情查询、订阅、历史下载、合约和板块能力已覆盖，但还没有做到全量平替。</p>
+        <p><code>xtdata</code> 原版当前检测到 138 个公开函数，cfquant 当前暴露 40 个公开函数，其中 24 个与原版同名，另外提供 16 个便捷辅助/别名函数。核心行情查询、订阅、历史下载、财务数据读取、基础资料、ETF/期权和因子查询已覆盖，但还没有做到全量平替。</p>
       </section>
       <section>
         <h3>xttrader 已平替</h3>
@@ -1194,6 +1672,8 @@ function renderServerAccess(info) {
   if (accessScopeValue) accessScopeValue.textContent = domains.length ? `${scopeText}，${domains.length} 条白名单` : scopeText;
   const authStateValue = $('webAuthStateValue');
   if (authStateValue) authStateValue.textContent = authText;
+  const logoutBtn = $('webAuthLogoutBtn');
+  if (logoutBtn) logoutBtn.classList.toggle('hidden', !authEnabled);
 
   const overviewToggle = $('allowRemoteAccess');
   if (overviewToggle) overviewToggle.checked = allowRemote;
@@ -1229,6 +1709,161 @@ function renderServerAccess(info) {
     hideWebAuthOverlay();
   }
   updateApiRequestPreview();
+}
+
+function bindTransportControls() {
+  const select1 = $('transportModeSelect');
+  const select2 = $('transportModeSelect2');
+  const saveBtn = $('saveTransportModeBtn');
+  const startBtn = $('startPipeHubBtn');
+  const stopBtn = $('stopPipeHubBtn');
+  if (select1) {
+    select1.addEventListener('change', () => {
+      if (select2) select2.value = select1.value;
+    });
+  }
+  if (select2) {
+    select2.addEventListener('change', () => {
+      if (select1) select1.value = select2.value;
+    });
+  }
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      saveTransportModeFromUi().catch((error) => log('通信模式保存失败', { error: error.message }));
+    });
+  }
+  if (startBtn) {
+    startBtn.addEventListener('click', () => {
+      api('/api/pipe-hub/start', { method: 'POST', body: '{}' })
+        .then((data) => {
+          renderPipeHub(data);
+          log('PipeHub 已启动', data);
+        })
+        .catch((error) => log('PipeHub 启动失败', { error: error.message }));
+    });
+  }
+  if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+      api('/api/pipe-hub/stop', { method: 'POST', body: '{}' })
+        .then((data) => {
+          renderPipeHub(data);
+          log('PipeHub 已停止', data);
+        })
+        .catch((error) => log('PipeHub 停止失败', { error: error.message }));
+    });
+  }
+}
+
+function renderTransport(info) {
+  const transport = (info && info.transport) || info || {};
+  const nextMode = transport.mode || info && info.mode;
+  if (nextMode) {
+    state.transportMode = nextMode;
+  }
+  if (!state.transportMode) {
+    state.transportMode = 'ctypes';
+  }
+  syncTopStatusDisplay();
+  const label = transport.label || (state.transportMode === 'ctypes' ? '通用模式' : '高级模式');
+  const detailLabel = transport.detail_label || (state.transportMode === 'ctypes'
+    ? 'ctypes 通用版'
+    : 'LTtx 普通/极速双桥');
+  const summary = transport.summary || {};
+  const transportStatus = $('transportStatus');
+  if (transportStatus) {
+    const pipeStatus = state.pipeHubStatus && state.pipeHubStatus.status;
+    const pipeReady = !!(
+      state.pipeHubStatus
+      && state.pipeHubStatus.running
+      && pipeStatus
+      && pipeStatus.qmt_connected
+    );
+    const advancedReady = !!(
+      state.bridgeStatus
+      && (
+        (state.bridgeStatus.modes
+          && state.bridgeStatus.modes.lttx
+          && state.bridgeStatus.modes.lttx.ready)
+        || (
+          state.bridgeStatus.normal
+          && state.bridgeStatus.normal.online
+          && state.bridgeStatus.trade
+          && state.bridgeStatus.trade.online
+        )
+      )
+    );
+    const ctypesReady = !!(
+      (state.bridgeStatus
+        && state.bridgeStatus.modes
+        && state.bridgeStatus.modes.ctypes
+        && state.bridgeStatus.modes.ctypes.ready)
+      || pipeReady
+    );
+    const online = activeAccountMode() === 'ctypes' ? ctypesReady : advancedReady;
+    setStatus('transportStatus', online, `${label}：${detailLabel}\n${summary.request_scope || ''}`);
+    const labelNode = $('transportStatusLabel');
+    if (labelNode) labelNode.textContent = state.transportMode === 'ctypes' ? '通用端' : '高级模式';
+  }
+  const select1 = $('transportModeSelect');
+  const select2 = $('transportModeSelect2');
+  [select1, select2].forEach((select) => {
+    if (select) select.value = state.transportMode;
+  });
+  const statusText = $('transportStatusText');
+  if (statusText) {
+    const requestScope = summary.request_scope || (state.transportMode === 'ctypes' ? '单文件双通道' : '普通桥 + 交易桥');
+    statusText.textContent = `${label}（${detailLabel}），${requestScope}`;
+  }
+  const startPipeHubBtn = $('startPipeHubBtn');
+  const stopPipeHubBtn = $('stopPipeHubBtn');
+  [startPipeHubBtn, stopPipeHubBtn].forEach((button) => {
+    if (button) button.disabled = button.dataset.runtimeDisabled === 'true';
+  });
+  const startLttxBtn = $('lttxStartBtn');
+  const stopLttxBtn = $('lttxStopBtn');
+  if (startLttxBtn) startLttxBtn.disabled = startLttxBtn.dataset.runtimeDisabled === 'true';
+  if (stopLttxBtn) stopLttxBtn.disabled = stopLttxBtn.dataset.runtimeDisabled === 'true';
+  const lttxLabel = $('lttxStatusLabel');
+  if (lttxLabel) lttxLabel.textContent = state.transportMode === 'ctypes' ? 'LTtx（高级模式）' : 'LTtx';
+  syncTransportChannelControls();
+}
+
+function syncTopStatusDisplay() {
+  const universal = activeAccountMode() === 'ctypes';
+  ['lttxStatus', 'normalStatus', 'tradeStatus'].forEach((id) => {
+    const node = $(id);
+    if (node) node.style.display = universal ? 'none' : '';
+  });
+}
+
+function syncTransportChannelControls() {
+  const universal = activeAccountMode() === 'ctypes';
+  const query = $('queryChannel');
+  const trade = $('tradeChannel');
+  [query, trade].forEach((node) => {
+    if (!node) return;
+    node.disabled = universal;
+    node.title = universal ? '通用模式由 ctypes 单桥自动路由' : '高级模式可选择普通 QMT 或极速交易端';
+  });
+  if (universal) {
+    if (query) query.value = 'normal';
+    if (trade) trade.value = 'trade';
+  }
+}
+
+function renderPipeHub(info) {
+  state.pipeHubStatus = info || null;
+  const box = $('pipeHubStatusBox');
+  if (!box) return;
+  const lines = [
+    `运行：${info && info.running ? '是' : '否'}`,
+    `管道：${info && info.pipe_name ? info.pipe_name : '--'}`,
+    `进程：${info && info.process_pid ? info.process_pid : '--'}`,
+    `QMT 连接：${info && info.status && info.status.qmt_connected ? '是' : '否'}`,
+    `待处理请求：${info && info.status && info.status.pending_count !== undefined ? info.status.pending_count : '--'}`,
+  ];
+  const span = box.querySelector('span');
+  if (span) span.textContent = lines.join('；');
 }
 
 async function saveServerAccessFromUi(source = 'api', options = {}) {
@@ -1314,6 +1949,33 @@ async function saveServerAccessFromUi(source = 'api', options = {}) {
   }
 }
 
+async function saveTransportModeFromUi() {
+  const mode = ($('transportModeSelect2') && $('transportModeSelect2').value) || ($('transportModeSelect') && $('transportModeSelect').value) || 'ctypes';
+  const data = await api('/api/transport', {
+    method: 'POST',
+    body: JSON.stringify({ mode, bridge_id: selectedBridge() }),
+  });
+  renderPipeHub(await api('/api/pipe-hub').catch(() => null));
+  renderTransport(data);
+  await refreshStatus().catch((error) => log('通信模式保存后状态刷新失败', { error: error.message }));
+  log('通信模式已保存', { mode });
+}
+
+async function refreshTransport() {
+  try {
+    const data = await api('/api/transport');
+    const pipeHub = await api('/api/pipe-hub').catch(() => null);
+    renderPipeHub(pipeHub);
+    renderTransport(data);
+    return data;
+  } catch (error) {
+    setStatus('transportStatus', false, error.message);
+    const statusText = $('transportStatusText');
+    if (statusText) statusText.textContent = error.message;
+    return null;
+  }
+}
+
 function showWebAuthOverlay(message = '') {
   const overlay = $('webAuthOverlay');
   if (!overlay) return;
@@ -1334,30 +1996,168 @@ function hideWebAuthOverlay() {
   if (overlay) overlay.classList.add('hidden');
 }
 
+async function logoutWebAuth() {
+  try {
+    await api('/api/web-auth/logout', { method: 'POST', body: '{}' });
+  } catch (error) {
+    log('网页登录退出失败', { error: error.message });
+  } finally {
+    clearWebAuthToken();
+    state.webAuthStatus = null;
+    showWebAuthOverlay('已退出登录');
+  }
+}
+
 async function loginWebAuth(event) {
   if (event) event.preventDefault();
   const username = $('webAuthLoginUserInput') ? $('webAuthLoginUserInput').value.trim() : '';
   const password = $('webAuthLoginPasswordInput') ? $('webAuthLoginPasswordInput').value : '';
+  const remember = true;
   const status = $('webAuthLoginStatus');
   if (status) status.textContent = '登录中...';
   try {
     const response = await fetch('/api/web-auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, remember }),
     });
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-    setWebAuthToken(payload.data.token || '');
+    const persistent = payload.data.remember !== false;
+    setWebAuthToken(payload.data.token || '', { remember: persistent });
     state.webAuthStatus = payload.data;
     hideWebAuthOverlay();
     await loadConfig();
-    await startAuthenticatedApp();
-    log('网页登录成功', { username: payload.data.username || username });
+    await continueAfterConfig();
+    log('网页登录成功', { username: payload.data.username || username, remember: persistent });
   } catch (error) {
     clearWebAuthToken();
     if (status) status.textContent = error.message;
   }
+}
+
+function showSetupOverlay(message = '') {
+  const overlay = $('setupOverlay');
+  if (!overlay) return;
+  overlay.classList.remove('hidden');
+  const accountInput = $('setupAccountId');
+  const qmtDirInput = $('setupQmtDir');
+  const modeInput = $('setupMode');
+  const setup = state.setup || {};
+  const defaultConfig = setup.account_configs && setup.account_configs[setup.default_account_id];
+  if (accountInput && !accountInput.value) {
+    accountInput.value = setup.default_account_id || state.defaultAccountId || '';
+  }
+  if (qmtDirInput && !qmtDirInput.value) {
+    qmtDirInput.value = setup.default_qmt_dir || (defaultConfig && defaultConfig.qmt_dir) || '';
+  }
+  if (modeInput) modeInput.value = setup.default_mode || (defaultConfig && defaultConfig.mode) || 'ctypes';
+  updateSetupSteps('config');
+  const status = $('setupStatus');
+  if (status) status.textContent = message;
+  overlay.scrollTop = 0;
+  const card = overlay.querySelector('.setup-card');
+  if (card) card.scrollTop = 0;
+}
+
+function clearOnboardingAutoShown() {
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index);
+    if (key && key.indexOf('cfquant.onboarding_auto_shown') === 0) {
+      localStorage.removeItem(key);
+    }
+  }
+}
+
+function onboardingAutoShownKey() {
+  const setup = state.setup || {};
+  const accountId = setup.default_account_id || state.defaultAccountId || state.accountId || 'default';
+  const mode = setup.default_mode || activeAccountMode() || 'ctypes';
+  return `${ONBOARDING_AUTO_SHOWN_KEY}.${accountId}.${mode}`;
+}
+
+function updateSetupSteps(activeStep) {
+  const order = ['config', 'identity', 'qmt', 'verify'];
+  const activeIndex = Math.max(0, order.indexOf(activeStep));
+  document.querySelectorAll('[data-setup-step]').forEach((node) => {
+    const index = order.indexOf(node.dataset.setupStep);
+    node.classList.toggle('done', index >= 0 && index < activeIndex);
+    node.classList.toggle('active', index === activeIndex);
+  });
+}
+
+function hideSetupOverlay() {
+  const overlay = $('setupOverlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+
+async function submitSetupForm(event) {
+  if (event) event.preventDefault();
+  const status = $('setupStatus');
+  const body = {
+    account_id: $('setupAccountId') ? $('setupAccountId').value.trim() : '',
+    qmt_dir: $('setupQmtDir') ? $('setupQmtDir').value.trim() : '',
+    mode: $('setupMode') ? $('setupMode').value : 'ctypes',
+  };
+  if (!body.account_id) {
+    if (status) status.textContent = '账号不能为空';
+    return;
+  }
+  if (status) {
+    status.textContent = body.qmt_dir
+      ? '正在保存初始化配置...'
+      : 'QMT 核心目录为空，自动更新将不可用，正在保存...';
+  }
+  updateSetupSteps('identity');
+  try {
+    const data = await api('/api/setup/initialize', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    updateSetupSteps('qmt');
+    state.setup = data.setup || null;
+    state.accountPairs = data.account_pairs || {};
+    state.accountConfigs = data.account_configs || {};
+    state.bridges = data.bridges || state.bridges;
+    await loadConfig();
+    hideSetupOverlay();
+    await startAuthenticatedApp();
+    clearOnboardingAutoShown();
+    openOnboardingGuide({ auto: true, reason: 'setup' });
+    log('初始化配置已保存', {
+      account_id: body.account_id,
+      mode: body.mode,
+      qmt_dir_configured: !!body.qmt_dir,
+      bridge_identity: data.qmt_bridge_identity || null,
+    });
+  } catch (error) {
+    updateSetupSteps('config');
+    if (status) status.textContent = error.message;
+    log('初始化配置保存失败', { error: error.message });
+  }
+}
+
+async function reinitializeSetup() {
+  if (!window.confirm('重新初始化会清空账号运行配置，需要重新输入默认账号、QMT目录和模式。确认继续吗？')) {
+    return;
+  }
+  try {
+    await api('/api/setup/reset', { method: 'POST', body: '{}' });
+    clearOnboardingAutoShown();
+    window.location.reload();
+  } catch (error) {
+    log('重新初始化失败', { error: error.message });
+  }
+}
+
+async function continueAfterConfig() {
+  if (state.setup && state.setup.setup_required) {
+    showSetupOverlay('请完成初始化配置');
+    return;
+  }
+  hideSetupOverlay();
+  await startAuthenticatedApp();
+  maybeAutoOpenOnboardingGuide();
 }
 
 async function ensureWebAuth() {
@@ -1366,12 +2166,11 @@ async function ensureWebAuth() {
     hideWebAuthOverlay();
     return true;
   }
-  const savedToken = localStorage.getItem(WEB_AUTH_TOKEN_KEY) || state.webAuthToken || '';
-  if (!savedToken) {
-    showWebAuthOverlay('请登录');
-    return false;
+  const savedTokenInfo = savedWebAuthTokenInfo();
+  const savedToken = savedTokenInfo.token;
+  if (savedToken) {
+    setWebAuthToken(savedToken, { remember: savedTokenInfo.remember });
   }
-  setWebAuthToken(savedToken);
   try {
     state.webAuthStatus = await api('/api/web-auth/status');
     hideWebAuthOverlay();
@@ -1390,7 +2189,7 @@ function renderLogCleanup(info) {
   if (toggle) toggle.checked = enabled;
   const status = $('logCleanupStatus');
   if (!status) return;
-  const retentionDays = state.logCleanup.retention_days || 5;
+  const retentionDays = state.logCleanup.retention_days || 30;
   const parts = [
     `本地保留 ${retentionDays} 天`,
     enabled ? 'QMT 清理已启用' : 'QMT 清理未启用',
@@ -1400,6 +2199,29 @@ function renderLogCleanup(info) {
     parts.push(`上次 ${last.finished_at_text}`);
   }
   status.textContent = parts.join('，');
+}
+
+function renderQmtLogLanguage(info) {
+  state.qmtLogLanguage = info || {};
+  const language = state.qmtLogLanguage.language || 'zh';
+  const select = $('qmtLogLanguageSelect');
+  if (select) select.value = language;
+  const status = $('qmtLogLanguageStatus');
+  if (status) status.textContent = `当前：${language === 'en' ? 'English' : '中文'}`;
+}
+
+async function saveQmtLogLanguageFromUi() {
+  const select = $('qmtLogLanguageSelect');
+  const language = select ? select.value : 'zh';
+  const data = await api('/api/qmt-log-language', {
+    method: 'POST',
+    body: JSON.stringify({ language }),
+  });
+  renderQmtLogLanguage(data);
+  log('QMT 日志语言已保存', {
+    language: data.language,
+    dispatch_results: data.dispatch_results || [],
+  });
 }
 
 async function saveLogCleanupFromUi() {
@@ -1527,8 +2349,8 @@ function renderUpdateStatus(data) {
     } else {
       const targets = data.targets || {};
       const parts = [
-        `${data.bridge_name || data.bridge_id || selectedBridge()}：${data.ready ? '可更新' : '未就绪'}`,
-        data.python_dir ? `目录 ${data.python_dir}` : '未配置 QMT Python 目录',
+        `${selectedAccount() || data.bridge_name || data.bridge_id || selectedBridge()}：${data.ready ? '可更新' : '未就绪'}`,
+        data.python_dir ? `核心目录 ${data.python_dir}` : '未配置 QMT 核心目录',
       ];
       const layoutText = updateLayoutText(targets.layout);
       if (layoutText) parts.push(layoutText);
@@ -1572,7 +2394,7 @@ async function runGithubUpdateFromUi() {
     log('GitHub 仓库为空，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认从 GitHub 更新当前桥接端核心代码？更新完成后需要重启 QMT 桥接脚本。');
+  const confirmed = window.confirm('确认从 GitHub 更新当前账号 QMT 目录中的核心代码？更新完成后需要重启 QMT 桥接脚本。');
   if (!confirmed) return;
   setUpdateControlsBusy(true);
   try {
@@ -1595,7 +2417,7 @@ async function uploadZipUpdateFromUi() {
     log('未选择 zip 文件，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认上传 zip 并更新当前桥接端核心代码？更新完成后需要重启 QMT 桥接脚本。');
+  const confirmed = window.confirm('确认上传 zip 并更新当前账号 QMT 目录中的核心代码？更新完成后需要重启 QMT 桥接脚本。');
   if (!confirmed) return;
   const formData = new FormData();
   formData.append('bridge_id', selectedBridge());
@@ -1648,16 +2470,19 @@ function apiFieldHtml(fieldName) {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}">${options}</select></label>`;
   }
   if (meta.type === 'channel') {
-    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="normal">普通 QMT</option><option value="trade">极速交易端</option></select></label>`;
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="normal">普通 QMT 请求</option><option value="trade">交易端请求</option></select></label>`;
   }
   if (meta.type === 'fixed_channel') {
-    return `<label class="field${wide}"><span>${esc(meta.label)}</span><input name="${esc(name)}" data-field="${esc(fieldName)}" type="text" value="normal" readonly><small>全推行情只能通过普通 QMT 推送</small></label>`;
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><input name="${esc(name)}" data-field="${esc(fieldName)}" type="text" value="normal" readonly><small>通用模式由 ctypes 单桥统一转发；高级模式全推由普通 QMT 推送</small></label>`;
   }
   if (meta.type === 'trade_channel') {
-    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="trade">极速交易端</option><option value="normal">普通 QMT</option></select></label>`;
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="trade">交易端请求</option><option value="normal">普通 QMT 请求</option></select></label>`;
   }
   if (meta.type === 'financial_mode') {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="filled">填充数据</option><option value="raw">原始数据</option></select></label>`;
+  }
+  if (meta.type === 'transport_mode') {
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="ctypes">通用模式（ctypes 单桥）</option><option value="lttx">高级模式（两个 QMT）</option></select></label>`;
   }
   if (meta.type === 'report_type') {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="announce_time">公告日期</option><option value="report_time">报告期</option></select></label>`;
@@ -1682,11 +2507,12 @@ function setApiDefaults(endpoint) {
     channel: selectedChannel(),
     whole_quote_channel: 'normal',
     trade_channel: selectedTradeChannel(),
+    transport_mode: state.transportMode,
     side: 'buy',
     since: '0',
     limit: '50',
     markets: 'SH,SZ',
-    quote_subscribe_id: '',
+    quote_subscribe_id: state.quoteSubscribeId || '',
     ...(endpoint.defaults || {}),
   };
   Array.from(form.elements).forEach((element) => {
@@ -1756,6 +2582,7 @@ function currentApiRequest() {
     });
     return {
       method: endpoint.method,
+      endpointId: endpoint.id,
       url: apiWsUrl(`${endpoint.path}${query.toString() ? `?${query.toString()}` : ''}`),
       headers: {},
       body: null,
@@ -1768,6 +2595,7 @@ function currentApiRequest() {
     });
     return {
       method: endpoint.method,
+      endpointId: endpoint.id,
       url: apiUrl(`${endpoint.path}${query.toString() ? `?${query.toString()}` : ''}`),
       headers: apiPreviewHeaders(),
       body: null,
@@ -1775,6 +2603,7 @@ function currentApiRequest() {
   }
   return {
     method: endpoint.method,
+    endpointId: endpoint.id,
     url: apiUrl(endpoint.path),
     headers: apiPreviewHeaders(),
     body: params,
@@ -1803,10 +2632,24 @@ function updateApiRequestPreview() {
 async function sendApiDebugRequest(event) {
   event.preventDefault();
   const request = currentApiRequest();
+  const endpoint = apiEndpointById(state.apiEndpointId);
   if (request.method === 'DOC') {
     return;
   }
   if (request.method === 'WS') {
+    if (request.endpointId === 'ws_quotes') {
+      const subscribeId = String(($('apiForm').elements.subscribe_id || {}).value || state.quoteSubscribeId || '').trim();
+      if (!subscribeId) {
+        $('apiResponseBox').textContent = JSON.stringify({
+          ok: false,
+          error: '网页调试不允许空订阅 ID 接收全部行情。请先订阅行情获取 subscribe_id，再连接推送。',
+        }, null, 2);
+        return;
+      }
+      state.quoteSubscribeId = subscribeId;
+      connectQuoteWebSocket(subscribeId);
+      return;
+    }
     connectApiWebSocket(request);
     return;
   }
@@ -1814,7 +2657,15 @@ async function sendApiDebugRequest(event) {
     $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: request.body.orders_json_error }, null, 2);
     return;
   }
-  $('apiResponseBox').textContent = '请求中...';
+  if (isDownloadEndpoint(endpoint)) {
+    request.body = request.body || {};
+    request.body.job_id = request.body.job_id || newDownloadJobId(endpoint.id);
+    beginDownloadProgress(request.body.job_id, request.body, endpoint);
+    $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
+    $('apiResponseBox').textContent = `请求中...\n已开始监听下载进度 job_id=${request.body.job_id}`;
+  } else {
+    $('apiResponseBox').textContent = '请求中...';
+  }
   try {
     const response = await fetch(request.url, {
       method: request.method,
@@ -1833,8 +2684,14 @@ async function sendApiDebugRequest(event) {
     }
     $('apiResponseBox').textContent = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
     handleApiDebugPayload(payload);
+    if (isDownloadEndpoint(endpoint)) {
+      finishDownloadRequest(payload);
+    }
   } catch (error) {
     $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: error.message }, null, 2);
+    if (isDownloadEndpoint(endpoint)) {
+      finishDownloadRequest(null, error);
+    }
   }
 }
 
@@ -1844,15 +2701,26 @@ function handleApiDebugPayload(payload) {
   if (endpoint.id === 'quote_subscribe_whole' || endpoint.id === 'quote_subscribe_single') {
     const subscribeId = payload.data.subscribe_id || '';
     if (subscribeId) {
-      resetQuoteLive(subscribeId);
-      connectQuoteWebSocket(subscribeId);
+      resetQuoteLive(subscribeId, { active: false });
+      const field = $('apiForm').elements.subscribe_id;
+      if (field) field.value = subscribeId;
+      $('apiResponseBox').textContent = `${JSON.stringify(payload, null, 2)}\n\n已获取订阅 ID。网页端不会自动连接全推行情，请点击“连接推送”后再查看实时行情。`;
     }
   }
   if (endpoint.id === 'quote_latest') {
-    (payload.data.events || []).forEach((event) => handleQuoteEvent(event));
+    (payload.data.events || []).forEach((event) => handleQuoteEvent(event, { force: true }));
+    scheduleQuoteRender(true);
   }
   if (endpoint.id === 'quote_unsubscribe') {
     stopQuoteLive({ unsubscribe: false });
+  }
+  if (isDownloadEndpoint(endpoint)) {
+    const jobId = payload.data.job_id || state.downloadJobId || '';
+    if (jobId) {
+      state.downloadJobId = String(jobId);
+      renderDownloadProgress();
+      $('apiResponseBox').textContent = `${JSON.stringify(payload, null, 2)}\n\n已开始监听下载进度，job_id=${jobId}`;
+    }
   }
 }
 
@@ -1870,9 +2738,15 @@ function stopQuoteLive(options = {}) {
   const subscribeId = String(state.quoteSubscribeId || '');
   const shouldUnsubscribe = !!subscribeId && options.unsubscribe !== false;
   closeApiSocket();
+  if (state.quoteRenderTimer) {
+    clearTimeout(state.quoteRenderTimer);
+    state.quoteRenderTimer = null;
+  }
   state.quoteRows.clear();
   state.quoteSeq = 0;
   state.quoteEventCount = 0;
+  state.quoteSocketLogCount = 0;
+  state.quoteSocketMessageCount = 0;
   state.quoteSubscribeId = '';
   state.quoteLiveActive = false;
   state.quoteConnectionText = '未订阅';
@@ -1906,11 +2780,26 @@ function stopQuoteLive(options = {}) {
 }
 
 function connectQuoteWebSocket(subscribeId = '') {
+  subscribeId = String(subscribeId || state.quoteSubscribeId || '').trim();
+  if (!subscribeId) {
+    $('apiResponseBox').textContent = JSON.stringify({
+      ok: false,
+      error: '请先订阅行情获取 subscribe_id，再连接网页实时推送。',
+    }, null, 2);
+    return;
+  }
   const params = new URLSearchParams();
   if (subscribeId) params.set('subscribe_id', subscribeId);
-  state.quoteLiveActive = !!subscribeId;
+  state.quoteSubscribeId = subscribeId;
+  state.quoteLiveActive = true;
+  state.quoteSocketLogCount = 0;
+  state.quoteSocketMessageCount = 0;
+  state.quoteConnectionText = `连接中 #${subscribeId}`;
+  renderQuoteLiveTable();
   const request = {
     method: 'WS',
+    endpointId: 'ws_quotes',
+    quoteStream: true,
     url: apiWsUrl(`/ws/quotes${params.toString() ? `?${params.toString()}` : ''}`),
   };
   connectApiWebSocket(request);
@@ -1927,41 +2816,60 @@ function connectApiWebSocket(request) {
   $('apiResponseBox').textContent = `连接中...\n${request.url}`;
   const socket = new WebSocket(request.url);
   state.apiSocket = socket;
-  const append = (message) => {
+  const append = (message, options = {}) => {
     const box = $('apiResponseBox');
+    if (!options.force && request.quoteStream) {
+      if (state.quoteSocketLogCount >= QUOTE_RESPONSE_LOG_LIMIT) return;
+      state.quoteSocketLogCount += 1;
+    }
     box.textContent = `${box.textContent}\n${message}`;
+    if (box.textContent.length > 20000) {
+      box.textContent = box.textContent.slice(-20000);
+    }
     box.scrollTop = box.scrollHeight;
   };
   socket.onopen = () => {
+    if (state.apiSocket !== socket) return;
     state.quoteConnectionText = state.quoteLiveActive ? '已连接' : '未订阅';
     renderQuoteLiveTable();
     append('WebSocket 已连接');
   };
   socket.onmessage = (event) => {
+    if (state.apiSocket !== socket) return;
     try {
       const payload = JSON.parse(event.data);
-      append(JSON.stringify(payload, null, 2));
       if (payload.type === 'quote' && payload.event && state.quoteLiveActive) {
+        state.quoteSocketMessageCount += 1;
         handleQuoteEvent(payload.event);
+        if (request.quoteStream && state.quoteSocketMessageCount % 200 === 0) {
+          append(`已接收 ${state.quoteSocketMessageCount} 条行情推送，实时表格按 ${QUOTE_RENDER_INTERVAL_MS}ms 限频刷新。`);
+        }
+        if (request.quoteStream) return;
       }
+      append(JSON.stringify(payload, null, 2));
     } catch (error) {
       append(event.data);
     }
   };
   socket.onerror = () => {
+    if (state.apiSocket !== socket) return;
     state.quoteConnectionText = '连接错误';
+    if (request.quoteStream) state.quoteLiveActive = false;
     renderQuoteLiveTable();
     append('WebSocket 连接错误');
   };
   socket.onclose = () => {
-    state.quoteConnectionText = state.quoteLiveActive ? '已关闭' : '未订阅';
+    if (state.apiSocket !== socket) return;
+    if (request.quoteStream) state.quoteLiveActive = false;
+    state.quoteConnectionText = request.quoteStream && state.quoteSubscribeId ? '已断开' : '未订阅';
+    state.apiSocket = null;
     renderQuoteLiveTable();
     append('WebSocket 已关闭');
   };
 }
 
-function handleQuoteEvent(event) {
-  if (!state.quoteLiveActive) return;
+function handleQuoteEvent(event, options = {}) {
+  if (!state.quoteLiveActive && !options.force) return;
   if (state.quoteSubscribeId && String(event.subscribe_id || '') !== String(state.quoteSubscribeId)) return;
   const panel = $('quoteLivePanel');
   if (panel) panel.classList.remove('hidden');
@@ -1969,7 +2877,7 @@ function handleQuoteEvent(event) {
   state.quoteSeq = Math.max(state.quoteSeq, Number(event.seq || state.quoteSeq || 0));
   const data = event.data || {};
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    Object.entries(data).forEach(([code, value]) => {
+    Object.entries(data).slice(0, QUOTE_EVENT_PROCESS_LIMIT).forEach(([code, value]) => {
       if (value && typeof value === 'object' && !Array.isArray(value)) {
         upsertQuoteRow(code, value, event);
       }
@@ -1980,7 +2888,7 @@ function handleQuoteEvent(event) {
   } else {
     upsertQuoteRow(event.subscribe_id || '--', { value: data }, event);
   }
-  renderQuoteLiveTable();
+  scheduleQuoteRender(!!options.force);
 }
 
 function upsertQuoteRow(code, quote, event) {
@@ -2015,14 +2923,34 @@ function renderQuoteLiveTable() {
   body.innerHTML = rows.map((row) => `<tr>
     <td>${esc(row.code)}</td>
     <td class="num">${plain(row.price)}</td>
-    <td class="num">${plain(row.pct)}</td>
+    <td class="num ${signedClass(row.pct)}">${plain(row.pct)}</td>
     <td class="num">${plain(row.volume)}</td>
     <td>${plain(row.time)}</td>
   </tr>`).join('') || '<tr><td colspan="5">等待行情推送</td></tr>';
   if (status) {
     const subText = state.quoteSubscribeId ? ` #${state.quoteSubscribeId}` : '';
-    status.textContent = `${state.quoteConnectionText}${subText} · ${state.quoteEventCount || 0} 次推送 · ${rows.length} 条 / seq ${state.quoteSeq || 0}`;
+    status.textContent = `${state.quoteConnectionText}${state.quoteConnectionText.includes('#') ? '' : subText} · ${state.quoteEventCount || 0} 次推送 · ${rows.length} 条 / seq ${state.quoteSeq || 0}`;
   }
+  const connectBtn = $('quoteConnectBtn');
+  const stopBtn = $('quoteStopBtn');
+  if (connectBtn) connectBtn.disabled = !state.quoteSubscribeId || state.quoteLiveActive;
+  if (stopBtn) stopBtn.disabled = !state.quoteSubscribeId && !state.quoteLiveActive;
+}
+
+function scheduleQuoteRender(force = false) {
+  if (force) {
+    if (state.quoteRenderTimer) {
+      clearTimeout(state.quoteRenderTimer);
+      state.quoteRenderTimer = null;
+    }
+    renderQuoteLiveTable();
+    return;
+  }
+  if (state.quoteRenderTimer) return;
+  state.quoteRenderTimer = setTimeout(() => {
+    state.quoteRenderTimer = null;
+    renderQuoteLiveTable();
+  }, QUOTE_RENDER_INTERVAL_MS);
 }
 
 function setView(view) {
@@ -2037,7 +2965,7 @@ function setView(view) {
   localStorage.setItem('cfquant.view', view);
   document.body.dataset.view = view;
   const titleMap = {
-    overview: '概览',
+    overview: '首页',
     trade: '交易',
     orders: '委托',
     status: '状态',
@@ -2053,6 +2981,34 @@ function setView(view) {
   });
   document.querySelectorAll('.view-panel').forEach((node) => {
     node.classList.toggle('hidden', !node.classList.contains(`view-${view}`));
+  });
+  syncHomeToolbar();
+  if (view === 'settings') {
+    setSettingsTab(state.settingsTab || localStorage.getItem(SETTINGS_TAB_KEY) || 'api-key', false);
+  }
+  if (state.appStarted && view === 'status') {
+    refreshStatus().catch((error) => log('状态刷新失败', { error: error.message }));
+  }
+  if (state.appStarted && view === 'bindings') {
+    refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message }));
+  }
+  if (state.appStarted && view === 'callbacks') {
+    refreshCallbacks().catch((error) => log('回调刷新失败', { error: error.message }));
+  }
+}
+
+function syncHomeToolbar() {
+  const home = state.currentView === 'overview';
+  const bridgeField = $('bridgeField');
+  if (bridgeField) bridgeField.style.display = 'none';
+  [
+    'queryChannelField',
+    'tradeChannelField',
+    'refreshBtn',
+    'autoRefreshField',
+  ].forEach((id) => {
+    const node = $(id);
+    if (node) node.style.display = home ? 'none' : '';
   });
 }
 
@@ -2090,34 +3046,217 @@ function loadAccountPairs() {
   }
 }
 
+function accountPairEntries() {
+  return Object.entries(state.accountPairs || {})
+    .map(([accountId, pair]) => {
+      const bridgeId = pair && typeof pair === 'object' ? pair.bridge_id : pair;
+      return {
+        accountId: String(accountId || '').trim(),
+        bridgeId: String(bridgeId || '').trim(),
+      };
+    })
+    .filter((item) => item.accountId && item.bridgeId);
+}
+
+function accountConfigEntries() {
+  return Object.entries(state.accountConfigs || {})
+    .map(([accountId, config]) => ({
+      accountId: String(accountId || '').trim(),
+      config: config && typeof config === 'object' ? config : {},
+    }))
+    .filter((item) => item.accountId);
+}
+
+function activeAccountMode() {
+  const accountId = String(state.accountId || '').trim();
+  const config = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
+  return state.accountRouteMode
+    || (config && config.mode)
+    || state.transportMode
+    || 'ctypes';
+}
+
+function preferredAccountMode() {
+  const accountId = String(state.accountId || '').trim();
+  const config = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
+  return (config && config.mode)
+    || state.transportMode
+    || 'ctypes';
+}
+
+function shouldUseLttxStatus() {
+  return preferredAccountMode() === 'lttx';
+}
+
+function bridgeIdForAccount(accountId) {
+  accountId = String(accountId || '').trim();
+  const config = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
+  const pairBridge = accountId ? loadAccountPairs()[accountId] : '';
+  return (config && config.bridge_id)
+    || pairBridge
+    || state.defaultBridgeId
+    || 'default';
+}
+
+async function saveAccountConfigRequest(body) {
+  try {
+    return await api('/api/account-config', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    if (error.status !== 404 && error.message !== 'not found') {
+      throw error;
+    }
+    const legacyBridgeId = bridgeIdForAccount(body.account_id) || state.defaultBridgeId || 'default';
+    const data = await api('/api/account-pairs', {
+      method: 'POST',
+      body: JSON.stringify({
+        account_id: body.account_id,
+        bridge_id: legacyBridgeId,
+      }),
+    });
+    log('当前 Web 后端未加载账号配置接口，已按旧账号绑定保存；重启 Web 后可保存 QMT 目录、模式和共享行情源', {
+      account_id: body.account_id,
+      bridge_id: legacyBridgeId,
+    });
+    return {
+      ...data,
+      account: data.account || {
+        account_id: body.account_id,
+        bridge_id: legacyBridgeId,
+        qmt_dir: body.qmt_dir || '',
+        mode: body.mode || 'ctypes',
+        data_provider: !!body.data_provider,
+      },
+      account_pairs: data.account_pairs || state.accountPairs || {},
+      account_configs: data.account_configs || state.accountConfigs || {},
+      bridges: data.bridges || state.bridges || {},
+      setup: data.setup || state.setup,
+      legacy_fallback: true,
+    };
+  }
+}
+
+async function deleteAccountConfigRequest(accountId) {
+  try {
+    return await api('/api/account-config/delete', {
+      method: 'POST',
+      body: JSON.stringify({ account_id: accountId }),
+    });
+  } catch (error) {
+    if (error.status !== 404 && error.message !== 'not found') {
+      throw error;
+    }
+    const data = await api('/api/account-pairs/delete', {
+      method: 'POST',
+      body: JSON.stringify({ account_id: accountId }),
+    });
+    log('当前 Web 后端未加载账号配置删除接口，已按旧账号绑定删除；重启 Web 后完整配置删除会生效', {
+      account_id: accountId,
+    });
+    const nextConfigs = { ...(state.accountConfigs || {}) };
+    delete nextConfigs[accountId];
+    return {
+      ...data,
+      account_pairs: data.account_pairs || {},
+      account_configs: data.account_configs || nextConfigs,
+      setup: data.setup || state.setup,
+      legacy_fallback: true,
+    };
+  }
+}
+
+function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
+  const select = $('accountInput');
+  if (!select) return;
+  const current = String(state.accountId || select.value || '').trim();
+  const accountMap = new Map();
+  const defaultId = String(defaultAccountId || '').trim();
+  const defaultBridgeId = state.defaultBridgeId || 'default';
+
+  if (defaultId) {
+    accountMap.set(defaultId, {
+      bridgeId: loadAccountPairs()[defaultId] || defaultBridgeId,
+      defaultAccount: true,
+    });
+  }
+  accountPairEntries().forEach(({ accountId, bridgeId }) => {
+    accountMap.set(accountId, { bridgeId, defaultAccount: accountId === defaultId });
+  });
+  accountConfigEntries().forEach(({ accountId, config }) => {
+    accountMap.set(accountId, {
+      bridgeId: config.bridge_id || loadAccountPairs()[accountId] || defaultBridgeId,
+      defaultAccount: accountId === defaultId,
+      mode: config.mode || 'ctypes',
+      provider: !!config.data_provider,
+    });
+  });
+  const options = Array.from(accountMap.entries()).map(([accountId, info]) => {
+    const modeLabel = info.mode === 'lttx' ? '高级' : '通用';
+    const providerLabel = info.provider ? '，数据源' : '';
+    const suffix = info.defaultAccount
+      ? `（默认账号，${modeLabel}${providerLabel}）`
+      : `（${modeLabel}${providerLabel}）`;
+    return `<option value="${plain(accountId)}">${plain(`${accountId} ${suffix}`)}</option>`;
+  }).join('');
+
+  select.innerHTML = options || '<option value="">暂无可用账号</option>';
+  const selected = accountMap.has(current)
+    ? current
+    : (defaultId && accountMap.has(defaultId) ? defaultId : (accountMap.keys().next().value || ''));
+  select.value = selected;
+  state.accountId = selected;
+  state.accountRouteMode = (state.accountConfigs && state.accountConfigs[selected] && state.accountConfigs[selected].mode) || state.transportMode || 'ctypes';
+  state.accountRouteFallback = false;
+}
+
 function saveAccountPairs(pairs) {
   localStorage.setItem(ACCOUNT_PAIR_KEY, JSON.stringify(pairs || {}));
 }
 
 function bridgeOptionExists(bridgeId) {
   const select = $('bridgeSelect');
+  if (!select) return false;
   return Array.from(select.options).some((option) => option.value === bridgeId);
 }
 
 function renderAccountPairs() {
-  const list = $('accountPairList');
-  if (!list) return;
-  const pairs = loadAccountPairs();
-  const entries = Object.entries(pairs).filter(([accountId, bridgeId]) => accountId && bridgeId);
-  $('accountPairCount').textContent = `${entries.length} 组`;
-  list.innerHTML = '';
+  const overviewList = $('accountPairList');
+  const bindingList = $('bindingAccountConfigList');
+  const configEntries = accountConfigEntries().map(({ accountId, config }) => ({
+    accountId,
+    bridgeId: config.bridge_id || bridgeIdForAccount(accountId),
+    config,
+  }));
+  const seen = new Set(configEntries.map((item) => item.accountId));
+  const legacyEntries = accountPairEntries()
+    .filter(({ accountId }) => !seen.has(accountId))
+    .map(({ accountId, bridgeId }) => ({
+      accountId,
+      bridgeId,
+      config: { bridge_id: bridgeId, mode: 'ctypes', qmt_dir: '', data_provider: false },
+    }));
+  const entries = [...configEntries, ...legacyEntries].filter((item) => item.accountId);
+  renderAccountSelect();
+  $('accountPairCount').textContent = `${entries.length} 个账号`;
+  if (overviewList) overviewList.innerHTML = '';
+  if (bindingList) bindingList.innerHTML = '';
   if (!entries.length) {
     const empty = document.createElement('div');
     empty.className = 'metric-note';
-    empty.textContent = '暂无配对';
-    list.appendChild(empty);
+    empty.textContent = '暂无账号配置';
+    if (overviewList) overviewList.appendChild(empty.cloneNode(true));
+    if (bindingList) bindingList.appendChild(empty);
     return;
   }
-  entries.forEach(([accountId, bridgeId]) => {
+  entries.forEach(({ accountId, bridgeId, config }) => {
     const row = document.createElement('div');
     row.className = 'pair-row';
     const label = document.createElement('span');
-    label.textContent = `${accountId} -> ${bridgeId}`;
+    const modeLabel = config.mode === 'lttx' ? '高级模式' : '通用模式';
+    const providerLabel = config.data_provider ? ' / 共享行情源' : '';
+    label.textContent = `${accountId} / ${modeLabel}${providerLabel}`;
     const useBtn = document.createElement('button');
     useBtn.type = 'button';
     useBtn.textContent = '使用';
@@ -2125,74 +3264,142 @@ function renderAccountPairs() {
     useBtn.dataset.bridgeId = bridgeId;
     row.appendChild(label);
     row.appendChild(useBtn);
-    list.appendChild(row);
+    if (overviewList) overviewList.appendChild(row);
+
+    if (bindingList) {
+      const configRow = document.createElement('div');
+      configRow.className = 'config-row';
+      const info = document.createElement('div');
+      info.className = 'config-info';
+      const strong = document.createElement('strong');
+      strong.textContent = accountId;
+      const summary = document.createElement('div');
+      summary.className = 'config-summary';
+      const modeLine = document.createElement('small');
+      modeLine.textContent = `模式：${modeLabel}${providerLabel}`;
+      const dirLine = document.createElement('small');
+      dirLine.textContent = config.qmt_dir
+        ? `QMT 核心目录：${config.qmt_dir}`
+        : 'QMT 核心目录未填写，自动更新不可用';
+      summary.appendChild(modeLine);
+      summary.appendChild(dirLine);
+      info.appendChild(strong);
+      info.appendChild(summary);
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.textContent = '编辑';
+      editBtn.dataset.accountId = accountId;
+      editBtn.dataset.bridgeId = bridgeId;
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.textContent = '删除';
+      deleteBtn.dataset.accountId = accountId;
+      deleteBtn.dataset.action = 'delete-account';
+      configRow.appendChild(info);
+      configRow.appendChild(editBtn);
+      configRow.appendChild(deleteBtn);
+      bindingList.appendChild(configRow);
+    }
   });
 }
 
 async function saveCurrentAccountPair() {
   const accountId = selectedAccount();
-  const bridgeId = selectedBridge();
+  const form = $('bindingForm');
+  const qmtDir = form && form.qmt_dir ? form.qmt_dir.value.trim() : '';
+  const mode = form && form.mode ? form.mode.value : 'ctypes';
+  const dataProvider = !!(form && form.data_provider && form.data_provider.checked);
   if (!accountId) {
     log('账号为空，无法保存配对');
     return;
   }
-  const data = await api('/api/account-pairs', {
-    method: 'POST',
-    body: JSON.stringify({ account_id: accountId, bridge_id: bridgeId }),
+  const data = await saveAccountConfigRequest({
+    account_id: accountId,
+    qmt_dir: qmtDir,
+    mode,
+    data_provider: dataProvider,
   });
   state.accountPairs = data.account_pairs || {};
+  state.accountConfigs = data.account_configs || state.accountConfigs;
+  state.setup = data.setup || state.setup;
+  state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
+  state.bridges = data.bridges || state.bridges;
+  state.accountId = accountId;
+  renderBridgeSelect(state.bridges);
+  renderAccountSelect();
+  applyAccountPair(accountId);
+  syncBindingForm();
   renderAccountPairs();
   await refreshBindingStatuses();
-  log('账号配对已保存', { account_id: accountId, bridge_id: bridgeId });
+  log('账号配置已保存', { account_id: accountId, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
+  if (data.qmt_bridge_identity) {
+    log('ctypes 身份配置已处理', data.qmt_bridge_identity);
+  }
+  if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId });
 }
 
 async function removeCurrentAccountPair() {
   const accountId = selectedAccount();
   if (!accountId) return;
-  const data = await api('/api/account-pairs/delete', {
-    method: 'POST',
-    body: JSON.stringify({ account_id: accountId }),
-  });
+  const data = await deleteAccountConfigRequest(accountId);
   state.accountPairs = data.account_pairs || {};
+  state.accountConfigs = data.account_configs || {};
+  state.setup = data.setup || state.setup;
+  state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
+  if (state.accountId === accountId) {
+    state.accountId = '';
+  }
   renderAccountPairs();
+  if (!state.accountId) {
+    state.accountId = state.defaultAccountId || '';
+    renderAccountSelect();
+    applyAccountPair(state.accountId);
+    syncBindingForm();
+  }
   await refreshBindingStatuses();
-  log('账号配对已移除', { account_id: accountId });
+  log('账号配置已删除', { account_id: accountId });
 }
 
 function applyAccountPair(accountId) {
   accountId = String(accountId || '').trim();
   if (!accountId) return false;
-  const bridgeId = loadAccountPairs()[accountId];
-  if (!bridgeId || !bridgeOptionExists(bridgeId)) return false;
-  $('bridgeSelect').value = bridgeId;
+  const bridgeId = bridgeIdForAccount(accountId);
+  const select = $('bridgeSelect');
+  if (select && bridgeOptionExists(bridgeId)) {
+    select.value = bridgeId;
+  }
   selectedBridge();
-  return true;
+  return !!((state.accountConfigs && state.accountConfigs[accountId]) || loadAccountPairs()[accountId]);
 }
 
 function syncBindingForm() {
   const form = $('bindingForm');
   if (!form) return;
   form.account_id.value = $('accountInput').value.trim();
-  if (bridgeOptionExists(selectedBridge())) {
-    form.bridge_id.value = selectedBridge();
-  }
+  const accountId = form.account_id.value.trim();
+  const config = state.accountConfigs && state.accountConfigs[accountId];
+  if (form.qmt_dir) form.qmt_dir.value = config && config.qmt_dir ? config.qmt_dir : '';
+  if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
+  if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
 }
 
 function selectAccountPair(accountId, bridgeId) {
   if (accountId) {
-    $('accountInput').value = accountId;
+    state.accountId = accountId;
+    renderAccountSelect();
     selectedAccount();
+    applyAccountPair(accountId);
   }
-  if (bridgeId && bridgeOptionExists(bridgeId)) {
+  if (!accountId && bridgeId && $('bridgeSelect') && bridgeOptionExists(bridgeId)) {
     $('bridgeSelect').value = bridgeId;
     selectedBridge();
   }
   syncBindingForm();
   resetSelectionState();
-  refreshStatus().catch((error) => log('账号配对状态刷新失败', { error: error.message }));
-  refreshAccount('asset,positions').catch((error) => log('账号配对资产刷新失败', { error: error.message }));
-  refreshAccount('orders').catch((error) => log('账号配对委托刷新失败', { error: error.message }));
-  refreshAccount('trades').catch((error) => log('账号配对成交刷新失败', { error: error.message }));
+  refreshStatus().catch((error) => log('账号配置状态刷新失败', { error: error.message }));
+  refreshAccount('asset,positions').catch((error) => log('账号配置资产刷新失败', { error: error.message }));
+  refreshAccount('orders').catch((error) => log('账号配置委托刷新失败', { error: error.message }));
+  refreshAccount('trades').catch((error) => log('账号配置成交刷新失败', { error: error.message }));
 }
 
 function renderBridgeConfigList() {
@@ -2204,13 +3411,27 @@ function renderBridgeConfigList() {
   Object.entries(bridges).forEach(([bridgeId, bridge]) => {
     const row = document.createElement('div');
     row.className = 'config-row';
-    const label = document.createElement('span');
+    const label = document.createElement('div');
+    label.className = 'config-info';
     const strong = document.createElement('strong');
     strong.textContent = `${plain(bridge.name || bridgeId)} (${plain(bridgeId)})`;
-    const dir = document.createElement('small');
-    dir.textContent = bridge.python_dir ? `Python 目录：${bridge.python_dir}` : 'Python 目录未设置';
     label.appendChild(strong);
-    label.appendChild(dir);
+    const channels = bridge.channels || {};
+    const summary = document.createElement('div');
+    summary.className = 'config-summary';
+    const normalLine = document.createElement('small');
+    normalLine.textContent = `普通通道：${channels.normal || '--'}`;
+    const tradeLine = document.createElement('small');
+    tradeLine.textContent = `极速通道：${channels.trade || '--'}`;
+    const normalDirLine = document.createElement('small');
+    normalDirLine.textContent = bridge.python_dir ? `普通 QMT 目录：${bridge.python_dir}` : '普通 QMT 目录未设置';
+    const tradeDirLine = document.createElement('small');
+    tradeDirLine.textContent = bridge.python_dir ? `极速交易端目录：${bridge.python_dir}` : '极速交易端目录未设置';
+    summary.appendChild(normalLine);
+    summary.appendChild(tradeLine);
+    summary.appendChild(normalDirLine);
+    summary.appendChild(tradeDirLine);
+    label.appendChild(summary);
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
     editBtn.textContent = '编辑';
@@ -2263,28 +3484,39 @@ async function submitBindingForm(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const accountId = form.account_id.value.trim();
-  const bridgeId = form.bridge_id.value;
+  const qmtDir = form.qmt_dir ? form.qmt_dir.value.trim() : '';
+  const mode = form.mode ? form.mode.value : 'ctypes';
+  const dataProvider = !!(form.data_provider && form.data_provider.checked);
   if (!accountId) {
     log('账号为空，无法保存绑定');
     return;
   }
   try {
-    const data = await api('/api/account-pairs', {
-      method: 'POST',
-      body: JSON.stringify({ account_id: accountId, bridge_id: bridgeId }),
+    const data = await saveAccountConfigRequest({
+      account_id: accountId,
+      qmt_dir: qmtDir,
+      mode,
+      data_provider: dataProvider,
     });
     state.accountPairs = data.account_pairs || {};
-    $('accountInput').value = accountId;
+    state.accountConfigs = data.account_configs || {};
+    state.setup = data.setup || state.setup;
+    state.bridges = data.bridges || state.bridges;
+    state.accountId = accountId;
+    renderBridgeSelect(state.bridges);
+    renderAccountSelect();
     selectedAccount();
-    if (bridgeId && bridgeOptionExists(bridgeId)) {
-      $('bridgeSelect').value = bridgeId;
-      selectedBridge();
-    }
+    applyAccountPair(accountId);
+    syncBindingForm();
     renderAccountPairs();
     await refreshBindingStatuses();
-    log('账号绑定已保存', { account_id: accountId, bridge_id: bridgeId });
+    log('账号配置已保存', { account_id: accountId, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
+    if (data.qmt_bridge_identity) {
+      log('ctypes 身份配置已处理', data.qmt_bridge_identity);
+    }
+    if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId });
   } catch (error) {
-    log('账号绑定保存失败', { error: error.message });
+    log('账号配置保存失败', { error: error.message });
   }
 }
 
@@ -2312,6 +3544,8 @@ async function refreshConfig() {
   const data = await api('/api/config');
   state.envBridges = data.env_bridges || {};
   state.accountPairs = data.account_pairs || {};
+  state.accountConfigs = data.account_configs || {};
+  state.setup = data.setup || null;
   state.bridgeId = data.bridges && data.bridges[currentBridgeId] ? currentBridgeId : (data.default_bridge_id || Object.keys(data.bridges || {})[0] || 'default');
   renderBridgeSelect(data.bridges || {});
   renderAccountPairs();
@@ -2324,27 +3558,25 @@ async function refreshConfig() {
 async function refreshBindingStatuses() {
   const body = $('bindingStatusBody');
   const overviewBody = $('overviewBindingBody');
-  const pairs = state.accountPairs || {};
-  const pairEntries = Object.values(pairs).filter((pair) => pair && pair.account_id && pair.bridge_id);
-  const bridgeIds = new Set(Object.keys(state.bridges || {}));
-  pairEntries.forEach((pair) => bridgeIds.add(pair.bridge_id));
-  bridgeIds.add('default');
-  const entries = [
-    ...pairEntries.map((pair) => ({ kind: 'pair', pair, bridge_id: pair.bridge_id, account_id: pair.account_id })),
-    ...Array.from(bridgeIds)
-      .filter((bridgeId) => !pairEntries.some((pair) => pair.bridge_id === bridgeId))
-      .map((bridgeId) => ({ kind: 'bridge', bridge_id: bridgeId, account_id: '' })),
-  ].filter((item) => state.bridges[item.bridge_id]);
+  const configs = state.accountConfigs || {};
+  const pairEntries = Object.values(configs).filter((config) => config && config.account_id && config.bridge_id);
+  const legacyPairs = Object.values(state.accountPairs || {}).filter((pair) => (
+    pair && pair.account_id && pair.bridge_id && !configs[pair.account_id]
+  ));
+  pairEntries.push(...legacyPairs);
+  const entries = pairEntries
+    .map((pair) => ({ kind: 'pair', pair, bridge_id: pair.bridge_id, account_id: pair.account_id }))
+    .filter((item) => item.account_id);
   if (!entries.length) {
-    if (body) body.innerHTML = '<tr><td colspan="5">暂无账号配对</td></tr>';
-    if (overviewBody) overviewBody.innerHTML = '<tr><td colspan="4">暂无账号配对</td></tr>';
+    if (body) body.innerHTML = '<tr><td colspan="6">暂无账号配置</td></tr>';
+    if (overviewBody) overviewBody.innerHTML = '<tr><td colspan="5">暂无账号配置</td></tr>';
     $('overviewBindingCount').textContent = '0 组';
     renderPairVerification(null);
     return;
   }
   const rows = await Promise.all(entries.map(async (entry) => {
     try {
-      const status = await api(`/api/status?bridge_id=${encodeURIComponent(entry.bridge_id)}`);
+      const status = await api(`/api/status?account_id=${encodeURIComponent(entry.account_id)}`);
       return { item: entry, status };
     } catch (error) {
       return { item: entry, error };
@@ -2357,14 +3589,20 @@ async function refreshBindingStatuses() {
     const overviewRows = rows.filter(({ item }) => item.kind === 'pair');
     overviewBody.innerHTML = overviewRows.length
       ? overviewRows.map(({ item, status, error }) => bindingStatusRowHtml(item, status, error, false)).join('')
-      : '<tr><td colspan="4">暂无账号配对</td></tr>';
+      : '<tr><td colspan="5">暂无账号配置</td></tr>';
     $('overviewBindingCount').textContent = `${overviewRows.length} 组`;
   }
 }
 
 function bindingStatusRowHtml(item, status, error, withVerify) {
-  const normalOnline = status && status.normal && status.normal.online;
-  const tradeOnline = status && status.trade && status.trade.online;
+  const selected = status && status.status ? status.status : status;
+  const normalOnline = selected && selected.normal && selected.normal.online;
+  const tradeOnline = selected && selected.trade && selected.trade.online;
+  const config = state.accountConfigs && state.accountConfigs[item.account_id];
+  const preferred = (status && status.preferred_mode) || (config && config.mode) || 'ctypes';
+  const effective = (status && status.effective_mode) || preferred;
+  const provider = (status && status.data_provider) || (config && config.data_provider);
+  const qmtDirText = config && config.qmt_dir ? config.qmt_dir : '未填写（自动更新不可用）';
   const title = error ? error.message : '';
   const accountText = item.account_id || '未绑定';
   const verifyCell = withVerify
@@ -2372,31 +3610,32 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
     : '';
   return `<tr title="${esc(title)}">
     <td>${esc(accountText)}</td>
-    <td>${esc(item.bridge_id)}</td>
-    <td><span class="status-dot ${normalOnline ? 'online' : 'offline'}">${normalOnline ? '在线' : '离线'}</span></td>
-    <td><span class="status-dot ${tradeOnline ? 'online' : 'offline'}">${tradeOnline ? '在线' : '离线'}</span></td>
+    <td>${preferred === 'lttx' ? '高级' : '通用'}</td>
+    <td><span class="status-dot ${normalOnline && tradeOnline ? 'online' : 'offline'}">${effective === 'lttx' ? '高级' : '通用'}${status && status.fallback ? '（已回退）' : ''}</span></td>
+    <td>${esc(qmtDirText)}</td>
+    <td>${provider ? '共享行情源' : '--'}</td>
     ${verifyCell}
   </tr>`;
 }
 
 async function verifyPair(accountId, bridgeId) {
-  $('pairVerifyNote').textContent = `${accountId} / ${bridgeId}`;
+  $('pairVerifyNote').textContent = `${accountId}`;
   try {
     const data = await api('/api/account-pairs/verify', {
       method: 'POST',
       body: JSON.stringify({
         account_id: accountId,
-        bridge_id: bridgeId,
+        bridge_id: bridgeId || bridgeIdForAccount(accountId),
         channel: selectedChannel(),
         force: 1,
       }),
     });
     renderPairVerification(data);
-    log('账号配对验证完成', { account_id: accountId, bridge_id: bridgeId });
+    log('账号验证完成', { account_id: accountId });
   } catch (error) {
     renderPairVerification(null);
     $('pairVerifyNote').textContent = `验证失败：${error.message}`;
-    log('账号配对验证失败', { account_id: accountId, bridge_id: bridgeId, error: error.message });
+    log('账号验证失败', { account_id: accountId, error: error.message });
   }
 }
 
@@ -2421,13 +3660,12 @@ function renderPairVerification(payload) {
     ? payload.account.positions.data
     : [];
   const html = positions.map((row) => {
-    const profit = row.position_profit ?? row.m_dPositionProfit;
     return `<tr>
       <td>${esc(row.stock_code || `${row.m_strInstrumentID || ''}.${row.m_strExchangeID || ''}`)}</td>
       <td>${esc(row.instrument_name || row.m_strInstrumentName)}</td>
       <td class="num">${esc(row.volume ?? row.m_nVolume)}</td>
       <td class="num">${esc(row.can_use_volume ?? row.m_nCanUseVolume)}</td>
-      <td class="num ${signedClass(profit)}">${money(row.market_value ?? row.m_dInstrumentValue)}</td>
+      <td class="num">${money(row.market_value ?? row.m_dInstrumentValue)}</td>
     </tr>`;
   }).join('');
   $('pairPositionsBody').innerHTML = html || '<tr><td colspan="5">无持仓数据</td></tr>';
@@ -2459,7 +3697,7 @@ function statusTooltipLines(label, info, snapshot) {
   const bridge = snapshot || {};
   const lines = [
     `${label}：${data.online ? '在线' : '离线或检测超时'}`,
-    `桥接端：${bridge.bridge_name || bridge.bridge_id || selectedBridge()}`,
+    `内部通道：${bridge.bridge_name || bridge.bridge_id || selectedBridge()}`,
     `请求频道：${data.channel || '--'}`,
     `检测动作：${data.probe_action || '--'}`,
     `检测耗时：${data.latency_ms === undefined ? '--' : `${data.latency_ms} ms`}`,
@@ -2492,20 +3730,13 @@ function statusTooltipLines(label, info, snapshot) {
 function renderBridgeSelect(bridges) {
   state.bridges = bridges || {};
   const bridgeSelect = $('bridgeSelect');
-  const current = bridgeSelect.value || state.bridgeId;
+  if (!bridgeSelect) return;
+  const current = bridgeIdForAccount(state.accountId) || bridgeSelect.value || state.bridgeId;
   const optionsHtml = Object.keys(state.bridges).map((id) => {
     const bridge = state.bridges[id] || {};
     return `<option value="${plain(id)}">${plain(bridge.name || id)}</option>`;
   }).join('');
   bridgeSelect.innerHTML = optionsHtml;
-  const bindingBridgeSelect = $('bindingBridgeSelect');
-  const bindingCurrent = bindingBridgeSelect ? bindingBridgeSelect.value : '';
-  if (bindingBridgeSelect) {
-    bindingBridgeSelect.innerHTML = optionsHtml;
-    if (bindingCurrent && state.bridges[bindingCurrent]) {
-      bindingBridgeSelect.value = bindingCurrent;
-    }
-  }
   if (current && state.bridges[current]) {
     bridgeSelect.value = current;
     state.bridgeId = current;
@@ -2520,19 +3751,28 @@ function renderBridgeSelect(bridges) {
 function renderLttxStatus(data) {
   state.lttxStatus = data || null;
   const running = !!(data && data.running);
+  const active = shouldUseLttxStatus();
   const processes = data && Array.isArray(data.processes) ? data.processes : [];
   const processText = processes.map((item) => `${item.pid || ''} ${item.name || ''}`.trim()).filter(Boolean).join(', ');
   const detail = data ? `${data.host}:${data.port} ${running ? '运行中' : '未运行'}${processText ? ` / ${processText}` : ''}` : '';
-  setStatus('lttxStatus', running, detail);
+  setStatus('lttxStatus', active && running, active ? detail : '通用模式未使用 LTtx，高级模式才需要 LTtx。');
 
   const startBtn = $('lttxStartBtn');
   const stopBtn = $('lttxStopBtn');
-  if (startBtn) startBtn.disabled = !!(data && !data.can_start);
-  if (stopBtn) stopBtn.disabled = !(data && data.can_stop);
+  if (startBtn) {
+    startBtn.dataset.runtimeDisabled = (!active || (data && !data.can_start)) ? 'true' : 'false';
+    startBtn.disabled = startBtn.dataset.runtimeDisabled === 'true';
+  }
+  if (stopBtn) {
+    stopBtn.dataset.runtimeDisabled = active && data && data.can_stop ? 'false' : 'true';
+    stopBtn.disabled = stopBtn.dataset.runtimeDisabled === 'true';
+  }
 
   const runtime = $('lttxRuntime');
   if (!runtime) return;
-  if (!data) {
+  if (!active) {
+    runtime.textContent = '当前为通用模式，LTtx 不参与请求路由。';
+  } else if (!data) {
     runtime.textContent = 'LTtx 状态未知';
   } else if (!running) {
     runtime.textContent = `LTtx 未运行，可通过网页或 cfquant\\start_cfquant.bat 启动。`;
@@ -2544,6 +3784,10 @@ function renderLttxStatus(data) {
 }
 
 async function refreshLttxStatus(options = {}) {
+  if (!shouldUseLttxStatus() && !options.force) {
+    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
+    return null;
+  }
   try {
     const data = await api('/api/lttx');
     renderLttxStatus(data);
@@ -2560,16 +3804,21 @@ async function refreshLttxStatus(options = {}) {
 
 async function loadConfigLegacy() {
   const data = await api('/api/config');
-  state.accountId = localStorage.getItem('cfquant.account') || data.default_account_id || '';
-  $('accountInput').value = state.accountId;
+  state.defaultAccountId = data.default_account_id || '';
   const bridges = data.bridges || {};
   state.envBridges = data.env_bridges || {};
   state.accountPairs = data.account_pairs || {};
-  state.bridgeId = localStorage.getItem('cfquant.bridge_id') || data.default_bridge_id || 'default';
+  state.accountConfigs = data.account_configs || {};
+  state.setup = data.setup || null;
+  state.defaultAccountId = data.default_account_id || state.defaultAccountId;
+  state.defaultBridgeId = data.default_bridge_id || 'default';
+  state.accountId = localStorage.getItem('cfquant.account') || state.defaultAccountId || '';
+  state.bridgeId = localStorage.getItem('cfquant.bridge_id') || state.defaultBridgeId;
   if (!bridges[state.bridgeId]) {
-    state.bridgeId = data.default_bridge_id || Object.keys(bridges)[0] || 'default';
+    state.bridgeId = state.defaultBridgeId || Object.keys(bridges)[0] || 'default';
   }
   renderBridgeSelect(bridges);
+  renderAccountSelect(state.defaultAccountId);
   applyAccountPair(state.accountId);
   syncBindingForm();
   const queryChannel = localStorage.getItem('cfquant.query_channel');
@@ -2593,6 +3842,7 @@ async function loadConfigLegacy() {
   }
   renderServerAccess(data.server_access);
   renderLogCleanup(data.log_cleanup);
+  renderQmtLogLanguage(data.qmt_log_language);
   refreshUpdateStatus({ log: false }).catch((error) => log('更新状态初始化失败', { error: error.message }));
   refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
   log('Web TX', { reply_channel: data.reply_channel });
@@ -2600,16 +3850,21 @@ async function loadConfigLegacy() {
 
 async function loadConfig() {
   const data = await api('/api/config');
-  state.accountId = localStorage.getItem('cfquant.account') || data.default_account_id || '';
-  $('accountInput').value = state.accountId;
+  state.defaultAccountId = data.default_account_id || '';
   const bridges = data.bridges || {};
   state.envBridges = data.env_bridges || {};
   state.accountPairs = data.account_pairs || {};
-  state.bridgeId = localStorage.getItem('cfquant.bridge_id') || data.default_bridge_id || 'default';
+  state.accountConfigs = data.account_configs || {};
+  state.setup = data.setup || null;
+  state.defaultAccountId = data.default_account_id || state.defaultAccountId;
+  state.defaultBridgeId = data.default_bridge_id || 'default';
+  state.accountId = localStorage.getItem('cfquant.account') || state.defaultAccountId || '';
+  state.bridgeId = localStorage.getItem('cfquant.bridge_id') || state.defaultBridgeId;
   if (!bridges[state.bridgeId]) {
-    state.bridgeId = data.default_bridge_id || Object.keys(bridges)[0] || 'default';
+    state.bridgeId = state.defaultBridgeId || Object.keys(bridges)[0] || 'default';
   }
   renderBridgeSelect(bridges);
+  renderAccountSelect(state.defaultAccountId);
   applyAccountPair(state.accountId);
   syncBindingForm();
   const queryChannel = localStorage.getItem('cfquant.query_channel');
@@ -2632,7 +3887,11 @@ async function loadConfig() {
     apiBaseInput.value = normalizeApiBaseUrl(savedBaseUrl);
   }
   renderServerAccess(data.server_access);
+  renderPipeHub(data.pipe_hub);
+  renderTransport(data.transport);
   renderLogCleanup(data.log_cleanup);
+  renderQmtLogLanguage(data.qmt_log_language);
+  syncOnboardingWizard();
   log('Web TX', { reply_channel: data.reply_channel || '', auth_required: !!data.auth_required });
   return data;
 }
@@ -2651,25 +3910,57 @@ async function startAuthenticatedApp() {
 }
 
 async function refreshStatus() {
-  const lttxPromise = refreshLttxStatus({ log: false });
+  const lttxPromise = shouldUseLttxStatus()
+    ? refreshLttxStatus({ log: false })
+    : Promise.resolve(null);
+  const transportPromise = refreshTransport();
   try {
-    const data = await api(`/api/status?bridge_id=${encodeURIComponent(selectedBridge())}`);
+    const data = await api(`/api/status?account_id=${encodeURIComponent(selectedAccount())}&bridge_id=${encodeURIComponent(selectedBridge())}`);
+    state.bridgeStatus = data;
     const lttx = await lttxPromise;
-    setStatus('normalStatus', data.normal.online, statusTooltipLines('普通 QMT', data.normal, data));
-    setStatus('tradeStatus', data.trade.online, statusTooltipLines('极速交易端', data.trade, data));
+    const transport = await transportPromise;
+    renderTransport(transport);
+    state.accountRouteMode = data.effective_mode || data.preferred_mode || state.accountRouteMode || state.transportMode || 'ctypes';
+    state.accountRouteFallback = !!data.fallback;
+    syncTopStatusDisplay();
+    syncTransportChannelControls();
+    const routeMode = state.accountRouteMode;
+    const normalLabel = routeMode === 'ctypes' ? '通用查询通道' : '高级模式·普通 QMT';
+    const tradeLabel = routeMode === 'ctypes' ? '通用交易通道' : '高级模式·极速交易端';
+    const normalLabelNode = $('normalStatusLabel');
+    const tradeLabelNode = $('tradeStatusLabel');
+    if (normalLabelNode) normalLabelNode.textContent = routeMode === 'ctypes' ? '通用查询通道' : '普通 QMT';
+    if (tradeLabelNode) tradeLabelNode.textContent = routeMode === 'ctypes' ? '通用交易通道' : '极速交易端';
+    const status = data.status || data;
+    setStatus('normalStatus', !!(status.normal && status.normal.online), statusTooltipLines(normalLabel, status.normal || {}, data));
+    setStatus('tradeStatus', !!(status.trade && status.trade.online), statusTooltipLines(tradeLabel, status.trade || {}, data));
     $('statusDetail').textContent = JSON.stringify({ lttx, bridge: data }, null, 2);
   } catch (error) {
     const lttx = await lttxPromise;
+    const transport = await transportPromise;
+    state.bridgeStatus = null;
+    renderTransport(transport);
+    state.accountRouteMode = activeAccountMode();
+    state.accountRouteFallback = false;
+    syncTopStatusDisplay();
+    syncTransportChannelControls();
+    const routeMode = state.accountRouteMode;
+    const normalLabel = routeMode === 'ctypes' ? '通用查询通道' : '高级模式·普通 QMT';
+    const tradeLabel = routeMode === 'ctypes' ? '通用交易通道' : '高级模式·极速交易端';
+    const normalLabelNode = $('normalStatusLabel');
+    const tradeLabelNode = $('tradeStatusLabel');
+    if (normalLabelNode) normalLabelNode.textContent = routeMode === 'ctypes' ? '通用查询通道' : '普通 QMT';
+    if (tradeLabelNode) tradeLabelNode.textContent = routeMode === 'ctypes' ? '通用交易通道' : '极速交易端';
     setStatus('normalStatus', false, [
-      '普通 QMT：状态检查失败',
-      `桥接端：${selectedBridge()}`,
+      `${normalLabel}：状态检查失败`,
+      `内部通道：${selectedBridge()}`,
       `错误：${error.message}`,
       '',
       '提示：非交易时间普通 QMT 的回调触发可能较慢，状态检测或委托查询可能短暂超时并进入 cooldown；通常不影响使用，稍后刷新即可。',
     ]);
     setStatus('tradeStatus', false, [
-      '极速交易端：状态检查失败',
-      `桥接端：${selectedBridge()}`,
+      `${tradeLabel}：状态检查失败`,
+      `内部通道：${selectedBridge()}`,
       `错误：${error.message}`,
     ]);
     $('statusDetail').textContent = JSON.stringify({ lttx, error: error.message }, null, 2);
@@ -2678,6 +3969,11 @@ async function refreshStatus() {
 }
 
 async function startLttx() {
+  if (!shouldUseLttxStatus()) {
+    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
+    log('当前为通用模式，LTtx 不参与请求路由，不需要启动');
+    return;
+  }
   const startBtn = $('lttxStartBtn');
   const stopBtn = $('lttxStopBtn');
   if (startBtn) startBtn.disabled = true;
@@ -2694,6 +3990,11 @@ async function startLttx() {
 }
 
 async function stopLttx() {
+  if (!shouldUseLttxStatus()) {
+    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
+    log('当前为通用模式，LTtx 不参与请求路由，不需要停止');
+    return;
+  }
   const confirmed = window.confirm('确认停止 LTtx 服务？停止后桥接通道会离线。');
   if (!confirmed) return;
   const startBtn = $('lttxStartBtn');
@@ -2719,20 +4020,29 @@ function selectedAccount() {
 }
 
 function selectedBridge() {
-  const bridgeId = $('bridgeSelect').value || state.bridgeId || 'default';
+  const select = $('bridgeSelect');
+  const accountBridgeId = bridgeIdForAccount(state.accountId);
+  const bridgeId = accountBridgeId || (select ? select.value : '') || state.bridgeId || 'default';
+  if (select && state.bridges && state.bridges[bridgeId]) {
+    select.value = bridgeId;
+  }
   localStorage.setItem('cfquant.bridge_id', bridgeId);
   state.bridgeId = bridgeId;
   return bridgeId;
 }
 
 function selectedChannel() {
-  state.queryChannel = $('queryChannel').value;
+  state.queryChannel = activeAccountMode() === 'ctypes' ? 'normal' : $('queryChannel').value;
+  if ($('queryChannel')) $('queryChannel').value = state.queryChannel;
   localStorage.setItem('cfquant.query_channel', state.queryChannel);
   return state.queryChannel;
 }
 
 function selectedTradeChannel() {
-  const channel = $('tradeChannel').value || 'trade';
+  const channel = activeAccountMode() === 'ctypes'
+    ? 'trade'
+    : (($('tradeChannel') && $('tradeChannel').value) || 'trade');
+  if ($('tradeChannel')) $('tradeChannel').value = channel;
   localStorage.setItem('cfquant.trade_channel', channel);
   return channel;
 }
@@ -2761,10 +4071,28 @@ function handleBridgeChange() {
 
 function handleAccountChange() {
   const accountId = selectedAccount();
+  if (!accountId) {
+    log('请选择账号');
+    return;
+  }
   applyAccountPair(accountId);
+  state.accountRouteMode = (state.accountConfigs && state.accountConfigs[accountId] && state.accountConfigs[accountId].mode) || state.transportMode || 'ctypes';
+  state.accountRouteFallback = false;
   syncBindingForm();
   resetSelectionState();
+  syncTopStatusDisplay();
+  syncTransportChannelControls();
   refreshCurrentSelection('账号');
+}
+
+function switchAccountFromToolbar() {
+  const accountId = selectedAccount();
+  if (!accountId) {
+    log('账号为空，无法切换');
+    return;
+  }
+  handleAccountChange();
+  log('账号已切换', { account_id: accountId });
 }
 
 function firstRow(section) {
@@ -2990,6 +4318,11 @@ function trackOrderEvents(rows) {
       addCallbackEvent(previous ? '委托更新' : '委托出现', snapshot);
     }
   });
+  while (state.orderSnapshot.size > ORDER_SNAPSHOT_LIMIT) {
+    const oldest = state.orderSnapshot.keys().next().value;
+    if (!oldest) break;
+    state.orderSnapshot.delete(oldest);
+  }
 }
 
 function addCallbackEvent(type, data) {
@@ -2999,7 +4332,11 @@ function addCallbackEvent(type, data) {
     ...data,
   });
   state.callbackEvents = state.callbackEvents.slice(0, 200);
-  renderCallbacks();
+  const count = $('callbackCount');
+  if (count) count.textContent = `${state.callbackEvents.length} 条`;
+  if (state.currentView === 'callbacks') {
+    renderCallbacks();
+  }
 }
 
 function normalizeCallbackEvent(event) {
@@ -3027,10 +4364,17 @@ async function refreshCallbacks() {
       state.callbackEvents.unshift(normalized);
     });
     state.callbackEvents = state.callbackEvents.slice(0, 200);
-    renderCallbacks();
+    if (state.currentView === 'callbacks') {
+      renderCallbacks();
+    }
     const shouldRefreshOrders = events.some((event) => String(event.event || '').includes('order') || String(event.event || '').includes('trade'));
-    if (shouldRefreshOrders) {
-      refreshAccount('orders').catch((error) => log('回调刷新委托失败', { error: error.message }));
+    if (shouldRefreshOrders && ['overview', 'orders', 'trade'].includes(state.currentView) && !state.orderRefreshInFlight) {
+      state.orderRefreshInFlight = true;
+      refreshAccount('orders')
+        .catch((error) => log('回调刷新委托失败', { error: error.message }))
+        .finally(() => {
+          state.orderRefreshInFlight = false;
+        });
     }
   } catch (error) {
     log('回调拉取失败', { error: error.message });
@@ -3038,7 +4382,10 @@ async function refreshCallbacks() {
 }
 
 function renderCallbacks() {
-  $('callbackCount').textContent = `${state.callbackEvents.length} 条`;
+  const count = $('callbackCount');
+  if (count) count.textContent = `${state.callbackEvents.length} 条`;
+  const body = $('callbacksBody');
+  if (!body) return;
   const html = state.callbackEvents.map((row) => `<tr>
     <td>${plain(row.time)}</td>
     <td>${plain(row.type)}</td>
@@ -3048,7 +4395,7 @@ function renderCallbacks() {
     <td class="num">${plain(row.traded)}</td>
     <td>${plain(row.status)}</td>
   </tr>`).join('');
-  $('callbacksBody').innerHTML = html || '<tr><td colspan="7">暂无回调事件</td></tr>';
+  body.innerHTML = html || '<tr><td colspan="7">暂无回调事件</td></tr>';
 }
 
 function renderOrders(section) {
@@ -3350,8 +4697,14 @@ function wireNavigation() {
   document.querySelectorAll('.nav-item').forEach((node) => {
     node.addEventListener('click', () => setView(node.dataset.view));
   });
-  window.addEventListener('pagehide', () => stopQuoteLive({ beacon: true }));
-  window.addEventListener('beforeunload', () => stopQuoteLive({ beacon: true }));
+  window.addEventListener('pagehide', () => {
+    stopQuoteLive({ beacon: true });
+    closeDownloadSocket();
+  });
+  window.addEventListener('beforeunload', () => {
+    stopQuoteLive({ beacon: true });
+    closeDownloadSocket();
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopQuoteLive({ beacon: true });
   });
@@ -3365,9 +4718,433 @@ function wireDataTabs() {
   });
 }
 
+function setOnboardingStatus(id, message = '', level = '') {
+  const node = $(id);
+  if (!node) return;
+  node.textContent = message;
+  node.classList.remove('is-ok', 'is-error', 'is-busy');
+  if (level) node.classList.add(`is-${level}`);
+}
+
+function joinWinPath(base, child) {
+  base = String(base || '').trim().replace(/[\\\/]+$/, '');
+  child = String(child || '').trim().replace(/^[\\\/]+/, '');
+  if (!base) return child || '--';
+  return child ? `${base}\\${child}` : base;
+}
+
+function parentWinPath(path) {
+  path = String(path || '').trim().replace(/[\\\/]+$/, '');
+  const index = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+  return index > 0 ? path.slice(0, index) : '';
+}
+
+function onboardingCurrentConfig() {
+  const accountId = ($('onboardingAccountId') && $('onboardingAccountId').value.trim())
+    || state.accountId
+    || state.defaultAccountId
+    || (state.setup && state.setup.default_account_id)
+    || '';
+  const existing = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
+  const setupConfig = state.setup && state.setup.account_configs
+    ? state.setup.account_configs[state.setup.default_account_id]
+    : null;
+  return existing || setupConfig || {};
+}
+
+function onboardingValues() {
+  const config = onboardingCurrentConfig();
+  const accountId = $('onboardingAccountId')
+    ? $('onboardingAccountId').value.trim()
+    : (config.account_id || state.accountId || state.defaultAccountId || '');
+  return {
+    account_id: accountId,
+    qmt_dir: $('onboardingQmtDir') ? $('onboardingQmtDir').value.trim() : (config.qmt_dir || ''),
+    mode: $('onboardingMode') ? $('onboardingMode').value : (config.mode || 'ctypes'),
+    data_provider: $('onboardingDataProvider') ? $('onboardingDataProvider').checked : !!config.data_provider,
+  };
+}
+
+function onboardingDeployPlan(values = onboardingValues()) {
+  const qmtDir = values.qmt_dir || '';
+  const installDir = parentWinPath(qmtDir);
+  const pythonDir = installDir ? joinWinPath(installDir, 'python') : '';
+  const baseRows = [
+    ['资金账号', values.account_id || '--'],
+    ['运行模式', values.mode === 'lttx' ? '高级模式' : '通用模式'],
+    ['当前填写的 QMT 核心目录', qmtDir || '未填写'],
+    ['核心包目录', qmtDir ? joinWinPath(qmtDir, 'cfquant') : '请先填写 QMT 核心目录'],
+    ['身份配置', qmtDir ? joinWinPath(qmtDir, 'cfquant_bridge_config.json') : '请先填写 QMT 核心目录'],
+  ];
+  if (values.mode === 'lttx') {
+    return [
+      ...baseRows,
+      ['普通 QMT 脚本目录', pythonDir || '请先填写普通 QMT 的 QMT 核心目录'],
+      ['普通 QMT 加载', pythonDir ? joinWinPath(pythonDir, 'CFQUANT.py') : '请先填写普通 QMT 的 QMT 核心目录'],
+      ['极速交易端 QMT', '请另外打开一个 QMT 终端，使用同一 bridge_id'],
+      ['极速交易端加载', '在另一个 QMT 的 python 目录加载 CFQUANT_TRADE_LOWLAT.py'],
+      ['高级模式注意', '不要在同一个 QMT 里同时运行 CFQUANT.py 和 CFQUANT_TRADE_LOWLAT.py'],
+    ];
+  }
+  return [
+    ...baseRows,
+    ['QMT 脚本目录', pythonDir || '请先填写 QMT 核心目录'],
+    ['通用端加载', pythonDir ? joinWinPath(pythonDir, 'CFQUANT_CTYPE_ALL_LOWLAT.py') : '请先填写 QMT 核心目录'],
+    ['部署数量', '只需要一个 QMT，一个通用端脚本'],
+  ];
+}
+
+function renderOnboardingDeployPlan() {
+  const box = $('onboardingDeployPaths');
+  if (!box) return;
+  const values = onboardingValues();
+  box.innerHTML = onboardingDeployPlan(values).map(([label, value]) => (
+    `<div class="onboarding-deploy-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
+  )).join('');
+  const notice = $('onboardingDeployNotice');
+  if (notice) {
+    const advanced = values.mode === 'lttx';
+    notice.classList.toggle('warning', advanced);
+    notice.innerHTML = advanced
+      ? '<strong>高级模式必须两个 QMT</strong><span>普通 QMT 可以和通用端部署在同一个 QMT 里；极速交易端必须单独打开另一个 QMT，并在那个 QMT 中加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>'
+      : '<strong>通用模式只加载一个脚本</strong><span>在 QMT 模型研究中加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。通用模式不需要加载 <code>CFQUANT.py</code> 或 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>';
+  }
+}
+
+function renderOnboardingBridgeSummary(data = state.bridgeStatus, error = null) {
+  const box = $('onboardingBridgeSummary');
+  if (!box) return;
+  const values = onboardingValues();
+  const selected = data && data.status ? data.status : data;
+  const normalOnline = !!(selected && selected.normal && selected.normal.online);
+  const tradeOnline = !!(selected && selected.trade && selected.trade.online);
+  const rows = [
+    ['资金账号', values.account_id || '--'],
+    ['内部通道', bridgeIdForAccount(values.account_id) || selectedBridge()],
+    ['查询通道', error ? `检测失败：${error.message}` : (normalOnline ? '在线' : '未在线')],
+    ['交易通道', error ? `检测失败：${error.message}` : (tradeOnline ? '在线' : '未在线')],
+  ];
+  box.innerHTML = rows.map(([label, value]) => (
+    `<div class="onboarding-summary-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
+  )).join('');
+}
+
+function onboardingSectionRows(section) {
+  if (!section || typeof section !== 'object') return [];
+  if (Array.isArray(section.data)) return section.data;
+  if (Array.isArray(section.rows)) return section.rows;
+  return [];
+}
+
+function renderOnboardingDataSummary(payload = null, error = null) {
+  const box = $('onboardingDataSummary');
+  if (!box) return;
+  const assetOk = !!(payload && payload.asset && payload.asset.ok);
+  const positionData = onboardingSectionRows(payload && payload.positions);
+  const positionsOk = !!(payload && payload.positions && payload.positions.ok);
+  const positionsRows = positionData.length;
+  const rows = [
+    ['资金账号', onboardingValues().account_id || '--'],
+    ['资产查询', error ? `失败：${error.message}` : (payload ? (assetOk ? '成功' : '未返回资产') : '尚未查询')],
+    ['持仓查询', error ? `失败：${error.message}` : (payload ? (positionsOk ? '成功' : '未返回持仓') : '尚未查询')],
+    ['持仓数量', payload ? `${positionsRows} 条` : '尚未查询'],
+    ['下一步', assetOk || positionsRows ? '基础初始化完成，可以接入外部程序' : '先确认 QMT 已登录账号并加载通用端脚本'],
+  ];
+  box.innerHTML = rows.map(([label, value]) => (
+    `<div class="onboarding-summary-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
+  )).join('');
+}
+
+function showOnboardingSuccess(payload = null) {
+  const modal = $('onboardingSuccess');
+  if (!modal) return;
+  const values = onboardingValues();
+  const modeText = values.mode === 'lttx' ? '高级模式' : '通用模式';
+  const positionsRows = onboardingSectionRows(payload && payload.positions).length;
+  const assetOk = !!(payload && payload.asset && payload.asset.ok);
+  const positionsOk = !!(payload && payload.positions && payload.positions.ok);
+  const text = $('onboardingSuccessText');
+  if (text) {
+    text.textContent = `账号 ${values.account_id || '--'} 的 ${modeText} 已完成基础验证，资金查询${assetOk ? '成功' : '未返回'}，持仓查询${positionsOk ? `成功（${positionsRows} 条）` : '未返回'}。`;
+  }
+  modal.classList.remove('hidden');
+  modal.setAttribute('aria-hidden', 'false');
+  window.setTimeout(() => {
+    const button = $('onboardingSuccessHomeBtn');
+    if (button) button.focus();
+  }, 0);
+}
+
+function hideOnboardingSuccess() {
+  const modal = $('onboardingSuccess');
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function setOnboardingStep(name) {
+  state.onboardingStep = name || 'config';
+  document.querySelectorAll('[data-onboarding-step]').forEach((button) => {
+    const step = button.dataset.onboardingStep;
+    button.classList.toggle('active', step === state.onboardingStep);
+    button.classList.toggle('done', state.onboardingDoneSteps.has(step));
+  });
+  document.querySelectorAll('[data-onboarding-panel]').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.onboardingPanel === state.onboardingStep);
+  });
+}
+
+function markOnboardingStepDone(name) {
+  if (name) state.onboardingDoneSteps.add(name);
+  setOnboardingStep(state.onboardingStep);
+}
+
+function resetOnboardingRunState() {
+  state.onboardingStep = 'intro';
+  state.onboardingDoneSteps = new Set();
+  const config = onboardingCurrentConfig();
+  if (config && config.account_id) {
+    state.onboardingDoneSteps.add('config');
+  }
+  [
+    'onboardingConfigStatus',
+    'onboardingDeployStatus',
+    'onboardingBridgeStatus',
+    'onboardingDataStatus',
+  ].forEach((id) => setOnboardingStatus(id, '', ''));
+  hideOnboardingSuccess();
+  renderOnboardingBridgeSummary(null);
+  renderOnboardingDataSummary(null);
+}
+
+function syncOnboardingWizard(options = {}) {
+  const config = onboardingCurrentConfig();
+  const shouldFill = !!options.force;
+  const accountInput = $('onboardingAccountId');
+  if (accountInput && (shouldFill || !accountInput.value.trim())) {
+    accountInput.value = config.account_id || state.accountId || state.defaultAccountId || '';
+  }
+  const qmtInput = $('onboardingQmtDir');
+  if (qmtInput && (shouldFill || !qmtInput.value.trim())) {
+    qmtInput.value = config.qmt_dir || (state.setup && state.setup.default_qmt_dir) || '';
+  }
+  const modeInput = $('onboardingMode');
+  if (modeInput) {
+    modeInput.value = config.mode || (state.setup && state.setup.default_mode) || 'ctypes';
+  }
+  const providerInput = $('onboardingDataProvider');
+  if (providerInput) {
+    providerInput.checked = config.data_provider !== false;
+  }
+  if (config.account_id) {
+    state.onboardingDoneSteps.add('config');
+  }
+  renderOnboardingDeployPlan();
+  renderOnboardingBridgeSummary();
+  renderOnboardingDataSummary();
+  setOnboardingStep(state.onboardingStep || 'config');
+}
+
+async function saveOnboardingConfig(event) {
+  if (event) event.preventDefault();
+  const values = onboardingValues();
+  if (!values.account_id) {
+    setOnboardingStatus('onboardingConfigStatus', '请先填写资金账号。', 'error');
+    return;
+  }
+  setOnboardingStatus('onboardingConfigStatus', '正在保存账号配置...', 'busy');
+  try {
+    const data = state.setup && state.setup.setup_required
+      ? await api('/api/setup/initialize', { method: 'POST', body: JSON.stringify(values) })
+      : await saveAccountConfigRequest(values);
+    state.accountPairs = data.account_pairs || {};
+    state.accountConfigs = data.account_configs || state.accountConfigs;
+    state.setup = data.setup || state.setup;
+    state.bridges = data.bridges || state.bridges;
+    state.defaultAccountId = (state.setup && state.setup.default_account_id) || state.defaultAccountId;
+    state.accountId = values.account_id;
+    renderBridgeSelect(state.bridges);
+    renderAccountSelect();
+    applyAccountPair(values.account_id);
+    syncBindingForm();
+    renderAccountPairs();
+    markOnboardingStepDone('config');
+    syncOnboardingWizard({ force: true });
+    setOnboardingStatus('onboardingConfigStatus', '账号配置已保存。', 'ok');
+    if (data.qmt_bridge_identity && data.qmt_bridge_identity.error) {
+      setOnboardingStatus('onboardingDeployStatus', `身份文件写入失败：${data.qmt_bridge_identity.error}`, 'error');
+    } else if (data.qmt_bridge_identity) {
+      setOnboardingStatus('onboardingDeployStatus', '身份配置已写入，可继续部署 QMT 脚本。', 'ok');
+    }
+    await refreshBindingStatuses();
+    setOnboardingStep('deploy');
+    log('新手引导账号配置已保存', { account_id: values.account_id, mode: values.mode, qmt_dir_configured: !!values.qmt_dir });
+  } catch (error) {
+    setOnboardingStatus('onboardingConfigStatus', `保存失败：${error.message}`, 'error');
+    log('新手引导账号配置保存失败', { error: error.message });
+  }
+}
+
+async function copyOnboardingDeployPlan() {
+  const text = onboardingDeployPlan().map(([label, value]) => `${label}: ${value}`).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    setOnboardingStatus('onboardingDeployStatus', '部署清单已复制。', 'ok');
+  } catch (error) {
+    setOnboardingStatus('onboardingDeployStatus', '复制失败，请直接按页面清单部署。', 'error');
+  }
+}
+
+async function refreshOnboardingBridge() {
+  const values = onboardingValues();
+  if (!values.account_id) {
+    setOnboardingStatus('onboardingBridgeStatus', '请先填写并保存资金账号。', 'error');
+    setOnboardingStep('config');
+    return;
+  }
+  state.accountId = values.account_id;
+  renderAccountSelect();
+  applyAccountPair(values.account_id);
+  setOnboardingStatus('onboardingBridgeStatus', '正在检测通道...', 'busy');
+  try {
+    const data = await api(`/api/status?account_id=${encodeURIComponent(values.account_id)}`);
+    state.bridgeStatus = data;
+    renderOnboardingBridgeSummary(data);
+    await refreshStatus();
+    await refreshBindingStatuses();
+    const selected = data && data.status ? data.status : data;
+    const online = !!(selected && selected.normal && selected.normal.online) || !!(selected && selected.trade && selected.trade.online);
+    markOnboardingStepDone('bridge');
+    setOnboardingStatus('onboardingBridgeStatus', online ? '通道已在线，可以验证数据。' : '已完成检测，但通道未在线；请检查 QMT 是否加载脚本。', online ? 'ok' : 'error');
+    if (online) setOnboardingStep('data');
+  } catch (error) {
+    renderOnboardingBridgeSummary(null, error);
+    setOnboardingStatus('onboardingBridgeStatus', `检测失败：${error.message}`, 'error');
+  }
+}
+
+async function verifyOnboardingData() {
+  const values = onboardingValues();
+  if (!values.account_id) {
+    setOnboardingStatus('onboardingDataStatus', '请先填写并保存资金账号。', 'error');
+    setOnboardingStep('config');
+    return;
+  }
+  state.accountId = values.account_id;
+  renderAccountSelect();
+  applyAccountPair(values.account_id);
+  setOnboardingStatus('onboardingDataStatus', '正在查询资金和持仓...', 'busy');
+  try {
+    const channel = selectedChannel();
+    const bridgeId = bridgeIdForAccount(values.account_id) || selectedBridge();
+    const data = await api(`/api/account?bridge_id=${encodeURIComponent(bridgeId)}&account_id=${encodeURIComponent(values.account_id)}&channel=${channel}&sections=asset,positions&force=1`);
+    renderOnboardingDataSummary(data);
+    if (data.asset && data.asset.ok) renderAsset(data.asset);
+    if (data.positions && data.positions.ok) renderPositions(data.positions);
+    const verified = !!((data.asset && data.asset.ok) || (data.positions && data.positions.ok));
+    if (verified) {
+      markOnboardingStepDone('data');
+      setOnboardingStatus('onboardingDataStatus', '验证完成，基础初始化已跑通。', 'ok');
+      showOnboardingSuccess(data);
+      log('新手引导数据验证完成', { account_id: values.account_id });
+    } else {
+      setOnboardingStatus('onboardingDataStatus', '验证未通过：资金和持仓都未成功返回。', 'error');
+      log('新手引导数据验证未通过', { account_id: values.account_id });
+    }
+  } catch (error) {
+    renderOnboardingDataSummary(null, error);
+    setOnboardingStatus('onboardingDataStatus', `验证失败：${error.message}`, 'error');
+    log('新手引导数据验证失败', { account_id: values.account_id, error: error.message });
+  }
+}
+
+function wireOnboardingGuide() {
+  document.querySelectorAll('[data-onboarding-step]').forEach((button) => {
+    button.addEventListener('click', () => setOnboardingStep(button.dataset.onboardingStep));
+  });
+  const form = $('onboardingConfigForm');
+  if (form) form.addEventListener('submit', saveOnboardingConfig);
+  const startConfigBtn = $('onboardingStartConfigBtn');
+  if (startConfigBtn) startConfigBtn.addEventListener('click', () => {
+    markOnboardingStepDone('intro');
+    setOnboardingStep('config');
+  });
+  ['onboardingAccountId', 'onboardingQmtDir', 'onboardingMode', 'onboardingDataProvider'].forEach((id) => {
+    const input = $(id);
+    if (input) input.addEventListener('input', renderOnboardingDeployPlan);
+    if (input) input.addEventListener('change', renderOnboardingDeployPlan);
+  });
+  const useCurrent = $('onboardingUseCurrentBtn');
+  if (useCurrent) useCurrent.addEventListener('click', () => {
+    syncOnboardingWizard({ force: true });
+    setOnboardingStatus('onboardingConfigStatus', '已读取当前账号配置。', 'ok');
+  });
+  const copyBtn = $('onboardingCopyDeployBtn');
+  if (copyBtn) copyBtn.addEventListener('click', () => copyOnboardingDeployPlan());
+  const goBridgeBtn = $('onboardingGoBridgeBtn');
+  if (goBridgeBtn) goBridgeBtn.addEventListener('click', () => {
+    markOnboardingStepDone('deploy');
+    setOnboardingStep('bridge');
+    refreshOnboardingBridge();
+  });
+  const refreshBridgeBtn = $('onboardingRefreshBridgeBtn');
+  if (refreshBridgeBtn) refreshBridgeBtn.addEventListener('click', refreshOnboardingBridge);
+  const openBindingsBtn = $('onboardingOpenBindingsBtn');
+  if (openBindingsBtn) openBindingsBtn.addEventListener('click', () => {
+    hideOnboardingModal();
+    setView('bindings');
+  });
+  const verifyDataBtn = $('onboardingVerifyDataBtn');
+  if (verifyDataBtn) verifyDataBtn.addEventListener('click', verifyOnboardingData);
+  const openHomeBtn = $('onboardingOpenHomeBtn');
+  if (openHomeBtn) openHomeBtn.addEventListener('click', () => {
+    hideOnboardingModal();
+    setView('overview');
+  });
+  const openApiBtn = $('onboardingOpenApiBtn');
+  if (openApiBtn) openApiBtn.addEventListener('click', () => {
+    hideOnboardingModal();
+    setView('api');
+  });
+  const successHomeBtn = $('onboardingSuccessHomeBtn');
+  if (successHomeBtn) successHomeBtn.addEventListener('click', () => {
+    hideOnboardingSuccess();
+    hideOnboardingModal();
+    setView('overview');
+  });
+  const successApiBtn = $('onboardingSuccessApiBtn');
+  if (successApiBtn) successApiBtn.addEventListener('click', () => {
+    hideOnboardingSuccess();
+    hideOnboardingModal();
+    setView('api');
+  });
+  const successBindingsBtn = $('onboardingSuccessBindingsBtn');
+  if (successBindingsBtn) successBindingsBtn.addEventListener('click', () => {
+    hideOnboardingSuccess();
+    hideOnboardingModal();
+    setView('bindings');
+  });
+  const inlineBtn = $('openOnboardingInlineBtn');
+  if (inlineBtn) inlineBtn.addEventListener('click', () => openOnboardingGuide({ manual: true }));
+  const closeBtn = $('closeOnboardingBtn');
+  if (closeBtn) closeBtn.addEventListener('click', hideOnboardingModal);
+  const backdrop = $('onboardingBackdrop');
+  if (backdrop) backdrop.addEventListener('click', hideOnboardingModal);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && $('onboardingSuccess') && !$('onboardingSuccess').classList.contains('hidden')) {
+      hideOnboardingSuccess();
+      return;
+    }
+    if (event.key === 'Escape' && $('onboardingWizard') && !$('onboardingWizard').classList.contains('hidden')) {
+      hideOnboardingModal();
+    }
+  });
+  syncOnboardingWizard();
+}
+
 function setTutorialTopic(name) {
   if (!document.querySelector(`.tutorial-menu-item[data-guide="${name}"]`)) {
-    name = 'project';
+    name = 'onboarding';
   }
   localStorage.setItem(TUTORIAL_TOPIC_KEY, name);
   document.querySelectorAll('.tutorial-menu-item').forEach((item) => {
@@ -3376,13 +5153,101 @@ function setTutorialTopic(name) {
   document.querySelectorAll('.tutorial-topic').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.guidePanel === name);
   });
+  if (name === 'onboarding') syncOnboardingWizard();
+}
+
+function showOnboardingModal(options = {}) {
+  syncOnboardingWizard({ force: !!options.force });
+  const wizard = $('onboardingWizard');
+  const backdrop = $('onboardingBackdrop');
+  if (!wizard || !backdrop) return;
+  backdrop.classList.remove('hidden');
+  wizard.classList.remove('hidden');
+  wizard.setAttribute('aria-hidden', 'false');
+  wizard.scrollTop = 0;
+  document.body.classList.add('onboarding-modal-open');
+  const firstInput = $('onboardingAccountId');
+  window.setTimeout(() => {
+    if (firstInput && state.onboardingStep === 'config') firstInput.focus();
+    else {
+      const activeButton = wizard.querySelector('[data-onboarding-step].active');
+      if (activeButton) activeButton.focus();
+    }
+  }, 0);
+  if (options.auto) {
+    log('已自动打开新手引导', { reason: options.reason || 'first_start' });
+  }
+}
+
+function hideOnboardingModal() {
+  hideOnboardingSuccess();
+  const wizard = $('onboardingWizard');
+  const backdrop = $('onboardingBackdrop');
+  if (wizard) {
+    wizard.classList.add('hidden');
+    wizard.setAttribute('aria-hidden', 'true');
+  }
+  if (backdrop) backdrop.classList.add('hidden');
+  document.body.classList.remove('onboarding-modal-open');
+}
+
+function openOnboardingGuide(options = {}) {
+  if (options.reset !== false) {
+    resetOnboardingRunState();
+  }
+  state.onboardingStep = options.step || 'intro';
+  setTutorialTopic('onboarding');
+  localStorage.setItem(onboardingAutoShownKey(), '1');
+  showOnboardingModal(options);
+}
+
+function maybeAutoOpenOnboardingGuide() {
+  if (state.setup && state.setup.setup_required) {
+    return false;
+  }
+  if (localStorage.getItem(onboardingAutoShownKey()) === '1') {
+    return false;
+  }
+  window.setTimeout(() => openOnboardingGuide({ auto: true, reason: 'first_start', step: 'intro' }), 0);
+  return true;
+}
+
+function setSettingsTab(name, shouldPersist = true) {
+  if (!document.querySelector(`.settings-menu-item[data-settings-tab="${name}"]`)) {
+    name = 'api-key';
+  }
+  state.settingsTab = name;
+  if (shouldPersist) {
+    localStorage.setItem(SETTINGS_TAB_KEY, name);
+  }
+  document.body.dataset.settingsTab = name;
+  document.querySelectorAll('.settings-menu-item').forEach((item) => {
+    item.classList.toggle('active', item.dataset.settingsTab === name);
+    item.setAttribute('aria-pressed', item.dataset.settingsTab === name ? 'true' : 'false');
+  });
+  document.querySelectorAll('.settings-section').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.settingsTab === name);
+  });
 }
 
 function wireTutorialNavigation() {
   document.querySelectorAll('.tutorial-menu-item').forEach((item) => {
-    item.addEventListener('click', () => setTutorialTopic(item.dataset.guide));
+    item.addEventListener('click', () => {
+      if (item.dataset.guide === 'onboarding') {
+        openOnboardingGuide({ manual: true });
+      } else {
+        setTutorialTopic(item.dataset.guide);
+      }
+    });
   });
-  setTutorialTopic(localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'project');
+  setTutorialTopic(localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'onboarding');
+}
+
+function wireSettingsNavigation() {
+  document.querySelectorAll('.settings-menu-item').forEach((item) => {
+    item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab));
+  });
+  setSettingsTab(localStorage.getItem(SETTINGS_TAB_KEY) || 'api-key');
 }
 
 function closeImageLightbox() {
@@ -3427,20 +5292,73 @@ function wireImageLightbox() {
   });
 }
 
+function visiblePage() {
+  return !document.hidden;
+}
+
+function shouldPollRouteStatus() {
+  return visiblePage();
+}
+
+function shouldPollCallbacks() {
+  return visiblePage() && state.currentView === 'callbacks';
+}
+
+function shouldPollBindingStatuses() {
+  return visiblePage() && state.currentView === 'bindings';
+}
+
+function shouldAutoRefreshOrders() {
+  if (!visiblePage()) return false;
+  const autoRefresh = $('autoRefresh');
+  if (!autoRefresh || !autoRefresh.checked) return false;
+  if (!['overview', 'orders', 'trade'].includes(state.currentView)) return false;
+  const interval = state.currentView === 'overview'
+    ? HOME_ORDER_REFRESH_INTERVAL_MS
+    : AUTO_ORDER_REFRESH_INTERVAL_MS;
+  return Date.now() - state.lastAutoOrderRefreshAt >= interval;
+}
+
 function startTimers() {
+  if (state.statusTimer || state.refreshTimer) return;
   setInterval(() => {
     $('clock').textContent = nowText();
   }, 1000);
   state.statusTimer = setInterval(() => {
-    refreshStatus().catch((error) => log('状态定时刷新失败', { error: error.message }));
-    refreshBindingStatuses().catch((error) => log('绑定状态定时刷新失败', { error: error.message }));
-  }, 15000);
-  setInterval(refreshCallbacks, 1500);
-  state.refreshTimer = setInterval(() => {
-    if ($('autoRefresh').checked) {
-      refreshAccount('orders').catch((error) => log('实时委托刷新失败', { error: error.message }));
+    if (shouldPollRouteStatus() && !state.statusRefreshInFlight) {
+      state.statusRefreshInFlight = true;
+      refreshStatus()
+        .catch((error) => log('状态定时刷新失败', { error: error.message }))
+        .finally(() => {
+          state.statusRefreshInFlight = false;
+        });
     }
-  }, 4000);
+    if (shouldPollBindingStatuses() && !state.bindingStatusRefreshInFlight) {
+      state.bindingStatusRefreshInFlight = true;
+      refreshBindingStatuses()
+        .catch((error) => log('绑定状态定时刷新失败', { error: error.message }))
+        .finally(() => {
+          state.bindingStatusRefreshInFlight = false;
+        });
+    }
+  }, STATUS_REFRESH_INTERVAL_MS);
+  setInterval(() => {
+    if (!shouldPollCallbacks() || state.callbackRefreshInFlight) return;
+    state.callbackRefreshInFlight = true;
+    refreshCallbacks().finally(() => {
+      state.callbackRefreshInFlight = false;
+    });
+  }, CALLBACK_POLL_INTERVAL_MS);
+  state.refreshTimer = setInterval(() => {
+    if (!shouldAutoRefreshOrders() || state.orderRefreshInFlight) return;
+    state.orderRefreshInFlight = true;
+    state.lastAutoOrderRefreshAt = Date.now();
+    refreshAccount('orders')
+      .catch((error) => log('实时委托刷新失败', { error: error.message }))
+      .finally(() => {
+        state.orderRefreshInFlight = false;
+      });
+  }, 1000);
 }
 
 async function boot() {
@@ -3449,6 +5367,8 @@ async function boot() {
   wireNavigation();
   wireDataTabs();
   wireTutorialNavigation();
+  wireOnboardingGuide();
+  wireSettingsNavigation();
   wireImageLightbox();
   renderCallbacks();
   setDataTab(localStorage.getItem('cfquant.trade_tab') || 'positions', false);
@@ -3462,25 +5382,52 @@ async function boot() {
       log('刷新失败', { error: error.message });
     }
   });
+  $('switchAccountBtn').addEventListener('click', switchAccountFromToolbar);
   $('statusBtn').addEventListener('click', refreshStatus);
   $('lttxStartBtn').addEventListener('click', startLttx);
   $('lttxStopBtn').addEventListener('click', stopLttx);
   $('openAccessSettingsBtn').addEventListener('click', () => setView('settings'));
-  $('savePairBtn').addEventListener('click', () => saveCurrentAccountPair().catch((error) => log('账号配对保存失败', { error: error.message })));
-  $('removePairBtn').addEventListener('click', () => removeCurrentAccountPair().catch((error) => log('账号配对移除失败', { error: error.message })));
+  const openOnboardingGlobalBtn = $('openOnboardingGlobalBtn');
+  if (openOnboardingGlobalBtn) {
+    openOnboardingGlobalBtn.addEventListener('click', () => openOnboardingGuide({ manual: true }));
+  }
+  $('savePairBtn').addEventListener('click', () => saveCurrentAccountPair().catch((error) => log('账号配置保存失败', { error: error.message })));
+  $('removePairBtn').addEventListener('click', () => removeCurrentAccountPair().catch((error) => log('账号配置删除失败', { error: error.message })));
   $('accountPairList').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-account-id]');
     if (!button) return;
     selectAccountPair(button.dataset.accountId, button.dataset.bridgeId);
   });
-  $('bridgeForm').addEventListener('submit', submitBridgeForm);
+  const bindingConfigList = $('bindingAccountConfigList');
+  if (bindingConfigList) {
+    bindingConfigList.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-account-id]');
+      if (!button) return;
+      if (button.dataset.action === 'delete-account') {
+        state.accountId = button.dataset.accountId || state.accountId;
+        renderAccountSelect();
+        removeCurrentAccountPair().catch((error) => log('账号配置删除失败', { error: error.message }));
+        return;
+      }
+      selectAccountPair(button.dataset.accountId, button.dataset.bridgeId);
+    });
+  }
+  const bridgeForm = $('bridgeForm');
+  if (bridgeForm) bridgeForm.addEventListener('submit', submitBridgeForm);
   $('bindingForm').addEventListener('submit', submitBindingForm);
-  $('bridgeConfigList').addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-bridge-id]');
-    if (!button) return;
-    if (button.dataset.action === 'edit') fillBridgeForm(button.dataset.bridgeId);
-    if (button.dataset.action === 'delete') deleteBridge(button.dataset.bridgeId);
-  });
+  const openOnboardingGuideBtn = $('openOnboardingGuideBtn');
+  if (openOnboardingGuideBtn) {
+    openOnboardingGuideBtn.addEventListener('click', () => openOnboardingGuide({ manual: true }));
+  }
+  const bridgeConfigList = $('bridgeConfigList');
+  if (bridgeConfigList) {
+    bridgeConfigList.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-bridge-id]');
+      if (!button) return;
+      if (button.dataset.action === 'edit') fillBridgeForm(button.dataset.bridgeId);
+      if (button.dataset.action === 'delete') deleteBridge(button.dataset.bridgeId);
+    });
+  }
   $('refreshBindingsBtn').addEventListener('click', () => refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message })));
   $('bindingStatusBody').addEventListener('click', (event) => {
     const button = event.target.closest('.verify-pair-btn');
@@ -3499,11 +5446,15 @@ async function boot() {
     }
     const button = event.target.closest('button[data-endpoint-id]');
     if (!button) return;
-    if (button.dataset.endpointId !== state.apiEndpointId) {
+    if (button.dataset.endpointId !== state.apiEndpointId && !isQuoteEndpoint(apiEndpointById(button.dataset.endpointId))) {
       stopQuoteLive();
     }
     renderApiDocs(button.dataset.endpointId, { ensureGroupOpen: true });
   });
+  $('quoteConnectBtn').addEventListener('click', () => connectQuoteWebSocket(state.quoteSubscribeId));
+  $('quoteStopBtn').addEventListener('click', () => stopQuoteLive());
+  const downloadClearBtn = $('downloadProgressClearBtn');
+  if (downloadClearBtn) downloadClearBtn.addEventListener('click', clearDownloadProgress);
   $('apiForm').addEventListener('input', updateApiRequestPreview);
   $('apiForm').addEventListener('change', updateApiRequestPreview);
   $('apiForm').addEventListener('submit', sendApiDebugRequest);
@@ -3529,10 +5480,21 @@ async function boot() {
     saveServerAccessFromUi('api', { reload: true }).catch((error) => log('Web 重载失败', { error: error.message }));
   });
   $('webAuthForm').addEventListener('submit', loginWebAuth);
+  const logoutBtn = $('webAuthLogoutBtn');
+  if (logoutBtn) logoutBtn.addEventListener('click', () => logoutWebAuth());
+  $('setupForm').addEventListener('submit', submitSetupForm);
+  $('reinitializeSetupBtn').addEventListener('click', reinitializeSetup);
   $('logCleanupForm').addEventListener('submit', (event) => {
     event.preventDefault();
     saveLogCleanupFromUi().catch((error) => log('日志清理设置保存失败', { error: error.message }));
   });
+  const qmtLogLanguageForm = $('qmtLogLanguageForm');
+  if (qmtLogLanguageForm) {
+    qmtLogLanguageForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      saveQmtLogLanguageFromUi().catch((error) => log('QMT 日志语言保存失败', { error: error.message }));
+    });
+  }
   $('runLogCleanupBtn').addEventListener('click', () => {
     runLogCleanupFromUi().catch((error) => log('日志清理执行失败', { error: error.message }));
   });
@@ -3585,12 +5547,13 @@ async function boot() {
   $('accountInput').addEventListener('change', handleAccountChange);
   $('queryChannel').addEventListener('change', selectedChannel);
   $('tradeChannel').addEventListener('change', selectedTradeChannel);
-  state.webAuthToken = localStorage.getItem(WEB_AUTH_TOKEN_KEY) || '';
+  bindTransportControls();
+  state.webAuthToken = savedWebAuthToken();
   await loadConfig();
   loadApiOpenGroups();
   renderApiDocs();
   if (await ensureWebAuth()) {
-    await startAuthenticatedApp();
+    await continueAfterConfig();
   }
 }
 

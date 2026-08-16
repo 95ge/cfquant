@@ -6,6 +6,7 @@ import threading
 import time
 
 from .config import get_config
+from .logging_i18n import get_log_language, set_log_language, translate_log
 from .protocol import loads_message, pack_event, pack_response
 
 
@@ -204,11 +205,18 @@ class CfquantQmtBridge(object):
     def _dispatch(self, action, params, msg):
         if action == "cfquant.ping":
             return {"pong": True, "ts": time.time(), "request_channel": self.request_channel}
+        if action == "cfquant.set_log_language":
+            lang = set_log_language(params.get("language") or params.get("lang"))
+            self._log("QMT日志语言已切换为:%s" % ("中文" if lang == "zh" else "English"))
+            return {"language": lang}
+        if action == "cfquant.get_log_language":
+            return {"language": get_log_language()}
         if action == "cfquant.status":
             return {
                 "bridge": type(self).__name__,
                 "running": self.running,
                 "request_channel": self.request_channel,
+                "log_language": get_log_language(),
                 "context_ready": self.context is not None,
                 "tx_ready": self.tx is not None,
                 "subscriptions": len(self.subscriptions),
@@ -229,7 +237,7 @@ class CfquantQmtBridge(object):
         if action == "xtdata.unsubscribe_quote":
             return self._unsubscribe_quote(params)
         if action == "xtdata.download_history_data":
-            return self._download_history_data(params)
+            return self._download_history_data(params, msg)
         if action == "xtdata.download_history_data2":
             return self._download_history_data2(params, msg)
         if action == "xtdata.get_instrument_detail":
@@ -363,9 +371,47 @@ class CfquantQmtBridge(object):
                     self.client_subscriptions[client_id].discard(subscribe_id)
         return result
 
-    def _download_history_data(self, params):
+    def _download_event_meta(self, params, kind, stage):
+        meta = {
+            "download": True,
+            "download_kind": kind,
+            "stage": stage,
+            "bridge_id": getattr(self, "bridge_id", "default"),
+        }
+        job_id = params.get("download_job_id") or params.get("job_id")
+        if job_id:
+            meta["job_id"] = str(job_id)
+        for name in ("stock_code", "period", "start_time", "end_time"):
+            value = params.get(name)
+            if value not in (None, ""):
+                meta[name] = value
+        for name in ("stock_list", "code_list", "table_list"):
+            value = params.get(name)
+            if value:
+                meta[name] = value
+        return meta
+
+    def _send_download_event(self, client_id, params, kind, stage, data=None):
+        callback_event = params.get("callback_event")
+        if not callback_event or not client_id:
+            return
+        self._send_event(
+            client_id,
+            callback_event,
+            data if data is not None else {},
+            meta=self._download_event_meta(params, kind, stage),
+        )
+
+    def _download_history_data(self, params, msg=None):
+        client_id = msg.get("client_id") if msg else None
+        emit_lifecycle = bool(params.get("download_emit_lifecycle"))
         func = self._get_callable("download_history_data", "down_history_data")
         if not func:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": "当前QMT内置ContextInfo未提供download_history_data",
+                })
             raise NotImplementedError("当前QMT内置ContextInfo未提供download_history_data")
         variants = []
         incrementally = params.get("incrementally")
@@ -389,18 +435,48 @@ class CfquantQmtBridge(object):
             ),
             {},
         ))
-        return self._call_variants(func, variants)
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "submitted", {
+                "stage": "submitted",
+                "message": "history download request submitted",
+            })
+        try:
+            result = self._call_variants(func, variants)
+        except Exception as e:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": str(e),
+                })
+            raise
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "request_done", {
+                "stage": "request_done",
+                "result": result,
+            })
+        return result
 
     def _download_history_data2(self, params, msg):
-        func = self._get_callable("download_history_data2", "down_history_data2")
-        if not func:
-            raise NotImplementedError("当前QMT环境未提供download_history_data2")
         client_id = msg.get("client_id")
         callback_event = params.get("callback_event")
+        emit_lifecycle = bool(params.get("download_emit_lifecycle"))
+        func = self._get_callable("download_history_data2", "down_history_data2")
+        if not func:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": "当前QMT环境未提供download_history_data2",
+                })
+            raise NotImplementedError("当前QMT环境未提供download_history_data2")
 
         def callback(data):
             if callback_event and client_id:
-                self._send_event(client_id, callback_event, data)
+                self._send_event(
+                    client_id,
+                    callback_event,
+                    data,
+                    meta=self._download_event_meta(params, "history", "progress"),
+                )
 
         callback_func = callback if callback_event else None
         variants = []
@@ -427,7 +503,26 @@ class CfquantQmtBridge(object):
             ),
             {},
         ))
-        return self._call_variants(func, variants)
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "submitted", {
+                "stage": "submitted",
+                "message": "history download request submitted",
+            })
+        try:
+            result = self._call_variants(func, variants)
+        except Exception as e:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": str(e),
+                })
+            raise
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "request_done", {
+                "stage": "request_done",
+                "result": result,
+            })
+        return result
 
     def _get_instrument_detail(self, params):
         func = getattr(self.context, "get_instrument_detail")
@@ -659,12 +754,13 @@ class CfquantQmtBridge(object):
     def _send_trader_event(self, client_id, name, data):
         self._send_event(client_id, "trader:%s" % name, data)
 
-    def _send_event(self, client_id, name, data, subscription_id=None):
+    def _send_event(self, client_id, name, data, subscription_id=None, meta=None):
         event = pack_event(
             name,
             data=data,
             client_id=client_id,
             subscription_id=subscription_id,
+            meta=meta,
         )
         self._push("event", event, client_id)
 
@@ -703,15 +799,6 @@ class CfquantQmtBridge(object):
             func = self._get_global_func(name)
             if callable(func):
                 return func
-        try:
-            from xtquant import xtdata
-        except Exception:
-            xtdata = None
-        if xtdata is not None:
-            for name in names:
-                func = getattr(xtdata, name, None)
-                if callable(func):
-                    return func
         return None
 
     def _get_global_func(self, name):
@@ -743,13 +830,20 @@ class CfquantQmtBridge(object):
         return mapping.get(account_type, "STOCK")
 
     def _load_txl(self):
+        package_error = None
+        try:
+            from .tx import txl
+            return txl
+        except Exception as e:
+            package_error = e
         try:
             from tx import txl
-        except Exception as e:
-            raise RuntimeError("无法导入 LTtx txl，请确认 tx.py 在 QMT Python 路径中: %s" % e)
-        return txl
+            return txl
+        except Exception as path_error:
+            raise RuntimeError("无法导入 LTtx txl，请确认 cfquant 包完整或 tx.py 在 QMT Python 路径中: %s; fallback: %s" % (package_error, path_error))
 
     def _log(self, msg):
+        msg = translate_log(msg)
         line = "%s %s" % (self._timestamp_ms(), msg)
         try:
             self.log_queue.put_nowait(line)
@@ -800,7 +894,17 @@ class CfquantQmtBridge(object):
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         except Exception:
             base_dir = os.getcwd()
-        return os.path.join(base_dir, "cfquant_qmt_bridge.log")
+        log_dir = (
+            os.environ.get("CFQUANT_QMT_LOG_DIR")
+            or os.environ.get("CFQUANT_LOG_DIR")
+            or os.path.join(base_dir, "log")
+        )
+        log_dir = os.path.abspath(log_dir)
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except Exception:
+            log_dir = base_dir
+        return os.path.join(log_dir, "cfquant_qmt_bridge.log")
 
     def _timestamp_ms(self):
         now = time.time()

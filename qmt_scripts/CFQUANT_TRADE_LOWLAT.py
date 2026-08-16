@@ -7,7 +7,6 @@ import importlib
 
 
 _trade_bridge = None
-_ENTRY_VERSION = "trade_lowlat_20260707_04"
 DEFAULT_ACCOUNT_ID = ""
 USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
@@ -16,13 +15,30 @@ BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
 def _ensure_path():
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        if base_dir and base_dir not in sys.path:
-            sys.path.insert(0, base_dir)
+        parent_dir = os.path.dirname(base_dir)
+        env_paths = [p for p in os.environ.get("CFQUANT_PYTHONPATH", "").split(os.pathsep) if p]
+        if os.path.basename(base_dir).lower() == "python":
+            candidates = env_paths + [os.path.join(parent_dir, "bin.x64"), base_dir, parent_dir]
+        else:
+            candidates = env_paths + [
+                base_dir,
+                os.path.join(base_dir, "bin.x64"),
+                parent_dir,
+                os.path.join(parent_dir, "bin.x64"),
+                os.path.join(parent_dir, "python"),
+            ]
+        insert_at = 0
+        for path in candidates:
+            if path and os.path.isdir(path) and path not in sys.path:
+                sys.path.insert(insert_at, path)
+                insert_at += 1
     except Exception:
         pass
 
 
 _ensure_path()
+
+from cfquant import __version__ as _ENTRY_VERSION
 
 
 def _load_bridge_starter():

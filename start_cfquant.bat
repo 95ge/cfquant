@@ -8,17 +8,8 @@ set "WEB_PORT=8765"
 for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=8765; $f='%~dp0cfquant_web_config.json'; if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.web_port) { $p=[int]$c.web_port } elseif ($c.web_server -and $c.web_server.port) { $p=[int]$c.web_server.port } } catch {} }; Write-Output $p"`) do set "WEB_PORT=%%P"
 if not defined WEB_PORT set "WEB_PORT=8765"
 
-echo Starting LTtx server...
-call :is_port_listening 2049
-if errorlevel 1 (
-    start "cfquant LTtx" /min "%PYTHON_EXE%" "%~dp0LTtx\tx\LTtx_server.py"
-) else (
-    echo LTtx server already listening on 2049, skip start.
-)
-
-timeout /t 2 /nobreak >nul
-
 echo Starting cfquant web dashboard...
+echo The web server will start PipeHub or LTtx according to the saved mode.
 call :is_port_listening %WEB_PORT%
 if errorlevel 1 (
     start "cfquant Web" /min "%PYTHON_EXE%" "%~dp0cfquant_web_server.py"

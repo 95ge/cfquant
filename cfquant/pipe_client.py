@@ -4,36 +4,31 @@ import threading
 import time
 
 from .config import get_config
+from .pipe_transport import (
+    DEFAULT_PIPE_NAME,
+    connect_pipe,
+    dumps_pipe_message,
+    loads_pipe_message,
+    normalize_pipe_name,
+)
 from .protocol import decode_value, dumps_message, loads_message, new_id, pack_request
 
 
-class CfquantError(RuntimeError):
-    pass
-
-
-class CfquantTimeout(TimeoutError):
-    pass
-
-
-class LTtxRpcClient(object):
+class PipeRpcClient(object):
     """
-    cfquant 外部端 LTtx/TX RPC 客户端。
-
-    - 通过 start_tx() 向大 QMT 的固定请求频道发送 request。
-    - 通过 start_txg(client_id) 订阅自己的专属回包频道。
-    - 大 QMT 按请求里的 client_id 原路 push response/event。
+    External Python RPC client over the cfquant named-pipe hub.
     """
 
-    def __init__(self, host=None, port=None, token=None, request_channel=None, timeout=None, client_id=None):
+    def __init__(self, pipe_name=None, request_channel=None, timeout=None, client_id=None, connect_timeout_ms=None):
         cfg = get_config()
-        self.host = host or cfg["host"]
-        self.port = int(port or cfg["port"])
-        self.token = token or cfg["token"]
+        self.pipe_name = normalize_pipe_name(pipe_name or cfg.get("pipe_name") or DEFAULT_PIPE_NAME)
         self.request_channel = request_channel or cfg["request_channel"]
         self.timeout = float(timeout or cfg["timeout"])
-        self.client_id = client_id or cfg.get("client_id") or new_id("client")
+        self.client_id = client_id or cfg.get("client_id") or new_id("pipe_client")
         self.reply_channel = self.client_id
-        self._tx = None
+        self.connect_timeout_ms = int(connect_timeout_ms or cfg.get("pipe_connect_timeout_ms") or 3000)
+        self._rx_conn = None
+        self._tx_conn = None
         self._pending = {}
         self._callbacks = {}
         self._lock = threading.RLock()
@@ -45,10 +40,18 @@ class LTtxRpcClient(object):
         with self._lock:
             if self._started:
                 return
-            txl = self._load_txl()
-            self._tx = txl(self.host, self.port, self.token)
-            self._tx.start_tx()
-            self._tx.start_txg(self.client_id)
+            self._rx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
+            self._rx_conn.write_frame(dumps_pipe_message({
+                "type": "hello",
+                "role": "api_rx",
+                "client_id": self.client_id,
+            }))
+            self._tx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
+            self._tx_conn.write_frame(dumps_pipe_message({
+                "type": "hello",
+                "role": "api_tx",
+                "client_id": self.client_id,
+            }))
             self._started = True
             self._recv_thread = threading.Thread(target=self._recv_loop)
             self._recv_thread.daemon = True
@@ -57,21 +60,20 @@ class LTtxRpcClient(object):
     def close(self):
         with self._lock:
             self._started = False
-            tx = self._tx
-            self._tx = None
-            if tx is not None:
+            conns = [self._rx_conn, self._tx_conn]
+            self._rx_conn = None
+            self._tx_conn = None
+            for conn in conns:
+                if conn is None:
+                    continue
                 try:
-                    tx.Q.put(None)
-                except Exception:
-                    pass
-                try:
-                    tx.close()
+                    conn.close()
                 except Exception:
                     pass
             with self._pending_lock:
                 for q in list(self._pending.values()):
                     try:
-                        q.put_nowait({"ok": False, "error": {"message": "cfquant client closed"}})
+                        q.put_nowait({"ok": False, "error": {"message": "cfquant pipe client closed"}})
                     except Exception:
                         pass
                 self._pending.clear()
@@ -89,21 +91,25 @@ class LTtxRpcClient(object):
             client_id=self.client_id,
             request_id=request_id,
         )
-        self._push("request", raw, request_channel or self.request_channel)
+        self._send_request(raw, request_channel or self.request_channel)
         try:
             msg = q.get(timeout=float(timeout or self.timeout))
         except queue.Empty:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
-            raise CfquantTimeout("cfquant request timeout: %s" % action)
+            from .client import CfquantTimeout
+
+            raise CfquantTimeout("cfquant pipe request timeout: %s" % action)
         if not msg.get("ok"):
             err = msg.get("error") or {}
+            from .client import CfquantError
+
             raise CfquantError(err.get("message") or str(err))
         return decode_value(msg.get("result"))
 
     def publish_event(self, channel, payload):
         self.start()
-        self._push("event", dumps_message(payload), channel)
+        self._send_request(dumps_message(payload), channel)
 
     def add_callback(self, event, callback):
         if callback is None:
@@ -115,16 +121,32 @@ class LTtxRpcClient(object):
         if callback in callbacks:
             callbacks.remove(callback)
 
+    def _send_request(self, payload, request_channel):
+        conn = self._tx_conn
+        if conn is None:
+            from .client import CfquantError
+
+            raise CfquantError("cfquant pipe client not started")
+        conn.write_frame(dumps_pipe_message({
+            "type": "request",
+            "role": "api_tx",
+            "client_id": self.client_id,
+            "request_channel": request_channel,
+            "payload": payload,
+        }))
+
     def _recv_loop(self):
         while self._started:
             try:
-                tx = self._tx
-                if tx is None:
+                conn = self._rx_conn
+                if conn is None:
                     break
-                raw = tx.Q.get()
+                raw = conn.read_frame()
                 if raw is None:
                     break
-                msg = loads_message(raw)
+                envelope = loads_pipe_message(raw)
+                payload = envelope.get("payload") if envelope else raw
+                msg = loads_message(payload)
                 if not msg:
                     continue
                 msg_type = msg.get("type")
@@ -165,66 +187,3 @@ class LTtxRpcClient(object):
                     callback(quote_msg)
                 except Exception:
                     pass
-
-    def _push(self, key, payload, channel):
-        tx = self._tx
-        if tx is None:
-            raise CfquantError("cfquant LTtx client not started")
-        result = tx.push(key, payload, channel)
-        if isinstance(result, dict) and result.get("code", 0) != 0:
-            raise CfquantError(result.get("msg") or "LTtx push failed")
-        return result
-
-    def _load_txl(self):
-        errors = []
-        try:
-            from .tx import txl
-            return txl
-        except Exception as e:
-            errors.append("cfquant.tx: %s" % e)
-        try:
-            from tx import txl
-            return txl
-        except Exception as e:
-            errors.append("tx.py: %s" % e)
-        try:
-            from LTtx.tx import txl
-            return txl
-        except Exception as e:
-            errors.append("LTtx.tx: %s" % e)
-        raise CfquantError("failed to import LTtx txl; tried %s" % "; ".join(errors))
-
-
-_default_client = None
-_client_lock = threading.Lock()
-
-
-def get_client():
-    global _default_client
-    with _client_lock:
-        if _default_client is None:
-            cfg = get_config()
-            if str(cfg.get("transport") or "ctypes").lower() in ("pipe", "ctypes", "named_pipe", "named-pipe"):
-                from .pipe_client import PipeRpcClient
-
-                _default_client = PipeRpcClient(
-                    pipe_name=cfg.get("pipe_name"),
-                    request_channel=cfg.get("request_channel"),
-                    timeout=cfg.get("timeout"),
-                    client_id=cfg.get("client_id"),
-                    connect_timeout_ms=cfg.get("pipe_connect_timeout_ms"),
-                )
-            else:
-                _default_client = LTtxRpcClient()
-        return _default_client
-
-
-def configure(**kwargs):
-    from .config import configure as configure_config
-
-    configure_config(**kwargs)
-    global _default_client
-    with _client_lock:
-        if _default_client is not None:
-            _default_client.close()
-        _default_client = None

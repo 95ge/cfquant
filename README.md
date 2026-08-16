@@ -1,108 +1,137 @@
 # cfquant
 
-cfquant 是面向 QMT 的本地桥接项目，用于把 Web 控制台、外部 Python 程序和 QMT 策略脚本连接起来，统一转发行情订阅、交易请求、账户查询和回调事件。
+cfquant 是面向 QMT 的本地桥接项目。它把 Web 控制台、外部 Python 程序和 QMT 策略脚本连接起来，统一转发行情订阅、账户查询、交易指令和回调事件。
 
-## 重要前提：建议两端都部署
+默认推荐使用**通用模式**：一个 QMT、一个入口脚本即可跑通。需要更低交易延迟时，再切换到**高级模式**。
 
-cfquant 的完整功能依赖两端同时运行：
+## 快速选择
 
-- **本地服务端**：运行 `start_cfquant.bat`，启动 LTtx、本地 Web 控制台和 HTTP/WebSocket 接口。
-- **QMT 桥接端**：把 `cfquant/`、`LTtx/` 和 `qmt_scripts/` 中的桥接脚本部署到 QMT 的 Python 策略目录，并在 QMT 中加载 `CFQUANT.py`、`CFQUANT_TRADE_LOWLAT.py`。
+| 模式 | QMT 侧部署 | 通信链路 | 适合场景 |
+|---|---|---|---|
+| 通用模式 | 一个 QMT 加载 `CFQUANT_CTYPE_ALL_LOWLAT.py` | Web / 外部 Python -> PipeHub -> ctypes 单文件桥 -> QMT | 快速部署、单账号验证、多数常规使用 |
+| 高级模式 | 两个 QMT：普通 QMT 加载 `CFQUANT.py`，极速交易端 QMT 加载 `CFQUANT_TRADE_LOWLAT.py` | Web / 外部 Python -> LTtx -> 普通桥 + 极速交易桥 -> QMT | 追求更低下单、撤单延迟 |
 
-只启动 Web 控制台时，可以看到页面和配置项，但无法真正调用 QMT 的行情、交易和账号能力；只在 QMT 里放桥接脚本而不启动本地服务端，外部 Python 和网页也无法连接。实际使用时建议两端都部署、都保持运行，然后在 Web 控制台完成桥接端和资金账号绑定。
+关键规则：
 
-## 快速开始
+- 通用模式不经过 LTtx，请求走 PipeHub named pipe。
+- 本地服务默认仍会预启动 LTtx，方便高级模式或旧客户端随时接入。
+- 高级模式必须打开两个 QMT。不要在同一个 QMT 里同时运行 `CFQUANT.py` 和 `CFQUANT_TRADE_LOWLAT.py`。
+- 通用模式和高级模式里的普通 QMT 可以部署在同一个 QMT；高级模式的极速交易端需要单独打开另一个 QMT。
+- 账号配置为高级模式时，系统优先走高级通道；高级通道不可用时自动回退到该账号的 ctypes 通用桥。
 
-1. 从 GitHub 下载源码 zip，解压到一个固定目录，例如：
+## 快速启动
+
+1. 解压项目到固定目录，例如：
 
    ```text
    D:\cfquant
    ```
 
-2. Windows 下双击运行：
+2. 双击运行：
 
    ```text
    start_cfquant.bat
    ```
 
-   脚本会启动本地 `LTtx_server.py` 和 Web 控制台，并打开：
+   默认打开：
 
    ```text
    http://127.0.0.1:8765/
    ```
 
-3. 如果不使用一键脚本，也可以手动分步启动：
+3. 首次打开网页后，先完成初始化向导：
 
-   ```powershell
-   cd D:\cfquant
-   python .\LTtx\tx\LTtx_server.py
-   ```
+   - 填写默认资金账号；
+   - 新用户选择通用模式；
+   - QMT 核心目录建议填写为 QMT 安装目录下的 `bin.x64`，例如 `D:\国金证券QMT交易端\bin.x64`；
+   - 目录可留空，但自动更新、脚本定位和多 QMT 身份写入会失效。
 
-   另开一个终端：
+4. 在 QMT 中加载对应入口脚本，然后回到网页验证资金、持仓、委托和行情。
 
-   ```powershell
-   cd D:\cfquant
-   python .\cfquant_web_server.py --host 127.0.0.1 --port 8765
-   ```
+运维脚本：
 
-4. 打开 Web 控制台后，进入“绑定”页面维护桥接端和账号绑定。
+```text
+start_cfquant.bat      启动本地服务
+stop_cfquant.bat       停止本地服务
+restart_cfquant.bat    重启本地服务
+启动cfquant.bat        中文启动脚本
+停止cfquant.bat        中文停止脚本
+重启cfquant.bat        中文重启脚本
+```
 
-5. 接入 QMT 时，把下面这些文件复制到 QMT 的 Python 策略目录：
+## QMT 部署
 
-   ```text
-   cfquant/
-   LTtx/
-   qmt_scripts/CFQUANT.py
-   qmt_scripts/CFQUANT_TRADE_LOWLAT.py
-   qmt_scripts/tx.py
-   ```
+QMT 核心目录指 QMT 安装目录里的 `bin.x64`。推荐目录结构如下。
 
-   复制后，`CFQUANT.py`、`CFQUANT_TRADE_LOWLAT.py`、`tx.py` 应和 `cfquant/`、`LTtx/` 位于同一个 QMT Python 目录中。
+通用模式：
 
-6. 在 QMT 中加载 `CFQUANT.py` 和 `CFQUANT_TRADE_LOWLAT.py`，然后回到 Web 控制台检查桥接端状态并完成账号绑定。
+```text
+QMT安装目录/
+  bin.x64/
+    cfquant/
+    cfquant_bridge_config.json   可由网页账号绑定自动写入
+  python/
+    CFQUANT_CTYPE_ALL_LOWLAT.py
+```
 
-   这一步和第 2 步必须同时完成：本地服务端负责接收网页和外部 Python 请求，QMT 桥接端负责真正调用 QMT 原生行情和交易能力。
+高级模式普通 QMT：
 
-## 外部 Python 使用
+```text
+普通QMT安装目录/
+  bin.x64/
+    cfquant/
+    cfquant_bridge_config.json
+  python/
+    CFQUANT.py
+```
 
-外部 Python 程序可以把 cfquant 当作 `xtquant` 兼容层使用。使用前需要先保证本地 `start_cfquant.bat` 已启动，QMT 侧桥接脚本已加载，并且 Web 控制台里已经完成账号和桥接端绑定。缺少任意一端时，外部 Python 通常只能导入包，无法完成真实行情查询、交易请求或回调接收。
+高级模式极速交易端 QMT：
 
-### 安装方式
+```text
+极速交易端QMT安装目录/
+  bin.x64/
+    cfquant/
+    cfquant_bridge_config.json
+  python/
+    CFQUANT_TRADE_LOWLAT.py
+```
 
-cfquant 暂未发布到 PyPI，因此暂不支持 `pip install cfquant`。当前只支持从本地源码目录安装。
+说明：
 
-开发调试时推荐使用 editable 安装：
+- `cfquant/` 核心包复制到目标 QMT 的 `bin.x64/cfquant/`。
+- QMT 入口脚本来自项目 `qmt_scripts/` 目录。
+- `tx.py` 已内置为 `cfquant.tx`，不需要单独复制到 QMT 的 `python/` 目录。
+- 网页保存账号绑定后，会把该 QMT 的 `bridge_id` 写入 `bin.x64/cfquant_bridge_config.json`。
+
+## 账号绑定
+
+默认是单账号、单 QMT：使用 `default` 内部通道即可。
+
+需要多账号时，在网页“绑定”页面为每个账号配置：
+
+- 资金账号；
+- QMT 核心目录，建议填写；
+- 通用模式或高级模式；
+- 是否作为共享行情数据源。
+
+多账号区分规则：
+
+- 同一个 QMT 登录多个账号：多个账号共用同一个内部通道，请求按 `account_id` 执行。
+- 多个 QMT 分别运行不同账号：每个 QMT 使用独立内部通道，网页根据 QMT 核心目录自动分配 `bridge_id`。
+- 多账号行情默认只选一个共享数据源，避免重复订阅全推行情。
+
+更完整的配置说明见 [web_account_runtime_configuration.md](docs/web_account_runtime_configuration.md)。
+
+## 外部 Python
+
+安装：
 
 ```powershell
 cd D:\cfquant
 pip install -e .
 ```
 
-如果不需要 editable 模式，也可以在源码目录直接安装当前版本：
-
-```powershell
-cd D:\cfquant
-pip install .
-```
-
-如果不想使用 pip，也可以把源码里的 `cfquant/` 和 `LTtx/` 两个目录直接复制到你的 Python 项目根目录，或复制到当前 Python 环境的 `site-packages` 目录。复制后应能在目标 Python 中执行：
-
-```python
-import cfquant
-from cfquant import xtdata
-```
-
-### 替代 xtquant 导入
-
-原来使用原生 `xtquant` 的代码：
-
-```python
-from xtquant import xtdata
-from xtquant.xttrader import XtQuantTrader
-from xtquant.xttype import StockAccount
-```
-
-可以改成：
+替代原生 `xtquant` 导入：
 
 ```python
 from cfquant import xtdata
@@ -110,24 +139,23 @@ from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
 ```
 
-如果原项目里大量使用 `import xtquant`，也可以用别名方式减少改动：
-
-```python
-import cfquant as xtquant
-
-data = xtquant.xtdata.get_full_tick(["000001.SZ"])
-```
-
-### 连接配置
-
-默认连接本机 LTtx。单 QMT 场景通常不需要手动调用 `configure`；只要 `start_cfquant.bat` 已启动、QMT 侧桥接脚本已加载，`xtdata` 可以像原生 `xtquant.xtdata` 一样直接使用。
-
-只有需要修改 LTtx 地址、端口、token、超时时间，或给没有账号映射的请求指定默认桥接端时，才需要调用 `configure`：
+默认连接通用模式：
 
 ```python
 from cfquant import configure
 
 configure(
+    transport="ctypes",
+    pipe_name=r"\\.\pipe\cfquant_pipe_hub",
+    timeout=15,
+)
+```
+
+需要强制走高级模式或旧 LTtx 通道时：
+
+```python
+configure(
+    transport="lttx",
     host="127.0.0.1",
     port=2049,
     token="LTtx",
@@ -135,37 +163,15 @@ configure(
 )
 ```
 
-也可以通过环境变量配置：
-
-```text
-CFQUANT_LTTX_HOST=127.0.0.1
-CFQUANT_LTTX_PORT=2049
-CFQUANT_LTTX_TOKEN=LTtx
-CFQUANT_TIMEOUT=15
-```
-
-### 行情查询示例
+示例：
 
 ```python
 from cfquant import xtdata
-
-tick = xtdata.get_full_tick(["000001.SZ", "600000.SH"])
-print(tick)
-
-bars = xtdata.get_market_data(
-    field_list=["open", "high", "low", "close", "volume"],
-    stock_list=["000001.SZ"],
-    period="1d",
-    count=5,
-)
-print(bars)
-```
-
-### 交易查询示例
-
-```python
 from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
+
+tick = xtdata.get_full_tick(["000001.SZ"])
+print(tick)
 
 account = StockAccount("2220009880")
 trader = XtQuantTrader("", 0, account=account)
@@ -173,62 +179,123 @@ trader.start()
 
 asset = trader.query_stock_asset(account)
 positions = trader.query_stock_positions(account)
-
-print(asset)
-print(positions)
+print(asset, positions)
 ```
 
-交易侧按资金账号路由：外部 Python 会读取当前项目目录或 `CFQUANT_WEB_CONFIG_FILE` 指向的 `cfquant_web_config.json`，如果里面已有 Web 控制台保存的“资金账号 -> 桥接端”绑定，只需要传同一个资金账号；如果不使用这份 Web 配置，也可以显式指定桥接端：
+外部 Python 会读取当前项目目录或 `CFQUANT_WEB_CONFIG_FILE` 指向的 `cfquant_web_config.json`。如果网页已保存账号配置，只需要传同一个资金账号，系统会自动按账号路由。
 
-```python
-account = StockAccount("2220009880", bridge_id="qmt2")
+## Web 功能
+
+Web 控制台包含：
+
+- 首页：账号选择、模式状态、资金和持仓概览；
+- 绑定：单账号、多账号、QMT 核心目录和共享数据源配置；
+- 交易：下单、批量下单、撤单、委托、成交、持仓；
+- 行情：快照、K 线、全推订阅；
+- 接口调试：按接口生成请求并查看返回；
+- 教程：通用模式和高级模式的部署引导；
+- 设置：通信模式、日志清理、QMT 日志语言、更新管理。
+
+全推行情不会在非必要页面默认推送到浏览器。只有进入相关界面或主动订阅后，网页才会接收实时行情，避免长时间打开首页造成浏览器卡顿。
+
+## 数据下载
+
+- 历史行情：已接入 `xtdata.download_history_data` 和 `download_history_data2`。
+- 下载进度：如果 QMT 提供 `download_history_data2`，网页可通过回调事件显示进度；如果只能回退旧接口，只能显示请求生命周期。
+- 财务数据：大 QMT 官网脚本侧未提供可直接调用的财务下载函数。`download_financial_data` 和网页财务下载入口目前用于读取、校验本地已下载财务数据；真实财务下载仍需要先在 QMT 客户端“数据管理 - 财务数据下载”中完成。
+
+能力矩阵见 [qmt_function_capability_matrix.md](docs/qmt_function_capability_matrix.md)。
+
+## 日志运维
+
+本地服务日志统一写入项目根目录 `log/`：
+
+```text
+log/
+  cfquant_web_server.runtime.log
+  cfquant_pipe_hub.stdout.log
+  cfquant_pipe_hub.stderr.log
+  lttx_server.stdout.log
+  lttx_server.stderr.log
+  cfquant_qmt_bridge.log
+  tx_log/
+  lttx/
 ```
+
+默认保留最近 30 天日志。Web 服务后台会定期自动清理，也可以在“设置 - 日志清理”中手动执行。
+
+根目录历史遗留的 `*.log`、`log_data/`、`tx_log/` 也纳入清理和 Git 忽略。QMT `userdata/log` 清理默认关闭，需要用户在网页里显式启用。
+
+常用环境变量：
+
+```text
+CFQUANT_LOG_DIR=D:\cfquant\log
+CFQUANT_LOG_RETENTION_DAYS=30
+CFQUANT_LOG_CLEANUP_INTERVAL_SECONDS=21600
+CFQUANT_PIPE_HUB_VERBOSE_EVENTS=0
+```
+
+`CFQUANT_PIPE_HUB_VERBOSE_EVENTS=1` 可打开 PipeHub 高频事件日志，只建议排查问题时临时使用。
+
+## 实测延迟
+
+测试环境为同一台本地机器和同一套 QMT 环境，仅用于判断量级，不代表固定承诺。
+
+交易时间稳定版测试时间：`2026-08-13 13:50` 至 `14:06`。
+
+| 方案 | 心跳 avg | 行情快照 avg | 资产查询 avg | 委托查询 avg |
+|---|---:|---:|---:|---:|
+| 普通 QMT / LTtx 普通通道 | 69.936 ms | 102.775 ms | 255.245 ms | 259.459 ms |
+| 极速交易端 / LTtx 交易通道 | 2.137 ms | 1.344 ms | 1.789 ms | 3.585 ms |
+| ctypes 普通通道 | 39.515 ms | 78.952 ms | 240.572 ms | 256.987 ms |
+| ctypes 交易通道 | 35.659 ms | 42.791 ms | 186.919 ms | 182.323 ms |
+
+真实下单撤单测试时间：`2026-08-13 14:40`，标的 `000001.SZ`，买入 `100` 股，限价 `11.1`，下单后等待 `3` 秒撤单。
+
+| 方案 | 下单请求 | 定位真实委托号 | 撤单请求 |
+|---|---:|---:|---:|
+| 普通 QMT | 175.897 ms | 326.104 ms | 128.918 ms |
+| 极速交易端 | 1.026 ms | 57.016 ms | 1.290 ms |
+| ctypes 交易通道 | 20.147 ms | 201.088 ms | 24.098 ms |
+
+非交易时间、午间休市或首次启动时，行情源、柜台连接、本地缓存和 QMT 回调节奏可能不活跃，请求耗时会明显高于交易时间。完整数据见 [ctypes_pipe_vs_lttx_latency_20260813.md](docs/ctypes_pipe_vs_lttx_latency_20260813.md)。
 
 ## 目录结构
 
 ```text
 cfquant/
-  cfquant/          核心 Python 包，提供 xtdata、xttrader、xttype 等兼容入口
-  LTtx/             本地通信依赖，外部 Python 客户端也需要它导入 txl
-  qmt_scripts/      需要放入 QMT Python 策略目录的入口脚本
-  web_dashboard/    Web 控制台静态资源
+  cfquant/             核心 Python 包
+  qmt_scripts/         QMT 入口脚本
+  web_dashboard/       Web 控制台静态资源
+  docs/                部署、兼容和测试文档
+  LTtx/                高级模式和旧 socket 客户端依赖
   cfquant_web_server.py
-                    Web 控制台后端入口
-  start_cfquant.bat Windows 一键启动脚本
-  docs/             部署与兼容说明
+                       Web 控制台后端
+  cfquant_pipe_hub.py  通用模式 PipeHub
+  start_cfquant.bat    一键启动
+  stop_cfquant.bat     一键停止
+  restart_cfquant.bat  一键重启
 ```
 
-## QMT 部署
+## 更多文档
 
-本地服务先运行在用户电脑上，负责启动 LTtx 和 Web 控制台；QMT 侧需要加载桥接脚本。两端都部署后，网页和外部 Python 请求才会通过 LTtx 转发到 QMT，并由 QMT 完成真实查询和交易。
+- [通用模式部署指南](docs/通用模式部署指南.md)
+- [高级模式部署指南](docs/高级模式部署指南.md)
+- [账号运行配置说明](docs/web_account_runtime_configuration.md)
+- [xtdata 兼容说明](docs/xtdata_compatibility.md)
+- [xttrader 兼容说明](docs/xttrader_compatibility.md)
+- [QMT 接口能力矩阵](docs/qmt_function_capability_matrix.md)
+- [延迟测试报告](docs/ctypes_pipe_vs_lttx_latency_20260813.md)
 
-QMT Python 策略目录最终应包含：
+## 版本日志
 
-```text
-CFQUANT.py
-CFQUANT_TRADE_LOWLAT.py
-tx.py
-cfquant/
-LTtx/
-```
+### core_20260817_01
 
-其中 `CFQUANT.py` 是普通桥入口，`CFQUANT_TRADE_LOWLAT.py` 是极速交易桥入口，`tx.py` 和 `LTtx/` 负责本地通信。
-
-## 多桥接端
-
-多 QMT 场景下，每个 QMT 终端应配置不同的 `bridge_id`，并在 Web 控制台“绑定”页面维护账号到桥接端的关系。
-
-## 更新机制
-
-Web 端支持为桥接端配置 Python 目录，并通过 GitHub 或 zip 源码更新核心代码。常规更新只替换目标目录中的：
-
-```text
-cfquant/
-LTtx/
-```
-
-不会覆盖 `CFQUANT.py`、`CFQUANT_TRADE_LOWLAT.py` 等入口脚本。更新前会备份旧版本，默认只保留最近 2 个备份，便于失败后回滚。
-
-## 说明
-
-详细教程以 Web 控制台的“教程”页面为准；`docs/` 目录保留部分兼容说明和补充文档。
+- 新增 ctypes named pipe 通用模式，默认推荐单账号、单 QMT、单文件部署。
+- 新增 PipeHub，本地 Web、外部 Python 和 QMT 通用桥通过 named pipe 通信。
+- 高级模式保留普通 QMT + 极速交易端双桥方案，并支持账号级高级优先、ctypes 自动回退。
+- Web 端新增首次初始化向导、账号绑定、多账号内部通道、共享行情数据源和通用端状态展示。
+- 完成 xtdata/xttrader 多个查询、行情订阅、历史数据下载、交易下单撤单兼容接入；财务下载降级为本地数据校验。
+- 增加实测延迟文档和 README 延迟对比，覆盖交易时间、非交易时间、真实下单撤单。
+- 优化全推行情 WebSocket 推送策略，非必要页面不主动推送全量行情，降低浏览器长时间停留导致的卡顿风险。
+- 日志统一写入 `log/` 目录，默认保留最近 30 天，并纳入 Git 忽略；PipeHub 高频事件日志默认关闭，需要排查时设置 `CFQUANT_PIPE_HUB_VERBOSE_EVENTS=1`。

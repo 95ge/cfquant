@@ -1,0 +1,7 @@
+pandas
+orjson
+packaging
+psutil
+pytz
+tabulate
+pandas_market_calendars

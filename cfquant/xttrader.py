@@ -62,6 +62,16 @@ def _new_trade_client(client_id=None, bridge_id=None):
     cfg = get_config()
     bridge_id = normalize_bridge_id(bridge_id or cfg.get("bridge_id"))
     trade_channel = channels_for_bridge(bridge_id)["trade"]
+    if str(cfg.get("transport") or "ctypes").lower() in ("pipe", "ctypes", "named_pipe", "named-pipe"):
+        from .pipe_client import PipeRpcClient
+
+        return PipeRpcClient(
+            pipe_name=cfg.get("pipe_name"),
+            request_channel=trade_channel,
+            timeout=cfg["timeout"],
+            client_id=client_id or new_id("trade_client"),
+            connect_timeout_ms=cfg.get("pipe_connect_timeout_ms"),
+        )
     return LTtxRpcClient(
         host=cfg["host"],
         port=cfg["port"],

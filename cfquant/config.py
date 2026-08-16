@@ -7,6 +7,9 @@ from .channels import bridge_id_from_env, channels_for_bridge
 DEFAULT_HOST = os.environ.get("CFQUANT_LTTX_HOST", os.environ.get("CFQUANT_SOCKET_HOST", "127.0.0.1"))
 DEFAULT_PORT = int(os.environ.get("CFQUANT_LTTX_PORT", os.environ.get("CFQUANT_SOCKET_PORT", "2049")))
 DEFAULT_TOKEN = os.environ.get("CFQUANT_LTTX_TOKEN", os.environ.get("CFQUANT_SOCKET_TOKEN", "LTtx"))
+DEFAULT_TRANSPORT = os.environ.get("CFQUANT_TRANSPORT", "ctypes")
+DEFAULT_PIPE_NAME = os.environ.get("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub")
+DEFAULT_PIPE_CONNECT_TIMEOUT_MS = int(os.environ.get("CFQUANT_PIPE_CONNECT_TIMEOUT_MS", "3000"))
 DEFAULT_BRIDGE_ID = bridge_id_from_env()
 DEFAULT_REQUEST_CHANNEL = os.environ.get(
     "CFQUANT_REQUEST_CHANNEL",
@@ -24,10 +27,24 @@ _config = {
     "request_channel": DEFAULT_REQUEST_CHANNEL,
     "timeout": DEFAULT_TIMEOUT,
     "client_id": DEFAULT_CLIENT_ID,
+    "transport": DEFAULT_TRANSPORT,
+    "pipe_name": DEFAULT_PIPE_NAME,
+    "pipe_connect_timeout_ms": DEFAULT_PIPE_CONNECT_TIMEOUT_MS,
 }
 
 
-def configure(host=None, port=None, token=None, request_channel=None, timeout=None, client_id=None, bridge_id=None):
+def configure(
+    host=None,
+    port=None,
+    token=None,
+    request_channel=None,
+    timeout=None,
+    client_id=None,
+    bridge_id=None,
+    transport=None,
+    pipe_name=None,
+    pipe_connect_timeout_ms=None,
+):
     """配置 cfquant 连接到 LTtx/TX 桥接端的参数。"""
     if host is not None:
         _config["host"] = host
@@ -47,6 +64,12 @@ def configure(host=None, port=None, token=None, request_channel=None, timeout=No
         _config["timeout"] = float(timeout)
     if client_id is not None:
         _config["client_id"] = client_id
+    if transport is not None:
+        _config["transport"] = str(transport or "ctypes").lower()
+    if pipe_name is not None:
+        _config["pipe_name"] = pipe_name
+    if pipe_connect_timeout_ms is not None:
+        _config["pipe_connect_timeout_ms"] = int(pipe_connect_timeout_ms)
 
 
 def get_config():

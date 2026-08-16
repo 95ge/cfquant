@@ -3,9 +3,13 @@ __pycache__/
 *.pyo
 
 .vscode/
+.playwright-cli/
+.local_archive/
 file_data/
+log/
 log_data/
 tx_log/
+reports/
 
 *.log
 *.runtime.log
@@ -16,6 +20,7 @@ tx_log/
 cfquant_web_config.db
 cfquant_web_config.json
 cfquant_hub_status.json
+cfquant_pipe_hub_status.json
 
 .updates/
 .cfquant_updates/

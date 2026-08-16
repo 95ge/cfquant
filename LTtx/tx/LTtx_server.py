@@ -138,6 +138,26 @@ def start_thread(target,args):
 log_que = queue.Queue()
 log_list = []
 
+def _lttx_log_dir():
+    configured = os.environ.get("CFQUANT_LTTX_LOG_DIR")
+    if configured:
+        return os.path.abspath(configured)
+    log_dir = os.environ.get("CFQUANT_LOG_DIR")
+    if log_dir:
+        return os.path.abspath(os.path.join(log_dir, "lttx"))
+    return os.path.abspath("log_data")
+
+def _cleanup_lttx_logs(log_dir):
+    try:
+        retention_days = int(os.environ.get("CFQUANT_LOG_RETENTION_DAYS") or "30")
+        cutoff = time.time() - max(1, retention_days) * 86400
+        for name in os.listdir(log_dir):
+            path = os.path.join(log_dir, name)
+            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                os.remove(path)
+    except Exception:
+        pass
+
 def sys_show_on(data):
     '''
     日志显示
@@ -151,12 +171,23 @@ def sys_show_on(data):
 
 def main_save_log():
     try:
-        os.mkdir('log_data')
+        log_dir = _lttx_log_dir()
+        os.makedirs(log_dir, exist_ok=True)
+        _cleanup_lttx_logs(log_dir)
     except:
-        pass
+        log_dir = os.path.abspath("log_data")
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except:
+            pass
+    cleanup_day = time.strftime("%Y-%m-%d")
     while 1:
         data = log_que.get()
-        with open('./log_data/%s_log.csv'%(time.strftime("%Y-%m-%d")),'a+',encoding='utf-8') as f:
+        current_day = time.strftime("%Y-%m-%d")
+        if current_day != cleanup_day:
+            _cleanup_lttx_logs(log_dir)
+            cleanup_day = current_day
+        with open(os.path.join(log_dir, '%s_log.csv'%(current_day)),'a+',encoding='utf-8') as f:
             f.write(str(data)+'\n')
             
 msg = '%s>>>>>>>[info] LTtx程序启动'%(time.strftime("%Y-%m-%d %H:%M:%S"))

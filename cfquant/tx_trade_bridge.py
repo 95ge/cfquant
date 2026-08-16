@@ -6,6 +6,7 @@ import time
 
 from .protocol import loads_message, pack_event, pack_response
 from . import account_routing
+from .logging_i18n import get_log_language, set_log_language, translate_log
 
 
 XTTRADER_COMPAT_CANDIDATES = {
@@ -68,7 +69,7 @@ class TxTradeBridge(object):
         self.globals_dict = globals_dict or {}
         self.running = False
         self.tx = None
-        self.log_file = os.path.join(os.getcwd(), "cfquant_qmt_bridge.log")
+        self.log_file = self._default_log_file()
         self.account_subscribers = {}
         self.client_accounts = {}
         self.subscriber_lock = threading.RLock()
@@ -153,6 +154,10 @@ class TxTradeBridge(object):
             }
         if action == "cfquant.status":
             return self._status()
+        if action == "cfquant.set_log_language":
+            return self._set_log_language(params)
+        if action == "cfquant.get_log_language":
+            return {"language": get_log_language()}
         if action == "cfquant.cleanup_qmt_logs":
             return self._cleanup_qmt_userdata_logs(params)
         if action == "cfquant.query_info":
@@ -189,8 +194,10 @@ class TxTradeBridge(object):
             return self._get_market_data_ex(params)
         if action == "xtdata.get_full_tick":
             return self.context.get_full_tick(params.get("code_list", []))
+        if action == "xtdata.get_local_data":
+            return self._get_local_data(params)
         if action == "xtdata.download_history_data":
-            return self._download_history_data(params)
+            return self._download_history_data(params, msg)
         if action == "xtdata.download_history_data2":
             return self._download_history_data2(params, msg)
         if action == "xtdata.get_financial_data":
@@ -198,11 +205,15 @@ class TxTradeBridge(object):
         if action == "xtdata.get_raw_financial_data":
             return self._get_raw_financial_data(params)
         if action == "xtdata.download_financial_data":
-            return self._download_financial_data(params)
+            return self._download_financial_data(params, msg)
+        if action == "xtdata.download_financial_data2":
+            return self._download_financial_data(params, msg)
         if action == "xtdata.get_instrument_detail":
             return self._get_instrument_detail(params)
         if action == "xtdata.get_stock_list_in_sector":
             return self.context.get_stock_list_in_sector(params.get("sector_name", ""))
+        if action.startswith("xtdata."):
+            return self._dispatch_xtdata_compat(action, params, msg)
         if action.startswith("xttrader."):
             return self._dispatch_xttrader_compat(action, params, msg)
         raise ValueError("unsupported action: %s" % action)
@@ -215,6 +226,7 @@ class TxTradeBridge(object):
             "request_channel": self.request_channel,
             "account_id": self.account_id,
             "account_subscribers": self._account_subscriber_status(),
+            "log_language": get_log_language(),
             "context_ready": self.context is not None,
             "tx_ready": self.tx is not None,
             "ts": time.time(),
@@ -229,6 +241,12 @@ class TxTradeBridge(object):
 
     def _status_extra(self):
         return {}
+
+    def _set_log_language(self, params):
+        params = params or {}
+        lang = set_log_language(params.get("language") or params.get("lang"))
+        self._log("QMT日志语言已切换为:%s" % ("中文" if lang == "zh" else "English"))
+        return {"language": lang}
 
     def _cleanup_qmt_userdata_logs(self, params):
         params = params or {}
@@ -509,6 +527,45 @@ class TxTradeBridge(object):
             return self._query_trade_detail(params, "position")
         return self._generic_xttrader_call(method, params)
 
+    def _dispatch_xtdata_compat(self, action, params, msg):
+        method = action.split(".", 1)[1]
+        if method == "get_trading_dates":
+            return self._get_trading_dates(params)
+        if method in (
+            "is_stock",
+            "is_fund",
+            "is_future",
+            "get_stock_type",
+            "get_stock_name",
+            "get_open_date",
+            "get_contract_expire_date",
+            "get_contract_multiplier",
+        ):
+            return self._call_stock_callable(method, params)
+        if method == "get_weight_in_index":
+            return self._get_weight_in_index(params)
+        if method == "get_turnover_rate":
+            return self._get_turnover_rate(params)
+        if method in ("get_ETF_list", "get_etf_list"):
+            return self._get_etf_list(params)
+        if method == "get_option_detail_data":
+            return self._get_option_detail_data(params)
+        if method == "get_option_list":
+            return self._get_option_list(params)
+        if method == "get_option_undl":
+            return self._get_option_undl(params)
+        if method == "get_option_undl_data":
+            return self._get_option_undl_data(params)
+        if method == "get_his_st_data":
+            return self._get_his_st_data(params)
+        if method == "get_his_index_data":
+            return self._get_his_index_data(params)
+        if method == "get_factor_data":
+            return self._get_factor_data(params)
+        if method in ("get_financial_data_ori", "get_financial_data_raw"):
+            return self._get_raw_financial_data(params)
+        raise NotImplementedError("xtdata.%s is not implemented by cfquant QMT bridge" % method)
+
     def _generic_xttrader_call(self, method, params):
         candidates = XTTRADER_COMPAT_CANDIDATES.get(method, (method,))
         func = self._get_callable(*candidates)
@@ -568,9 +625,82 @@ class TxTradeBridge(object):
             params.get("fill_data", True),
         )
 
-    def _download_history_data(self, params):
+    def _get_local_data(self, params):
+        func = self._get_callable("get_local_data")
+        if not func:
+            return self._get_market_data_ex(params)
+        stock_code = self._first_param(params, ("stock_code", "stockcode", "stock", "code"), "")
+        stock_list = self._list_param(params.get("stock_list", params.get("code_list", [])))
+        if not stock_code and stock_list:
+            return dict((code, self._call_local_data(func, code, params)) for code in stock_list)
+        return self._call_local_data(func, stock_code, params)
+
+    def _call_local_data(self, func, stock_code, params):
+        return self._call_variants(func, [
+            ((
+                stock_code,
+                params.get("start_time", params.get("start_date", "19700101")),
+                params.get("end_time", params.get("end_date", "22010101")),
+                params.get("period", "follow"),
+                params.get("divid_type", params.get("dividend_type", "none")),
+                params.get("count", -1),
+            ), {}),
+            ((
+                stock_code,
+                params.get("start_time", params.get("start_date", "19700101")),
+                params.get("end_time", params.get("end_date", "22010101")),
+                params.get("period", "follow"),
+                params.get("divid_type", params.get("dividend_type", "none")),
+            ), {}),
+            ((
+                stock_code,
+                params.get("start_time", params.get("start_date", "19700101")),
+                params.get("end_time", params.get("end_date", "22010101")),
+            ), {}),
+            ((stock_code,), {}),
+        ])
+
+    def _download_event_meta(self, params, kind, stage):
+        meta = {
+            "download": True,
+            "download_kind": kind,
+            "stage": stage,
+            "bridge_id": self.bridge_id,
+        }
+        job_id = params.get("download_job_id") or params.get("job_id")
+        if job_id:
+            meta["job_id"] = str(job_id)
+        for name in ("stock_code", "period", "start_time", "end_time"):
+            value = params.get(name)
+            if value not in (None, ""):
+                meta[name] = value
+        for name in ("stock_list", "code_list", "table_list"):
+            value = params.get(name)
+            if value:
+                meta[name] = value
+        return meta
+
+    def _send_download_event(self, client_id, params, kind, stage, data=None):
+        callback_event = params.get("callback_event")
+        if not callback_event or not client_id:
+            return
+        self._send_event(
+            client_id,
+            callback_event,
+            data if data is not None else {},
+            meta=self._download_event_meta(params, kind, stage),
+        )
+
+    def _download_history_data(self, params, msg=None):
+        client_id = msg.get("client_id") if msg else None
+        emit_lifecycle = bool(params.get("download_emit_lifecycle"))
         func = self._get_callable("download_history_data", "down_history_data")
         if not func:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": "download_history_data not found",
+                })
             raise NotImplementedError("download_history_data not found")
         variants = []
         incrementally = params.get("incrementally")
@@ -594,18 +724,48 @@ class TxTradeBridge(object):
             ),
             {},
         ))
-        return self._call_variants(func, variants)
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "submitted", {
+                "stage": "submitted",
+                "message": "history download request submitted",
+            })
+        try:
+            result = self._call_variants(func, variants)
+        except Exception as e:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": str(e),
+                })
+            raise
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "request_done", {
+                "stage": "request_done",
+                "result": result,
+            })
+        return result
 
     def _download_history_data2(self, params, msg):
-        func = self._get_callable("download_history_data2", "down_history_data2")
-        if not func:
-            raise NotImplementedError("download_history_data2 not found")
         client_id = msg.get("client_id")
         callback_event = params.get("callback_event")
+        emit_lifecycle = bool(params.get("download_emit_lifecycle"))
+        func = self._get_callable("download_history_data2", "down_history_data2")
+        if not func:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": "download_history_data2 not found",
+                })
+            raise NotImplementedError("download_history_data2 not found")
 
         def callback(data):
             if callback_event and client_id:
-                self._send_event(client_id, callback_event, data)
+                self._send_event(
+                    client_id,
+                    callback_event,
+                    data,
+                    meta=self._download_event_meta(params, "history", "progress"),
+                )
 
         callback_func = callback if callback_event else None
         variants = []
@@ -632,7 +792,26 @@ class TxTradeBridge(object):
             ),
             {},
         ))
-        return self._call_variants(func, variants)
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "submitted", {
+                "stage": "submitted",
+                "message": "history download request submitted",
+            })
+        try:
+            result = self._call_variants(func, variants)
+        except Exception as e:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "history", "error", {
+                    "stage": "error",
+                    "error": str(e),
+                })
+            raise
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "history", "request_done", {
+                "stage": "request_done",
+                "result": result,
+            })
+        return result
 
     def _get_instrument_detail(self, params):
         func = self._get_callable("get_instrument_detail")
@@ -682,26 +861,280 @@ class TxTradeBridge(object):
             ), {}),
         ])
 
-    def _download_financial_data(self, params):
+    def _default_financial_field(self, table):
+        table = str(table or "").strip().upper()
+        defaults = {
+            "ASHAREBALANCESHEET": "fix_assets",
+            "ASHAREINCOME": "net_profit_excl_min_int_inc",
+            "ASHARECASHFLOW": "net_cash_flows_oper_act",
+            "CAPITALSTRUCTURE": "capital",
+            "PERSHAREINDEX": "eps",
+        }
+        return defaults.get(table, "fix_assets")
+
+    def _financial_probe_fields(self, params):
+        fields = self._list_param(params.get("field_list") or params.get("fields"))
+        tables = self._list_param(params.get("table_list") or params.get("tables") or params.get("table"))
+        if not tables:
+            tables = ["ASHAREBALANCESHEET"]
+        if not fields:
+            fields = [self._default_financial_field(tables[0])]
+        if len(tables) == 1:
+            table = tables[0]
+            fields = [
+                field if "." in str(field) or "。" in str(field) else "%s.%s" % (table, field)
+                for field in fields
+            ]
+        return fields
+
+    def _summarize_data_result(self, value):
+        if value is None:
+            return {"type": "None", "empty": True}
+        type_name = value.__class__.__name__
+        if type_name == "DataFrame":
+            shape = list(getattr(value, "shape", []) or [])
+            columns = [str(item) for item in list(getattr(value, "columns", []) or [])[:20]]
+            return {
+                "type": "DataFrame",
+                "shape": shape,
+                "columns": columns,
+                "empty": bool(getattr(value, "empty", False)),
+            }
+        if type_name == "Series":
+            size = int(getattr(value, "size", 0) or 0)
+            return {"type": "Series", "count": size, "empty": size <= 0}
+        if isinstance(value, dict):
+            return {
+                "type": "dict",
+                "count": len(value),
+                "keys": [str(item) for item in list(value.keys())[:20]],
+                "empty": len(value) <= 0,
+            }
+        if isinstance(value, (list, tuple, set)):
+            return {"type": type_name, "count": len(value), "empty": len(value) <= 0}
+        return {"type": type_name, "preview": str(value)[:200], "empty": False}
+
+    def _check_local_financial_data(self, params):
+        fields = self._financial_probe_fields(params)
+        stock_list = params.get("stock_list", params.get("code_list", []))
+        start_time = params.get("start_time", params.get("start_date", ""))
+        end_time = params.get("end_time", params.get("end_date", ""))
+        report_type = params.get("report_type") or "report_time"
+        func = self._get_callable("get_raw_financial_data")
+        action = "get_raw_financial_data"
+        if not func:
+            func = self._get_callable("get_financial_data")
+            action = "get_financial_data"
+        if not func:
+            raise NotImplementedError("get_raw_financial_data/get_financial_data not found")
+        result = self._call_variants(func, [
+            ((fields, stock_list, start_time, end_time, report_type), {}),
+            ((fields, stock_list, start_time, end_time), {}),
+        ])
+        return {
+            "download_supported": False,
+            "manual_download_required": True,
+            "manual_download_hint": "QMT官方脚本侧未提供财务数据下载函数；请先在QMT客户端 数据管理 - 财务数据下载 中下载，再读取本地财务数据。",
+            "query_action": action,
+            "field_list": fields,
+            "stock_list": stock_list,
+            "query_summary": self._summarize_data_result(result),
+            "result": True,
+        }
+
+    def _download_financial_data(self, params, msg=None):
         stock_list = params.get("stock_list", params.get("code_list", []))
         table_list = params.get("table_list") or []
         start_time = params.get("start_time", params.get("start_date", ""))
         end_time = params.get("end_time", params.get("end_date", ""))
         callback_event = params.get("callback_event")
+        client_id = msg.get("client_id") if msg else None
+        emit_lifecycle = bool(params.get("download_emit_lifecycle"))
         func = self._get_callable("download_financial_data2", "down_financial_data2")
         if func:
+            def callback(data):
+                if callback_event and client_id:
+                    self._send_event(
+                        client_id,
+                        callback_event,
+                        data,
+                        meta=self._download_event_meta(params, "financial", "progress"),
+                    )
+
+            callback_func = callback if callback_event else None
             variants = [
-                ((stock_list, table_list, start_time, end_time, None), {}),
+                ((stock_list, table_list, start_time, end_time, callback_func), {}),
                 ((stock_list, table_list, start_time, end_time), {}),
             ]
-            return self._call_variants(func, variants)
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "financial", "submitted", {
+                    "stage": "submitted",
+                    "message": "financial download request submitted",
+                })
+            try:
+                result = self._call_variants(func, variants)
+            except Exception as e:
+                if emit_lifecycle:
+                    self._send_download_event(client_id, params, "financial", "error", {
+                        "stage": "error",
+                        "error": str(e),
+                    })
+                raise
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "financial", "request_done", {
+                    "stage": "request_done",
+                    "result": result,
+                })
+            return result
         func = self._get_callable("download_financial_data", "down_financial_data")
         if not func:
-            raise NotImplementedError("download_financial_data not found")
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "financial_check", "submitted", {
+                    "stage": "submitted",
+                    "message": "开始校验本地财务数据，QMT官方脚本侧未提供财务下载函数。",
+                })
+            try:
+                result = self._check_local_financial_data(params)
+            except Exception as e:
+                if emit_lifecycle:
+                    self._send_download_event(client_id, params, "financial_check", "error", {
+                        "stage": "error",
+                        "error": str(e),
+                    })
+                raise
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "financial_check", "request_done", {
+                    "stage": "request_done",
+                    "message": "本地财务数据校验已返回。",
+                    "summary": result.get("query_summary"),
+                    "available": not bool((result.get("query_summary") or {}).get("empty")),
+                })
+            return result
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "financial", "submitted", {
+                "stage": "submitted",
+                "message": "financial download request submitted",
+            })
+        try:
+            result = self._call_variants(func, [
+                ((stock_list, table_list), {}),
+                ((stock_list,), {}),
+            ])
+        except Exception as e:
+            if emit_lifecycle:
+                self._send_download_event(client_id, params, "financial", "error", {
+                    "stage": "error",
+                    "error": str(e),
+                })
+            raise
+        if emit_lifecycle:
+            self._send_download_event(client_id, params, "financial", "request_done", {
+                "stage": "request_done",
+                "result": result,
+            })
+        return result
+
+    def _get_trading_dates(self, params):
+        func = self._get_callable("get_trading_dates")
+        if not func:
+            raise NotImplementedError("get_trading_dates not found")
+        return func(
+            self._first_param(params, ("stockcode", "stock_code", "stock", "code"), ""),
+            params.get("start_date", params.get("start_time", "")),
+            params.get("end_date", params.get("end_time", "")),
+            params.get("count", -1),
+            params.get("period", "1d"),
+        )
+
+    def _call_stock_callable(self, method, params):
+        func = self._get_callable(method)
+        if not func:
+            raise NotImplementedError("%s not found" % method)
+        return func(self._first_param(params, ("stock_code", "stockcode", "stock", "code"), ""))
+
+    def _get_weight_in_index(self, params):
+        func = self._get_callable("get_weight_in_index")
+        if not func:
+            raise NotImplementedError("get_weight_in_index not found")
+        return func(
+            self._first_param(params, ("mtkindexcode", "index_code", "index", "index_code_ref"), ""),
+            self._first_param(params, ("stockcode", "stock_code", "stock", "code"), ""),
+        )
+
+    def _get_turnover_rate(self, params):
+        func = self._get_callable("get_turnover_rate")
+        if not func:
+            raise NotImplementedError("get_turnover_rate not found")
+        return func(
+            self._first_param(params, ("stock_code", "stockcode", "stock", "code"), ""),
+            params.get("start_time", params.get("start_date", "")),
+            params.get("end_time", params.get("end_date", "")),
+        )
+
+    def _get_etf_list(self, params):
+        func = self._get_callable("get_ETF_list", "get_etf_list")
+        if not func:
+            raise NotImplementedError("get_ETF_list not found")
+        return func(
+            params.get("market", ""),
+            self._first_param(params, ("stockcode", "stock_code", "stock", "code"), ""),
+            self._list_param(params.get("typeList", params.get("type_list", []))),
+        )
+
+    def _get_option_detail_data(self, params):
+        func = self._get_callable("get_option_detail_data")
+        if not func:
+            raise NotImplementedError("get_option_detail_data not found")
+        return func(self._first_param(params, ("stockcode", "stock_code", "opt_code", "code"), ""))
+
+    def _get_option_list(self, params):
+        func = self._get_callable("get_option_list")
+        if not func:
+            raise NotImplementedError("get_option_list not found")
+        return func(
+            self._first_param(params, ("object", "underlying_code", "undl_code", "stock_code", "code"), ""),
+            params.get("dedate", params.get("expire_date", "")),
+            params.get("opttype", params.get("option_type", "")),
+            params.get("isavailavle", params.get("is_available", params.get("available", False))),
+        )
+
+    def _get_option_undl(self, params):
+        func = self._get_callable("get_option_undl")
+        if not func:
+            raise NotImplementedError("get_option_undl not found")
+        return func(self._first_param(params, ("opt_code", "stock_code", "stockcode", "code"), ""))
+
+    def _get_option_undl_data(self, params):
+        func = self._get_callable("get_option_undl_data")
+        if not func:
+            raise NotImplementedError("get_option_undl_data not found")
         return self._call_variants(func, [
-            ((stock_list, table_list), {}),
-            ((stock_list,), {}),
+            ((self._first_param(params, ("undl_code_ref", "undl_code", "underlying_code", "stock_code", "code"), ""),), {}),
+            ((), {}),
         ])
+
+    def _get_his_st_data(self, params):
+        func = self._get_callable("get_his_st_data")
+        if not func:
+            raise NotImplementedError("get_his_st_data not found")
+        return func(self._first_param(params, ("stockCode", "stock_code", "stockcode", "code"), ""))
+
+    def _get_his_index_data(self, params):
+        func = self._get_callable("get_his_index_data")
+        if not func:
+            raise NotImplementedError("get_his_index_data not found")
+        return func(self._first_param(params, ("stockCode", "stock_code", "stockcode", "code"), ""))
+
+    def _get_factor_data(self, params):
+        func = self._get_callable("get_factor_data")
+        if not func:
+            raise NotImplementedError("get_factor_data not found")
+        return func(
+            params.get("field_list", params.get("fields", [])),
+            params.get("stock_list", params.get("code_list", [])),
+            params.get("start_date", params.get("start_time", "")),
+            params.get("end_date", params.get("end_time", "")),
+        )
 
     def _subscribe_account(self, params, msg=None):
         account = params.get("account") or {}
@@ -958,6 +1391,22 @@ class TxTradeBridge(object):
             return dict((str(k), self._plain_value(v)) for k, v in value.items())
         return str(value)
 
+    def _first_param(self, params, names, default=None):
+        for name in names:
+            value = params.get(name)
+            if value is not None and value != "":
+                return value
+        return default
+
+    def _list_param(self, value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return [value]
+
     def _account_type_name(self, account_type):
         mapping = {
             1: "future",
@@ -997,10 +1446,10 @@ class TxTradeBridge(object):
             status[account_id] = max(status.get(account_id, 0), count)
         return status
 
-    def _send_event(self, client_id, name, data, subscription_id=None):
+    def _send_event(self, client_id, name, data, subscription_id=None, meta=None):
         if not client_id or self.tx is None:
             return
-        event = pack_event(name, data=data, client_id=client_id, subscription_id=subscription_id)
+        event = pack_event(name, data=data, client_id=client_id, subscription_id=subscription_id, meta=meta)
         self.tx.push("event", event, client_id)
 
     def _call_variants(self, func, variants):
@@ -1016,24 +1465,54 @@ class TxTradeBridge(object):
         return func()
 
     def _get_callable(self, *names):
-        for name in names:
-            func = self.globals_dict.get(name)
-            if callable(func):
-                return func
-            if self.context is not None:
-                func = getattr(self.context, name, None)
+        owners = [self.globals_dict]
+        if self.context is not None:
+            owners.append(self.context)
+            inner_context = getattr(self.context, "context", None)
+            if inner_context is not None and inner_context is not self.context:
+                owners.append(inner_context)
+        for owner in owners:
+            for name in names:
+                if isinstance(owner, dict):
+                    func = owner.get(name)
+                else:
+                    func = getattr(owner, name, None)
                 if callable(func):
                     return func
         return None
 
     def _load_txl(self):
+        package_error = None
+        try:
+            from .tx import txl
+            return txl
+        except Exception as e:
+            package_error = e
         try:
             from tx import txl
-        except Exception as e:
-            raise RuntimeError("failed to import txl: %s" % e)
-        return txl
+            return txl
+        except Exception as path_error:
+            raise RuntimeError(
+                "failed to import txl from cfquant.tx or tx.py: %s; fallback: %s"
+                % (package_error, path_error)
+            )
+
+    def _default_log_file(self):
+        base_dir = os.getcwd()
+        log_dir = (
+            os.environ.get("CFQUANT_QMT_LOG_DIR")
+            or os.environ.get("CFQUANT_LOG_DIR")
+            or os.path.join(base_dir, "log")
+        )
+        log_dir = os.path.abspath(log_dir)
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except Exception:
+            log_dir = base_dir
+        return os.path.join(log_dir, "cfquant_qmt_bridge.log")
 
     def _log(self, msg):
+        msg = translate_log(msg)
         line = "%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
         try:
             with open(self.log_file, "a", encoding="utf-8") as f:
