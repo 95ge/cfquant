@@ -450,6 +450,10 @@ class NormalQmtBridge(TxTradeBridge):
             "m_strAccountId",
             "m_strAccount",
             "m_accountID",
+            "order_source",
+            "source",
+            "order_remark",
+            "strategy_name",
             "m_strStatus",
             "m_strInstrumentID",
             "m_strExchangeID",
@@ -471,6 +475,7 @@ class NormalQmtBridge(TxTradeBridge):
             "m_dOpenPrice",
             "m_dPositionCost",
             "m_strRemark",
+            "m_strOrderRemark",
             "m_strStrategyName",
             "m_strOrderSysID",
             "m_strOrderID",
@@ -498,13 +503,15 @@ class NormalQmtBridge(TxTradeBridge):
         market = data.get("m_strExchangeID")
         if code and market:
             data["stock_code"] = "%s.%s" % (code, market)
-        source_text = str(
-            data.get("order_remark")
-            or data.get("m_strRemark")
-            or data.get("m_strOrderRemark")
-            or data.get("m_strStrategyName")
-            or ""
-        ).strip().lower()
+        source_text = " ".join(str(item or "") for item in (
+            data.get("order_source"),
+            data.get("source"),
+            data.get("order_remark"),
+            data.get("strategy_name"),
+            data.get("m_strRemark"),
+            data.get("m_strOrderRemark"),
+            data.get("m_strStrategyName"),
+        )).strip().lower()
         data["order_source"] = "cfquant" if source_text.startswith("cfquant") or "_cfquant" in source_text else "other"
         return data
 
