@@ -15,9 +15,54 @@ RUNTIME_CONFIG = {}
 RUNTIME_CHANNELS = {}
 
 
+def _entry_file_path():
+    path = globals().get("__file__") or ""
+    path = str(path or "").strip()
+    if path and not path.startswith("<"):
+        try:
+            return os.path.abspath(path)
+        except Exception:
+            return path
+    return ""
+
+
+def _entry_base_dir():
+    entry_file = _entry_file_path()
+    if entry_file:
+        return os.path.dirname(entry_file)
+    for name in ("CFQUANT_QMT_SCRIPT_DIR", "CFQUANT_SCRIPT_DIR", "CFQUANT_ENTRY_DIR"):
+        path = str(os.environ.get(name) or "").strip()
+        if path and os.path.isdir(path):
+            return os.path.abspath(path)
+    try:
+        cwd = os.path.abspath(os.getcwd())
+        if (
+            os.path.isfile(os.path.join(cwd, "CFQUANT_TRADE_LOWLAT.py"))
+            or os.path.isfile(os.path.join(cwd, "cfquant_bridge_config.json"))
+            or os.path.isdir(os.path.join(cwd, "cfquant"))
+        ):
+            return cwd
+    except Exception:
+        pass
+    for path in sys.path:
+        path = str(path or "").strip()
+        if path and os.path.isdir(path):
+            base = os.path.abspath(path)
+            if (
+                os.path.isfile(os.path.join(base, "CFQUANT_TRADE_LOWLAT.py"))
+                or os.path.isfile(os.path.join(base, "cfquant_bridge_config.json"))
+                or os.path.isdir(os.path.join(base, "cfquant"))
+            ):
+                return base
+    try:
+        return os.path.abspath(os.getcwd())
+    except Exception:
+        return ""
+
+
 def _runtime_config_paths():
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = _entry_base_dir()
         parent_dir = os.path.dirname(base_dir)
         candidates = []
         env_path = os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE")
@@ -93,7 +138,7 @@ def _apply_runtime_config():
 
 def _ensure_path():
     try:
-        base_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = _entry_base_dir()
         parent_dir = os.path.dirname(base_dir)
         env_paths = [p for p in os.environ.get("CFQUANT_PYTHONPATH", "").split(os.pathsep) if p]
         if os.path.basename(base_dir).lower() == "python":
@@ -106,11 +151,22 @@ def _ensure_path():
                 os.path.join(parent_dir, "bin.x64"),
                 os.path.join(parent_dir, "python"),
             ]
-        insert_at = 0
+        ordered = []
+        seen = set()
         for path in candidates:
-            if path and os.path.isdir(path) and path not in sys.path:
-                sys.path.insert(insert_at, path)
-                insert_at += 1
+            if not path or not os.path.isdir(path):
+                continue
+            path = os.path.abspath(path)
+            key = os.path.normcase(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(path)
+        if ordered:
+            sys.path[:] = ordered + [
+                path for path in sys.path
+                if os.path.normcase(os.path.abspath(path or os.curdir)) not in seen
+            ]
     except Exception:
         pass
 
