@@ -1365,17 +1365,20 @@ class TxTradeBridge(object):
         return instrument_id
 
     def _order_source(self, obj):
-        value = self._first_value(obj, (
-            "order_source",
-            "source",
-            "order_remark",
-            "strategy_name",
-            "m_strRemark",
-            "m_strOrderRemark",
-            "m_strStrategyName",
-        ))
-        text = str(value or "").strip().lower()
-        return "cfquant" if text.startswith("cfquant") or "_cfquant" in text else "other"
+        values = [
+            self._get_value(obj, name)
+            for name in (
+                "order_source",
+                "source",
+                "order_remark",
+                "strategy_name",
+                "m_strRemark",
+                "m_strOrderRemark",
+                "m_strStrategyName",
+            )
+        ]
+        text = " ".join(str(value or "") for value in values).strip().lower()
+        return "cfquant" if "cfquant" in text else "other"
 
     def _get_value(self, obj, name):
         if obj is None:

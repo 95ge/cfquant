@@ -512,7 +512,7 @@ class NormalQmtBridge(TxTradeBridge):
             data.get("m_strOrderRemark"),
             data.get("m_strStrategyName"),
         )).strip().lower()
-        data["order_source"] = "cfquant" if source_text.startswith("cfquant") or "_cfquant" in source_text else "other"
+        data["order_source"] = "cfquant" if "cfquant" in source_text else "other"
         return data
 
     def _callback_account_id(self, obj, data):
