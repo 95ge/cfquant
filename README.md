@@ -8,13 +8,14 @@ cfquant 是面向 QMT 的本地桥接项目。它把 Web 控制台、外部 Pyth
 
 | 模式 | QMT 侧部署 | 通信链路 | 适合场景 |
 |---|---|---|---|
-| 通用模式 | 一个 QMT 加载 `CFQUANT_CTYPE_ALL_LOWLAT.py` | Web / 外部 Python -> PipeHub -> ctypes 单文件桥 -> QMT | 快速部署、单账号验证、多数常规使用 |
+| 通用模式 | 一个 QMT 加载 `CFQUANT_CTYPE_ALL_LOWLAT.py` | Web -> PipeHub -> ctypes 单文件桥 -> QMT | 快速部署、单账号验证、多数常规使用 |
 | 高级模式 | 两个 QMT：普通 QMT 加载 `CFQUANT.py`，极速交易端 QMT 加载 `CFQUANT_TRADE_LOWLAT.py` | Web / 外部 Python -> LTtx -> 普通桥 + 极速交易桥 -> QMT | 追求更低下单、撤单延迟 |
 
 关键规则：
 
 - 通用模式不经过 LTtx，请求走 PipeHub named pipe。
 - 本地服务默认仍会预启动 LTtx，方便高级模式或旧客户端随时接入。
+- 外部 Python 默认先通过 LTtx 读取 Web 写入的运行注册信息，再进入 Web 统一路由；不依赖 `8765` HTTP 端口。
 - 高级模式必须打开两个 QMT。不要在同一个 QMT 里同时运行 `CFQUANT.py` 和 `CFQUANT_TRADE_LOWLAT.py`。
 - 通用模式和高级模式里的普通 QMT 可以部署在同一个 QMT；高级模式的极速交易端需要单独打开另一个 QMT。
 - 账号配置为高级模式时，系统优先走高级通道；高级通道不可用时自动回退到该账号的 ctypes 通用桥。
@@ -139,7 +140,32 @@ from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
 ```
 
-默认连接通用模式：
+默认不需要调用 `configure()`。外部 `cfquant` 的默认 `transport=auto`，会先通过 LTtx 的 `tx.get("cfquant.runtime")` 读取 Web 服务写入的运行注册信息；如果 Web 已注册统一路由频道，请求会发到 `cfquant.web.request`，由 Web 根据账号配置自动选择通用模式或高级模式。
+
+```python
+from cfquant import xtdata
+
+tick = xtdata.get_full_tick(["000001.SZ"])
+print(tick)
+```
+
+需要强制指定接入方式时再调用 `configure()`。
+
+强制走 Web 统一路由：
+
+```python
+from cfquant import configure
+
+configure(
+    transport="web_lttx",
+    host="127.0.0.1",
+    port=2049,
+    token="LTtx",
+    web_request_channel="cfquant.web.request",
+)
+```
+
+强制直连通用 PipeHub：
 
 ```python
 from cfquant import configure
@@ -151,7 +177,7 @@ configure(
 )
 ```
 
-需要强制走高级模式或旧 LTtx 通道时：
+强制直连高级模式或旧 LTtx 通道：
 
 ```python
 configure(
@@ -161,6 +187,17 @@ configure(
     token="LTtx",
     timeout=15,
 )
+```
+
+相关环境变量：
+
+```text
+CFQUANT_TRANSPORT=auto
+CFQUANT_DISCOVERY_KEY=cfquant.runtime
+CFQUANT_WEB_REQUEST_CHANNEL=cfquant.web.request
+CFQUANT_LTTX_HOST=127.0.0.1
+CFQUANT_LTTX_PORT=2049
+CFQUANT_LTTX_TOKEN=LTtx
 ```
 
 示例：
@@ -182,7 +219,7 @@ positions = trader.query_stock_positions(account)
 print(asset, positions)
 ```
 
-外部 Python 会读取当前项目目录或 `CFQUANT_WEB_CONFIG_FILE` 指向的 `cfquant_web_config.json`。如果网页已保存账号配置，只需要传同一个资金账号，系统会自动按账号路由。
+外部 Python 默认不再需要读取 `8765` HTTP 端口。Web 服务会把当前模式、版本、账号绑定、共享数据源和统一请求频道维护到 LTtx 变量中；外部 `cfquant` 启动时读取这些变量并走统一路由。如果没有读到 Web 注册信息，`auto` 会回退直连通用 PipeHub。
 
 ## Web 功能
 
@@ -288,6 +325,13 @@ cfquant/
 - [延迟测试报告](docs/ctypes_pipe_vs_lttx_latency_20260813.md)
 
 ## 版本日志
+
+### core_20260817_02
+
+- 外部 `cfquant` 默认接入方式改为 `transport=auto`。
+- Web 服务启动后通过 LTtx 的 `tx.put()` 维护 `cfquant.runtime` 注册信息，包含系统版本、当前模式、账号绑定、共享数据源、桥接端和统一请求频道。
+- 外部 Python 通过 LTtx 的 `tx.get()` 读取注册信息，优先把请求发送到 `cfquant.web.request`，由 Web 统一完成通用模式/高级模式识别、账号路由和高级失败回退。
+- 不再依赖 `8765` HTTP 端口探测；只有强制直连 PipeHub、强制直连 LTtx 或特殊部署时才需要调用 `configure()`。
 
 ### core_20260817_01
 

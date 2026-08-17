@@ -10,6 +10,7 @@ import math
 import mimetypes
 import os
 import posixpath
+import queue
 import re
 import secrets
 import shutil
@@ -51,7 +52,8 @@ from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_language
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
-from cfquant.protocol import new_id
+from cfquant.protocol import loads_message, new_id, pack_event, pack_response
+from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
@@ -76,6 +78,9 @@ PIPE_HUB_STDOUT_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stdout.log")
 PIPE_HUB_STDERR_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stderr.log")
 PIPE_HUB_STATUS_FILE = os.path.join(BASE_DIR, "cfquant_pipe_hub_status.json")
 QMT_BRIDGE_CONFIG_FILENAME = os.environ.get("CFQUANT_QMT_BRIDGE_CONFIG_FILENAME", "cfquant_bridge_config.json")
+LTTX_DISCOVERY_KEY = os.environ.get("CFQUANT_DISCOVERY_KEY", "cfquant.runtime")
+LTTX_WEB_REQUEST_CHANNEL = os.environ.get("CFQUANT_WEB_REQUEST_CHANNEL", "cfquant.web.request")
+LTTX_REGISTRY_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_LTTX_REGISTRY_INTERVAL_SECONDS", "5"))
 try:
     _LOG_FP = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
     _WINDOWLESS = os.path.basename(sys.executable).lower() == "pythonw.exe"
@@ -1843,6 +1848,340 @@ PIPE_HUB = PipeHubManager()
 
 
 CLIENTS = GlobalTxClient()
+
+
+def _external_account_id(params):
+    params = params or {}
+    account = params.get("account") if isinstance(params.get("account"), dict) else {}
+    return str(
+        account.get("account_id")
+        or account.get("m_strAccountID")
+        or params.get("account_id")
+        or params.get("m_strAccountID")
+        or ""
+    ).strip()
+
+
+def _external_default_channel(action):
+    action = str(action or "")
+    if action in {
+        "xttrader.order_stock",
+        "xttrader.order_stock_async",
+        "xttrader.order_stock_batch",
+        "xttrader.cancel_order_stock",
+        "xttrader.cancel_order_stock_async",
+        "xttrader.cancel_order_stock_sysid",
+        "xttrader.cancel_order_stock_sysid_async",
+    }:
+        return "trade"
+    if action in {
+        "xtdata.subscribe_quote",
+        "xtdata.subscribe_whole_quote",
+        "xtdata.unsubscribe_quote",
+        "xtdata.download_history_data",
+        "xtdata.download_history_data2",
+        "xtdata.download_financial_data",
+        "xtdata.download_financial_data2",
+    }:
+        return "normal"
+    if action.startswith("xttrader."):
+        return "normal"
+    return "trade"
+
+
+def build_lttx_registry():
+    configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
+    accounts = {}
+    for account_id, row in configs.items():
+        if not isinstance(row, dict):
+            continue
+        accounts[str(account_id)] = {
+            "account_id": str(row.get("account_id") or account_id),
+            "bridge_id": normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID),
+            "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
+            "enabled": bool(row.get("enabled", True)),
+            "data_provider": bool(row.get("data_provider")),
+        }
+    now = time.time()
+    return {
+        "schema": "cfquant.lttx.registry",
+        "version": CORE_VERSION,
+        "web_version": "cfquant-web/0.1",
+        "updated_at": now,
+        "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+        "discovery_key": LTTX_DISCOVERY_KEY,
+        "web_request_channel": LTTX_WEB_REQUEST_CHANNEL,
+        "transport_mode": WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes",
+        "default_account_id": configured_default_account_id(),
+        "data_provider_account_id": WEB_CONFIG.data_provider_account_id() if WEB_CONFIG is not None else "",
+        "accounts": accounts,
+        "bridges": current_bridges(),
+        "web_route": {
+            "enabled": True,
+            "request_channel": LTTX_WEB_REQUEST_CHANNEL,
+            "transport": "web_lttx",
+            "description": "外部 cfquant 通过 LTtx 统一请求频道进入 Web 账号路由。",
+        },
+        "direct_fallback_transport": "ctypes",
+        "features": {
+            "account_routing": True,
+            "mode_auto_detect": True,
+            "advanced_fallback_to_ctypes": True,
+            "quote_event_forward": True,
+            "trader_event_forward": True,
+        },
+    }
+
+
+def route_external_lttx_request(msg):
+    action = str(msg.get("action") or "")
+    params = msg.get("params") or {}
+    if not isinstance(params, dict):
+        params = {}
+    if action in ("cfquant.registry", "cfquant.discovery", "cfquant.runtime"):
+        return build_lttx_registry(), {"route": "registry"}
+    if action == "cfquant.ping":
+        return {
+            "pong": True,
+            "via": "web_lttx",
+            "ts": time.time(),
+            "web_request_channel": LTTX_WEB_REQUEST_CHANNEL,
+            "version": CORE_VERSION,
+        }, {"route": "web_lttx"}
+    if action == "cfquant.status":
+        account_id = _external_account_id(params)
+        if account_id:
+            return account_route_status(account_id, bridge_id=params.get("bridge_id")), {"route": "account_status"}
+        return build_lttx_registry(), {"route": "registry"}
+
+    default_channel = normalize_channel(params.get("default_channel") or _external_default_channel(action), "normal")
+    requested_channel = params.get("channel") or params.get("request_channel")
+    account_id = _external_account_id(params)
+    timeout = float(params.get("timeout") or msg.get("timeout") or 12.0)
+    if action.startswith("xttrader."):
+        account_id = account_id or configured_default_account_id()
+        route = account_request(
+            account_id,
+            params.get("bridge_id"),
+            requested_channel,
+            action,
+            params,
+            default_channel=default_channel,
+            timeout=timeout,
+            mark_offline_on_timeout=True,
+        )
+        meta = dict(route)
+        meta.pop("result", None)
+        meta["route"] = "account"
+        return route["result"], meta
+    if action.startswith("xtdata."):
+        if account_id:
+            route = account_request(
+                account_id,
+                params.get("bridge_id"),
+                requested_channel,
+                action,
+                params,
+                default_channel=default_channel,
+                timeout=timeout,
+                mark_offline_on_timeout=True,
+            )
+        else:
+            route = data_provider_request(
+                action,
+                params,
+                requested_channel=requested_channel,
+                default_channel=default_channel,
+                timeout=timeout,
+                bridge_id=params.get("bridge_id"),
+            )
+        meta = dict(route)
+        meta.pop("result", None)
+        meta["route"] = "data"
+        return route["result"], meta
+    raise ValueError("unsupported external web_lttx action: %s" % action)
+
+
+class LttxWebRouteServer(object):
+    def __init__(self, request_channel=LTTX_WEB_REQUEST_CHANNEL, discovery_key=LTTX_DISCOVERY_KEY):
+        self.request_channel = request_channel
+        self.discovery_key = discovery_key
+        self.running = False
+        self.tx = None
+        self.thread = None
+        self._lock = threading.RLock()
+        self._quote_subscribers = {}
+        self._account_subscribers = {}
+        self._last_registry_put = 0.0
+
+    def start(self):
+        with self._lock:
+            if self.running:
+                return
+            self.running = True
+            CLIENTS.add_callback("quote", self._on_quote_event)
+            CLIENTS.add_callback("__event__", self._on_client_event)
+            self.thread = threading.Thread(target=self._loop)
+            self.thread.daemon = True
+            self.thread.start()
+        safe_print("cfquant LTtx 统一路由已启动 channel=%s registry=%s" % (self.request_channel, self.discovery_key))
+
+    def close(self):
+        self.running = False
+        CLIENTS.remove_callback("quote", self._on_quote_event)
+        CLIENTS.remove_callback("__event__", self._on_client_event)
+        tx = self.tx
+        self.tx = None
+        if tx is not None:
+            try:
+                tx.close()
+            except Exception:
+                pass
+
+    def publish_registry(self, force=False):
+        tx = self.tx
+        if tx is None:
+            return False
+        now = time.time()
+        if not force and now - self._last_registry_put < LTTX_REGISTRY_INTERVAL_SECONDS:
+            return False
+        registry = build_lttx_registry()
+        try:
+            tx.put(self.discovery_key, registry)
+            tx.put("%s.version" % self.discovery_key, registry.get("version"))
+            tx.put("%s.web_request_channel" % self.discovery_key, self.request_channel)
+            tx.put("%s.transport_mode" % self.discovery_key, registry.get("transport_mode"))
+            self._last_registry_put = now
+            return True
+        except Exception as e:
+            safe_print("cfquant LTtx 注册信息写入失败: %s" % e)
+            return False
+
+    def _loop(self):
+        while self.running:
+            tx = None
+            try:
+                tx = txl(LTTX_HOST, LTTX_PORT, "LTtx", show=False)
+                tx.start_tx()
+                tx.start_txg(self.request_channel)
+                self.tx = tx
+                self.publish_registry(force=True)
+                while self.running and self.tx is tx:
+                    self.publish_registry()
+                    try:
+                        raw = tx.Q.get(timeout=1.0)
+                    except queue.Empty:
+                        continue
+                    if raw is None:
+                        break
+                    self._handle_raw(raw)
+            except Exception as e:
+                if self.running:
+                    safe_print("cfquant LTtx 统一路由异常: %s，1秒后重试" % e)
+                    time.sleep(1)
+            finally:
+                if self.tx is tx:
+                    self.tx = None
+                if tx is not None:
+                    try:
+                        tx.close()
+                    except Exception:
+                        pass
+
+    def _handle_raw(self, raw):
+        msg = loads_message(raw)
+        if not msg or msg.get("type") != "request":
+            return
+        request_id = msg.get("id")
+        client_id = msg.get("client_id") or msg.get("reply_channel")
+        action = str(msg.get("action") or "")
+        try:
+            result, meta = route_external_lttx_request(msg)
+            response = pack_response(request_id, ok=True, result=result, meta=meta)
+            self._remember_external_subscription(action, msg, result)
+        except Exception as e:
+            response = pack_response(request_id, ok=False, error=e, meta={"route": "web_lttx"})
+            safe_print("cfquant LTtx 统一路由请求失败 action=%s id=%s error=%s" % (action, request_id, e))
+        if client_id and self.tx is not None:
+            try:
+                self.tx.push("response", response, client_id)
+            except Exception as e:
+                safe_print("cfquant LTtx 统一路由回包失败 client=%s error=%s" % (client_id, e))
+
+    def _remember_external_subscription(self, action, msg, result):
+        client_id = msg.get("client_id") or msg.get("reply_channel")
+        params = msg.get("params") or {}
+        if not client_id:
+            return
+        if action in ("xtdata.subscribe_quote", "xtdata.subscribe_whole_quote"):
+            subscribe_id = ""
+            if isinstance(result, dict):
+                subscribe_id = str(result.get("subscribe_id") or "")
+            else:
+                subscribe_id = str(result or "")
+            if subscribe_id:
+                with self._lock:
+                    self._quote_subscribers.setdefault(subscribe_id, set()).add(client_id)
+        elif action == "xtdata.unsubscribe_quote":
+            subscribe_id = str(params.get("subscribe_id") or "")
+            if subscribe_id:
+                with self._lock:
+                    subscribers = self._quote_subscribers.get(subscribe_id)
+                    if subscribers:
+                        subscribers.discard(client_id)
+                        if not subscribers:
+                            self._quote_subscribers.pop(subscribe_id, None)
+        elif action == "xttrader.subscribe":
+            account_id = _external_account_id(params) or configured_default_account_id()
+            if account_id:
+                with self._lock:
+                    self._account_subscribers.setdefault(account_id, set()).add(client_id)
+        elif action == "xttrader.unsubscribe":
+            account_id = _external_account_id(params)
+            with self._lock:
+                if account_id:
+                    subscribers = self._account_subscribers.get(account_id)
+                    if subscribers:
+                        subscribers.discard(client_id)
+                else:
+                    for subscribers in self._account_subscribers.values():
+                        subscribers.discard(client_id)
+
+    def _on_quote_event(self, msg):
+        if not isinstance(msg, dict):
+            return
+        subscribe_id = str(msg.get("subscription_id") or msg.get("subscribe_id") or "")
+        with self._lock:
+            client_ids = sorted(self._quote_subscribers.get(subscribe_id, set()))
+        for client_id in client_ids:
+            self._push_event(client_id, msg.get("event") or "quote:%s" % subscribe_id, msg.get("data"), subscribe_id)
+
+    def _on_client_event(self, msg):
+        if not isinstance(msg, dict):
+            return
+        event = str(msg.get("event") or "")
+        if not event.startswith("trader:"):
+            return
+        account_id = CallbackEventStore.event_account_id_static(msg)
+        if not account_id and isinstance(msg.get("data"), dict):
+            account_id = _external_account_id(msg.get("data"))
+        with self._lock:
+            client_ids = sorted(self._account_subscribers.get(str(account_id or ""), set()))
+        for client_id in client_ids:
+            self._push_event(client_id, event, msg.get("data"))
+
+    def _push_event(self, client_id, event, data=None, subscription_id=None):
+        tx = self.tx
+        if tx is None or not client_id:
+            return
+        try:
+            payload = pack_event(event, data=data, client_id=client_id, subscription_id=subscription_id)
+            tx.push("event", payload, client_id)
+        except Exception as e:
+            safe_print("cfquant LTtx 统一路由事件转发失败 client=%s event=%s error=%s" % (client_id, event, e))
+
+
+LTTX_WEB_ROUTE = LttxWebRouteServer()
 
 
 def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
@@ -6199,8 +6538,10 @@ def main(argv=None):
                 CLIENTS.start(client_mode)
             except Exception as e:
                 safe_print("cfquant %s client start failed: %s" % (client_mode, e))
+        LTTX_WEB_ROUTE.start()
         safe_print("cfquant web global tx started reply_channel=%s" % CLIENTS.client_id)
     except Exception as e:
+        LTTX_WEB_ROUTE.close()
         CLIENTS.close()
         safe_print("cfquant web global tx start failed: %s" % e)
     STATUS_MONITOR.start()
@@ -6217,6 +6558,7 @@ def main(argv=None):
         ACCOUNT_CACHE.close()
         CALLBACKS.close()
         QUOTES.close()
+        LTTX_WEB_ROUTE.close()
         CLIENTS.close()
         server.server_close()
         restart_request = None
