@@ -24,5 +24,9 @@ cfquant_pipe_hub_status.json
 
 .updates/
 .cfquant_updates/
+.cfquant_project_updates/
 .pytest_cache/
 .mypy_cache/
+
+# Local video synthesis workspace and generated media.
+remotion_intro/

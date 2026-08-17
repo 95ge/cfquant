@@ -40,6 +40,12 @@ const state = {
   pipeHubStatus: null,
   updateStatus: null,
   updateBusy: false,
+  versionInfo: null,
+  versionCheckInFlight: false,
+  versionRemoteChecked: false,
+  versionUpdateBusy: false,
+  projectUpdateStatus: null,
+  projectUpdateBusy: false,
   apiOpenGroups: new Set(['data', 'trade', 'system', 'transport']),
   quoteRows: new Map(),
   quoteSeq: 0,
@@ -877,6 +883,178 @@ async function api(path, options = {}) {
     throw error;
   }
   return payload.data;
+}
+
+function versionCompareText(value, remoteError = '') {
+  if (value === 'same') return '已是最新';
+  if (value === 'newer' || value === 'different') return '发现新版本';
+  if (value === 'older') return '本地版本较新';
+  if (remoteError) return '远端检查失败';
+  return '未检查远端';
+}
+
+function projectVersionClass(info) {
+  if (state.versionCheckInFlight) return 'status-checking';
+  const remote = info && info.remote ? info.remote : {};
+  if (remote.error) return 'status-error';
+  const comparison = info && info.comparison ? info.comparison : 'unknown';
+  if (comparison === 'same') return 'status-same';
+  if (comparison === 'newer') return 'status-newer';
+  if (comparison === 'different') return 'status-different';
+  if (comparison === 'older') return 'status-older';
+  return 'status-unknown';
+}
+
+function renderVersionLog(changelog, title) {
+  const info = changelog || {};
+  const items = Array.isArray(info.items) ? info.items : [];
+  const version = info.version ? ` / ${info.version}` : '';
+  if (!items.length) {
+    return `<div class="version-log"><span>${esc(title)}${esc(version)}</span><ul><li>暂无更新日志</li></ul></div>`;
+  }
+  return `<div class="version-log"><span>${esc(title)}${esc(version)}</span><ul>${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></div>`;
+}
+
+function renderProjectVersion(info) {
+  state.versionInfo = info || state.versionInfo || null;
+  const data = state.versionInfo || {};
+  const currentVersion = data.current_version || (data.local && data.local.version) || '--';
+  const widget = $('versionWidget');
+  const label = $('versionBadgeLabel');
+  const checkState = $('versionCheckState');
+  const body = $('versionPopoverBody');
+  const alert = $('versionAlert');
+  if (label) label.textContent = state.versionCheckInFlight ? '检查中...' : `v ${currentVersion}`;
+  if (widget) {
+    widget.classList.remove(
+      'status-same',
+      'status-newer',
+      'status-different',
+      'status-older',
+      'status-error',
+      'status-checking',
+      'status-unknown',
+    );
+    widget.classList.add(projectVersionClass(data));
+  }
+  const remote = data.remote || {};
+  const stateText = state.versionCheckInFlight ? '正在检查远端' : versionCompareText(data.comparison, remote.error);
+  if (checkState) checkState.textContent = stateText;
+  if (alert) {
+    const showAlert = !!(remote.error && !state.versionCheckInFlight);
+    alert.classList.toggle('hidden', !showAlert);
+    alert.textContent = showAlert
+      ? '版本探测失败：当前网络可能无法访问 GitHub，不影响交易和行情功能'
+      : '版本探测失败，不影响交易和行情功能';
+    alert.title = showAlert ? `版本探测失败：${remote.error}` : '';
+  }
+  if (!body) return;
+  const local = data.local || {};
+  const readmeNote = local.matches_readme === false
+    ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
+    : `来源：${local.source || '本地版本文件'}`;
+  const remoteNote = remote.error
+    ? `检查失败：${remote.error}`
+    : remote.version
+      ? `${remote.repo_url || data.repo_url || DEFAULT_UPDATE_REPO_URL}#${remote.ref || data.ref || DEFAULT_UPDATE_REF}${remote.checked_at_text ? ` / ${remote.checked_at_text}` : ''}${remote.cached ? ' / 缓存' : ''}`
+      : '尚未检查 GitHub 版本';
+  const actionBusy = state.versionCheckInFlight || state.projectUpdateBusy || state.versionUpdateBusy;
+  const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
+  const recheckDisabled = state.versionCheckInFlight ? ' disabled' : '';
+  const actionStatus = state.projectUpdateBusy
+    ? 'Web 项目正在更新，完成后会自动重启。'
+    : state.versionCheckInFlight
+      ? '正在连接远端版本源...'
+      : (remote.error ? '当前远端不可达，可以稍后重新检查。' : '可在这里直接更新 Web 项目，或进入设置页处理 QMT 核心更新。');
+  body.innerHTML = `
+    <div class="version-info-row">
+      <span>当前版本</span>
+      <strong>${esc(currentVersion)}</strong>
+      <small>${esc(readmeNote)}</small>
+    </div>
+    <div class="version-info-row">
+      <span>GitHub 版本</span>
+      <strong>${esc(remote.version || '--')}</strong>
+      <small>${esc(remoteNote)}</small>
+    </div>
+    <div class="version-info-row">
+      <span>版本状态</span>
+      <strong>${esc(stateText)}</strong>
+      <small>${esc(data.update_available ? 'GitHub 上有新版本，进入设置页可执行更新。' : '基于 README 版本号判断。')}</small>
+    </div>
+    ${renderVersionLog(local.changelog, '当前更新日志')}
+    ${remote.version || remote.error ? renderVersionLog(remote.changelog, 'GitHub 更新日志') : ''}
+    <div class="version-actions">
+      <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
+      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新 Web</button>
+      <button type="button" data-version-action="qmt-update"${actionBusy ? ' disabled' : ''}>更新 QMT 核心</button>
+      <button type="button" data-version-action="open-update">更新设置</button>
+    </div>
+    <div class="version-action-status">${esc(actionStatus)}</div>`;
+}
+
+async function refreshProjectVersion(options = {}) {
+  if (state.versionCheckInFlight) return state.versionInfo;
+  if (state.versionRemoteChecked && !options.force) return state.versionInfo;
+  state.versionCheckInFlight = true;
+  renderProjectVersion(state.versionInfo);
+  try {
+    const remote = options.remote !== false;
+    const force = !!options.force;
+    const data = await api(`/api/version?remote=${remote ? '1' : '0'}&force=${force ? '1' : '0'}`);
+    state.versionRemoteChecked = remote || state.versionRemoteChecked;
+    renderProjectVersion(data);
+    if (options.log) {
+      log('版本状态已刷新', {
+        current_version: data.current_version || '',
+        remote_version: data.remote && data.remote.version ? data.remote.version : '',
+        comparison: data.comparison || '',
+      });
+    }
+    return data;
+  } catch (error) {
+    const fallback = state.versionInfo || { current_version: '--', comparison: 'unknown', remote: {} };
+    fallback.remote = { ...(fallback.remote || {}), error: error.message };
+    renderProjectVersion(fallback);
+    if (options.log !== false) log('版本状态刷新失败', { error: error.message });
+    return fallback;
+  } finally {
+    state.versionCheckInFlight = false;
+    renderProjectVersion(state.versionInfo);
+  }
+}
+
+function wireVersionBadge() {
+  const widget = $('versionWidget');
+  const badge = $('versionBadge');
+  if (widget) {
+    const check = () => {
+      refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态刷新失败', { error: error.message }));
+    };
+    widget.addEventListener('mouseenter', check);
+    widget.addEventListener('focusin', check);
+    widget.addEventListener('click', (event) => {
+      const action = event.target.closest('[data-version-action]');
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (action.dataset.versionAction === 'recheck') {
+        refreshProjectVersion({ remote: true, force: true, log: true }).catch((error) => log('版本状态刷新失败', { error: error.message }));
+      } else if (action.dataset.versionAction === 'project-update') {
+        runProjectGithubUpdateFromUi({ source: 'version-popover' }).catch((error) => log('Web 项目更新失败', { error: error.message }));
+      } else if (action.dataset.versionAction === 'qmt-update') {
+        runGithubUpdateFromUi({ source: 'version-popover' }).catch((error) => log('QMT 核心更新失败', { error: error.message }));
+      } else if (action.dataset.versionAction === 'open-update') {
+        setView('settings');
+        setSettingsTab('update');
+      }
+    });
+  }
+  if (badge) {
+    badge.addEventListener('click', () => {
+      refreshProjectVersion({ remote: true, force: true, log: true }).catch((error) => log('版本状态刷新失败', { error: error.message }));
+    });
+  }
 }
 
 function webAuthEnabled() {
@@ -2266,10 +2444,80 @@ function setUpdateControlsBusy(busy = state.updateBusy) {
   if (rollbackButton) rollbackButton.disabled = state.updateBusy || !ready || !backups.length;
 }
 
+function setProjectUpdateControlsBusy(busy = state.projectUpdateBusy) {
+  state.projectUpdateBusy = !!busy;
+  const ready = !!(state.projectUpdateStatus && state.projectUpdateStatus.ready);
+  const backups = state.projectUpdateStatus && Array.isArray(state.projectUpdateStatus.backups)
+    ? state.projectUpdateStatus.backups
+    : [];
+  ['runProjectGithubUpdateBtn', 'uploadProjectZipUpdateBtn'].forEach((id) => {
+    const button = $(id);
+    if (button) button.disabled = state.projectUpdateBusy || !ready;
+  });
+  const refreshButton = $('refreshProjectUpdateStatusBtn');
+  if (refreshButton) refreshButton.disabled = state.projectUpdateBusy;
+  const rollbackButton = $('rollbackProjectUpdateBtn');
+  if (rollbackButton) rollbackButton.disabled = state.projectUpdateBusy || !ready || !backups.length;
+  renderProjectVersion(state.versionInfo);
+}
+
 function renderUpdateResult(payload) {
   const box = $('updateResultBox');
   if (!box) return;
+  renderUpdateNotice('updateNoticeBox', payload, { forceQmtRestart: true });
   box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
+}
+
+function renderProjectUpdateResult(payload) {
+  const box = $('projectUpdateResultBox');
+  if (!box) return;
+  renderUpdateNotice('projectUpdateNoticeBox', payload, { forceQmtRestart: false });
+  box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
+}
+
+function buildUpdateNoticeLines(payload, options = {}) {
+  if (!payload) return [];
+  const restart = payload.qmt_restart_required || {};
+  const entry = payload.entry_manual_update || restart.entry_manual_update || {};
+  const restartRequired = !!restart.required || !!options.forceQmtRestart;
+  const entryRequired = !!entry.required;
+  if (!restartRequired && !entryRequired) return [];
+  const lines = [];
+  if (restartRequired) {
+    lines.push({
+      strong: 'QMT 侧需要重启',
+      text: restart.message || '更新完成后，请停止并重新启动对应 QMT 入口脚本，让 QMT 加载最新代码。',
+    });
+  }
+  if (entryRequired) {
+    const files = Array.isArray(entry.entry_files) && entry.entry_files.length
+      ? `涉及入口：${entry.entry_files.join('、')}`
+      : '涉及 QMT 入口脚本';
+    lines.push({
+      strong: '入口文件需要手动更新',
+      text: `${entry.message || 'QMT 入口文件需要手动更新后再启动。'} ${files}`,
+    });
+  } else if (restartRequired) {
+    lines.push({
+      strong: '入口文件',
+      text: '本次未检测到入口脚本变更。如果版本说明提到入口文件变化，请手动更新 QMT 里的加密入口文件后再启动。',
+    });
+  }
+  return lines;
+}
+
+function renderUpdateNotice(boxId, payload, options = {}) {
+  const box = $(boxId);
+  if (!box) return;
+  const lines = buildUpdateNoticeLines(payload, options);
+  box.classList.toggle('hidden', !lines.length);
+  box.innerHTML = lines.map((line) => `<div><strong>${esc(line.strong)}</strong><span>${esc(line.text)}</span></div>`).join('');
+}
+
+function alertUpdateNotice(payload, options = {}) {
+  const lines = buildUpdateNoticeLines(payload, options);
+  if (!lines.length) return;
+  window.alert(lines.map((line) => `${line.strong}\n${line.text}`).join('\n\n'));
 }
 
 function updateVersionLabel(info) {
@@ -2319,6 +2567,240 @@ function renderUpdateVersionInfo(data) {
       <strong>${esc(updateCompareText(version.matches_remote))}</strong>
       <small>${version.matches_remote === false ? 'GitHub 上有不同提交' : '基于 commit 判断'}</small>
     </div>`;
+}
+
+function projectUpdateCompareText(value, remoteError = '') {
+  if (value === 'same') return '一致';
+  if (value === 'newer' || value === 'different') return '可更新';
+  if (value === 'older') return '本地较新';
+  if (remoteError) return '远端不可达';
+  return '无法判断';
+}
+
+function projectUpdateCompareClass(value, remoteError = '') {
+  if (remoteError) return 'unknown';
+  if (value === 'same') return 'match';
+  if (value === 'newer' || value === 'different') return 'diff';
+  return 'unknown';
+}
+
+function renderProjectUpdateVersionInfo(data) {
+  const box = $('projectUpdateVersionInfo');
+  if (!box) return;
+  const version = data && data.version_info ? data.version_info : {};
+  const local = version.local || {};
+  const remote = version.remote || {};
+  const currentVersion = version.current_version || local.version || data && data.current_version || '--';
+  const localDetail = local.matches_readme === false
+    ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
+    : `来源：${local.source || '本地项目'}`;
+  const remoteDetail = remote.error
+    ? `获取失败：${remote.error}`
+    : `${remote.repo_url || DEFAULT_UPDATE_REPO_URL}${remote.ref ? `#${remote.ref}` : ''}${remote.checked_at_text ? ` / ${remote.checked_at_text}` : ''}${remote.cached ? ' / 缓存' : ''}`;
+  const compareClass = projectUpdateCompareClass(version.comparison, remote.error);
+  box.innerHTML = `
+    <div class="update-version-item">
+      <span>当前 Web 项目</span>
+      <strong>${esc(currentVersion)}</strong>
+      <small>${esc(localDetail)}</small>
+    </div>
+    <div class="update-version-item">
+      <span>GitHub 项目版本</span>
+      <strong>${esc(remote.version || '--')}</strong>
+      <small>${esc(remote.version || remote.error ? remoteDetail : '未检查远端版本')}</small>
+    </div>
+    <div class="update-version-item update-version-compare ${compareClass}">
+      <span>版本对比</span>
+      <strong>${esc(projectUpdateCompareText(version.comparison, remote.error))}</strong>
+      <small>${remote.error ? '网络不通时不影响本地功能' : '基于 README 版本日志判断'}</small>
+    </div>`;
+}
+
+function renderProjectUpdateStatus(data) {
+  state.projectUpdateStatus = data || null;
+  const status = $('projectUpdateStatus');
+  const select = $('projectRollbackBackupSelect');
+  const backups = data && Array.isArray(data.backups) ? data.backups : [];
+  const repoInput = $('projectUpdateRepoInput');
+  const refInput = $('projectUpdateRefInput');
+  const defaultRepo = (data && data.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
+  const defaultRef = (data && data.default_ref) || DEFAULT_UPDATE_REF;
+  if (repoInput && !repoInput.value.trim()) repoInput.value = defaultRepo;
+  if (refInput && !refInput.value.trim()) refInput.value = defaultRef;
+  if (select) {
+    select.innerHTML = backups.length
+      ? backups.map((row) => {
+          const version = row.version ? ` / ${row.version}` : '';
+          const count = row.file_count ? ` / ${row.file_count} 文件` : '';
+          const label = `${row.created_at_text || row.name}${version}${count}`;
+          return `<option value="${esc(row.name)}">${esc(label)}</option>`;
+        }).join('')
+      : '<option value="">暂无项目备份</option>';
+    select.disabled = !backups.length;
+  }
+  if (status) {
+    if (!data) {
+      status.textContent = '未加载项目更新状态';
+      status.title = '';
+    } else {
+      const version = data.version_info || {};
+      const remote = version.remote || {};
+      const parts = [
+        `Web 项目：${data.ready ? '可更新' : '未就绪'}`,
+        data.target_dir ? `目录 ${data.target_dir}` : '',
+        data.current_version ? `版本 ${data.current_version}` : '',
+        version.comparison ? `版本对比 ${projectUpdateCompareText(version.comparison, remote.error)}` : '',
+        defaultRepo ? `默认仓库 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}` : '',
+        `备份 ${backups.length} 个`,
+      ].filter(Boolean);
+      if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
+      if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
+      status.textContent = parts.join('，');
+      status.title = JSON.stringify(data, null, 2);
+    }
+  }
+  renderProjectUpdateVersionInfo(data);
+  setProjectUpdateControlsBusy(false);
+}
+
+function handleProjectReload(reloadInfo, message) {
+  if (!reloadInfo) return;
+  const nextUrl = reloadInfo.next_url || window.location.href;
+  log(message || 'Web 正在重启', { next_url: nextUrl });
+  window.setTimeout(() => {
+    window.location.href = nextUrl || window.location.href;
+  }, 2600);
+}
+
+async function refreshProjectUpdateStatus(options = {}) {
+  const status = $('projectUpdateStatus');
+  if (status) status.textContent = '正在检查项目更新状态...';
+  const repoInput = $('projectUpdateRepoInput');
+  const refInput = $('projectUpdateRefInput');
+  const repoUrl = (repoInput && repoInput.value.trim()) || DEFAULT_UPDATE_REPO_URL;
+  const ref = (refInput && refInput.value.trim()) || DEFAULT_UPDATE_REF;
+  const remote = options.remote !== false;
+  const data = await api(`/api/project-updates/status?repo_url=${encodeURIComponent(repoUrl)}&ref=${encodeURIComponent(ref)}&remote=${remote ? '1' : '0'}`);
+  renderProjectUpdateStatus(data);
+  if (options.log !== false) {
+    log('Web 项目更新状态已刷新', {
+      ready: !!data.ready,
+      target_dir: data.target_dir || '',
+      version: data.current_version || '',
+    });
+  }
+  return data;
+}
+
+async function runProjectGithubUpdateFromUi(options = {}) {
+  const repoInput = $('projectUpdateRepoInput');
+  const refInput = $('projectUpdateRefInput');
+  const repoUrl = (repoInput && repoInput.value.trim())
+    || (state.projectUpdateStatus && state.projectUpdateStatus.default_repo_url)
+    || DEFAULT_UPDATE_REPO_URL;
+  const ref = (refInput && refInput.value.trim())
+    || (state.projectUpdateStatus && state.projectUpdateStatus.default_ref)
+    || DEFAULT_UPDATE_REF;
+  if (repoInput && !repoInput.value.trim()) repoInput.value = repoUrl;
+  if (refInput && !refInput.value.trim()) refInput.value = ref;
+  if (!repoUrl) {
+    log('GitHub 仓库为空，无法更新 Web 项目');
+    return;
+  }
+  const versionInfo = state.versionInfo || {};
+  const remoteInfo = versionInfo.remote || {};
+  let confirmText = '确认从 GitHub 更新当前 Web 项目并自动重启？本地配置、数据库和日志会保留。';
+  if (versionInfo.comparison === 'older') {
+    confirmText = '当前本地版本显示比 GitHub 更新，继续会用 GitHub 当前内容覆盖 Web 项目。确认继续？本地配置、数据库和日志会保留。';
+  } else if (remoteInfo.error) {
+    confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从 GitHub 更新 Web 项目吗？`;
+  }
+  const confirmed = window.confirm(confirmText);
+  if (!confirmed) return;
+  state.versionUpdateBusy = true;
+  setProjectUpdateControlsBusy(true);
+  renderProjectVersion(state.versionInfo);
+  try {
+    const data = await api('/api/project-updates/github', {
+      method: 'POST',
+      body: JSON.stringify({ repo_url: repoUrl, ref, reload: true }),
+    });
+    renderProjectUpdateResult(data);
+    alertUpdateNotice(data, { forceQmtRestart: false });
+    log('Web 项目已从 GitHub 更新', {
+      version: data.current_version || '',
+      copied_files: data.copied_files || 0,
+      source: options.source || 'settings',
+    });
+    handleProjectReload(data.reload, 'Web 项目已更新，正在重启');
+  } finally {
+    state.versionUpdateBusy = false;
+    setProjectUpdateControlsBusy(false);
+    renderProjectVersion(state.versionInfo);
+  }
+}
+
+async function uploadProjectZipUpdateFromUi() {
+  const input = $('projectUpdateZipInput');
+  const file = input && input.files && input.files[0];
+  if (!file) {
+    log('未选择项目 zip 文件，无法更新 Web 项目');
+    return;
+  }
+  const confirmed = window.confirm('确认上传 zip 更新当前 Web 项目并自动重启？本地配置、数据库和日志会保留。');
+  if (!confirmed) return;
+  const formData = new FormData();
+  formData.append('reload', '1');
+  formData.append('file', file, file.name);
+  state.versionUpdateBusy = true;
+  setProjectUpdateControlsBusy(true);
+  renderProjectVersion(state.versionInfo);
+  try {
+    const response = await fetch('/api/project-updates/upload', { method: 'POST', headers: authHeaders(), body: formData });
+    const payload = await response.json();
+    if (!payload.ok) {
+      throw new Error(payload.error || `HTTP ${response.status}`);
+    }
+    renderProjectUpdateResult(payload.data);
+    alertUpdateNotice(payload.data, { forceQmtRestart: false });
+    log('Web 项目已通过 zip 更新', {
+      version: payload.data.current_version || '',
+      copied_files: payload.data.copied_files || 0,
+    });
+    handleProjectReload(payload.data.reload, 'Web 项目 zip 更新完成，正在重启');
+  } finally {
+    state.versionUpdateBusy = false;
+    setProjectUpdateControlsBusy(false);
+    renderProjectVersion(state.versionInfo);
+  }
+}
+
+async function rollbackProjectUpdateFromUi() {
+  const select = $('projectRollbackBackupSelect');
+  const backup = select ? select.value : '';
+  if (!backup) {
+    log('没有可回滚的项目备份');
+    return;
+  }
+  const confirmed = window.confirm(`确认回滚 Web 项目到备份 ${backup} 并自动重启？`);
+  if (!confirmed) return;
+  state.versionUpdateBusy = true;
+  setProjectUpdateControlsBusy(true);
+  renderProjectVersion(state.versionInfo);
+  try {
+    const data = await api('/api/project-updates/rollback', {
+      method: 'POST',
+      body: JSON.stringify({ backup, reload: true }),
+    });
+    renderProjectUpdateResult(data);
+    alertUpdateNotice(data, { forceQmtRestart: false });
+    log('Web 项目已回滚', { version: data.current_version || '', backup });
+    handleProjectReload(data.reload, 'Web 项目已回滚，正在重启');
+  } finally {
+    state.versionUpdateBusy = false;
+    setProjectUpdateControlsBusy(false);
+    renderProjectVersion(state.versionInfo);
+  }
 }
 
 function renderUpdateStatus(data) {
@@ -2403,6 +2885,7 @@ async function runGithubUpdateFromUi() {
       body: JSON.stringify({ bridge_id: selectedBridge(), repo_url: repoUrl, ref }),
     });
     renderUpdateResult(data);
+    alertUpdateNotice(data, { forceQmtRestart: true });
     await refreshUpdateStatus({ log: false });
     log('核心代码已从 GitHub 更新', { bridge_id: data.bridge_id, version: data.current_version || '' });
   } finally {
@@ -2431,6 +2914,7 @@ async function uploadZipUpdateFromUi() {
       throw new Error(payload.error || `HTTP ${response.status}`);
     }
     renderUpdateResult(payload.data);
+    alertUpdateNotice(payload.data, { forceQmtRestart: true });
     await refreshUpdateStatus({ log: false });
     log('核心代码已通过 zip 更新', { bridge_id: payload.data.bridge_id, version: payload.data.current_version || '' });
   } finally {
@@ -2454,6 +2938,7 @@ async function rollbackUpdateFromUi() {
       body: JSON.stringify({ bridge_id: selectedBridge(), backup }),
     });
     renderUpdateResult(data);
+    alertUpdateNotice(data, { forceQmtRestart: true });
     await refreshUpdateStatus({ log: false });
     log('核心代码已回滚', { bridge_id: data.bridge_id, version: data.current_version || '' });
   } finally {
@@ -3843,6 +4328,11 @@ async function loadConfigLegacy() {
   renderServerAccess(data.server_access);
   renderLogCleanup(data.log_cleanup);
   renderQmtLogLanguage(data.qmt_log_language);
+  renderProjectVersion(data.version);
+  if (!data.auth_required) {
+    refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
+    refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
+  }
   refreshUpdateStatus({ log: false }).catch((error) => log('更新状态初始化失败', { error: error.message }));
   refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
   log('Web TX', { reply_channel: data.reply_channel });
@@ -3891,6 +4381,11 @@ async function loadConfig() {
   renderTransport(data.transport);
   renderLogCleanup(data.log_cleanup);
   renderQmtLogLanguage(data.qmt_log_language);
+  renderProjectVersion(data.version);
+  if (!data.auth_required) {
+    refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
+    refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
+  }
   syncOnboardingWizard();
   log('Web TX', { reply_channel: data.reply_channel || '', auth_required: !!data.auth_required });
   return data;
@@ -3901,6 +4396,8 @@ async function startAuthenticatedApp() {
   state.appStarted = true;
   renderApiDocs();
   await refreshStatus();
+  refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
+  refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
   await refreshAccount('asset,positions').catch((error) => log('初始化查询失败', { error: error.message }));
   refreshAccount('orders').catch((error) => log('委托初始化失败', { error: error.message }));
   refreshAccount('trades').catch((error) => log('成交初始化失败', { error: error.message }));
@@ -5363,6 +5860,7 @@ function startTimers() {
 
 async function boot() {
   wireForms();
+  renderProjectUpdateStatus(null);
   renderUpdateStatus(null);
   wireNavigation();
   wireDataTabs();
@@ -5370,7 +5868,9 @@ async function boot() {
   wireOnboardingGuide();
   wireSettingsNavigation();
   wireImageLightbox();
+  wireVersionBadge();
   renderCallbacks();
+  renderProjectVersion(null);
   setDataTab(localStorage.getItem('cfquant.trade_tab') || 'positions', false);
   setView(localStorage.getItem('cfquant.view') || 'overview');
   $('refreshBtn').addEventListener('click', async () => {
@@ -5497,6 +5997,27 @@ async function boot() {
   }
   $('runLogCleanupBtn').addEventListener('click', () => {
     runLogCleanupFromUi().catch((error) => log('日志清理执行失败', { error: error.message }));
+  });
+  $('refreshProjectUpdateStatusBtn').addEventListener('click', () => {
+    refreshProjectUpdateStatus({ remote: true }).catch((error) => log('Web 项目更新状态刷新失败', { error: error.message }));
+  });
+  $('runProjectGithubUpdateBtn').addEventListener('click', () => {
+    runProjectGithubUpdateFromUi({ source: 'settings' }).catch((error) => {
+      renderProjectUpdateResult({ error: error.message });
+      log('Web 项目 GitHub 更新失败', { error: error.message });
+    });
+  });
+  $('uploadProjectZipUpdateBtn').addEventListener('click', () => {
+    uploadProjectZipUpdateFromUi().catch((error) => {
+      renderProjectUpdateResult({ error: error.message });
+      log('Web 项目 zip 更新失败', { error: error.message });
+    });
+  });
+  $('rollbackProjectUpdateBtn').addEventListener('click', () => {
+    rollbackProjectUpdateFromUi().catch((error) => {
+      renderProjectUpdateResult({ error: error.message });
+      log('Web 项目回滚失败', { error: error.message });
+    });
   });
   $('refreshUpdateStatusBtn').addEventListener('click', () => {
     refreshUpdateStatus().catch((error) => log('更新状态刷新失败', { error: error.message }));

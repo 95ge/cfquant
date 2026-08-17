@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=20260817_onboarding_architecture_1">
+  <link rel="stylesheet" href="/styles.css?v=20260817_update_notice_1">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -103,9 +103,22 @@
     <aside class="sidebar">
       <div class="side-brand">
         <div class="brand-mark">cf</div>
-        <div>
+        <div class="brand-copy">
           <strong>cfquant</strong>
           <span>QMT Bridge</span>
+        </div>
+        <div id="versionWidget" class="version-widget" tabindex="0" aria-label="版本信息">
+          <button id="versionBadge" class="version-badge" type="button" aria-describedby="versionPopover">
+            <span id="versionBadgeDot" class="version-dot"></span>
+            <span id="versionBadgeLabel">v --</span>
+          </button>
+          <div id="versionPopover" class="version-popover" role="tooltip">
+            <div class="version-popover-head">
+              <strong>版本信息</strong>
+              <span id="versionCheckState">未检查远端</span>
+            </div>
+            <div id="versionPopoverBody" class="version-popover-body">正在加载版本信息...</div>
+          </div>
         </div>
       </div>
       <nav class="side-nav">
@@ -132,6 +145,7 @@
         <div class="status-pill" id="normalStatus"><span></span><strong id="normalStatusLabel">通用查询通道</strong></div>
         <div class="status-pill" id="tradeStatus"><span></span><strong id="tradeStatusLabel">通用交易通道</strong></div>
         <div class="status-pill" id="transportStatus"><span></span><strong id="transportStatusLabel">通用模式</strong></div>
+        <div id="versionAlert" class="topbar-alert hidden" title="">版本探测失败，不影响交易和行情功能</div>
         <button id="webAuthLogoutBtn" class="topbar-logout hidden" type="button">退出登录</button>
       </div>
       </header>
@@ -631,8 +645,8 @@
                   <span>通用模式 / 高级模式</span>
                 </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="update">
-                  <strong>核心更新</strong>
-                  <span>GitHub 和 zip 更新回滚</span>
+                  <strong>系统更新</strong>
+                  <span>Web 项目 / QMT 核心</span>
                 </button>
               </aside>
               <section class="settings-section active" data-settings-tab="api-key">
@@ -790,7 +804,41 @@
                 </div>
               </section>
               <section class="settings-section" data-settings-tab="update">
-                <h3>核心更新</h3>
+                <h3>Web 项目更新</h3>
+                <p class="settings-note">更新当前 Web 项目目录，配置、数据库、日志、运行缓存和 LTtx 本地配置会保留。更新成功后 Web 服务会自动重启。</p>
+                <div class="update-status-row">
+                  <span id="projectUpdateStatus" class="metric-note">未加载项目更新状态</span>
+                  <button id="refreshProjectUpdateStatusBtn" type="button">刷新状态</button>
+                </div>
+                <div id="projectUpdateVersionInfo" class="update-version-info"></div>
+                <div class="api-serverbar update-bar">
+                  <label class="field">
+                    <span>GitHub 仓库</span>
+                    <input id="projectUpdateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
+                  </label>
+                  <label class="field compact">
+                    <span>分支 / 标签</span>
+                    <input id="projectUpdateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
+                  </label>
+                  <button id="runProjectGithubUpdateBtn" class="primary" type="button">更新 Web 并重启</button>
+                </div>
+                <div class="api-serverbar update-bar">
+                  <label class="field">
+                    <span>项目源码 zip</span>
+                    <input id="projectUpdateZipInput" type="file" accept=".zip,application/zip">
+                  </label>
+                  <button id="uploadProjectZipUpdateBtn" class="primary" type="button">上传 zip 更新 Web</button>
+                  <label class="field">
+                    <span>可回滚项目备份</span>
+                    <select id="projectRollbackBackupSelect"></select>
+                  </label>
+                  <button id="rollbackProjectUpdateBtn" class="danger" type="button">回滚 Web 并重启</button>
+                </div>
+                <div id="projectUpdateNoticeBox" class="update-notice hidden"></div>
+                <pre id="projectUpdateResultBox" class="json-box small-json update-result"></pre>
+
+                <h3 class="settings-subtitle">QMT 核心更新</h3>
+                <p class="settings-note">更新当前账号绑定 QMT 目录内的 <code>cfquant</code> 核心包。更新完成后需要重启对应 QMT 桥接脚本；如果本次涉及入口文件变更，QMT 加密入口文件需要手动更新后再启动。</p>
                 <div class="update-status-row">
                   <span id="updateStatus" class="metric-note">未加载更新状态</span>
                   <button id="refreshUpdateStatusBtn" type="button">刷新状态</button>
@@ -819,6 +867,7 @@
                   </label>
                   <button id="rollbackUpdateBtn" class="danger" type="button">回滚</button>
                 </div>
+                <div id="updateNoticeBox" class="update-notice hidden"></div>
                 <pre id="updateResultBox" class="json-box small-json update-result"></pre>
               </section>
             </div>
@@ -1923,6 +1972,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=20260817_onboarding_architecture_1"></script>
+  <script src="/app.js?v=20260817_update_notice_1"></script>
 </body>
 </html>

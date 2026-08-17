@@ -112,6 +112,13 @@ DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://git
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
 UPDATE_REMOTE_CACHE_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_CACHE_SECONDS", "300"))
 UPDATE_REMOTE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_TIMEOUT_SECONDS", "12"))
+PROJECT_UPDATE_DIR = os.path.join(BASE_DIR, ".cfquant_project_updates")
+PROJECT_UPDATE_BACKUP_KEEP = int(os.environ.get("CFQUANT_PROJECT_UPDATE_BACKUP_KEEP", "2"))
+QMT_ENTRY_SCRIPT_NAMES = (
+    "CFQUANT_CTYPE_ALL_LOWLAT.py",
+    "CFQUANT.py",
+    "CFQUANT_TRADE_LOWLAT.py",
+)
 WEB_BOUND_HOST = None
 WEB_BOUND_PORT = None
 WEB_RESTART_REQUEST = None
@@ -3106,6 +3113,76 @@ def jsonable_key(value):
     return str(safe)
 
 
+def qmt_entry_manual_update_info(entry_files=None, required=False, reason=""):
+    entry_files = [str(item) for item in (entry_files or []) if str(item or "").strip()]
+    return {
+        "required": bool(required),
+        "reason": reason or (
+            "本次更新包含 QMT 入口脚本变更"
+            if required else
+            "未检测到 QMT 入口脚本变更"
+        ),
+        "entry_files": entry_files,
+        "message": (
+            "QMT 入口启动文件需要用户手动更新后再启动。"
+            "QMT 里的入口策略文件通常是加密文件，Web 无法自动覆盖；"
+            "请根据当前模式手动更新对应入口文件，然后在 QMT 侧重新启动桥接脚本。"
+            if required else
+            "本次未检测到 QMT 入口脚本变更；如果只更新了核心包，仍需在 QMT 侧重启正在运行的桥接脚本。"
+        ),
+        "mode_files": {
+            "通用模式": ["CFQUANT_CTYPE_ALL_LOWLAT.py"],
+            "高级模式": ["CFQUANT.py", "CFQUANT_TRADE_LOWLAT.py"],
+        },
+    }
+
+
+def qmt_restart_required_info(reason="", entry_info=None):
+    entry_info = entry_info or qmt_entry_manual_update_info()
+    return {
+        "required": True,
+        "reason": reason or "QMT 核心包已更新",
+        "message": (
+            "更新已写入文件系统，但 QMT 中正在运行的桥接脚本不会自动加载新代码；"
+            "请停止并重新启动对应 QMT 入口脚本。"
+        ),
+        "entry_manual_update": entry_info,
+    }
+
+
+def qmt_restart_not_required_info(reason="", entry_info=None):
+    entry_info = entry_info or qmt_entry_manual_update_info()
+    return {
+        "required": False,
+        "reason": reason or "未检测到需要 QMT 重启的变更",
+        "message": "本次 Web 项目更新未检测到 QMT 入口脚本变更，QMT 侧无需因为本次 Web 更新单独重启。",
+        "entry_manual_update": entry_info,
+    }
+
+
+def file_content_equal(path_a, path_b):
+    try:
+        if not os.path.isfile(path_a) or not os.path.isfile(path_b):
+            return False
+        if os.path.getsize(path_a) != os.path.getsize(path_b):
+            return False
+        hash_a = hashlib.sha256()
+        hash_b = hashlib.sha256()
+        with open(path_a, "rb") as fa, open(path_b, "rb") as fb:
+            while True:
+                chunk_a = fa.read(1024 * 1024)
+                chunk_b = fb.read(1024 * 1024)
+                if chunk_a != chunk_b:
+                    return False
+                if not chunk_a:
+                    break
+                hash_a.update(chunk_a)
+                hash_b.update(chunk_b)
+        return hash_a.digest() == hash_b.digest()
+    except Exception:
+        return False
+
+
 class CfquantUpdater(object):
     BACKUP_KEEP = 2
 
@@ -3227,6 +3304,7 @@ class CfquantUpdater(object):
                     self._restore_backup_dir(rollback_backup, current)
                 raise
             removed = self._prune_backups(target["backup_dir"])
+            entry_info = qmt_entry_manual_update_info(reason="QMT 核心包回滚未检测入口脚本变更")
             return {
                 "bridge_id": target["bridge_id"],
                 "python_dir": target["python_dir"],
@@ -3235,6 +3313,11 @@ class CfquantUpdater(object):
                 "removed_backups": removed,
                 "current_version": self._read_version(current),
                 "backups": self._list_backups(target["backup_dir"]),
+                "qmt_restart_required": qmt_restart_required_info(
+                    reason="QMT 核心包已回滚",
+                    entry_info=entry_info,
+                ),
+                "entry_manual_update": entry_info,
             }
 
     def _target_paths(self, python_dir):
@@ -3323,6 +3406,7 @@ class CfquantUpdater(object):
         if not source_core:
             raise RuntimeError("源码中未找到 cfquant 核心目录")
         self._validate_core_dir(source_core)
+        entry_info = self._entry_update_info(source_dir)
         os.makedirs(target["backup_dir"], exist_ok=True)
         backup = self._backup_current_core(target)
         temp_new = os.path.join(target["updates_dir"], "new_core_%s" % self._timestamp())
@@ -3347,6 +3431,11 @@ class CfquantUpdater(object):
                 "removed_backups": removed,
                 "current_version": self._read_version(current),
                 "backups": self._list_backups(target["backup_dir"]),
+                "qmt_restart_required": qmt_restart_required_info(
+                    reason="QMT 核心包已更新",
+                    entry_info=entry_info,
+                ),
+                "entry_manual_update": entry_info,
             }
         except Exception:
             if not installed:
@@ -3642,6 +3731,52 @@ class CfquantUpdater(object):
                 return os.path.abspath(root)
         return ""
 
+    def _find_source_project_root(self, source_dir):
+        source_dir = os.path.abspath(source_dir)
+        if self._looks_like_project_root(source_dir):
+            return source_dir
+        for root, dirs, files in os.walk(source_dir):
+            if ".git" in dirs:
+                dirs.remove(".git")
+            if "__pycache__" in dirs:
+                dirs.remove("__pycache__")
+            if self._looks_like_project_root(root):
+                return os.path.abspath(root)
+        return ""
+
+    def _looks_like_project_root(self, path):
+        return (
+            os.path.isfile(os.path.join(path, "cfquant_web_server.py"))
+            and os.path.isdir(os.path.join(path, "qmt_scripts"))
+            and self._looks_like_core(os.path.join(path, "cfquant"))
+        )
+
+    def _entry_update_info(self, source_dir):
+        project_root = self._find_source_project_root(source_dir)
+        if not project_root:
+            return qmt_entry_manual_update_info(reason="更新源未包含 QMT 入口脚本目录")
+        changed = []
+        available = []
+        for filename in QMT_ENTRY_SCRIPT_NAMES:
+            source_path = os.path.join(project_root, "qmt_scripts", filename)
+            if not os.path.isfile(source_path):
+                continue
+            available.append(filename)
+            local_path = os.path.join(BASE_DIR, "qmt_scripts", filename)
+            if not file_content_equal(source_path, local_path):
+                changed.append(filename)
+        return qmt_entry_manual_update_info(
+            entry_files=changed,
+            required=bool(changed),
+            reason=(
+                "更新源中的 QMT 入口脚本与当前项目不一致"
+                if changed else
+                "更新源包含 QMT 入口脚本，但与当前项目一致"
+                if available else
+                "更新源未包含 QMT 入口脚本"
+            ),
+        )
+
     def _looks_like_core(self, path):
         if not os.path.isdir(path):
             return False
@@ -3744,16 +3879,19 @@ class CfquantUpdater(object):
         return removed
 
     def _read_version(self, core_dir):
-        init_path = os.path.join(core_dir, "__init__.py")
-        if not os.path.isfile(init_path):
-            return ""
-        try:
-            with open(init_path, "r", encoding="utf-8", errors="replace") as f:
-                text = f.read(4096)
-            match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", text)
-            return match.group(1) if match else ""
-        except Exception:
-            return ""
+        for filename in ("version.py", "__init__.py"):
+            path = os.path.join(core_dir, filename)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(8192)
+                match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", text)
+                if match:
+                    return match.group(1)
+            except Exception:
+                continue
+        return ""
 
     def _remove_tree(self, path):
         if not path or not os.path.exists(path):
@@ -3770,7 +3908,484 @@ class CfquantUpdater(object):
         return time.strftime("%Y%m%d_%H%M%S")
 
 
+class CfquantProjectUpdater(object):
+    BACKUP_KEEP = PROJECT_UPDATE_BACKUP_KEEP
+    EXCLUDED_DIR_NAMES = {
+        ".git",
+        ".cfquant_project_updates",
+        ".cfquant_updates",
+        ".updates",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".idea",
+        ".vscode",
+        "node_modules",
+        "log",
+        "log_data",
+        "tx_log",
+        "pic",
+        "remotion_intro",
+    }
+    PRESERVED_REL_PATHS = {
+        "AGENTS.md",
+        ".env",
+        "cfquant_web_config.json",
+        "cfquant_web_config.db",
+        "cfquant_pipe_hub_status.json",
+        "LTtx/tx/Config.txt",
+        "LTtx/tx/data0.txt",
+    }
+    EXCLUDED_FILE_PATTERNS = (
+        "*.pyc",
+        "*.pyo",
+        "*.pyd",
+        "*.log",
+        "*.tmp",
+        "*.bak",
+    )
+
+    def __init__(self):
+        self._lock = threading.RLock()
+
+    def status(self, repo_url=None, ref=None, include_remote=True):
+        repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
+        ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
+        errors = []
+        warnings = []
+        if not self._looks_like_project(BASE_DIR):
+            errors.append("当前目录不是完整 cfquant 项目目录: %s" % BASE_DIR)
+        try:
+            backups = self._list_backups()
+        except Exception as e:
+            backups = []
+            warnings.append("备份读取失败: %s" % e)
+        return {
+            "target_dir": BASE_DIR,
+            "ready": not errors,
+            "errors": errors,
+            "warnings": warnings,
+            "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+            "last_update": self._read_install_meta(),
+            "backups": backups,
+            "version_info": project_version_info(
+                include_remote=include_remote,
+                repo_url=repo_url,
+                ref=ref,
+            ),
+            "default_repo_url": repo_url,
+            "default_ref": ref,
+            "preserved_paths": sorted(self.PRESERVED_REL_PATHS),
+            "excluded_dirs": sorted(self.EXCLUDED_DIR_NAMES),
+        }
+
+    def update_from_github(self, repo_url, ref=""):
+        repo_url = str(repo_url or "").strip()
+        ref = str(ref or "").strip()
+        if not repo_url:
+            raise ValueError("repo_url is required")
+        with self._lock:
+            with tempfile.TemporaryDirectory(prefix="cfquant_project_update_") as work_dir:
+                source_dir = os.path.join(work_dir, "source")
+                fetched = UPDATER._fetch_github(repo_url, ref, source_dir)
+                return self._install_source(source_dir, {
+                    "source": "github",
+                    "repo_url": repo_url,
+                    "ref": ref,
+                    "fetch": fetched,
+                })
+
+    def update_from_zip(self, filename, content):
+        content = content or b""
+        if not content:
+            raise ValueError("zip content is empty")
+        with self._lock:
+            with tempfile.TemporaryDirectory(prefix="cfquant_project_update_") as work_dir:
+                zip_path = os.path.join(work_dir, "upload.zip")
+                with open(zip_path, "wb") as f:
+                    f.write(content)
+                source_dir = os.path.join(work_dir, "source")
+                UPDATER._safe_extract_zip(zip_path, source_dir)
+                return self._install_source(source_dir, {
+                    "source": "zip",
+                    "filename": filename,
+                    "size": len(content),
+                })
+
+    def rollback(self, backup_name=None):
+        with self._lock:
+            backups = self._list_backups()
+            if not backups:
+                raise RuntimeError("没有可回滚的项目备份")
+            if backup_name:
+                backup_name = os.path.basename(str(backup_name))
+                selected = next((row for row in backups if row["name"] == backup_name), None)
+                if selected is None:
+                    raise RuntimeError("project backup not found: %s" % backup_name)
+            else:
+                selected = backups[0]
+            rollback_backup = self._backup_project(
+                self._manifest_rel_files(selected),
+                label="rollback",
+            )
+            entry_info = self._entry_rollback_info(selected)
+            self._restore_backup(selected)
+            removed = self._prune_backups()
+            return {
+                "updated": True,
+                "target_dir": BASE_DIR,
+                "restored_backup": selected,
+                "rollback_backup": rollback_backup,
+                "removed_backups": removed,
+                "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+                "backups": self._list_backups(),
+                "qmt_restart_required": (
+                    qmt_restart_required_info(
+                        reason="Web 项目回滚影响了 QMT 入口脚本",
+                        entry_info=entry_info,
+                    )
+                    if entry_info.get("required")
+                    else qmt_restart_not_required_info(
+                        reason="Web 项目回滚未检测到 QMT 入口脚本变更",
+                        entry_info=entry_info,
+                    )
+                ),
+                "entry_manual_update": entry_info,
+            }
+
+    def _install_source(self, source_dir, meta):
+        source_root = self._find_source_project(source_dir)
+        if not source_root:
+            raise RuntimeError("源码中未找到完整 cfquant 项目目录")
+        rel_files = self._source_rel_files(source_root)
+        if not rel_files:
+            raise RuntimeError("源码中没有可更新的项目文件")
+        backup = self._backup_project(rel_files, label="backup")
+        copied = []
+        changed = []
+        try:
+            for rel_path in rel_files:
+                src = os.path.join(source_root, rel_path.replace("/", os.sep))
+                dst = self._safe_target_path(rel_path)
+                if not file_content_equal(src, dst):
+                    changed.append(rel_path)
+                parent = os.path.dirname(dst)
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                if os.path.isdir(dst) and not os.path.islink(dst):
+                    UPDATER._remove_tree(dst)
+                elif os.path.exists(dst) and not os.path.isfile(dst):
+                    os.remove(dst)
+                shutil.copy2(src, dst)
+                copied.append(rel_path)
+            entry_info = self._entry_update_info(changed)
+            self._write_install_meta(meta, source_root, backup, copied, changed, entry_info)
+            removed = self._prune_backups()
+            return {
+                "updated": True,
+                "target_dir": BASE_DIR,
+                "source_project": source_root,
+                "source": meta,
+                "backup": backup,
+                "copied_files": len(copied),
+                "changed_files": len(changed),
+                "changed_qmt_entry_files": entry_info.get("entry_files") or [],
+                "removed_backups": removed,
+                "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+                "backups": self._list_backups(),
+                "qmt_restart_required": (
+                    qmt_restart_required_info(
+                        reason="Web 项目更新包含 QMT 入口脚本变更",
+                        entry_info=entry_info,
+                    )
+                    if entry_info.get("required")
+                    else qmt_restart_not_required_info(
+                        reason="Web 项目更新未检测到 QMT 入口脚本变更",
+                        entry_info=entry_info,
+                    )
+                ),
+                "entry_manual_update": entry_info,
+            }
+        except Exception:
+            self._restore_backup(backup)
+            raise
+
+    def _find_source_project(self, source_dir):
+        source_dir = os.path.abspath(source_dir)
+        if self._looks_like_project(source_dir):
+            return source_dir
+        for root, dirs, files in os.walk(source_dir):
+            if ".git" in dirs:
+                dirs.remove(".git")
+            if "__pycache__" in dirs:
+                dirs.remove("__pycache__")
+            if self._looks_like_project(root):
+                return os.path.abspath(root)
+        return ""
+
+    def _looks_like_project(self, path):
+        return (
+            os.path.isfile(os.path.join(path, "cfquant_web_server.py"))
+            and os.path.isfile(os.path.join(path, "cfquant", "__init__.py"))
+            and os.path.isfile(os.path.join(path, "web_dashboard", "index.html"))
+        )
+
+    def _source_rel_files(self, source_root):
+        result = []
+        for root, dirs, files in os.walk(source_root):
+            rel_root = self._relpath(source_root, root)
+            dirs[:] = [
+                name for name in dirs
+                if not self._is_excluded_path(self._join_rel(rel_root, name), is_dir=True)
+            ]
+            for filename in files:
+                rel_path = self._join_rel(rel_root, filename)
+                if self._is_excluded_path(rel_path, is_dir=False):
+                    continue
+                result.append(rel_path)
+        result.sort()
+        return result
+
+    def _backup_project(self, rel_files, label="backup"):
+        rel_files = sorted(set(rel_files or []))
+        os.makedirs(self._backup_root(), exist_ok=True)
+        name = "%s_%s" % (time.strftime("%Y%m%d_%H%M%S"), label)
+        backup_dir = os.path.join(self._backup_root(), name)
+        files_dir = os.path.join(backup_dir, "files")
+        os.makedirs(files_dir, exist_ok=True)
+        manifest = {
+            "schema": "cfquant.project.backup",
+            "created_at": time.time(),
+            "created_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "project_dir": BASE_DIR,
+            "label": label,
+            "files": {},
+        }
+        for rel_path in rel_files:
+            if self._is_excluded_path(rel_path, is_dir=False):
+                continue
+            src = self._safe_target_path(rel_path)
+            item = {"existed": os.path.isfile(src)}
+            if os.path.isfile(src):
+                dst = os.path.join(files_dir, rel_path.replace("/", os.sep))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy2(src, dst)
+                try:
+                    item["size"] = os.path.getsize(src)
+                except Exception:
+                    pass
+            manifest["files"][rel_path] = item
+        self._write_json_file(os.path.join(backup_dir, "manifest.json"), manifest)
+        return self._backup_info(backup_dir)
+
+    def _restore_backup(self, backup):
+        backup_dir = backup.get("path") if isinstance(backup, dict) else str(backup or "")
+        backup_dir = os.path.abspath(backup_dir)
+        if not backup_dir.startswith(os.path.abspath(self._backup_root()) + os.sep):
+            raise RuntimeError("非法项目备份路径: %s" % backup_dir)
+        manifest = self._read_json_file(os.path.join(backup_dir, "manifest.json"))
+        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+        files_dir = os.path.join(backup_dir, "files")
+        for rel_path, item in files.items():
+            if self._is_excluded_path(rel_path, is_dir=False):
+                continue
+            dst = self._safe_target_path(rel_path)
+            existed = bool(item.get("existed")) if isinstance(item, dict) else False
+            if existed:
+                src = os.path.join(files_dir, rel_path.replace("/", os.sep))
+                if os.path.isfile(src):
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copy2(src, dst)
+            elif os.path.isfile(dst):
+                os.remove(dst)
+
+    def _entry_update_info(self, changed_rel_files):
+        entry_files = []
+        for rel_path in changed_rel_files or []:
+            normalized = self._normalize_rel(rel_path)
+            if not normalized.lower().startswith("qmt_scripts/"):
+                continue
+            filename = os.path.basename(normalized)
+            if filename in QMT_ENTRY_SCRIPT_NAMES:
+                entry_files.append(filename)
+        return qmt_entry_manual_update_info(
+            entry_files=entry_files,
+            required=bool(entry_files),
+            reason=(
+                "本次 Web 项目更新修改了 QMT 入口脚本"
+                if entry_files else
+                "本次 Web 项目更新未修改 QMT 入口脚本"
+            ),
+        )
+
+    def _entry_rollback_info(self, backup):
+        backup_dir = backup.get("path") if isinstance(backup, dict) else str(backup or "")
+        backup_dir = os.path.abspath(backup_dir)
+        manifest = self._read_json_file(os.path.join(backup_dir, "manifest.json"))
+        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+        files_dir = os.path.join(backup_dir, "files")
+        entry_files = []
+        for rel_path, item in files.items():
+            normalized = self._normalize_rel(rel_path)
+            if not normalized.lower().startswith("qmt_scripts/"):
+                continue
+            filename = os.path.basename(normalized)
+            if filename not in QMT_ENTRY_SCRIPT_NAMES:
+                continue
+            backup_path = os.path.join(files_dir, normalized.replace("/", os.sep))
+            current_path = self._safe_target_path(normalized)
+            existed = bool(item.get("existed")) if isinstance(item, dict) else False
+            if existed and not file_content_equal(backup_path, current_path):
+                entry_files.append(filename)
+            elif not existed and os.path.isfile(current_path):
+                entry_files.append(filename)
+        return qmt_entry_manual_update_info(
+            entry_files=entry_files,
+            required=bool(entry_files),
+            reason=(
+                "本次 Web 项目回滚会修改 QMT 入口脚本"
+                if entry_files else
+                "本次 Web 项目回滚未修改 QMT 入口脚本"
+            ),
+        )
+
+    def _write_install_meta(self, meta, source_root, backup, copied, changed, entry_info):
+        payload = {
+            "updated_at": time.time(),
+            "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "project_dir": BASE_DIR,
+            "source": meta,
+            "source_project": source_root,
+            "backup": backup,
+            "copied_files": copied,
+            "changed_files": changed,
+            "entry_manual_update": entry_info,
+            "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+        }
+        os.makedirs(PROJECT_UPDATE_DIR, exist_ok=True)
+        self._write_json_file(os.path.join(PROJECT_UPDATE_DIR, "last_update.json"), payload)
+
+    def _read_install_meta(self):
+        return self._read_json_file(os.path.join(PROJECT_UPDATE_DIR, "last_update.json"))
+
+    def _manifest_rel_files(self, backup):
+        manifest = self._read_json_file(os.path.join(backup.get("path") or "", "manifest.json"))
+        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+        return list(files.keys())
+
+    def _list_backups(self):
+        backup_root = self._backup_root()
+        if not os.path.isdir(backup_root):
+            return []
+        rows = []
+        for name in os.listdir(backup_root):
+            path = os.path.join(backup_root, name)
+            if os.path.isdir(path):
+                rows.append(self._backup_info(path))
+        rows.sort(key=lambda row: row.get("created_at") or 0, reverse=True)
+        return rows
+
+    def _backup_info(self, path):
+        stat_result = os.stat(path)
+        manifest = self._read_json_file(os.path.join(path, "manifest.json"))
+        files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
+        files_dir = os.path.join(path, "files")
+        return {
+            "name": os.path.basename(path),
+            "path": os.path.abspath(path),
+            "created_at": stat_result.st_mtime,
+            "created_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat_result.st_mtime)),
+            "version": self._read_project_version(files_dir),
+            "file_count": len(files),
+            "label": manifest.get("label") or "",
+        }
+
+    def _prune_backups(self):
+        rows = self._list_backups()
+        removed = []
+        for row in rows[self.BACKUP_KEEP:]:
+            try:
+                UPDATER._remove_tree(row["path"])
+                removed.append(row)
+            except Exception as e:
+                safe_print("project backup prune failed %s: %s" % (row.get("path"), e))
+        return removed
+
+    def _read_project_version(self, project_dir):
+        candidates = [
+            os.path.join(project_dir, "cfquant", "version.py"),
+            os.path.join(project_dir, "cfquant", "__init__.py"),
+        ]
+        for path in candidates:
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read(8192)
+                match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", text)
+                if match:
+                    return match.group(1)
+            except Exception:
+                continue
+        return ""
+
+    def _is_excluded_path(self, rel_path, is_dir=False):
+        rel_path = self._normalize_rel(rel_path)
+        if not rel_path:
+            return False
+        parts = [part.lower() for part in rel_path.split("/") if part]
+        if any(part in self.EXCLUDED_DIR_NAMES for part in parts):
+            return True
+        if rel_path.lower() in {item.lower() for item in self.PRESERVED_REL_PATHS}:
+            return True
+        if not is_dir:
+            filename = parts[-1] if parts else ""
+            if any(fnmatch.fnmatch(filename, pattern.lower()) for pattern in self.EXCLUDED_FILE_PATTERNS):
+                return True
+        return False
+
+    def _safe_target_path(self, rel_path):
+        rel_path = self._normalize_rel(rel_path)
+        target = os.path.abspath(os.path.join(BASE_DIR, rel_path.replace("/", os.sep)))
+        root = os.path.abspath(BASE_DIR)
+        if target != root and not target.startswith(root + os.sep):
+            raise RuntimeError("项目更新路径越界: %s" % rel_path)
+        return target
+
+    def _backup_root(self):
+        return os.path.join(PROJECT_UPDATE_DIR, "backups")
+
+    def _relpath(self, root, path):
+        rel = os.path.relpath(path, root)
+        return "" if rel == "." else self._normalize_rel(rel)
+
+    def _join_rel(self, rel_root, name):
+        return self._normalize_rel(os.path.join(rel_root, name) if rel_root else name)
+
+    def _normalize_rel(self, path):
+        rel = str(path or "").replace("\\", "/").strip("/")
+        rel = posixpath.normpath(rel)
+        return "" if rel == "." else rel
+
+    def _read_json_file(self, path):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _write_json_file(self, path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 UPDATER = CfquantUpdater(WEB_CONFIG)
+PROJECT_UPDATER = CfquantProjectUpdater()
 
 
 def write_qmt_bridge_identity(row):
@@ -5288,6 +5903,186 @@ def bridge_update_status(bridge_id=None, repo_url=None, ref=None):
     return UPDATER.status(bridge_id or DEFAULT_BRIDGE_ID, repo_url=repo_url, ref=ref)
 
 
+_PROJECT_VERSION_CACHE = {}
+_PROJECT_VERSION_LOCK = threading.RLock()
+
+
+def _read_text_file(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _extract_latest_changelog(readme_text):
+    result = {
+        "version": "",
+        "body": "",
+        "items": [],
+    }
+    if not readme_text:
+        return result
+    match = re.search(r"(?m)^##\s+版本日志\s*$", readme_text)
+    if not match:
+        return result
+    section = readme_text[match.end():]
+    next_section = re.search(r"(?m)^##\s+", section)
+    if next_section:
+        section = section[:next_section.start()]
+    heading = re.search(r"(?m)^###\s+(.+?)\s*$", section)
+    if not heading:
+        return result
+    body = section[heading.end():]
+    next_heading = re.search(r"(?m)^###\s+", body)
+    if next_heading:
+        body = body[:next_heading.start()]
+    items = []
+    for line in body.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith("- "):
+            text = text[2:].strip()
+        items.append(text)
+    result["version"] = heading.group(1).strip()
+    result["body"] = body.strip()
+    result["items"] = items[:12]
+    return result
+
+
+def _parse_github_repo_name(repo_url):
+    value = str(repo_url or "").strip()
+    value = re.sub(r"\.git$", "", value)
+    patterns = [
+        r"github\.com[:/]+([^/\s]+)/([^/\s#?]+)",
+        r"^([^/\s]+)/([^/\s#?]+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, value)
+        if match:
+            return match.group(1), match.group(2)
+    raise ValueError("无法识别 GitHub 仓库地址: %s" % repo_url)
+
+
+def _github_raw_readme_url(repo_url, ref):
+    owner, repo = _parse_github_repo_name(repo_url)
+    owner_q = urllib.parse.quote(owner, safe="")
+    repo_q = urllib.parse.quote(repo, safe="")
+    ref_q = urllib.parse.quote(str(ref or "main").strip() or "main", safe="/")
+    return "https://raw.githubusercontent.com/%s/%s/%s/README.md" % (owner_q, repo_q, ref_q)
+
+
+def _version_sort_key(version):
+    match = re.search(r"(\d{8})(?:[_-](\d+))?", str(version or ""))
+    if not match:
+        return None
+    return int(match.group(1)), int(match.group(2) or 0)
+
+
+def _compare_project_versions(current_version, remote_version):
+    current = str(current_version or "").strip()
+    remote = str(remote_version or "").strip()
+    if not remote:
+        return "unknown"
+    if current == remote:
+        return "same"
+    current_key = _version_sort_key(current)
+    remote_key = _version_sort_key(remote)
+    if current_key and remote_key:
+        if remote_key > current_key:
+            return "newer"
+        if remote_key < current_key:
+            return "older"
+    return "different"
+
+
+def _local_project_version_info():
+    readme_path = os.path.join(BASE_DIR, "README.md")
+    changelog = _extract_latest_changelog(_read_text_file(readme_path))
+    return {
+        "version": CORE_VERSION,
+        "readme_version": changelog.get("version") or "",
+        "source": "README.md",
+        "readme_path": readme_path,
+        "matches_readme": (changelog.get("version") or "") == CORE_VERSION if changelog.get("version") else None,
+        "changelog": changelog,
+    }
+
+
+def _remote_project_version_info(repo_url=None, ref=None, force=False):
+    repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
+    ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
+    cache_key = "%s#%s" % (repo_url, ref)
+    now = time.time()
+    if not force:
+        with _PROJECT_VERSION_LOCK:
+            cached = _PROJECT_VERSION_CACHE.get(cache_key)
+            if cached and now - float(cached.get("checked_at") or 0) < UPDATE_REMOTE_CACHE_SECONDS:
+                result = dict(cached)
+                result["cached"] = True
+                return result
+    result = {
+        "repo_url": repo_url,
+        "ref": ref,
+        "readme_url": "",
+        "version": "",
+        "checked_at": now,
+        "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+        "cached": False,
+        "error": "",
+        "changelog": {
+            "version": "",
+            "body": "",
+            "items": [],
+        },
+    }
+    if not repo_url:
+        result["error"] = "未配置 GitHub 仓库"
+        return result
+    try:
+        result["readme_url"] = _github_raw_readme_url(repo_url, ref)
+        request = urllib.request.Request(
+            result["readme_url"],
+            headers={"User-Agent": "cfquant-web/%s" % CORE_VERSION},
+        )
+        with urllib.request.urlopen(request, timeout=UPDATE_REMOTE_TIMEOUT_SECONDS) as response:
+            raw = response.read(512 * 1024)
+        text = raw.decode("utf-8", errors="replace")
+        result["changelog"] = _extract_latest_changelog(text)
+        result["version"] = result["changelog"].get("version") or ""
+        if not result["version"]:
+            result["error"] = "远端 README 未解析到版本日志"
+    except Exception as e:
+        result["error"] = str(e) or repr(e)
+    with _PROJECT_VERSION_LOCK:
+        _PROJECT_VERSION_CACHE[cache_key] = dict(result)
+    return result
+
+
+def project_version_info(include_remote=False, force=False, repo_url=None, ref=None):
+    repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
+    ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
+    local = _local_project_version_info()
+    data = {
+        "current_version": CORE_VERSION,
+        "web_version": "cfquant-web/0.1",
+        "repo_url": repo_url,
+        "ref": ref,
+        "local": local,
+        "remote": None,
+        "comparison": "unchecked",
+        "update_available": None,
+    }
+    if include_remote:
+        remote = _remote_project_version_info(repo_url=repo_url, ref=ref, force=force)
+        comparison = _compare_project_versions(CORE_VERSION, remote.get("version"))
+        data["remote"] = remote
+        data["comparison"] = comparison
+        data["update_available"] = comparison in ("newer", "different")
+    return data
+
+
 def bridge_update_github(body):
     body = body or {}
     bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
@@ -5304,6 +6099,22 @@ def bridge_update_rollback(body):
     body = body or {}
     bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
     return UPDATER.rollback(bridge_id, body.get("backup") or body.get("backup_name"))
+
+
+def project_update_status(repo_url=None, ref=None, include_remote=True):
+    return PROJECT_UPDATER.status(repo_url=repo_url, ref=ref, include_remote=include_remote)
+
+
+def project_update_github(body):
+    body = body or {}
+    repo_url = body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL
+    ref = body.get("ref") or body.get("branch") or body.get("tag") or DEFAULT_UPDATE_REF
+    return PROJECT_UPDATER.update_from_github(repo_url, ref)
+
+
+def project_update_rollback(body):
+    body = body or {}
+    return PROJECT_UPDATER.rollback(body.get("backup") or body.get("backup_name"))
 
 
 def quote_status():
@@ -5872,6 +6683,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/updates/upload":
             self._handle_update_upload(parsed)
             return
+        if parsed.path == "/api/project-updates/upload":
+            self._handle_project_update_upload(parsed)
+            return
         try:
             body = self._read_json_body()
         except Exception as e:
@@ -5910,6 +6724,22 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(bridge_update_github(body)))
             elif parsed.path == "/api/updates/rollback":
                 self._write_json(ok(bridge_update_rollback(body)))
+            elif parsed.path == "/api/project-updates/github":
+                result = project_update_github(body)
+                reload_requested = parse_bool(body.get("reload")) if "reload" in body else True
+                if reload_requested:
+                    result["reload"] = web_reload_info(reason="project-update")
+                self._write_json(ok(result))
+                if reload_requested:
+                    schedule_web_reload(self.server, result["reload"])
+            elif parsed.path == "/api/project-updates/rollback":
+                result = project_update_rollback(body)
+                reload_requested = parse_bool(body.get("reload")) if "reload" in body else True
+                if reload_requested:
+                    result["reload"] = web_reload_info(reason="project-rollback")
+                self._write_json(ok(result))
+                if reload_requested:
+                    schedule_web_reload(self.server, result["reload"])
             elif parsed.path == "/api/quotes/whole/subscribe":
                 self._write_json(ok(subscribe_whole_quote(body)))
             elif parsed.path == "/api/quotes/subscribe":
@@ -6086,6 +6916,38 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._write_json(fail(e, 400), status=400)
 
+    def _handle_project_update_upload(self, parsed):
+        try:
+            content_type = self.headers.get("Content-Type") or ""
+            if "multipart/form-data" not in content_type.lower():
+                self._write_json(fail("multipart/form-data is required", 400), status=400)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                self._write_json(fail("empty upload", 400), status=400)
+                return
+            if length > UPDATE_UPLOAD_MAX_BYTES:
+                self._write_json(fail("upload too large: %s bytes" % length, 400), status=400)
+                return
+            raw = self.rfile.read(length)
+            fields, files = self._parse_multipart(content_type, raw)
+            file_item = files.get("file") or files.get("zip")
+            if not file_item:
+                self._write_json(fail("file is required", 400), status=400)
+                return
+            result = PROJECT_UPDATER.update_from_zip(
+                file_item.get("filename") or "upload.zip",
+                file_item.get("content") or b"",
+            )
+            reload_requested = parse_bool(fields.get("reload")) if "reload" in fields else True
+            if reload_requested:
+                result["reload"] = web_reload_info(reason="project-update-upload")
+            self._write_json(ok(result))
+            if reload_requested:
+                schedule_web_reload(self.server, result["reload"])
+        except Exception as e:
+            self._write_json(fail(e, 400), status=400)
+
     def _parse_multipart(self, content_type, raw):
         header = "Content-Type: %s\r\nMIME-Version: 1.0\r\n\r\n" % content_type
         message = email.parser.BytesParser(policy=email.policy.default).parsebytes(header.encode("utf-8") + raw)
@@ -6128,6 +6990,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                         "transport": WEB_CONFIG.transport_info(),
                         "pipe_hub": PIPE_HUB.status(),
                         "qmt_log_language": WEB_CONFIG.qmt_log_language_info(),
+                        "version": project_version_info(include_remote=False),
                     }))
                     return
                 self._write_json(ok({
@@ -6147,6 +7010,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "pipe_hub": PIPE_HUB.status(),
                     "log_cleanup": log_cleanup_info(),
                     "qmt_log_language": qmt_log_language_info(),
+                    "version": project_version_info(include_remote=False),
                 }))
             elif parsed.path == "/api/apikey":
                 self._write_json(ok(api_key_info()))
@@ -6167,6 +7031,26 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
                 ref = (query.get("ref") or query.get("branch") or query.get("tag") or [""])[0]
                 self._write_json(ok(bridge_update_status(bridge_id, repo_url=repo_url, ref=ref)))
+            elif parsed.path == "/api/project-updates/status":
+                repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
+                ref = (query.get("ref") or query.get("branch") or query.get("tag") or [""])[0]
+                include_remote = parse_bool((query.get("remote") or ["1"])[0])
+                self._write_json(ok(project_update_status(
+                    repo_url=repo_url,
+                    ref=ref,
+                    include_remote=include_remote,
+                )))
+            elif parsed.path == "/api/version":
+                include_remote = parse_bool((query.get("remote") or ["1"])[0])
+                force = parse_bool((query.get("force") or ["0"])[0])
+                repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
+                ref = (query.get("ref") or query.get("branch") or query.get("tag") or [""])[0]
+                self._write_json(ok(project_version_info(
+                    include_remote=include_remote,
+                    force=force,
+                    repo_url=repo_url,
+                    ref=ref,
+                )))
             elif parsed.path == "/api/quotes/status":
                 self._write_json(ok(quote_status()))
             elif parsed.path == "/api/quotes/latest":
