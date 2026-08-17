@@ -5,25 +5,101 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=20260817_update_notice_1">
+  <link rel="stylesheet" href="/styles.css?v=web_20260817_12">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
-    <div class="auth-card">
-      <h2>网页登录</h2>
-      <form id="webAuthForm" class="auth-form">
-        <label class="field wide">
-          <span>账号</span>
-          <input id="webAuthLoginUserInput" autocomplete="username">
-        </label>
-        <label class="field wide">
-          <span>密码</span>
-          <input id="webAuthLoginPasswordInput" type="password" autocomplete="current-password">
-        </label>
-        <div class="auth-auto-login-note wide">登录成功后会自动保持登录，主动退出前不再要求输入密码。</div>
-        <button class="primary wide" type="submit">登录</button>
-        <span id="webAuthLoginStatus" class="metric-note"></span>
-      </form>
+    <div class="login-shell" role="dialog" aria-modal="true" aria-labelledby="webAuthTitle">
+      <section class="login-showcase" aria-label="系统架构轮播">
+        <div class="login-brandline">
+          <div class="login-brandmark">cf</div>
+          <div>
+            <strong>cfquant</strong>
+            <span>QMT Bridge Console</span>
+          </div>
+        </div>
+        <div class="login-carousel" aria-live="off">
+          <article class="login-slide login-slide-1">
+            <div class="login-slide-copy">
+              <span>Architecture</span>
+              <h2>本地 Web 到 QMT 的交易与行情桥接</h2>
+              <p>统一处理鉴权、账号路由、行情订阅和交易请求，让外部程序通过稳定接口接入 QMT 能力。</p>
+            </div>
+            <div class="architecture-map" aria-hidden="true">
+              <div class="arch-node source">外部程序</div>
+              <div class="arch-link"></div>
+              <div class="arch-node web">cfquant Web</div>
+              <div class="arch-link"></div>
+              <div class="arch-node bridge">Socket / Pipe</div>
+              <div class="arch-link"></div>
+              <div class="arch-node qmt">QMT 终端</div>
+            </div>
+          </article>
+          <article class="login-slide login-slide-2">
+            <div class="login-slide-copy">
+              <span>Operations</span>
+              <h2>多账号运行配置集中管理</h2>
+              <p>默认账号、通用模式、高级模式和数据源状态集中呈现，减少部署和排障时的切换成本。</p>
+            </div>
+            <div class="login-metrics" aria-hidden="true">
+              <div><strong>HTTP</strong><span>外部接口</span></div>
+              <div><strong>WS</strong><span>回调推送</span></div>
+              <div><strong>QMT</strong><span>柜台链路</span></div>
+            </div>
+          </article>
+          <article class="login-slide login-slide-3">
+            <div class="login-slide-copy">
+              <span>Security</span>
+              <h2>管理员登录与自动会话保持</h2>
+              <p>首次使用创建管理员账号，后续自动登录；主动退出后回到登录界面，适合本机和局域网部署。</p>
+            </div>
+            <div class="login-security-grid" aria-hidden="true">
+              <div>加盐哈希</div>
+              <div>Token 会话</div>
+              <div>API Key</div>
+              <div>访问白名单</div>
+            </div>
+          </article>
+        </div>
+        <div class="login-carousel-dots" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+      </section>
+      <section class="login-panel">
+        <div class="login-panel-head">
+          <span>安全入口</span>
+          <h1 id="webAuthTitle">登录 cfquant 控制台</h1>
+          <p>登录后可管理 QMT 桥接、行情订阅、交易请求和外部接口配置。</p>
+        </div>
+        <form id="webAuthForm" class="auth-form login-form">
+          <div class="login-form-card">
+            <label class="login-field wide" for="webAuthLoginUserInput">
+              <span class="login-field-label">管理员账号</span>
+              <span class="login-input-wrap login-input-account">
+                <input id="webAuthLoginUserInput" autocomplete="username" placeholder="admin">
+              </span>
+            </label>
+            <label class="login-field wide" for="webAuthLoginPasswordInput">
+              <span class="login-field-label">管理员密码</span>
+              <span class="login-input-wrap login-input-password">
+                <input id="webAuthLoginPasswordInput" type="password" autocomplete="current-password" placeholder="请输入密码">
+              </span>
+            </label>
+            <div class="login-session-note wide">
+              <strong>自动登录</strong>
+              <span>登录成功后保持会话，主动退出前不再要求输入密码。</span>
+            </div>
+            <button id="webAuthLoginBtn" class="primary login-submit wide" type="submit"><span>登录</span></button>
+            <span id="webAuthLoginStatus" class="metric-note login-status" role="status"></span>
+          </div>
+        </form>
+        <div class="login-footnote">
+          <strong>本地优先</strong>
+          <span>默认只监听本机地址，远程访问可在登录后进入设置页开启。</span>
+        </div>
+      </section>
     </div>
   </div>
   <div id="setupOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -60,8 +136,8 @@
       </div>
       <ol class="setup-steps" id="setupSteps" aria-label="初始化步骤">
         <li class="active" data-setup-step="config">
-          <strong>配置默认账号</strong>
-          <span>填写资金账号和 QMT 核心目录，推荐通用模式。</span>
+          <strong>注册管理员并配置默认账号</strong>
+          <span>创建网页登录账号，填写资金账号和 QMT 核心目录。</span>
         </li>
         <li data-setup-step="identity">
           <strong>写入通用端身份</strong>
@@ -77,6 +153,24 @@
         </li>
       </ol>
       <form id="setupForm" class="auth-form">
+        <div id="setupAdminFields" class="setup-admin-fields">
+          <div class="setup-admin-head">
+            <strong>管理员账号</strong>
+            <span>首次使用先创建本机 Web 管理员。密码只保存加盐哈希，登录状态会记住用于自动登录。</span>
+          </div>
+          <label class="field wide">
+            <span>管理员账号</span>
+            <input id="setupAdminUsername" name="admin_username" autocomplete="username" placeholder="admin">
+          </label>
+          <label class="field wide">
+            <span>管理员密码</span>
+            <input id="setupAdminPassword" name="admin_password" type="password" autocomplete="new-password" placeholder="至少 6 位">
+          </label>
+          <label class="field wide">
+            <span>确认管理员密码</span>
+            <input id="setupAdminPasswordConfirm" name="admin_password_confirm" type="password" autocomplete="new-password">
+          </label>
+        </div>
         <label class="field wide">
           <span>账号</span>
           <input id="setupAccountId" name="account_id" autocomplete="off" placeholder="2220009880">
@@ -179,7 +273,7 @@
           <button id="refreshBtn" class="primary">刷新</button>
           <label id="autoRefreshField" class="toggle">
             <input id="autoRefresh" type="checkbox" checked>
-            <span>实时委托</span>
+            <span>回调委托</span>
           </label>
         </section>
 
@@ -283,12 +377,14 @@
                   <tr>
                     <th><input id="selectAllOrders" type="checkbox"></th>
                     <th>序号</th>
-                    <th>代码</th>
-                    <th>名称</th>
-                    <th class="num">数量</th>
-                    <th class="num">成交</th>
-                    <th>状态</th>
-                    <th>编号</th>
+                    <th><button class="sort-header" type="button" data-order-sort="time">时间<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th><button class="sort-header" type="button" data-order-sort="source">来源<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th><button class="sort-header" type="button" data-order-sort="code">代码<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th><button class="sort-header" type="button" data-order-sort="name">名称<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th class="num"><button class="sort-header" type="button" data-order-sort="volume">数量<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th class="num"><button class="sort-header" type="button" data-order-sort="traded">成交<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th><button class="sort-header" type="button" data-order-sort="status">状态<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th><button class="sort-header" type="button" data-order-sort="id">编号<span class="sort-mark" aria-hidden="true"></span></button></th>
                   </tr>
                 </thead>
                 <tbody id="ordersBody"></tbody>
@@ -379,13 +475,14 @@
                     <tr>
                       <th><input id="selectAllTradeOrders" type="checkbox"></th>
                       <th>序号</th>
-                      <th>时间</th>
-                      <th>代码</th>
-                      <th>名称</th>
-                      <th class="num">数量</th>
-                      <th class="num">成交</th>
-                      <th>状态</th>
-                      <th>编号</th>
+                      <th><button class="sort-header" type="button" data-order-sort="time">时间<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th><button class="sort-header" type="button" data-order-sort="source">来源<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th><button class="sort-header" type="button" data-order-sort="code">代码<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th><button class="sort-header" type="button" data-order-sort="name">名称<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th class="num"><button class="sort-header" type="button" data-order-sort="volume">数量<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th class="num"><button class="sort-header" type="button" data-order-sort="traded">成交<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th><button class="sort-header" type="button" data-order-sort="status">状态<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th><button class="sort-header" type="button" data-order-sort="id">编号<span class="sort-mark" aria-hidden="true"></span></button></th>
                     </tr>
                   </thead>
                   <tbody id="tradeOrdersBody"></tbody>
@@ -1970,12 +2067,53 @@ USER_BRIDGE_ID = "qmt2"</pre>
     </div>
   </div>
 
+  <div id="qmtUpdateProgressOverlay" class="update-progress-overlay hidden" aria-hidden="true">
+    <div class="update-progress-dialog" role="dialog" aria-modal="true" aria-labelledby="qmtUpdateProgressTitle">
+      <div class="update-progress-head">
+        <div>
+          <strong id="qmtUpdateProgressTitle">QMT 核心更新进度</strong>
+          <span id="qmtUpdateProgressDetail">准备更新 QMT 核心包...</span>
+        </div>
+        <button id="qmtUpdateProgressCloseBtn" type="button" disabled>关闭</button>
+      </div>
+      <div class="update-progress-meter" aria-hidden="true">
+        <span id="qmtUpdateProgressBar"></span>
+      </div>
+      <div class="update-progress-meta">
+        <span>当前进度</span>
+        <strong id="qmtUpdateProgressPercent">0%</strong>
+      </div>
+      <ol id="qmtUpdateProgressSteps" class="update-progress-steps"></ol>
+      <div class="update-progress-actions">
+        <button id="qmtUpdateProgressCloseBottomBtn" type="button" disabled>完成后关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="updateRestartNoticeOverlay" class="restart-notice-overlay hidden" aria-hidden="true">
+    <div class="restart-notice-dialog" role="dialog" aria-modal="true" aria-labelledby="updateRestartNoticeTitle">
+      <div class="restart-notice-head">
+        <div>
+          <span>更新后操作</span>
+          <strong id="updateRestartNoticeTitle">QMT 侧需要重启</strong>
+          <p id="updateRestartNoticeSummary">核心文件已经写入磁盘，但 QMT 运行中的脚本不会自动加载新代码。</p>
+        </div>
+        <button id="updateRestartNoticeCloseBtn" type="button" aria-label="关闭重启提醒">关闭</button>
+      </div>
+      <div id="updateRestartNoticeBody" class="restart-notice-body"></div>
+      <div class="restart-notice-actions">
+        <button id="updateRestartNoticeSettingsBtn" type="button">打开更新设置</button>
+        <button id="updateRestartNoticeCloseBottomBtn" class="primary" type="button">我知道了</button>
+      </div>
+    </div>
+  </div>
+
   <div class="image-lightbox" id="imageLightbox" aria-hidden="true">
     <button class="image-lightbox-close" id="imageLightboxClose" type="button" aria-label="关闭图片预览">关闭</button>
     <img id="imageLightboxImg" alt="">
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=20260817_update_notice_1"></script>
+  <script src="/app.js?v=web_20260817_12"></script>
 </body>
 </html>

@@ -635,6 +635,27 @@ class CfquantQmtBridge(object):
                 "stock_code": self._stock_code_from_trade_obj(obj),
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
+                "order_source": self._order_source(obj),
+                "order_time": self._first_value(obj, (
+                    "order_time",
+                    "entrust_time",
+                    "insert_time",
+                    "m_strOrderTime",
+                    "m_strEntrustTime",
+                    "m_strInsertTime",
+                    "m_nOrderTime",
+                    "m_nEntrustTime",
+                    "m_nInsertTime",
+                )),
+                "order_date": self._first_value(obj, (
+                    "order_date",
+                    "entrust_date",
+                    "m_strOrderDate",
+                    "m_strEntrustDate",
+                    "m_strTradingDay",
+                    "m_nOrderDate",
+                    "m_nEntrustDate",
+                )),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "order_volume": self._get_value(obj, "m_nVolumeTotalOriginal"),
                 "traded_price": self._get_value(obj, "m_dTradedPrice"),
@@ -650,6 +671,7 @@ class CfquantQmtBridge(object):
                 "m_nVolumeTraded": self._get_value(obj, "m_nVolumeTraded"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
                 "m_strRemark": self._get_value(obj, "m_strRemark"),
+                "m_strStrategyName": self._get_value(obj, "m_strStrategyName"),
                 "m_strOrderSysID": self._get_value(obj, "m_strOrderSysID"),
                 "m_nOrderID": self._get_value(obj, "m_nOrderID"),
                 "m_strOrderID": self._get_value(obj, "m_strOrderID"),
@@ -657,6 +679,15 @@ class CfquantQmtBridge(object):
                 "m_strOrderStatus": self._get_value(obj, "m_strOrderStatus"),
                 "m_nOrderState": self._get_value(obj, "m_nOrderState"),
                 "m_strStatus": self._get_value(obj, "m_strStatus"),
+                "m_strOrderTime": self._get_value(obj, "m_strOrderTime"),
+                "m_strEntrustTime": self._get_value(obj, "m_strEntrustTime"),
+                "m_strInsertTime": self._get_value(obj, "m_strInsertTime"),
+                "m_nOrderTime": self._get_value(obj, "m_nOrderTime"),
+                "m_nEntrustTime": self._get_value(obj, "m_nEntrustTime"),
+                "m_nInsertTime": self._get_value(obj, "m_nInsertTime"),
+                "m_strOrderDate": self._get_value(obj, "m_strOrderDate"),
+                "m_strEntrustDate": self._get_value(obj, "m_strEntrustDate"),
+                "m_strTradingDay": self._get_value(obj, "m_strTradingDay"),
             }
         if datatype == "DEAL":
             return {
@@ -719,6 +750,26 @@ class CfquantQmtBridge(object):
         if instrument_id and exchange_id:
             return "%s.%s" % (instrument_id, exchange_id)
         return instrument_id
+
+    def _order_source(self, obj):
+        value = self._first_value(obj, (
+            "order_source",
+            "source",
+            "order_remark",
+            "strategy_name",
+            "m_strRemark",
+            "m_strOrderRemark",
+            "m_strStrategyName",
+        ))
+        text = str(value or "").strip().lower()
+        return "cfquant" if text.startswith("cfquant") or "_cfquant" in text else "other"
+
+    def _first_value(self, obj, names):
+        for name in names:
+            value = self._get_value(obj, name)
+            if value is not None and value != "":
+                return value
+        return None
 
     def _object_to_dict(self, obj):
         if hasattr(obj, "items"):

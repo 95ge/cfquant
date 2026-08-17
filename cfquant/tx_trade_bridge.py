@@ -1217,6 +1217,7 @@ class TxTradeBridge(object):
                 "stock_code": self._stock_code(obj),
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
+                "order_source": self._order_source(obj),
                 "order_time": self._first_value(obj, (
                     "order_time",
                     "entrust_time",
@@ -1252,6 +1253,7 @@ class TxTradeBridge(object):
                 "m_nVolumeTraded": self._get_value(obj, "m_nVolumeTraded"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
                 "m_strRemark": self._get_value(obj, "m_strRemark"),
+                "m_strStrategyName": self._get_value(obj, "m_strStrategyName"),
                 "m_strOrderSysID": self._get_value(obj, "m_strOrderSysID"),
                 "m_nOrderID": self._get_value(obj, "m_nOrderID"),
                 "m_strOrderID": self._get_value(obj, "m_strOrderID"),
@@ -1361,6 +1363,19 @@ class TxTradeBridge(object):
         if instrument_id and exchange_id:
             return "%s.%s" % (instrument_id, exchange_id)
         return instrument_id
+
+    def _order_source(self, obj):
+        value = self._first_value(obj, (
+            "order_source",
+            "source",
+            "order_remark",
+            "strategy_name",
+            "m_strRemark",
+            "m_strOrderRemark",
+            "m_strStrategyName",
+        ))
+        text = str(value or "").strip().lower()
+        return "cfquant" if text.startswith("cfquant") or "_cfquant" in text else "other"
 
     def _get_value(self, obj, name):
         if obj is None:

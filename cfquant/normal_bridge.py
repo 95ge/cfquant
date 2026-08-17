@@ -471,6 +471,7 @@ class NormalQmtBridge(TxTradeBridge):
             "m_dOpenPrice",
             "m_dPositionCost",
             "m_strRemark",
+            "m_strStrategyName",
             "m_strOrderSysID",
             "m_strOrderID",
             "m_nOrderID",
@@ -478,6 +479,15 @@ class NormalQmtBridge(TxTradeBridge):
             "m_strOrderStatus",
             "m_nOrderState",
             "m_strStatusMsg",
+            "m_strOrderTime",
+            "m_strEntrustTime",
+            "m_strInsertTime",
+            "m_nOrderTime",
+            "m_nEntrustTime",
+            "m_nInsertTime",
+            "m_strOrderDate",
+            "m_strEntrustDate",
+            "m_strTradingDay",
         ]
         data = {}
         for field in fields:
@@ -488,6 +498,14 @@ class NormalQmtBridge(TxTradeBridge):
         market = data.get("m_strExchangeID")
         if code and market:
             data["stock_code"] = "%s.%s" % (code, market)
+        source_text = str(
+            data.get("order_remark")
+            or data.get("m_strRemark")
+            or data.get("m_strOrderRemark")
+            or data.get("m_strStrategyName")
+            or ""
+        ).strip().lower()
+        data["order_source"] = "cfquant" if source_text.startswith("cfquant") or "_cfquant" in source_text else "other"
         return data
 
     def _callback_account_id(self, obj, data):

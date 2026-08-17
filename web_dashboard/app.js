@@ -1,3 +1,5 @@
+const FRONTEND_VERSION = 'web_20260817_12';
+
 const state = {
   accountId: '',
   defaultAccountId: '',
@@ -6,11 +8,24 @@ const state = {
   queryChannel: 'normal',
   currentView: 'overview',
   settingsTab: 'api-key',
-  refreshTimer: null,
   statusTimer: null,
   lastOrderConfirm: '',
   callbackSeq: 0,
   orderSnapshot: new Map(),
+  orderSnapshotReady: false,
+  orderHighlights: new Map(),
+  orderHighlightTimer: null,
+  orderCallbackSocket: null,
+  orderCallbackKey: '',
+  orderCallbackReconnectTimer: null,
+  orderCallbackRefreshTimer: null,
+  orderCallbackRefreshInFlight: false,
+  orderCallbackRefreshPending: false,
+  orderCallbackRefreshSections: new Set(),
+  latestOrders: [],
+  orderSort: { key: 'time', direction: 'desc' },
+  cfquantOrderIds: new Set(),
+  cfquantOrderRemarks: new Set(),
   callbackEvents: [],
   lttxStatus: null,
   bridges: {},
@@ -40,6 +55,9 @@ const state = {
   pipeHubStatus: null,
   updateStatus: null,
   updateBusy: false,
+  qmtUpdateProgress: null,
+  qmtUpdateProgressTimer: null,
+  updateRestartNotice: null,
   versionInfo: null,
   versionCheckInFlight: false,
   versionRemoteChecked: false,
@@ -65,8 +83,6 @@ const state = {
   statusRefreshInFlight: false,
   callbackRefreshInFlight: false,
   bindingStatusRefreshInFlight: false,
-  orderRefreshInFlight: false,
-  lastAutoOrderRefreshAt: 0,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -87,9 +103,8 @@ const LOG_ENTRY_LIMIT = 180;
 const LOG_REPEAT_WINDOW_MS = 5000;
 const STATUS_REFRESH_INTERVAL_MS = 30000;
 const CALLBACK_POLL_INTERVAL_MS = 3000;
-const AUTO_ORDER_REFRESH_INTERVAL_MS = 4000;
-const HOME_ORDER_REFRESH_INTERVAL_MS = 15000;
 const ORDER_SNAPSHOT_LIMIT = 500;
+const ORDER_HIGHLIGHT_MS = 6500;
 const DOWNLOAD_EVENT_PREFIX = 'xtdata:download';
 const DOWNLOAD_EVENT_LIMIT = 80;
 
@@ -540,6 +555,7 @@ const API_RETURN_DOCS = {
   ],
   orders: [
     ['order_time', '委托时间'],
+    ['order_source', '委托来源：cfquant 或 其他'],
     ['stock_code', '证券代码'],
     ['instrument_name', '证券名称'],
     ['order_volume', '委托数量'],
@@ -910,21 +926,23 @@ function renderVersionLog(changelog, title) {
   const items = Array.isArray(info.items) ? info.items : [];
   const version = info.version ? ` / ${info.version}` : '';
   if (!items.length) {
-    return `<div class="version-log"><span>${esc(title)}${esc(version)}</span><ul><li>暂无更新日志</li></ul></div>`;
+    return `<section class="version-log"><span>${esc(title)}${esc(version)}</span><ul><li>暂无更新日志</li></ul></section>`;
   }
-  return `<div class="version-log"><span>${esc(title)}${esc(version)}</span><ul>${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></div>`;
+  return `<section class="version-log"><span>${esc(title)}${esc(version)}</span><ul>${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>`;
 }
 
 function renderProjectVersion(info) {
   state.versionInfo = info || state.versionInfo || null;
   const data = state.versionInfo || {};
-  const currentVersion = data.current_version || (data.local && data.local.version) || '--';
+  const coreVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
+  const serverFrontendVersion = data.frontend_version || data.web_version || '--';
+  const browserFrontendVersion = FRONTEND_VERSION;
   const widget = $('versionWidget');
   const label = $('versionBadgeLabel');
   const checkState = $('versionCheckState');
   const body = $('versionPopoverBody');
   const alert = $('versionAlert');
-  if (label) label.textContent = state.versionCheckInFlight ? '检查中...' : `v ${currentVersion}`;
+  if (label) label.textContent = state.versionCheckInFlight ? '检查中...' : `v ${coreVersion}`;
   if (widget) {
     widget.classList.remove(
       'status-same',
@@ -953,6 +971,9 @@ function renderProjectVersion(info) {
   const readmeNote = local.matches_readme === false
     ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
     : `来源：${local.source || '本地版本文件'}`;
+  const frontendNote = serverFrontendVersion && serverFrontendVersion !== '--' && serverFrontendVersion !== browserFrontendVersion
+    ? `浏览器 ${browserFrontendVersion} / 服务端 ${serverFrontendVersion}，建议强制刷新页面`
+    : `浏览器前端 ${browserFrontendVersion}${serverFrontendVersion && serverFrontendVersion !== '--' ? ` / 服务端 ${serverFrontendVersion}` : ''}`;
   const remoteNote = remote.error
     ? `检查失败：${remote.error}`
     : remote.version
@@ -967,23 +988,32 @@ function renderProjectVersion(info) {
       ? '正在连接远端版本源...'
       : (remote.error ? '当前远端不可达，可以稍后重新检查。' : '可在这里直接更新 Web 项目，或进入设置页处理 QMT 核心更新。');
   body.innerHTML = `
-    <div class="version-info-row">
-      <span>当前版本</span>
-      <strong>${esc(currentVersion)}</strong>
-      <small>${esc(readmeNote)}</small>
+    <div class="version-summary">
+      <div class="version-info-row">
+        <span>核心版本</span>
+        <strong>${esc(coreVersion)}</strong>
+        <small>${esc(readmeNote)}</small>
+      </div>
+      <div class="version-info-row">
+        <span>前端版本</span>
+        <strong>${esc(browserFrontendVersion)}</strong>
+        <small>${esc(frontendNote)}</small>
+      </div>
+      <div class="version-info-row">
+        <span>GitHub 版本</span>
+        <strong>${esc(remote.version || '--')}</strong>
+        <small>${esc(remoteNote)}</small>
+      </div>
+      <div class="version-info-row">
+        <span>版本状态</span>
+        <strong>${esc(stateText)}</strong>
+        <small>${esc(data.update_available ? 'GitHub 上有新版本，进入设置页可执行更新。' : '基于 README 版本号判断。')}</small>
+      </div>
     </div>
-    <div class="version-info-row">
-      <span>GitHub 版本</span>
-      <strong>${esc(remote.version || '--')}</strong>
-      <small>${esc(remoteNote)}</small>
+    <div class="version-log-wrap">
+      ${renderVersionLog(local.changelog, '当前更新日志')}
+      ${remote.version || remote.error ? renderVersionLog(remote.changelog, 'GitHub 更新日志') : ''}
     </div>
-    <div class="version-info-row">
-      <span>版本状态</span>
-      <strong>${esc(stateText)}</strong>
-      <small>${esc(data.update_available ? 'GitHub 上有新版本，进入设置页可执行更新。' : '基于 README 版本号判断。')}</small>
-    </div>
-    ${renderVersionLog(local.changelog, '当前更新日志')}
-    ${remote.version || remote.error ? renderVersionLog(remote.changelog, 'GitHub 更新日志') : ''}
     <div class="version-actions">
       <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
       <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新 Web</button>
@@ -1027,12 +1057,43 @@ async function refreshProjectVersion(options = {}) {
 function wireVersionBadge() {
   const widget = $('versionWidget');
   const badge = $('versionBadge');
+  const popover = $('versionPopover');
   if (widget) {
+    let closeTimer = null;
     const check = () => {
       refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态刷新失败', { error: error.message }));
     };
-    widget.addEventListener('mouseenter', check);
-    widget.addEventListener('focusin', check);
+    const openPopover = () => {
+      if (closeTimer) {
+        window.clearTimeout(closeTimer);
+        closeTimer = null;
+      }
+      widget.classList.add('open');
+      check();
+    };
+    const pointerInsideVersionArea = () => (
+      widget.matches(':hover')
+      || (popover && popover.matches(':hover'))
+      || widget.contains(document.activeElement)
+      || (popover && popover.contains(document.activeElement))
+    );
+    const scheduleClose = () => {
+      if (closeTimer) window.clearTimeout(closeTimer);
+      closeTimer = window.setTimeout(() => {
+        if (pointerInsideVersionArea()) return;
+        widget.classList.remove('open');
+      }, 260);
+    };
+    widget.addEventListener('mouseenter', openPopover);
+    widget.addEventListener('mouseleave', scheduleClose);
+    widget.addEventListener('focusin', openPopover);
+    widget.addEventListener('focusout', scheduleClose);
+    if (popover) {
+      popover.addEventListener('mouseenter', openPopover);
+      popover.addEventListener('mouseleave', scheduleClose);
+      popover.addEventListener('focusin', openPopover);
+      popover.addEventListener('focusout', scheduleClose);
+    }
     widget.addEventListener('click', (event) => {
       const action = event.target.closest('[data-version-action]');
       if (!action) return;
@@ -1118,6 +1179,26 @@ function setWebAuthToken(token, options = {}) {
 
 function clearWebAuthToken() {
   setWebAuthToken('');
+}
+
+function setWebAuthLoginStatus(message = '', stateName = 'info') {
+  const status = $('webAuthLoginStatus');
+  if (!status) return;
+  status.textContent = message || '';
+  status.dataset.state = stateName || 'info';
+  status.classList.toggle('visible', !!message);
+}
+
+function setWebAuthLoginBusy(busy) {
+  const button = $('webAuthLoginBtn');
+  if (!button) return;
+  button.disabled = !!busy;
+  button.classList.toggle('is-loading', !!busy);
+}
+
+function setupRequiresAdminRegistration() {
+  const auth = state.serverAccess && state.serverAccess.web_auth ? state.serverAccess.web_auth : null;
+  return !(auth && auth.configured);
 }
 
 function apiEndpointById(id) {
@@ -2158,8 +2239,10 @@ function showWebAuthOverlay(message = '') {
   const overlay = $('webAuthOverlay');
   if (!overlay) return;
   overlay.classList.remove('hidden');
-  const status = $('webAuthLoginStatus');
-  if (status) status.textContent = message;
+  overlay.scrollTop = 0;
+  window.scrollTo({ top: 0, left: 0 });
+  setWebAuthLoginBusy(false);
+  setWebAuthLoginStatus(message, message ? 'info' : 'info');
   const userInput = $('webAuthLoginUserInput');
   if (userInput && !userInput.value) {
     userInput.value = state.serverAccess && state.serverAccess.web_auth_username ? state.serverAccess.web_auth_username : '';
@@ -2191,8 +2274,20 @@ async function loginWebAuth(event) {
   const username = $('webAuthLoginUserInput') ? $('webAuthLoginUserInput').value.trim() : '';
   const password = $('webAuthLoginPasswordInput') ? $('webAuthLoginPasswordInput').value : '';
   const remember = true;
-  const status = $('webAuthLoginStatus');
-  if (status) status.textContent = '登录中...';
+  if (!username) {
+    setWebAuthLoginStatus('请输入管理员账号', 'error');
+    const input = $('webAuthLoginUserInput');
+    if (input) input.focus();
+    return;
+  }
+  if (!password) {
+    setWebAuthLoginStatus('请输入管理员密码', 'error');
+    const input = $('webAuthLoginPasswordInput');
+    if (input) input.focus();
+    return;
+  }
+  setWebAuthLoginBusy(true);
+  setWebAuthLoginStatus('正在校验账号密码...', 'info');
   try {
     const response = await fetch('/api/web-auth/login', {
       method: 'POST',
@@ -2204,13 +2299,16 @@ async function loginWebAuth(event) {
     const persistent = payload.data.remember !== false;
     setWebAuthToken(payload.data.token || '', { remember: persistent });
     state.webAuthStatus = payload.data;
+    setWebAuthLoginStatus('登录成功，正在进入控制台...', 'ok');
     hideWebAuthOverlay();
     await loadConfig();
     await continueAfterConfig();
     log('网页登录成功', { username: payload.data.username || username, remember: persistent });
   } catch (error) {
     clearWebAuthToken();
-    if (status) status.textContent = error.message;
+    setWebAuthLoginStatus(error.message, 'error');
+  } finally {
+    setWebAuthLoginBusy(false);
   }
 }
 
@@ -2221,8 +2319,19 @@ function showSetupOverlay(message = '') {
   const accountInput = $('setupAccountId');
   const qmtDirInput = $('setupQmtDir');
   const modeInput = $('setupMode');
+  const adminFields = $('setupAdminFields');
+  const adminUsernameInput = $('setupAdminUsername');
+  const adminPasswordInput = $('setupAdminPassword');
+  const adminPasswordConfirmInput = $('setupAdminPasswordConfirm');
+  const adminRequired = setupRequiresAdminRegistration();
   const setup = state.setup || {};
   const defaultConfig = setup.account_configs && setup.account_configs[setup.default_account_id];
+  if (adminFields) adminFields.classList.toggle('hidden', !adminRequired);
+  if (adminUsernameInput && adminRequired && !adminUsernameInput.value) {
+    adminUsernameInput.value = (state.serverAccess && state.serverAccess.web_auth_username) || 'admin';
+  }
+  if (adminPasswordInput) adminPasswordInput.value = '';
+  if (adminPasswordConfirmInput) adminPasswordConfirmInput.value = '';
   if (accountInput && !accountInput.value) {
     accountInput.value = setup.default_account_id || state.defaultAccountId || '';
   }
@@ -2272,11 +2381,44 @@ function hideSetupOverlay() {
 async function submitSetupForm(event) {
   if (event) event.preventDefault();
   const status = $('setupStatus');
+  const adminRequired = setupRequiresAdminRegistration();
   const body = {
     account_id: $('setupAccountId') ? $('setupAccountId').value.trim() : '',
     qmt_dir: $('setupQmtDir') ? $('setupQmtDir').value.trim() : '',
     mode: $('setupMode') ? $('setupMode').value : 'ctypes',
   };
+  if (adminRequired) {
+    const adminUsername = $('setupAdminUsername') ? $('setupAdminUsername').value.trim() : '';
+    const adminPassword = $('setupAdminPassword') ? $('setupAdminPassword').value : '';
+    const adminPasswordConfirm = $('setupAdminPasswordConfirm') ? $('setupAdminPasswordConfirm').value : '';
+    if (!adminUsername) {
+      if (status) status.textContent = '管理员账号不能为空';
+      const input = $('setupAdminUsername');
+      if (input) input.focus();
+      return;
+    }
+    if (!adminPassword) {
+      if (status) status.textContent = '管理员密码不能为空';
+      const input = $('setupAdminPassword');
+      if (input) input.focus();
+      return;
+    }
+    if (adminPassword.length < 6) {
+      if (status) status.textContent = '管理员密码至少 6 位';
+      const input = $('setupAdminPassword');
+      if (input) input.focus();
+      return;
+    }
+    if (adminPassword !== adminPasswordConfirm) {
+      if (status) status.textContent = '两次输入的管理员密码不一致';
+      const input = $('setupAdminPasswordConfirm');
+      if (input) input.focus();
+      return;
+    }
+    body.admin_username = adminUsername;
+    body.admin_password = adminPassword;
+    body.admin_password_confirm = adminPasswordConfirm;
+  }
   if (!body.account_id) {
     if (status) status.textContent = '账号不能为空';
     return;
@@ -2297,6 +2439,14 @@ async function submitSetupForm(event) {
     state.accountPairs = data.account_pairs || {};
     state.accountConfigs = data.account_configs || {};
     state.bridges = data.bridges || state.bridges;
+    if (data.web_auth && data.web_auth.token) {
+      const persistent = data.web_auth.remember !== false;
+      setWebAuthToken(data.web_auth.token, { remember: persistent });
+      state.webAuthStatus = data.web_auth;
+    }
+    if (data.server_access) {
+      renderServerAccess(data.server_access);
+    }
     await loadConfig();
     hideSetupOverlay();
     await startAuthenticatedApp();
@@ -2306,6 +2456,7 @@ async function submitSetupForm(event) {
       account_id: body.account_id,
       mode: body.mode,
       qmt_dir_configured: !!body.qmt_dir,
+      admin_registered: adminRequired,
       bridge_identity: data.qmt_bridge_identity || null,
     });
   } catch (error) {
@@ -2466,6 +2617,150 @@ function setProjectUpdateControlsBusy(busy = state.projectUpdateBusy) {
   renderProjectVersion(state.versionInfo);
 }
 
+function qmtUpdateProgressSteps(kind) {
+  if (kind === 'upload') {
+    return [
+      { key: 'prepare', label: '确认更新目标', percent: 8 },
+      { key: 'upload', label: '上传源码 zip', percent: 42 },
+      { key: 'backup', label: '备份当前 QMT 核心包', percent: 58 },
+      { key: 'install', label: '替换 cfquant 核心包', percent: 82 },
+      { key: 'refresh', label: '刷新更新状态', percent: 94 },
+      { key: 'done', label: '更新完成', percent: 100 },
+    ];
+  }
+  if (kind === 'rollback') {
+    return [
+      { key: 'prepare', label: '确认回滚目标', percent: 12 },
+      { key: 'backup', label: '备份当前 QMT 核心包', percent: 36 },
+      { key: 'restore', label: '恢复选中备份', percent: 76 },
+      { key: 'refresh', label: '刷新更新状态', percent: 94 },
+      { key: 'done', label: '回滚完成', percent: 100 },
+    ];
+  }
+  return [
+    { key: 'prepare', label: '确认更新目标', percent: 8 },
+    { key: 'download', label: '连接 GitHub 并下载源码', percent: 38 },
+    { key: 'backup', label: '备份当前 QMT 核心包', percent: 58 },
+    { key: 'install', label: '替换 cfquant 核心包', percent: 82 },
+    { key: 'refresh', label: '刷新更新状态', percent: 94 },
+    { key: 'done', label: '更新完成', percent: 100 },
+  ];
+}
+
+function clearQmtUpdateProgressTimer() {
+  if (state.qmtUpdateProgressTimer) {
+    window.clearInterval(state.qmtUpdateProgressTimer);
+    state.qmtUpdateProgressTimer = null;
+  }
+}
+
+function renderQmtUpdateProgress() {
+  const progress = state.qmtUpdateProgress;
+  const overlay = $('qmtUpdateProgressOverlay');
+  if (!overlay) return;
+  overlay.classList.toggle('hidden', !progress);
+  overlay.setAttribute('aria-hidden', progress ? 'false' : 'true');
+  if (!progress) return;
+  const title = $('qmtUpdateProgressTitle');
+  const percentText = $('qmtUpdateProgressPercent');
+  const bar = $('qmtUpdateProgressBar');
+  const detail = $('qmtUpdateProgressDetail');
+  const stepsBox = $('qmtUpdateProgressSteps');
+  const closeBtn = $('qmtUpdateProgressCloseBtn');
+  const closeBottomBtn = $('qmtUpdateProgressCloseBottomBtn');
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  if (title) title.textContent = progress.title || 'QMT 核心更新进度';
+  if (percentText) percentText.textContent = `${Math.round(percent)}%`;
+  if (bar) {
+    bar.style.width = `${percent}%`;
+    bar.classList.toggle('failed', progress.status === 'error');
+    bar.classList.toggle('done', progress.status === 'done');
+  }
+  if (detail) detail.textContent = progress.detail || '';
+  if (stepsBox) {
+    const currentIndex = progress.stepIndex || 0;
+    stepsBox.innerHTML = (progress.steps || []).map((step, index) => {
+      const cls = index < currentIndex ? 'done' : (index === currentIndex ? 'active' : '');
+      return `<li class="${cls}"><span>${index + 1}</span><strong>${esc(step.label)}</strong></li>`;
+    }).join('');
+  }
+  const canClose = progress.status === 'done' || progress.status === 'error';
+  [closeBtn, closeBottomBtn].forEach((button) => {
+    if (button) button.disabled = !canClose;
+  });
+}
+
+function openQmtUpdateProgress(kind, title, detail) {
+  clearQmtUpdateProgressTimer();
+  const steps = qmtUpdateProgressSteps(kind);
+  state.qmtUpdateProgress = {
+    kind,
+    title: title || 'QMT 核心更新进度',
+    detail: detail || '',
+    status: 'running',
+    stepIndex: 0,
+    percent: steps[0] ? steps[0].percent : 0,
+    steps,
+    startedAt: Date.now(),
+  };
+  renderQmtUpdateProgress();
+  state.qmtUpdateProgressTimer = window.setInterval(() => {
+    const progress = state.qmtUpdateProgress;
+    if (!progress || progress.status !== 'running') return;
+    const maxIndex = Math.max(0, (progress.steps || []).length - 2);
+    const nextIndex = Math.min(maxIndex, (progress.stepIndex || 0) + 1);
+    if (nextIndex !== progress.stepIndex) {
+      progress.stepIndex = nextIndex;
+      progress.percent = Math.max(progress.percent || 0, progress.steps[nextIndex].percent);
+      renderQmtUpdateProgress();
+    }
+  }, 1400);
+}
+
+function setQmtUpdateProgressStep(stepKey, detail, percent) {
+  const progress = state.qmtUpdateProgress;
+  if (!progress) return;
+  const index = (progress.steps || []).findIndex((step) => step.key === stepKey);
+  if (index >= 0) progress.stepIndex = index;
+  if (detail) progress.detail = detail;
+  if (percent !== undefined && percent !== null) {
+    progress.percent = Math.max(progress.percent || 0, Math.min(100, Number(percent) || 0));
+  } else if (index >= 0) {
+    progress.percent = Math.max(progress.percent || 0, progress.steps[index].percent);
+  }
+  renderQmtUpdateProgress();
+}
+
+function finishQmtUpdateProgress(payload, detail) {
+  const progress = state.qmtUpdateProgress;
+  if (!progress) return;
+  clearQmtUpdateProgressTimer();
+  progress.status = 'done';
+  progress.stepIndex = Math.max(0, (progress.steps || []).length - 1);
+  progress.percent = 100;
+  const version = payload && payload.current_version ? `，当前版本 ${payload.current_version}` : '';
+  progress.detail = detail || `操作完成${version}。请按页面提示重启 QMT 入口脚本。`;
+  renderQmtUpdateProgress();
+}
+
+function failQmtUpdateProgress(error) {
+  const progress = state.qmtUpdateProgress;
+  if (!progress) return;
+  clearQmtUpdateProgressTimer();
+  progress.status = 'error';
+  progress.detail = `操作失败：${error && error.message ? error.message : error}`;
+  progress.percent = Math.max(progress.percent || 0, 12);
+  renderQmtUpdateProgress();
+}
+
+function closeQmtUpdateProgress() {
+  const progress = state.qmtUpdateProgress;
+  if (progress && progress.status === 'running') return;
+  clearQmtUpdateProgressTimer();
+  state.qmtUpdateProgress = null;
+  renderQmtUpdateProgress();
+}
+
 function renderUpdateResult(payload) {
   const box = $('updateResultBox');
   if (!box) return;
@@ -2511,17 +2806,152 @@ function buildUpdateNoticeLines(payload, options = {}) {
   return lines;
 }
 
+function buildUpdateNoticeModel(payload, options = {}) {
+  const lines = buildUpdateNoticeLines(payload, options);
+  if (!lines.length) return null;
+  const restart = payload.qmt_restart_required || {};
+  const entry = payload.entry_manual_update || restart.entry_manual_update || {};
+  const entryFiles = Array.isArray(entry.entry_files) ? entry.entry_files.filter(Boolean) : [];
+  const version = payload.current_version || payload.version || '';
+  const targetDir = payload.python_dir || payload.target_dir || '';
+  const restartRequired = !!restart.required || !!options.forceQmtRestart;
+  const entryRequired = !!entry.required;
+  const modeFiles = entry.mode_files && typeof entry.mode_files === 'object' ? entry.mode_files : {};
+  const steps = entryRequired
+    ? [
+      '停止 QMT 里正在运行的 cfquant 入口脚本。',
+      `手动更新入口文件${entryFiles.length ? `：${entryFiles.join('、')}` : '。'}`,
+      '重新启动对应 QMT 入口脚本，让新代码重新加载。',
+      '回到网页刷新状态，确认通道在线。',
+    ]
+    : [
+      '停止 QMT 里正在运行的 cfquant 桥接脚本。',
+      '重新启动对应入口脚本，让 QMT 加载最新核心包。',
+      '回到网页刷新状态，确认通道在线。',
+    ];
+  return {
+    title: entryRequired ? 'QMT 入口文件需要手动更新' : 'QMT 侧需要重启',
+    subtitle: entryRequired
+      ? '本次更新涉及 QMT 入口脚本。由于入口文件通常是加密文件，需要手动替换后再启动。'
+      : '核心文件已经写入磁盘，但 QMT 运行中的脚本不会自动加载新代码。',
+    lines,
+    steps,
+    version,
+    targetDir,
+    bridgeId: payload.bridge_id || '',
+    restartRequired,
+    entryRequired,
+    entryFiles,
+    modeFiles,
+  };
+}
+
+function renderUpdateNoticeCard(model, options = {}) {
+  if (!model) return '';
+  const meta = [
+    model.version ? `当前版本：${model.version}` : '',
+    model.bridgeId ? `桥接端：${model.bridgeId}` : '',
+    model.targetDir ? `目标目录：${model.targetDir}` : '',
+  ].filter(Boolean);
+  const modeRows = Object.entries(model.modeFiles || {});
+  const compactClass = options.compact ? ' compact' : '';
+  return `
+    <div class="update-notice-card${compactClass}">
+      <div class="update-notice-head">
+        <div>
+          <strong>${esc(model.title)}</strong>
+          <span>${esc(model.subtitle)}</span>
+        </div>
+        <em>${esc(model.entryRequired ? '需手动处理' : '需重启')}</em>
+      </div>
+      ${meta.length ? `<div class="update-notice-meta">${meta.map((item) => `<span>${esc(item)}</span>`).join('')}</div>` : ''}
+      <div class="update-notice-grid">
+        ${model.lines.map((line) => `
+          <section>
+            <strong>${esc(line.strong)}</strong>
+            <span>${esc(line.text)}</span>
+          </section>
+        `).join('')}
+      </div>
+      <ol class="update-notice-steps">
+        ${model.steps.map((step) => `<li>${esc(step)}</li>`).join('')}
+      </ol>
+      ${modeRows.length ? `
+        <div class="update-notice-mode-files">
+          ${modeRows.map(([name, files]) => `
+            <span><strong>${esc(name)}</strong>${esc(Array.isArray(files) ? files.join('、') : String(files || ''))}</span>
+          `).join('')}
+        </div>
+      ` : ''}
+    </div>`;
+}
+
 function renderUpdateNotice(boxId, payload, options = {}) {
   const box = $(boxId);
   if (!box) return;
-  const lines = buildUpdateNoticeLines(payload, options);
-  box.classList.toggle('hidden', !lines.length);
-  box.innerHTML = lines.map((line) => `<div><strong>${esc(line.strong)}</strong><span>${esc(line.text)}</span></div>`).join('');
+  const model = buildUpdateNoticeModel(payload, options);
+  box.classList.toggle('hidden', !model);
+  box.innerHTML = model ? renderUpdateNoticeCard(model, { compact: true }) : '';
+}
+
+function renderUpdateRestartNoticeModal() {
+  const overlay = $('updateRestartNoticeOverlay');
+  if (!overlay) return;
+  const model = state.updateRestartNotice;
+  overlay.classList.toggle('hidden', !model);
+  overlay.setAttribute('aria-hidden', model ? 'false' : 'true');
+  if (!model) return;
+  const title = $('updateRestartNoticeTitle');
+  const summary = $('updateRestartNoticeSummary');
+  const body = $('updateRestartNoticeBody');
+  if (title) title.textContent = model.title;
+  if (summary) summary.textContent = model.subtitle;
+  if (body) body.innerHTML = renderUpdateNoticeCard(model);
+}
+
+function openUpdateRestartNotice(payload, options = {}) {
+  const model = buildUpdateNoticeModel(payload, options);
+  if (!model) return false;
+  state.updateRestartNotice = model;
+  renderUpdateRestartNoticeModal();
+  const closeBtn = $('updateRestartNoticeCloseBottomBtn') || $('updateRestartNoticeCloseBtn');
+  if (closeBtn) window.setTimeout(() => closeBtn.focus(), 0);
+  return true;
+}
+
+function closeUpdateRestartNotice() {
+  state.updateRestartNotice = null;
+  renderUpdateRestartNoticeModal();
+}
+
+function wireUpdateRestartNotice() {
+  ['updateRestartNoticeCloseBtn', 'updateRestartNoticeCloseBottomBtn'].forEach((id) => {
+    const button = $(id);
+    if (button) button.addEventListener('click', closeUpdateRestartNotice);
+  });
+  const settingsBtn = $('updateRestartNoticeSettingsBtn');
+  if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => {
+      closeUpdateRestartNotice();
+      setView('settings');
+      setSettingsTab('update');
+    });
+  }
+  const overlay = $('updateRestartNoticeOverlay');
+  if (overlay) {
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closeUpdateRestartNotice();
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.updateRestartNotice) closeUpdateRestartNotice();
+  });
 }
 
 function alertUpdateNotice(payload, options = {}) {
   const lines = buildUpdateNoticeLines(payload, options);
   if (!lines.length) return;
+  if (openUpdateRestartNotice(payload, options)) return;
   window.alert(lines.map((line) => `${line.strong}\n${line.text}`).join('\n\n'));
 }
 
@@ -2870,6 +3300,41 @@ async function refreshUpdateStatus(options = {}) {
   return data;
 }
 
+function uploadQmtCoreZip(formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/updates/upload');
+    Object.entries(authHeaders()).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') xhr.setRequestHeader(key, value);
+    });
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || typeof onProgress !== 'function') return;
+      onProgress(event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      let payload = null;
+      try {
+        payload = JSON.parse(xhr.responseText || '{}');
+      } catch (error) {
+        reject(new Error(`更新接口返回无法解析：${error.message}`));
+        return;
+      }
+      if (xhr.status === 401 && webAuthEnabled()) {
+        clearWebAuthToken();
+        showWebAuthOverlay('请先登录');
+      }
+      if (!payload.ok) {
+        reject(new Error((payload && payload.error) || `HTTP ${xhr.status}`));
+        return;
+      }
+      resolve(payload.data);
+    };
+    xhr.onerror = () => reject(new Error('上传 zip 更新请求失败'));
+    xhr.onabort = () => reject(new Error('上传 zip 更新请求已中断'));
+    xhr.send(formData);
+  });
+}
+
 async function runGithubUpdateFromUi() {
   const repoInput = $('updateRepoInput');
   const refInput = $('updateRefInput');
@@ -2883,16 +3348,31 @@ async function runGithubUpdateFromUi() {
   }
   const confirmed = window.confirm('确认从 GitHub 更新当前账号 QMT 目录中的核心代码？更新完成后需要重启 QMT 桥接脚本。');
   if (!confirmed) return;
+  openQmtUpdateProgress(
+    'github',
+    'QMT 核心更新',
+    `正在从 ${repoUrl}${ref ? `#${ref}` : ''} 更新 ${selectedAccount() || selectedBridge()} 的 QMT 核心包`
+  );
   setUpdateControlsBusy(true);
   try {
+    setQmtUpdateProgressStep('download', '正在连接 GitHub 并下载源码包...');
     const data = await api('/api/updates/github', {
       method: 'POST',
       body: JSON.stringify({ bridge_id: selectedBridge(), repo_url: repoUrl, ref }),
     });
+    setQmtUpdateProgressStep('refresh', '核心包已替换，正在刷新更新状态...');
     renderUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: true });
-    await refreshUpdateStatus({ log: false });
+    try {
+      await refreshUpdateStatus({ log: false });
+    } catch (refreshError) {
+      log('核心更新后刷新状态失败', { error: refreshError.message });
+    }
+    finishQmtUpdateProgress(data);
     log('核心代码已从 GitHub 更新', { bridge_id: data.bridge_id, version: data.current_version || '' });
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     setUpdateControlsBusy(false);
   }
@@ -2910,18 +3390,31 @@ async function uploadZipUpdateFromUi() {
   const formData = new FormData();
   formData.append('bridge_id', selectedBridge());
   formData.append('file', file, file.name);
-  const headers = authHeaders();
+  openQmtUpdateProgress(
+    'upload',
+    'QMT 核心 zip 更新',
+    `正在上传 ${file.name}，目标 ${selectedAccount() || selectedBridge()} 的 QMT 核心包`
+  );
   setUpdateControlsBusy(true);
   try {
-    const response = await fetch('/api/updates/upload', { method: 'POST', headers, body: formData });
-    const payload = await response.json();
-    if (!payload.ok) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
+    const data = await uploadQmtCoreZip(formData, (loaded, total) => {
+      const uploadPercent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      const mapped = 8 + Math.min(34, Math.round(uploadPercent * 0.34));
+      setQmtUpdateProgressStep('upload', `正在上传源码 zip：${uploadPercent}%`, mapped);
+    });
+    setQmtUpdateProgressStep('refresh', '核心包已替换，正在刷新更新状态...');
+    renderUpdateResult(data);
+    alertUpdateNotice(data, { forceQmtRestart: true });
+    try {
+      await refreshUpdateStatus({ log: false });
+    } catch (refreshError) {
+      log('zip 更新后刷新状态失败', { error: refreshError.message });
     }
-    renderUpdateResult(payload.data);
-    alertUpdateNotice(payload.data, { forceQmtRestart: true });
-    await refreshUpdateStatus({ log: false });
-    log('核心代码已通过 zip 更新', { bridge_id: payload.data.bridge_id, version: payload.data.current_version || '' });
+    finishQmtUpdateProgress(data);
+    log('核心代码已通过 zip 更新', { bridge_id: data.bridge_id, version: data.current_version || '' });
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     setUpdateControlsBusy(false);
   }
@@ -2936,16 +3429,31 @@ async function rollbackUpdateFromUi() {
   }
   const confirmed = window.confirm(`确认回滚到备份 ${backup}？回滚完成后需要重启 QMT 桥接脚本。`);
   if (!confirmed) return;
+  openQmtUpdateProgress(
+    'rollback',
+    'QMT 核心回滚',
+    `正在回滚 ${selectedAccount() || selectedBridge()} 到备份 ${backup}`
+  );
   setUpdateControlsBusy(true);
   try {
+    setQmtUpdateProgressStep('restore', '正在备份当前核心并恢复选中备份...');
     const data = await api('/api/updates/rollback', {
       method: 'POST',
       body: JSON.stringify({ bridge_id: selectedBridge(), backup }),
     });
+    setQmtUpdateProgressStep('refresh', '核心包已回滚，正在刷新更新状态...');
     renderUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: true });
-    await refreshUpdateStatus({ log: false });
+    try {
+      await refreshUpdateStatus({ log: false });
+    } catch (refreshError) {
+      log('核心回滚后刷新状态失败', { error: refreshError.message });
+    }
+    finishQmtUpdateProgress(data, `回滚完成，当前版本 ${data.current_version || '--'}。请按页面提示重启 QMT 入口脚本。`);
     log('核心代码已回滚', { bridge_id: data.bridge_id, version: data.current_version || '' });
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     setUpdateControlsBusy(false);
   }
@@ -3517,7 +4025,7 @@ function setDataTab(name, shouldRefresh = true) {
     refreshAccount('trades').catch((error) => log('成交刷新失败', { error: error.message }));
   }
   if (shouldRefresh && name === 'orders') {
-    refreshAccount('orders').catch((error) => log('委托刷新失败', { error: error.message }));
+    refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('委托刷新失败', { error: error.message }));
   }
 }
 
@@ -3886,9 +4394,10 @@ function selectAccountPair(accountId, bridgeId) {
   }
   syncBindingForm();
   resetSelectionState();
+  restartOrderCallbackSocket();
   refreshStatus().catch((error) => log('账号配置状态刷新失败', { error: error.message }));
   refreshAccount('asset,positions').catch((error) => log('账号配置资产刷新失败', { error: error.message }));
-  refreshAccount('orders').catch((error) => log('账号配置委托刷新失败', { error: error.message }));
+  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('账号配置委托刷新失败', { error: error.message }));
   refreshAccount('trades').catch((error) => log('账号配置成交刷新失败', { error: error.message }));
 }
 
@@ -4404,10 +4913,11 @@ async function startAuthenticatedApp() {
   refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
   refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
   await refreshAccount('asset,positions').catch((error) => log('初始化查询失败', { error: error.message }));
-  refreshAccount('orders').catch((error) => log('委托初始化失败', { error: error.message }));
+  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('委托初始化失败', { error: error.message }));
   refreshAccount('trades').catch((error) => log('成交初始化失败', { error: error.message }));
   refreshUpdateStatus({ log: false }).catch((error) => log('更新状态初始化失败', { error: error.message }));
   refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
+  connectOrderCallbackSocket({ force: true });
   startTimers();
 }
 
@@ -4553,13 +5063,28 @@ function resetSelectionState() {
   state.callbackSeq = 0;
   state.callbackEvents = [];
   state.orderSnapshot.clear();
+  state.orderSnapshotReady = false;
+  state.orderHighlights.clear();
+  state.cfquantOrderIds.clear();
+  state.cfquantOrderRemarks.clear();
+  state.orderCallbackRefreshSections.clear();
+  state.orderCallbackRefreshPending = false;
+  if (state.orderHighlightTimer) {
+    window.clearTimeout(state.orderHighlightTimer);
+    state.orderHighlightTimer = null;
+  }
+  if (state.orderCallbackRefreshTimer) {
+    window.clearTimeout(state.orderCallbackRefreshTimer);
+    state.orderCallbackRefreshTimer = null;
+  }
   renderCallbacks();
 }
 
 function refreshCurrentSelection(reason) {
+  restartOrderCallbackSocket();
   refreshStatus().catch((error) => log(`${reason}状态刷新失败`, { error: error.message }));
   refreshAccount('asset,positions').catch((error) => log(`${reason}资产刷新失败`, { error: error.message }));
-  refreshAccount('orders').catch((error) => log(`${reason}委托刷新失败`, { error: error.message }));
+  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log(`${reason}委托刷新失败`, { error: error.message }));
   refreshAccount('trades').catch((error) => log(`${reason}成交刷新失败`, { error: error.message }));
 }
 
@@ -4655,6 +5180,63 @@ function orderCode(row) {
 
 function orderName(row) {
   return row.instrument_name || row.m_strInstrumentName || row.stock_name || row.name || '';
+}
+
+function orderRemark(row) {
+  return firstField(row, [
+    'order_remark',
+    'remark',
+    'strategy_name',
+    'm_strRemark',
+    'm_strOrderRemark',
+    'm_strStrategyName',
+  ]);
+}
+
+function isCfquantOrder(row) {
+  const id = orderKey(row);
+  if (id && state.cfquantOrderIds.has(id)) return true;
+  const explicitSource = String(row.order_source || row.source || '').trim().toLowerCase();
+  if (explicitSource === 'cfquant') return true;
+  const remark = String(orderRemark(row) || '').trim();
+  if (remark && state.cfquantOrderRemarks.has(remark)) return true;
+  return /^cfquant(?:_|$)/i.test(remark) || /(?:^|[_\-\s])cfquant(?:[_\-\s]|$)/i.test(remark);
+}
+
+function orderSource(row) {
+  return isCfquantOrder(row) ? 'cfquant' : '其他';
+}
+
+function orderSourceClass(row) {
+  return isCfquantOrder(row) ? 'source-cfquant' : 'source-other';
+}
+
+function rememberCfquantOrder(value) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => rememberCfquantOrder(item));
+    return;
+  }
+  if (typeof value !== 'object') return;
+  const id = String(
+    value.order_id
+    || value.m_strOrderSysID
+    || value.m_strOrderID
+    || value.m_nOrderID
+    || '',
+  ).trim();
+  const remark = String(
+    value.order_remark
+    || value.remark
+    || value.m_strRemark
+    || value.m_strOrderRemark
+    || '',
+  ).trim();
+  if (id && id !== '-1') state.cfquantOrderIds.add(id);
+  if (remark) state.cfquantOrderRemarks.add(remark);
+  if (value.result) rememberCfquantOrder(value.result);
+  if (value.results) rememberCfquantOrder(value.results);
+  if (value.request_result && typeof value.request_result === 'object') rememberCfquantOrder(value.request_result);
 }
 
 function orderVolume(row) {
@@ -4802,13 +5384,189 @@ function tradeTime(row) {
   return formatTradeDataTime(firstField(row, TRADE_TIME_FIELDS), firstField(row, TRADE_DATE_FIELDS));
 }
 
+const ORDER_SORT_COLUMNS = {
+  time: { type: 'number', defaultDirection: 'desc' },
+  source: { type: 'text', defaultDirection: 'asc' },
+  code: { type: 'text', defaultDirection: 'asc' },
+  name: { type: 'text', defaultDirection: 'asc' },
+  volume: { type: 'number', defaultDirection: 'desc' },
+  traded: { type: 'number', defaultDirection: 'desc' },
+  status: { type: 'text', defaultDirection: 'asc' },
+  id: { type: 'text', defaultDirection: 'asc' },
+};
+
+function dateDigitsForSort(value) {
+  if (!hasValue(value)) return '';
+  const digits = String(value).trim().replace(/\D/g, '');
+  return digits.length >= 8 ? digits.slice(0, 8) : '';
+}
+
+function clockDigitsForSort(value) {
+  if (!hasValue(value)) return '';
+  const text = String(value).trim();
+  const clockMatch = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (clockMatch) {
+    return `${clockMatch[1].padStart(2, '0')}${clockMatch[2]}${clockMatch[3] || '00'}`;
+  }
+  const digits = text.replace(/\D/g, '');
+  return digits && digits.length <= 6 ? digits.padStart(6, '0') : '';
+}
+
+function tradeDataTimeSortValue(value, dateValue) {
+  if (!hasValue(value)) return null;
+  const text = String(value).trim();
+  const digits = text.replace(/\D/g, '');
+  if (digits.length === 13 && digits.startsWith('1')) return Number(digits);
+  if (digits.length === 10 && digits.startsWith('1')) return Number(digits) * 1000;
+  if (digits.length >= 14) return Number(digits.slice(0, 14));
+  if (digits.length === 12) return Number(`${digits}00`);
+
+  const clock = clockDigitsForSort(text);
+  if (clock) {
+    const date = dateDigitsForSort(dateValue);
+    return Number(date ? `${date}${clock}` : clock);
+  }
+  return null;
+}
+
+function orderTimeSortValue(row) {
+  return tradeDataTimeSortValue(firstField(row, ORDER_TIME_FIELDS), firstField(row, ORDER_DATE_FIELDS));
+}
+
+function orderSortValue(row, key) {
+  if (key === 'time') return orderTimeSortValue(row);
+  if (key === 'source') return orderSource(row);
+  if (key === 'code') return orderCode(row);
+  if (key === 'name') return orderName(row);
+  if (key === 'volume') return orderVolume(row);
+  if (key === 'traded') return tradedVolume(row);
+  if (key === 'status') return orderStatus(row);
+  if (key === 'id') return orderKey(row);
+  return '';
+}
+
+function compareOrderSortValues(left, right, column, direction) {
+  const type = column.type;
+  const leftMissing = type === 'number' ? !Number.isFinite(Number(left)) : !hasValue(left);
+  const rightMissing = type === 'number' ? !Number.isFinite(Number(right)) : !hasValue(right);
+  if (leftMissing && rightMissing) return 0;
+  if (leftMissing) return 1;
+  if (rightMissing) return -1;
+
+  let result = 0;
+  if (type === 'number') {
+    result = Number(left) - Number(right);
+  } else {
+    result = String(left).localeCompare(String(right), 'zh-CN', { numeric: true, sensitivity: 'base' });
+  }
+  return direction === 'desc' ? -result : result;
+}
+
+function sortedOrderRows(rows) {
+  const sort = state.orderSort || { key: 'time', direction: 'desc' };
+  const column = ORDER_SORT_COLUMNS[sort.key] || ORDER_SORT_COLUMNS.time;
+  const direction = sort.direction === 'asc' ? 'asc' : 'desc';
+  return rows.map((row, index) => ({ row, index })).sort((left, right) => {
+    const result = compareOrderSortValues(
+      orderSortValue(left.row, sort.key),
+      orderSortValue(right.row, sort.key),
+      column,
+      direction,
+    );
+    if (result !== 0) return result;
+    return direction === 'desc' ? right.index - left.index : left.index - right.index;
+  }).map((item) => item.row);
+}
+
+function renderOrderSortHeaders() {
+  document.querySelectorAll('[data-order-sort]').forEach((button) => {
+    const active = button.dataset.orderSort === state.orderSort.key;
+    const mark = button.querySelector('.sort-mark');
+    button.classList.toggle('active', active);
+    button.dataset.direction = active ? state.orderSort.direction : '';
+    if (mark) mark.textContent = active ? (state.orderSort.direction === 'asc' ? '↑' : '↓') : '';
+  });
+}
+
+function setOrderSort(key) {
+  const column = ORDER_SORT_COLUMNS[key];
+  if (!column) return;
+  const current = state.orderSort || {};
+  const direction = current.key === key
+    ? (current.direction === 'asc' ? 'desc' : 'asc')
+    : column.defaultDirection;
+  state.orderSort = { key, direction };
+  renderOrderSortHeaders();
+  renderOrders({ data: state.latestOrders || [] });
+}
+
+function wireOrderSortHeaders() {
+  document.querySelectorAll('[data-order-sort]').forEach((button) => {
+    button.addEventListener('click', () => setOrderSort(button.dataset.orderSort));
+  });
+  renderOrderSortHeaders();
+}
+
+function pruneOrderHighlights(now = Date.now()) {
+  let changed = false;
+  state.orderHighlights.forEach((highlight, id) => {
+    if (!highlight || highlight.expiresAt <= now) {
+      state.orderHighlights.delete(id);
+      changed = true;
+    }
+  });
+  return changed;
+}
+
+function scheduleOrderHighlightCleanup() {
+  if (state.orderHighlightTimer) {
+    window.clearTimeout(state.orderHighlightTimer);
+    state.orderHighlightTimer = null;
+  }
+  const expires = Array.from(state.orderHighlights.values()).map((item) => item.expiresAt);
+  if (!expires.length) return;
+  const nextExpiresAt = Math.min(...expires);
+  const delay = Math.max(120, nextExpiresAt - Date.now() + 40);
+  state.orderHighlightTimer = window.setTimeout(() => {
+    state.orderHighlightTimer = null;
+    const changed = pruneOrderHighlights();
+    if (changed) renderOrders({ data: state.latestOrders || [] });
+    if (state.orderHighlights.size) scheduleOrderHighlightCleanup();
+  }, delay);
+}
+
+function markOrderHighlight(id, type) {
+  if (!id) return;
+  state.orderHighlights.set(id, {
+    type,
+    expiresAt: Date.now() + ORDER_HIGHLIGHT_MS,
+  });
+  scheduleOrderHighlightCleanup();
+}
+
+function orderHighlightType(row) {
+  const id = orderKey(row);
+  if (!id) return '';
+  const highlight = state.orderHighlights.get(id);
+  if (!highlight) return '';
+  if (highlight.expiresAt <= Date.now()) {
+    state.orderHighlights.delete(id);
+    return '';
+  }
+  return highlight.type || 'updated';
+}
+
 function trackOrderEvents(rows) {
+  const shouldHighlight = state.orderSnapshotReady;
   rows.forEach((row) => {
     const id = orderKey(row);
     if (!id) return;
     const snapshot = {
       code: orderCode(row),
+      name: orderName(row),
       order_id: id,
+      time: orderTime(row),
+      source: orderSource(row),
       volume: row.order_volume ?? row.m_nVolumeTotalOriginal,
       traded: row.traded_volume ?? row.m_nVolumeTraded,
       status: orderStatus(row),
@@ -4817,14 +5575,18 @@ function trackOrderEvents(rows) {
     const changed = !previous || JSON.stringify(previous) !== JSON.stringify(snapshot);
     if (changed) {
       state.orderSnapshot.set(id, snapshot);
+      if (shouldHighlight) markOrderHighlight(id, previous ? 'updated' : 'new');
       addCallbackEvent(previous ? '委托更新' : '委托出现', snapshot);
     }
   });
+  state.orderSnapshotReady = true;
   while (state.orderSnapshot.size > ORDER_SNAPSHOT_LIMIT) {
     const oldest = state.orderSnapshot.keys().next().value;
     if (!oldest) break;
     state.orderSnapshot.delete(oldest);
+    state.orderHighlights.delete(oldest);
   }
+  pruneOrderHighlights();
 }
 
 function addCallbackEvent(type, data) {
@@ -4842,7 +5604,7 @@ function addCallbackEvent(type, data) {
 }
 
 function normalizeCallbackEvent(event) {
-  const data = event.data || event;
+  const data = callbackEventData(event);
   const eventName = event.event || event.type || 'callback';
   return {
     time: event.received_at ? new Date(event.received_at * 1000).toLocaleString('zh-CN', { hour12: false }) : nowText(),
@@ -4855,28 +5617,203 @@ function normalizeCallbackEvent(event) {
   };
 }
 
+function callbackEventData(event) {
+  const data = event && event.data !== undefined ? event.data : event;
+  if (data && typeof data === 'object' && data.__cf_type__ === 'object' && data.attrs) {
+    return data.attrs;
+  }
+  return data && typeof data === 'object' ? data : {};
+}
+
+function appendServerCallbackEvent(event, options = {}) {
+  if (!event || typeof event !== 'object') return false;
+  const seq = Number(event.seq || 0);
+  if (seq && seq <= state.callbackSeq) return false;
+  if (seq) state.callbackSeq = Math.max(state.callbackSeq, seq);
+  state.callbackEvents.unshift(normalizeCallbackEvent(event));
+  state.callbackEvents = state.callbackEvents.slice(0, 200);
+  const count = $('callbackCount');
+  if (count) count.textContent = `${state.callbackEvents.length} 条`;
+  if (options.render !== false && state.currentView === 'callbacks') {
+    renderCallbacks();
+  }
+  return true;
+}
+
+function callbackEventName(event) {
+  return String((event && (event.event || event.type)) || '').toLowerCase();
+}
+
+function callbackEventIsTradeRelated(event) {
+  const name = callbackEventName(event);
+  return name.includes('order') || name.includes('trade') || name.includes('cancel');
+}
+
+function callbackEventIsOrderRow(event) {
+  return callbackEventName(event).includes('on_stock_order');
+}
+
+function orderRowFromCallbackEvent(event) {
+  if (!callbackEventIsOrderRow(event)) return null;
+  const data = callbackEventData(event);
+  if (!data || typeof data !== 'object') return null;
+  const row = { ...data };
+  if (!hasValue(firstField(row, ORDER_TIME_FIELDS)) && hasValue(event.received_at)) {
+    row.order_time = Math.round(Number(event.received_at) * 1000);
+  }
+  return orderKey(row) ? row : null;
+}
+
+function mergeOrderCallbackRow(row) {
+  if (!row) return false;
+  const id = orderKey(row);
+  if (!id) return false;
+  if (isCfquantOrder(row)) rememberCfquantOrder(row);
+  const rows = (state.latestOrders || []).slice();
+  const index = rows.findIndex((item) => orderKey(item) === id);
+  if (index >= 0) rows[index] = { ...rows[index], ...row };
+  else rows.push(row);
+  renderOrders({ data: rows });
+  return true;
+}
+
+function runOrderCallbackRefresh() {
+  state.orderCallbackRefreshTimer = null;
+  if (state.orderCallbackRefreshInFlight) {
+    state.orderCallbackRefreshPending = true;
+    return;
+  }
+  const sections = Array.from(state.orderCallbackRefreshSections);
+  state.orderCallbackRefreshSections.clear();
+  if (!sections.length) return;
+  state.orderCallbackRefreshInFlight = true;
+  refreshAccount(sections.join(','), { force: true, subscribe: false })
+    .catch((error) => log('回调刷新交易数据失败', { sections, error: error.message }))
+    .finally(() => {
+      state.orderCallbackRefreshInFlight = false;
+      if (state.orderCallbackRefreshPending || state.orderCallbackRefreshSections.size) {
+        state.orderCallbackRefreshPending = false;
+        scheduleOrderCallbackRefresh();
+      }
+    });
+}
+
+function scheduleOrderCallbackRefresh(sections = 'orders') {
+  String(sections || 'orders').split(',').forEach((section) => {
+    const value = section.trim();
+    if (value) state.orderCallbackRefreshSections.add(value);
+  });
+  if (state.orderCallbackRefreshTimer) return;
+  state.orderCallbackRefreshTimer = window.setTimeout(runOrderCallbackRefresh, 180);
+}
+
+function handleOrderCallbackEvent(event) {
+  if (!appendServerCallbackEvent(event, { render: false })) return;
+  const data = callbackEventData(event);
+  rememberCfquantOrder(data);
+  const merged = mergeOrderCallbackRow(orderRowFromCallbackEvent(event));
+  const name = callbackEventName(event);
+  if (name.includes('stock_trade')) {
+    scheduleOrderCallbackRefresh('asset,positions,orders,trades');
+  } else if (!merged && callbackEventIsTradeRelated(event)) {
+    scheduleOrderCallbackRefresh('orders');
+  }
+  if (state.currentView === 'callbacks') {
+    renderCallbacks();
+  }
+}
+
+function handleOrderCallbackPayload(payload) {
+  if (!payload || payload.type === 'hello') return;
+  if (payload.type === 'history' && Array.isArray(payload.events)) {
+    payload.events.forEach((event) => handleOrderCallbackEvent(event));
+    return;
+  }
+  if (payload.type === 'callback' && payload.event) {
+    handleOrderCallbackEvent(payload.event);
+  }
+}
+
+function realtimeOrdersEnabled() {
+  const control = $('autoRefresh');
+  return !control || control.checked;
+}
+
+function closeOrderCallbackSocket() {
+  if (state.orderCallbackReconnectTimer) {
+    window.clearTimeout(state.orderCallbackReconnectTimer);
+    state.orderCallbackReconnectTimer = null;
+  }
+  const socket = state.orderCallbackSocket;
+  state.orderCallbackSocket = null;
+  state.orderCallbackKey = '';
+  if (socket) {
+    try {
+      socket.close();
+    } catch (error) {
+      // ignore stale sockets
+    }
+  }
+}
+
+function connectOrderCallbackSocket(options = {}) {
+  if (!state.appStarted || !realtimeOrdersEnabled()) {
+    closeOrderCallbackSocket();
+    return;
+  }
+  const accountId = selectedAccount();
+  if (!accountId) {
+    closeOrderCallbackSocket();
+    return;
+  }
+  const bridgeId = selectedBridge();
+  const socketKey = `${bridgeId}|${accountId}`;
+  if (!options.force && state.orderCallbackSocket && state.orderCallbackKey === socketKey) return;
+  closeOrderCallbackSocket();
+
+  const params = new URLSearchParams();
+  params.set('bridge_id', bridgeId);
+  params.set('account_id', accountId);
+  params.set('event_prefix', 'trader:');
+  const socket = new WebSocket(apiWsUrl(`/ws/callbacks?${params.toString()}`));
+  state.orderCallbackSocket = socket;
+  state.orderCallbackKey = socketKey;
+  socket.onmessage = (event) => {
+    if (state.orderCallbackSocket !== socket) return;
+    try {
+      handleOrderCallbackPayload(JSON.parse(event.data));
+    } catch (error) {
+      log('委托回调消息解析失败', { error: error.message });
+    }
+  };
+  socket.onerror = () => {
+    if (state.orderCallbackSocket === socket) log('委托回调 WebSocket 异常');
+  };
+  socket.onclose = () => {
+    if (state.orderCallbackSocket !== socket) return;
+    state.orderCallbackSocket = null;
+    state.orderCallbackKey = '';
+    if (!state.appStarted || !realtimeOrdersEnabled() || document.hidden) return;
+    state.orderCallbackReconnectTimer = window.setTimeout(() => {
+      state.orderCallbackReconnectTimer = null;
+      connectOrderCallbackSocket({ force: true });
+    }, 2000);
+  };
+}
+
+function restartOrderCallbackSocket() {
+  closeOrderCallbackSocket();
+  connectOrderCallbackSocket({ force: true });
+}
+
 async function refreshCallbacks() {
   try {
     const payload = await api(`/api/callbacks?bridge_id=${encodeURIComponent(selectedBridge())}&account_id=${encodeURIComponent(selectedAccount())}&since=${state.callbackSeq}&limit=200`);
     const events = payload.events || [];
     if (!events.length) return;
-    events.forEach((event) => {
-      state.callbackSeq = Math.max(state.callbackSeq, Number(event.seq || 0));
-      const normalized = normalizeCallbackEvent(event);
-      state.callbackEvents.unshift(normalized);
-    });
-    state.callbackEvents = state.callbackEvents.slice(0, 200);
+    events.forEach((event) => appendServerCallbackEvent(event, { render: false }));
     if (state.currentView === 'callbacks') {
       renderCallbacks();
-    }
-    const shouldRefreshOrders = events.some((event) => String(event.event || '').includes('order') || String(event.event || '').includes('trade'));
-    if (shouldRefreshOrders && ['overview', 'orders', 'trade'].includes(state.currentView) && !state.orderRefreshInFlight) {
-      state.orderRefreshInFlight = true;
-      refreshAccount('orders')
-        .catch((error) => log('回调刷新委托失败', { error: error.message }))
-        .finally(() => {
-          state.orderRefreshInFlight = false;
-        });
     }
   } catch (error) {
     log('回调拉取失败', { error: error.message });
@@ -4902,30 +5839,36 @@ function renderCallbacks() {
 
 function renderOrders(section) {
   const rows = (section && Array.isArray(section.data)) ? section.data : [];
+  state.latestOrders = rows.slice();
   trackOrderEvents(rows);
   const cancelableCount = rows.filter(isCancelableOrder).length;
   $('orderCount').textContent = `${rows.length} 条 / ${cancelableCount} 条可撤`;
-  const html = orderRowsHtml(rows);
-  $('ordersBody').innerHTML = html || '<tr><td colspan="8">无委托数据</td></tr>';
+  const sortedRows = sortedOrderRows(rows);
+  const html = orderRowsHtml(sortedRows, { includeTime: true });
+  $('ordersBody').innerHTML = html || '<tr><td colspan="10">无委托数据</td></tr>';
   const tradeBody = $('tradeOrdersBody');
   if (tradeBody) {
-    tradeBody.innerHTML = orderRowsHtml(rows, { includeTime: true }) || '<tr><td colspan="9">无委托数据</td></tr>';
+    tradeBody.innerHTML = html || '<tr><td colspan="10">无委托数据</td></tr>';
   }
   $('selectAllOrders').checked = false;
   const tradeSelectAll = $('selectAllTradeOrders');
   if (tradeSelectAll) tradeSelectAll.checked = false;
+  renderOrderSortHeaders();
 }
 
 function orderRowsHtml(rows, options = {}) {
   const includeTime = !!options.includeTime;
-  return rows.slice().reverse().map((row, index) => {
+  return rows.map((row, index) => {
     const code = orderCode(row);
     const orderId = orderKey(row);
     const cancelable = isCancelableOrder(row);
-    return `<tr class="clickable" data-order-id="${plain(orderId)}" data-code="${plain(code)}" data-cancelable="${cancelable ? '1' : '0'}">
+    const highlightType = orderHighlightType(row);
+    const highlightClass = highlightType ? ` order-row-highlight order-row-${highlightType}` : '';
+    return `<tr class="clickable${highlightClass}" data-order-id="${plain(orderId)}" data-code="${plain(code)}" data-cancelable="${cancelable ? '1' : '0'}">
       <td><input class="order-select" type="checkbox" data-order-id="${plain(orderId)}"${cancelable ? '' : ' disabled'}></td>
       <td class="num">${index + 1}</td>
       ${includeTime ? `<td>${plain(orderTime(row))}</td>` : ''}
+      <td><span class="source-pill ${orderSourceClass(row)}">${plain(orderSource(row))}</span></td>
       <td>${plain(code)}</td>
       <td>${plain(orderName(row))}</td>
       <td class="num">${plain(orderVolume(row))}</td>
@@ -4960,7 +5903,8 @@ async function refreshAccount(sections = 'asset,positions', options = {}) {
     return;
   }
   const force = options.force ? '&force=1' : '';
-  const data = await api(`/api/account?bridge_id=${encodeURIComponent(selectedBridge())}&account_id=${encodeURIComponent(accountId)}&channel=${channel}&sections=${sections}${force}`);
+  const subscribe = options.subscribe === false ? '&subscribe=0' : '';
+  const data = await api(`/api/account?bridge_id=${encodeURIComponent(selectedBridge())}&account_id=${encodeURIComponent(accountId)}&channel=${channel}&sections=${sections}${force}${subscribe}`);
   if (data.asset) {
     if (data.asset.ok) renderAsset(data.asset);
     else log('资产查询失败', data.asset);
@@ -5024,6 +5968,7 @@ async function submitOrder(event) {
   };
   try {
     const data = await api('/api/order', { method: 'POST', body: JSON.stringify(body) });
+    rememberCfquantOrder(data);
     log('委托已提交', data);
     addCallbackEvent('提交委托', {
       code: body.stock_code,
@@ -5033,7 +5978,7 @@ async function submitOrder(event) {
       status: 'submitted',
     });
     await refreshAccount('asset,positions', { force: true });
-    await refreshAccount('orders', { force: true });
+    await refreshAccount('orders', { force: true, subscribe: false });
   } catch (error) {
     log('委托失败', { error: error.message });
   }
@@ -5078,14 +6023,17 @@ async function submitBatchOrders(event) {
       return;
     }
     const body = {
+      bridge_id: selectedBridge(),
+      channel: selectedTradeChannel(),
       account_id: selectedAccount(),
       orders,
       confirm_text: form.confirm_text.value.trim(),
     };
     const data = await api('/api/orders/batch', { method: 'POST', body: JSON.stringify(body) });
+    rememberCfquantOrder(data);
     log('批量委托已提交', data);
     await refreshAccount('asset,positions', { force: true });
-    await refreshAccount('orders', { force: true });
+    await refreshAccount('orders', { force: true, subscribe: false });
   } catch (error) {
     log('批量委托失败', { error: error.message });
   }
@@ -5108,7 +6056,7 @@ async function sendCancel(orderId, channel) {
     traded: '',
     status: 'cancel_requested',
   });
-  await refreshAccount('orders', { force: true });
+  await refreshAccount('orders', { force: true, subscribe: false });
 }
 
 async function cancelOrder(event) {
@@ -5152,7 +6100,7 @@ async function cancelSelectedOrders() {
       log('批量撤单失败', { order_id: orderId, error: error.message });
     }
   }
-  await refreshAccount('orders', { force: true });
+  await refreshAccount('orders', { force: true, subscribe: false });
 }
 
 function wireForms() {
@@ -5193,6 +6141,7 @@ function wireForms() {
     });
   });
   $('cancelSelectedBtn').addEventListener('click', cancelSelectedOrders);
+  wireOrderSortHeaders();
 }
 
 function wireNavigation() {
@@ -5202,13 +6151,16 @@ function wireNavigation() {
   window.addEventListener('pagehide', () => {
     stopQuoteLive({ beacon: true });
     closeDownloadSocket();
+    closeOrderCallbackSocket();
   });
   window.addEventListener('beforeunload', () => {
     stopQuoteLive({ beacon: true });
     closeDownloadSocket();
+    closeOrderCallbackSocket();
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopQuoteLive({ beacon: true });
+    else connectOrderCallbackSocket();
   });
 }
 
@@ -5810,19 +6762,8 @@ function shouldPollBindingStatuses() {
   return visiblePage() && state.currentView === 'bindings';
 }
 
-function shouldAutoRefreshOrders() {
-  if (!visiblePage()) return false;
-  const autoRefresh = $('autoRefresh');
-  if (!autoRefresh || !autoRefresh.checked) return false;
-  if (!['overview', 'orders', 'trade'].includes(state.currentView)) return false;
-  const interval = state.currentView === 'overview'
-    ? HOME_ORDER_REFRESH_INTERVAL_MS
-    : AUTO_ORDER_REFRESH_INTERVAL_MS;
-  return Date.now() - state.lastAutoOrderRefreshAt >= interval;
-}
-
 function startTimers() {
-  if (state.statusTimer || state.refreshTimer) return;
+  if (state.statusTimer) return;
   setInterval(() => {
     $('clock').textContent = nowText();
   }, 1000);
@@ -5851,16 +6792,6 @@ function startTimers() {
       state.callbackRefreshInFlight = false;
     });
   }, CALLBACK_POLL_INTERVAL_MS);
-  state.refreshTimer = setInterval(() => {
-    if (!shouldAutoRefreshOrders() || state.orderRefreshInFlight) return;
-    state.orderRefreshInFlight = true;
-    state.lastAutoOrderRefreshAt = Date.now();
-    refreshAccount('orders')
-      .catch((error) => log('实时委托刷新失败', { error: error.message }))
-      .finally(() => {
-        state.orderRefreshInFlight = false;
-      });
-  }, 1000);
 }
 
 async function boot() {
@@ -5874,6 +6805,7 @@ async function boot() {
   wireSettingsNavigation();
   wireImageLightbox();
   wireVersionBadge();
+  wireUpdateRestartNotice();
   renderCallbacks();
   renderProjectVersion(null);
   setDataTab(localStorage.getItem('cfquant.trade_tab') || 'positions', false);
@@ -5881,7 +6813,7 @@ async function boot() {
   $('refreshBtn').addEventListener('click', async () => {
     try {
       await refreshAccount('asset,positions', { force: true });
-      await refreshAccount('orders', { force: true });
+      await refreshAccount('orders', { force: true, subscribe: false });
       await refreshAccount('trades', { force: true });
     } catch (error) {
       log('刷新失败', { error: error.message });
@@ -6045,6 +6977,10 @@ async function boot() {
       log('核心代码回滚失败', { error: error.message });
     });
   });
+  const qmtUpdateProgressCloseBtn = $('qmtUpdateProgressCloseBtn');
+  if (qmtUpdateProgressCloseBtn) qmtUpdateProgressCloseBtn.addEventListener('click', closeQmtUpdateProgress);
+  const qmtUpdateProgressCloseBottomBtn = $('qmtUpdateProgressCloseBottomBtn');
+  if (qmtUpdateProgressCloseBottomBtn) qmtUpdateProgressCloseBottomBtn.addEventListener('click', closeQmtUpdateProgress);
   $('useCurrentOriginBtn').addEventListener('click', () => {
     $('apiBaseUrlInput').value = window.location.origin;
     updateApiRequestPreview();
@@ -6067,7 +7003,14 @@ async function boot() {
       if (apiToggle) apiToggle.checked = overviewRemoteToggle.checked;
     });
   }
-  $('ordersBtn').addEventListener('click', () => refreshAccount('orders', { force: true }).catch((error) => log('委托刷新失败', { error: error.message })));
+  $('ordersBtn').addEventListener('click', () => refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('委托刷新失败', { error: error.message })));
+  const realtimeOrdersToggle = $('autoRefresh');
+  if (realtimeOrdersToggle) {
+    realtimeOrdersToggle.addEventListener('change', () => {
+      if (realtimeOrdersToggle.checked) connectOrderCallbackSocket({ force: true });
+      else closeOrderCallbackSocket();
+    });
+  }
   $('clearLogBtn').addEventListener('click', () => { $('logBox').innerHTML = ''; });
   $('bridgeSelect').addEventListener('change', handleBridgeChange);
   $('accountInput').addEventListener('change', handleAccountChange);

@@ -57,6 +57,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
+WEB_VERSION = "web_20260817_12"
 BASE_DIR = _PROJECT_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
 LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
@@ -1927,7 +1928,8 @@ def build_lttx_registry():
     return {
         "schema": "cfquant.lttx.registry",
         "version": CORE_VERSION,
-        "web_version": "cfquant-web/0.1",
+        "web_version": WEB_VERSION,
+        "frontend_version": WEB_VERSION,
         "updated_at": now,
         "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
         "discovery_key": LTTX_DISCOVERY_KEY,
@@ -5222,11 +5224,19 @@ class AccountDataCache(object):
         self._running = False
         self._stop_event.set()
 
-    def get(self, bridge_id, channel, account_id, sections, force=False):
+    def get(self, bridge_id, channel, account_id, sections, force=False, subscribe=True):
         bridge_id = normalize_bridge_id(bridge_id)
         sections = [section for section in sections if section in ACCOUNT_ACTIONS]
         if not sections:
             return {"bridge_id": bridge_id, "account_id": account_id, "channel": channel}
+        if not subscribe:
+            live = query_account_live(bridge_id, channel, account_id, sections)
+            live["cache"] = {
+                "enabled": False,
+                "force": bool(force),
+                "subscribed": False,
+            }
+            return live
         self._subscribe(bridge_id, channel, account_id, sections)
         if force:
             live = query_account_live(bridge_id, channel, account_id, sections)
@@ -5634,6 +5644,28 @@ def initialize_web_setup(body):
     account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
     if not account_id:
         raise ValueError("account_id is required")
+    auth_info = WEB_CONFIG.web_auth_info(include_username=True)
+    admin_username = str(
+        body.get("admin_username") or body.get("web_auth_username") or "admin"
+    ).strip()
+    admin_password = str(
+        body.get("admin_password") or body.get("web_auth_password") or ""
+    )
+    admin_password_confirm = str(
+        body.get("admin_password_confirm") or body.get("web_auth_password_confirm") or ""
+    )
+    should_register_admin = not auth_info.get("configured")
+    if should_register_admin:
+        if not admin_username:
+            raise ValueError("admin username is required")
+        if not admin_password:
+            raise ValueError("admin password is required")
+        if len(admin_password) < 6:
+            raise ValueError("admin password must be at least 6 characters")
+        if not admin_password_confirm:
+            raise ValueError("admin password confirmation is required")
+        if admin_password != admin_password_confirm:
+            raise ValueError("admin passwords do not match")
     row = WEB_CONFIG.save_account_config(
         account_id=account_id,
         bridge_id=body.get("bridge_id"),
@@ -5644,12 +5676,26 @@ def initialize_web_setup(body):
     )
     identity = write_qmt_bridge_identity(row)
     runtime = ensure_account_runtime(row["mode"])
+    web_auth = None
+    server_access = None
+    if should_register_admin:
+        server_access = WEB_CONFIG.set_server_access_settings(
+            web_auth_enabled=True,
+            web_auth_username=admin_username,
+            web_auth_password=admin_password,
+        )
+        token = issue_web_auth_token(admin_username, remember=True)
+        web_auth = web_auth_status(token)
+        web_auth["token"] = token
+        web_auth["remember"] = True
     return {
         "initialized": True,
         "account": row,
         "qmt_bridge_identity": identity,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
+        "server_access": server_access or server_access_info(include_auth_details=True),
+        "web_auth": web_auth or WEB_CONFIG.web_auth_info(include_username=True),
         "bridges": WEB_CONFIG.bridges(),
         "account_pairs": WEB_CONFIG.account_pairs(),
         "account_configs": WEB_CONFIG.account_configs(),
@@ -6098,7 +6144,9 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
     local = _local_project_version_info()
     data = {
         "current_version": CORE_VERSION,
-        "web_version": "cfquant-web/0.1",
+        "core_version": CORE_VERSION,
+        "web_version": WEB_VERSION,
+        "frontend_version": WEB_VERSION,
         "repo_url": repo_url,
         "ref": ref,
         "local": local,
@@ -6662,7 +6710,7 @@ def download_financial_data(body):
 
 
 class CfquantWebHandler(BaseHTTPRequestHandler):
-    server_version = "cfquant-web/0.1"
+    server_version = WEB_VERSION
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -6813,7 +6861,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/account-config/delete":
                 self._write_json(ok(delete_account_runtime_config(body)))
             elif parsed.path == "/api/setup/initialize":
-                self._write_json(ok(initialize_web_setup(body)))
+                result = initialize_web_setup(body)
+                token = ((result.get("web_auth") or {}).get("token") or "")
+                self._write_json(ok(result), extra_headers=self._web_auth_cookie_headers(token))
             elif parsed.path == "/api/setup/reset":
                 self._write_json(ok(reset_web_setup()))
             elif parsed.path == "/api/setup/data-provider":
@@ -7145,7 +7195,15 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 channel = (query.get("channel") or ["normal"])[0]
                 sections = parse_sections((query.get("sections") or [""])[0])
                 force = parse_bool((query.get("force") or ["0"])[0])
-                self._write_json(ok(ACCOUNT_CACHE.get(bridge_id, channel, account_id, sections, force=force)))
+                subscribe = parse_bool((query.get("subscribe") or ["1"])[0])
+                self._write_json(ok(ACCOUNT_CACHE.get(
+                    bridge_id,
+                    channel,
+                    account_id,
+                    sections,
+                    force=force,
+                    subscribe=subscribe,
+                )))
             else:
                 self._write_json(fail("not found", 404), status=404)
         except Exception as e:
