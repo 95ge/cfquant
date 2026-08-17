@@ -164,6 +164,19 @@ def _load_runtime_config():
     return "", {}
 
 
+def _config_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("0", "false", "no", "off", "disable", "disabled", "closed", "close"):
+        return False
+    if text in ("1", "true", "yes", "on", "enable", "enabled", "open"):
+        return True
+    return default
+
+
 def _apply_runtime_config():
     global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS
 
@@ -180,6 +193,10 @@ def _apply_runtime_config():
     channels = data.get("channels") or {}
     if isinstance(channels, dict):
         RUNTIME_CHANNELS = channels
+    if not os.environ.get("CFQUANT_QMT_LOG_LANGUAGE") and data.get("qmt_log_language"):
+        os.environ["CFQUANT_QMT_LOG_LANGUAGE"] = str(data.get("qmt_log_language") or "zh")
+    if not os.environ.get("CFQUANT_QMT_LOG_ENABLED") and "qmt_log_enabled" in data:
+        os.environ["CFQUANT_QMT_LOG_ENABLED"] = "1" if _config_bool(data.get("qmt_log_enabled"), True) else "0"
     _write_runtime_log(
         "cfquant ctypes runtime config loaded path=%s bridge_id=%s pipe=%s"
         % (path, BRIDGE_ID, PIPE_NAME)
@@ -192,7 +209,7 @@ _write_runtime_log("cfquant ctypes entry executing file=%s sys_path_head=%s" % (
 
 try:
     from cfquant import __version__ as _ENTRY_VERSION
-    from cfquant.logging_i18n import translate_log
+    from cfquant.logging_i18n import get_log_enabled, translate_log
     from cfquant.protocol import loads_message
     _write_runtime_log("cfquant import ok version=%s" % _ENTRY_VERSION)
 except Exception as e:
@@ -201,6 +218,8 @@ except Exception as e:
 
 
 def _print_log(message):
+    if not get_log_enabled():
+        return
     translated = translate_log(message)
     print(translated)
     _write_runtime_log(translated)

@@ -6,7 +6,7 @@ import time
 
 from .protocol import loads_message, pack_event, pack_response
 from . import account_routing
-from .logging_i18n import get_log_language, set_log_language, translate_log
+from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, set_log_language, translate_log
 
 
 XTTRADER_COMPAT_CANDIDATES = {
@@ -158,6 +158,10 @@ class TxTradeBridge(object):
             return self._set_log_language(params)
         if action == "cfquant.get_log_language":
             return {"language": get_log_language()}
+        if action == "cfquant.set_log_enabled":
+            return self._set_log_enabled(params)
+        if action == "cfquant.get_log_enabled":
+            return {"enabled": get_log_enabled()}
         if action == "cfquant.cleanup_qmt_logs":
             return self._cleanup_qmt_userdata_logs(params)
         if action == "cfquant.query_info":
@@ -227,6 +231,7 @@ class TxTradeBridge(object):
             "account_id": self.account_id,
             "account_subscribers": self._account_subscriber_status(),
             "log_language": get_log_language(),
+            "log_enabled": get_log_enabled(),
             "context_ready": self.context is not None,
             "tx_ready": self.tx is not None,
             "ts": time.time(),
@@ -247,6 +252,17 @@ class TxTradeBridge(object):
         lang = set_log_language(params.get("language") or params.get("lang"))
         self._log("QMT日志语言已切换为:%s" % ("中文" if lang == "zh" else "English"))
         return {"language": lang}
+
+    def _set_log_enabled(self, params):
+        params = params or {}
+        if "enabled" in params:
+            value = params.get("enabled")
+        else:
+            value = params.get("show")
+        enabled = set_log_enabled(value)
+        self.show = True
+        self._log("QMT log output enabled=%s" % ("1" if enabled else "0"), force=True)
+        return {"enabled": enabled}
 
     def _cleanup_qmt_userdata_logs(self, params):
         params = params or {}
@@ -1511,7 +1527,9 @@ class TxTradeBridge(object):
             log_dir = base_dir
         return os.path.join(log_dir, "cfquant_qmt_bridge.log")
 
-    def _log(self, msg):
+    def _log(self, msg, force=False):
+        if not force and not get_log_enabled():
+            return
         msg = translate_log(msg)
         line = "%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
         try:

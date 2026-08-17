@@ -48,6 +48,15 @@ CFQUANT_PIPE_HUB_VERBOSE_EVENTS=0
 
 `CFQUANT_PIPE_HUB_VERBOSE_EVENTS=1` 会打开 PipeHub 高频事件日志，只建议排查问题时临时使用。
 
+## QMT 日志设置
+
+Web“设置 - QMT 日志”可以控制 QMT 侧桥接日志：
+
+- 日志显示默认开启；
+- 语言默认中文，也可以切换为 English；
+- 保存后会向在线的普通桥和交易桥广播配置；
+- 账号绑定写入的 `cfquant_bridge_config.json` 会保存日志语言和日志开关，QMT 入口脚本重启后继续生效。
+
 ## 版本检查
 
 Web 左上角会显示当前版本号。鼠标悬停后可以查看：

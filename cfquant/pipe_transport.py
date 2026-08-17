@@ -8,7 +8,7 @@ import threading
 import time
 from ctypes import wintypes
 
-from .logging_i18n import translate_log
+from .logging_i18n import get_log_enabled, translate_log
 
 
 DEFAULT_PIPE_NAME = os.environ.get("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub")
@@ -480,7 +480,7 @@ class PipeTxClient(object):
                 pass
 
     def _log(self, msg):
-        if self.show:
+        if self.show and get_log_enabled():
             print("cfquant pipe tx %s" % translate_log(msg))
 
     def _normalize_channels(self, channels):

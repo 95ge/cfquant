@@ -772,6 +772,10 @@
               <section class="settings-section" data-settings-tab="qmt-log">
                 <h3>QMT 日志</h3>
                 <form id="qmtLogLanguageForm" class="api-serverbar">
+                  <label class="toggle api-remote-toggle">
+                    <input id="qmtLogEnabled" type="checkbox" checked>
+                    <span>显示 QMT 桥接日志</span>
+                  </label>
                   <label class="field">
                     <span>显示语言</span>
                     <select id="qmtLogLanguageSelect">
@@ -779,7 +783,7 @@
                       <option value="en">English</option>
                     </select>
                   </label>
-                  <button id="saveQmtLogLanguageBtn" class="primary" type="submit">保存日志语言</button>
+                  <button id="saveQmtLogLanguageBtn" class="primary" type="submit">保存日志设置</button>
                   <span id="qmtLogLanguageStatus" class="metric-note"></span>
                 </form>
               </section>

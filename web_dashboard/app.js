@@ -2382,22 +2382,27 @@ function renderLogCleanup(info) {
 function renderQmtLogLanguage(info) {
   state.qmtLogLanguage = info || {};
   const language = state.qmtLogLanguage.language || 'zh';
+  const enabled = state.qmtLogLanguage.enabled !== false;
+  const toggle = $('qmtLogEnabled');
+  if (toggle) toggle.checked = enabled;
   const select = $('qmtLogLanguageSelect');
   if (select) select.value = language;
   const status = $('qmtLogLanguageStatus');
-  if (status) status.textContent = `当前：${language === 'en' ? 'English' : '中文'}`;
+  if (status) status.textContent = `当前：${enabled ? '日志开启' : '日志关闭'}，${language === 'en' ? 'English' : '中文'}`;
 }
 
 async function saveQmtLogLanguageFromUi() {
   const select = $('qmtLogLanguageSelect');
+  const toggle = $('qmtLogEnabled');
   const language = select ? select.value : 'zh';
   const data = await api('/api/qmt-log-language', {
     method: 'POST',
-    body: JSON.stringify({ language }),
+    body: JSON.stringify({ language, enabled: !!(toggle && toggle.checked) }),
   });
   renderQmtLogLanguage(data);
-  log('QMT 日志语言已保存', {
+  log('QMT 日志设置已保存', {
     language: data.language,
+    enabled: data.enabled,
     dispatch_results: data.dispatch_results || [],
   });
 }
@@ -5992,7 +5997,7 @@ async function boot() {
   if (qmtLogLanguageForm) {
     qmtLogLanguageForm.addEventListener('submit', (event) => {
       event.preventDefault();
-      saveQmtLogLanguageFromUi().catch((error) => log('QMT 日志语言保存失败', { error: error.message }));
+      saveQmtLogLanguageFromUi().catch((error) => log('QMT 日志设置保存失败', { error: error.message }));
     });
   }
   $('runLogCleanupBtn').addEventListener('click', () => {

@@ -5,6 +5,7 @@ import os
 import sys
 import importlib
 import datetime as dt
+import json
 
 
 _cf_bridge = None
@@ -15,6 +16,84 @@ _PUMP_MAX_MS = 0
 DEFAULT_ACCOUNT_ID = ""
 USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
+RUNTIME_CONFIG = {}
+RUNTIME_CHANNELS = {}
+
+
+def _runtime_config_paths():
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        parent_dir = os.path.dirname(base_dir)
+        candidates = []
+        env_path = os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE")
+        if env_path:
+            candidates.append(env_path)
+        if os.path.basename(base_dir).lower() == "python":
+            candidates.append(os.path.join(parent_dir, "bin.x64", "cfquant_bridge_config.json"))
+            candidates.append(os.path.join(base_dir, "cfquant_bridge_config.json"))
+        else:
+            candidates.append(os.path.join(base_dir, "cfquant_bridge_config.json"))
+            candidates.append(os.path.join(base_dir, "bin.x64", "cfquant_bridge_config.json"))
+        candidates.append(os.path.join(parent_dir, "cfquant_bridge_config.json"))
+        result = []
+        seen = set()
+        for path in candidates:
+            if not path:
+                continue
+            path = os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+            key = os.path.normcase(path)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(path)
+        return result
+    except Exception:
+        return []
+
+
+def _load_runtime_config():
+    for path in _runtime_config_paths():
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r") as f:
+                data = json.loads(f.read())
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def _config_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("0", "false", "no", "off", "disable", "disabled", "closed", "close"):
+        return False
+    if text in ("1", "true", "yes", "on", "enable", "enabled", "open"):
+        return True
+    return default
+
+
+def _apply_runtime_config():
+    global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS
+
+    data = _load_runtime_config()
+    RUNTIME_CONFIG = data
+    if not data:
+        return
+    if not os.environ.get("CFQUANT_BRIDGE_ID") and data.get("bridge_id"):
+        BRIDGE_ID = data.get("bridge_id")
+    channels = data.get("channels") or {}
+    if isinstance(channels, dict):
+        RUNTIME_CHANNELS = channels
+    if not os.environ.get("CFQUANT_QMT_LOG_LANGUAGE") and data.get("qmt_log_language"):
+        os.environ["CFQUANT_QMT_LOG_LANGUAGE"] = str(data.get("qmt_log_language") or "zh")
+    if not os.environ.get("CFQUANT_QMT_LOG_ENABLED") and "qmt_log_enabled" in data:
+        os.environ["CFQUANT_QMT_LOG_ENABLED"] = "1" if _config_bool(data.get("qmt_log_enabled"), True) else "0"
 
 
 def _ensure_path():
@@ -42,8 +121,15 @@ def _ensure_path():
 
 
 _ensure_path()
+_apply_runtime_config()
 
 from cfquant import __version__ as _ENTRY_VERSION
+from cfquant.logging_i18n import get_log_enabled, translate_log
+
+
+def _print_log(message):
+    if get_log_enabled():
+        print(translate_log(message))
 
 
 def _load_bridge_starter():
@@ -53,11 +139,11 @@ def _load_bridge_starter():
     try:
         tx_trade_bridge = importlib.reload(tx_trade_bridge)
     except Exception as e:
-        print("tx trade bridge reload failed:%s" % e)
+        _print_log("tx trade bridge reload failed:%s" % e)
     try:
         normal_bridge = importlib.reload(normal_bridge)
     except Exception as e:
-        print("normal bridge reload failed:%s" % e)
+        _print_log("normal bridge reload failed:%s" % e)
     return normal_bridge.start_normal_bridge
 
 
@@ -67,6 +153,10 @@ from cfquant.channels import channels_for_bridge, normalize_bridge_id
 
 BRIDGE_ID = normalize_bridge_id(BRIDGE_ID)
 BRIDGE_CHANNELS = channels_for_bridge(BRIDGE_ID)
+for _channel_key in ("normal", "callback"):
+    _channel_value = RUNTIME_CHANNELS.get(_channel_key) or RUNTIME_CONFIG.get("%s_channel" % _channel_key)
+    if _channel_value:
+        BRIDGE_CHANNELS[_channel_key] = str(_channel_value).strip()
 
 _cf_bridge = start_normal_bridge(
     None,
@@ -82,14 +172,14 @@ _cf_bridge = start_normal_bridge(
     pump_max_count=_PUMP_MAX_COUNT,
     pump_max_ms=_PUMP_MAX_MS,
 )
-print("cfquant normal bridge module loaded")
-print("cfquant entry version:%s" % _ENTRY_VERSION)
-print("cfquant bridge id:%s normal_channel:%s callback_channel:%s" % (
+_print_log("cfquant normal bridge module loaded")
+_print_log("cfquant entry version:%s" % _ENTRY_VERSION)
+_print_log("cfquant bridge id:%s normal_channel:%s callback_channel:%s" % (
     BRIDGE_ID,
     BRIDGE_CHANNELS["normal"],
     BRIDGE_CHANNELS["callback"],
 ))
-print("cfquant normal bridge pump max_count:%s max_ms:%s" % (_PUMP_MAX_COUNT, _PUMP_MAX_MS))
+_print_log("cfquant normal bridge pump max_count:%s max_ms:%s" % (_PUMP_MAX_COUNT, _PUMP_MAX_MS))
 
 
 def cfquant_normal_timer(*args, **kwargs):
@@ -111,16 +201,16 @@ def _schedule_cf_timer(ContextInfo):
             interval=dt.timedelta(milliseconds=_TIMER_INTERVAL_MS),
             name="cfquant_normal_bridge_pump",
         )
-        print("cfquant normal bridge timer scheduled key:%s interval_ms:%s" % (_cf_timer_key, _TIMER_INTERVAL_MS))
+        _print_log("cfquant normal bridge timer scheduled key:%s interval_ms:%s" % (_cf_timer_key, _TIMER_INTERVAL_MS))
     except Exception as e:
-        print("cfquant normal bridge timer schedule failed:%s" % e)
+        _print_log("cfquant normal bridge timer schedule failed:%s" % e)
 
 
 def init(ContextInfo):
     if _cf_bridge:
         _cf_bridge.set_context(ContextInfo)
     _schedule_cf_timer(ContextInfo)
-    print("cfquant normal bridge context ready version:%s" % _ENTRY_VERSION)
+    _print_log("cfquant normal bridge context ready version:%s" % _ENTRY_VERSION)
 
 
 def handlebar(ContextInfo):
@@ -135,13 +225,13 @@ def stop(ContextInfo):
         try:
             ContextInfo.cancel_schedule_run(_cf_timer_key)
         except Exception as e:
-            print("cfquant normal bridge timer cancel failed:%s" % e)
+            _print_log("cfquant normal bridge timer cancel failed:%s" % e)
         _cf_timer_key = None
 
     if _cf_bridge:
         _cf_bridge.close()
         _cf_bridge = None
-        print("cfquant normal bridge stopped")
+        _print_log("cfquant normal bridge stopped")
 
 
 def _publish_callback(event_name, obj):
@@ -149,7 +239,7 @@ def _publish_callback(event_name, obj):
         if _cf_bridge:
             _cf_bridge.publish_callback_event(event_name, obj)
     except Exception as e:
-        print("cfquant callback publish failed event=%s error=%s" % (event_name, e))
+        _print_log("cfquant callback publish failed event=%s error=%s" % (event_name, e))
 
 
 def account_callback(ContextInfo, accountInfo):

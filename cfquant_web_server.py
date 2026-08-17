@@ -50,7 +50,7 @@ _prepend_import_path(_LTTX_TX_DIR)
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
-from cfquant.logging_i18n import normalize_log_language
+from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import loads_message, new_id, pack_event, pack_response
 from cfquant.version import __version__ as CORE_VERSION
@@ -403,6 +403,7 @@ class WebRuntimeConfig(object):
             "web_auth_hash": "",
             "cleanup_qmt_userdata_logs": False,
             "qmt_log_language": os.environ.get("CFQUANT_QMT_LOG_LANGUAGE", "zh"),
+            "qmt_log_enabled": normalize_log_enabled(os.environ.get("CFQUANT_QMT_LOG_ENABLED", "1")),
             "transport_mode": os.environ.get("CFQUANT_WEB_TRANSPORT_MODE", os.environ.get("CFQUANT_TRANSPORT", "ctypes")),
         }
         self.load()
@@ -875,11 +876,18 @@ class WebRuntimeConfig(object):
         with self._lock:
             return normalize_log_language(self._data.get("qmt_log_language") or "zh")
 
+    def qmt_log_enabled(self):
+        with self._lock:
+            return normalize_log_enabled(self._data.get("qmt_log_enabled"))
+
     def qmt_log_language_info(self):
         language = self.qmt_log_language()
+        enabled = self.qmt_log_enabled()
         return {
             "language": language,
             "label": "中文" if language == "zh" else "English",
+            "enabled": enabled,
+            "enabled_label": "开启" if enabled else "关闭",
         }
 
     def transport_mode(self):
@@ -903,11 +911,15 @@ class WebRuntimeConfig(object):
             self._save_settings_locked({"transport_mode": mode})
         return self.transport_info()
 
-    def set_qmt_log_language(self, language):
+    def set_qmt_log_language(self, language, enabled=None):
         language = normalize_log_language(language)
         with self._lock:
             self._data["qmt_log_language"] = language
-            self._save_settings_locked({"qmt_log_language": language})
+            values = {"qmt_log_language": language}
+            if enabled is not None:
+                self._data["qmt_log_enabled"] = normalize_log_enabled(enabled)
+                values["qmt_log_enabled"] = "1" if self._data.get("qmt_log_enabled") else "0"
+            self._save_settings_locked(values)
         return self.qmt_log_language_info()
 
     def server_access_info(self, bound_host=None, bound_port=None, include_auth_details=True):
@@ -1091,6 +1103,8 @@ class WebRuntimeConfig(object):
             self._data["cleanup_qmt_userdata_logs"] = self._settings_bool(settings.get("cleanup_qmt_userdata_logs"))
         if "qmt_log_language" in settings:
             self._data["qmt_log_language"] = normalize_log_language(settings.get("qmt_log_language"))
+        if "qmt_log_enabled" in settings:
+            self._data["qmt_log_enabled"] = normalize_log_enabled(settings.get("qmt_log_enabled"))
         if "transport_mode" in settings:
             self._data["transport_mode"] = normalize_transport_mode(settings.get("transport_mode"))
 
@@ -4418,6 +4432,8 @@ def write_qmt_bridge_identity(row):
             "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
             "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
             "channels": channels,
+            "qmt_log_language": WEB_CONFIG.qmt_log_language() if WEB_CONFIG is not None else "zh",
+            "qmt_log_enabled": WEB_CONFIG.qmt_log_enabled() if WEB_CONFIG is not None else True,
             "updated_at": time.time(),
             "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "source": "cfquant_web_account_binding",
@@ -5867,14 +5883,15 @@ def qmt_log_language_info():
 
 def save_qmt_log_language(body):
     body = body or {}
-    info = WEB_CONFIG.set_qmt_log_language(body.get("language") or body.get("lang"))
+    enabled = body.get("enabled") if "enabled" in body else body.get("show")
+    info = WEB_CONFIG.set_qmt_log_language(body.get("language") or body.get("lang"), enabled=enabled)
     bridge_id = body.get("bridge_id")
     targets = [normalize_bridge_id(bridge_id)] if bridge_id else list(current_bridges().keys())
     results = []
     for target_bridge_id in targets:
         for channel in ("normal", "trade"):
             try:
-                result = CLIENTS.request(
+                language_result = CLIENTS.request(
                     target_bridge_id,
                     channel,
                     "cfquant.set_log_language",
@@ -5882,11 +5899,22 @@ def save_qmt_log_language(body):
                     timeout=3.0,
                     ignore_cooldown=True,
                 )
+                enabled_result = CLIENTS.request(
+                    target_bridge_id,
+                    channel,
+                    "cfquant.set_log_enabled",
+                    {"enabled": info["enabled"]},
+                    timeout=3.0,
+                    ignore_cooldown=True,
+                )
                 results.append({
                     "bridge_id": target_bridge_id,
                     "channel": channel,
                     "ok": True,
-                    "result": result,
+                    "result": {
+                        "language": language_result,
+                        "enabled": enabled_result,
+                    },
                 })
             except Exception as e:
                 results.append({
@@ -5896,6 +5924,10 @@ def save_qmt_log_language(body):
                     "error": str(e),
                 })
     info["dispatch_results"] = results
+    try:
+        info["identity_results"] = sync_qmt_bridge_identities()
+    except Exception as e:
+        info["identity_error"] = str(e)
     return info
 
 
