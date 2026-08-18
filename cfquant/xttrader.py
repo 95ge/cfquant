@@ -703,12 +703,14 @@ def _bridge_id_from_account(account):
     if isinstance(account, dict):
         bridge_id = _bridge_id_value(account.get("bridge_id") or account.get("qmt_bridge_id"))
         account_id = str(account.get("account_id") or account.get("m_strAccountID") or "").strip()
+        account_type = account.get("account_type", xtconstant.SECURITY_ACCOUNT)
     else:
         bridge_id = _bridge_id_value(getattr(account, "bridge_id", "") or getattr(account, "qmt_bridge_id", ""))
         account_id = _account_id(account)
+        account_type = getattr(account, "account_type", xtconstant.SECURITY_ACCOUNT)
     if bridge_id:
         return bridge_id
-    return _bridge_id_for_account_id(account_id)
+    return _bridge_id_for_account(account_id, account_type)
 
 
 def _bridge_id_value(value):
@@ -724,18 +726,35 @@ def _subscription_key(account):
 
 def _subscription_key_from_payload(payload):
     bridge_id = _bridge_id_from_account(payload) or _default_bridge_id()
-    return normalize_bridge_id(bridge_id), str(payload.get("account_id") or "").strip()
+    return (
+        normalize_bridge_id(bridge_id),
+        _account_type_name(payload.get("account_type", xtconstant.SECURITY_ACCOUNT)),
+        str(payload.get("account_id") or "").strip(),
+    )
 
 
 def _default_bridge_id():
     return normalize_bridge_id(get_config().get("bridge_id"))
 
 
-def _bridge_id_for_account_id(account_id):
+def _bridge_id_for_account(account_id, account_type=xtconstant.SECURITY_ACCOUNT):
     account_id = str(account_id or "").strip()
     if not account_id:
         return ""
-    return _account_bridge_pairs().get(account_id, "")
+    account_type = _account_type_name(account_type)
+    pairs = _account_bridge_pairs()
+    for value in pairs.values():
+        if not isinstance(value, dict):
+            continue
+        if str(value.get("account_id") or "").strip() != account_id:
+            continue
+        if _account_type_name(value.get("account_type", xtconstant.SECURITY_ACCOUNT)) != account_type:
+            continue
+        return _bridge_id_value(value.get("bridge_id"))
+    legacy = pairs.get(account_id)
+    if isinstance(legacy, dict):
+        return _bridge_id_value(legacy.get("bridge_id"))
+    return legacy or ""
 
 
 def _account_bridge_pairs():
@@ -760,14 +779,36 @@ def _account_bridge_pairs():
                 with open(path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
                 values = (raw.get("account_pairs") or {}) if isinstance(raw, dict) else {}
-                items = values.values() if isinstance(values, dict) else values
+                if not values and isinstance(raw, dict):
+                    values = raw.get("account_configs") or {}
+                if isinstance(values, dict):
+                    items = []
+                    for key, item in values.items():
+                        if isinstance(item, dict):
+                            row = dict(item)
+                            row.setdefault("account_key", key)
+                            items.append(row)
+                        else:
+                            items.append({"account_key": key, "account_id": key, "bridge_id": item})
+                else:
+                    items = values
                 for item in items:
                     if not isinstance(item, dict):
                         continue
                     account_id = str(item.get("account_id") or "").strip()
+                    account_type = _account_type_name(item.get("account_type", xtconstant.SECURITY_ACCOUNT))
                     bridge_id = _bridge_id_value(item.get("bridge_id"))
                     if account_id and bridge_id:
-                        pairs[account_id] = bridge_id
+                        account_key = str(item.get("account_key") or "").strip()
+                        if not account_key:
+                            account_key = "%s:%s:%s" % (bridge_id, account_type, account_id)
+                        pairs[account_key] = {
+                            "account_key": account_key,
+                            "account_id": account_id,
+                            "account_type": account_type,
+                            "bridge_id": bridge_id,
+                        }
+                        pairs.setdefault(account_id, bridge_id)
             except Exception:
                 pass
         _account_bridge_cache["stamp"] = stamp
@@ -801,6 +842,23 @@ def _account_id(account):
     if isinstance(account, dict):
         return str(account.get("account_id") or account.get("m_strAccountID") or "").strip()
     return str(getattr(account, "account_id", "") or getattr(account, "m_strAccountID", "") or "").strip()
+
+
+def _account_type_name(account_type):
+    mapping = dict((value, name) for value, name in xtconstant.ACCOUNT_TYPE_DICT.items())
+    if isinstance(account_type, str):
+        text = account_type.strip().upper()
+        aliases = {
+            "2": "STOCK",
+            "SECURITY": "STOCK",
+            "SECURITY_ACCOUNT": "STOCK",
+            "STOCK_ACCOUNT": "STOCK",
+            "3": "CREDIT",
+            "CREDIT_ACCOUNT": "CREDIT",
+            "MARGIN": "CREDIT",
+        }
+        return aliases.get(text, text or "STOCK")
+    return mapping.get(account_type, "STOCK")
 
 
 def _safe_client_part(value):

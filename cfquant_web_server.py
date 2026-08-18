@@ -57,7 +57,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260817_12"
+WEB_VERSION = "web_20260818_01"
 BASE_DIR = _PROJECT_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
 LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
@@ -137,8 +137,97 @@ ACCOUNT_ACTIONS = {
     "orders": "xttrader.query_stock_orders",
     "trades": "xttrader.query_stock_trades",
 }
+CREDIT_ACTIONS = {
+    "detail": "xttrader.query_credit_detail",
+    "credit_detail": "xttrader.query_credit_detail",
+    "subjects": "xttrader.query_credit_subjects",
+    "credit_subjects": "xttrader.query_credit_subjects",
+    "slo_code": "xttrader.query_credit_slo_code",
+    "credit_slo_code": "xttrader.query_credit_slo_code",
+    "assure": "xttrader.query_credit_assure",
+    "credit_assure": "xttrader.query_credit_assure",
+    "compacts": "xttrader.query_stk_compacts",
+    "stk_compacts": "xttrader.query_stk_compacts",
+}
+CREDIT_PROBE_ACTIONS = [
+    ("asset", "xttrader.query_stock_asset"),
+    ("positions", "xttrader.query_stock_positions"),
+    ("orders", "xttrader.query_stock_orders"),
+    ("trades", "xttrader.query_stock_trades"),
+    ("credit_detail", "xttrader.query_credit_detail"),
+    ("credit_subjects", "xttrader.query_credit_subjects"),
+    ("credit_slo_code", "xttrader.query_credit_slo_code"),
+    ("credit_assure", "xttrader.query_credit_assure"),
+    ("stk_compacts", "xttrader.query_stk_compacts"),
+]
+ACCOUNT_TYPE_LABELS = {
+    "STOCK": "普通",
+    "CREDIT": "信用",
+}
 DOWNLOAD_CALLBACK_EVENT = "xtdata:download_progress"
 DOWNLOAD_EVENT_PREFIX = "xtdata:download"
+
+
+def normalize_account_type(value=None, default="STOCK"):
+    raw = value
+    if raw is None or raw == "":
+        raw = default
+    text = str(raw or default or "STOCK").strip()
+    if not text:
+        text = str(default or "STOCK")
+    upper = text.upper().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "2": "STOCK",
+        "STOCK": "STOCK",
+        "SECURITY": "STOCK",
+        "SECURITY_ACCOUNT": "STOCK",
+        "STOCK_ACCOUNT": "STOCK",
+        "NORMAL": "STOCK",
+        "普通": "STOCK",
+        "普通账户": "STOCK",
+        "普通证券账户": "STOCK",
+        "3": "CREDIT",
+        "CREDIT": "CREDIT",
+        "MARGIN": "CREDIT",
+        "MARGIN_TRADING": "CREDIT",
+        "CREDIT_ACCOUNT": "CREDIT",
+        "信用": "CREDIT",
+        "信用账户": "CREDIT",
+        "融资融券": "CREDIT",
+    }
+    account_type = aliases.get(upper) or aliases.get(text) or upper
+    if account_type not in ("STOCK", "CREDIT"):
+        raise ValueError("unsupported account_type: %s" % text)
+    return account_type
+
+
+def account_type_label(account_type):
+    return ACCOUNT_TYPE_LABELS.get(normalize_account_type(account_type), normalize_account_type(account_type))
+
+
+def account_key_for(account_id, account_type=None, bridge_id=None):
+    account_id = str(account_id or "").strip()
+    if not account_id:
+        return ""
+    return "%s:%s:%s" % (
+        normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID),
+        normalize_account_type(account_type),
+        account_id,
+    )
+
+
+def account_identity(account_id=None, account_type=None, bridge_id=None, account_key=None):
+    account_id = str(account_id or "").strip()
+    account_type = normalize_account_type(account_type)
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    key = str(account_key or "").strip() or account_key_for(account_id, account_type, bridge_id)
+    return {
+        "account_key": key,
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "bridge_id": bridge_id,
+    }
 
 
 def get_lan_ip():
@@ -391,8 +480,12 @@ class WebRuntimeConfig(object):
             "account_pairs": {},
             "account_configs": {},
             "default_account_id": DEFAULT_ACCOUNT_ID,
+            "default_account_type": "STOCK",
+            "default_account_key": "",
             "initialized": False,
             "data_provider_account_id": "",
+            "data_provider_account_type": "STOCK",
+            "data_provider_account_key": "",
             "api_key": "",
             "allow_remote": False,
             "api_base_url": "",
@@ -423,10 +516,22 @@ class WebRuntimeConfig(object):
                         self._data["default_account_id"] = str(
                             raw.get("default_account_id") or DEFAULT_ACCOUNT_ID
                         ).strip() or DEFAULT_ACCOUNT_ID
+                        self._data["default_account_type"] = normalize_account_type(raw.get("default_account_type") or "STOCK")
+                        self._data["default_account_key"] = self._coerce_account_key_locked(
+                            account_key=raw.get("default_account_key"),
+                            account_id=self._data["default_account_id"],
+                            account_type=self._data["default_account_type"],
+                        )
                         self._data["initialized"] = bool(raw.get("initialized"))
                         self._data["data_provider_account_id"] = str(
                             raw.get("data_provider_account_id") or ""
                         ).strip()
+                        self._data["data_provider_account_type"] = normalize_account_type(raw.get("data_provider_account_type") or "STOCK")
+                        self._data["data_provider_account_key"] = self._coerce_account_key_locked(
+                            account_key=raw.get("data_provider_account_key"),
+                            account_id=self._data["data_provider_account_id"],
+                            account_type=self._data["data_provider_account_type"],
+                        )
                         web_server = raw.get("web_server") if isinstance(raw.get("web_server"), dict) else {}
                         web_port = raw.get("web_port")
                         if web_port in (None, ""):
@@ -445,6 +550,7 @@ class WebRuntimeConfig(object):
                 self._load_settings_locked()
             except Exception as e:
                 safe_print("web sqlite settings load failed: %s" % e)
+            self._repair_account_defaults_locked()
 
     def snapshot(self):
         with self._lock:
@@ -465,13 +571,103 @@ class WebRuntimeConfig(object):
         with self._lock:
             return json.loads(json.dumps(self._data.get("account_configs") or {}, ensure_ascii=False))
 
-    def account_config(self, account_id):
+    def account_config(self, account_id=None, account_type=None, bridge_id=None, account_key=None):
         account_id = str(account_id or "").strip()
-        if not account_id:
+        account_key = str(account_key or "").strip()
+        with self._lock:
+            key = self._coerce_account_key_locked(
+                account_key=account_key,
+                account_id=account_id,
+                account_type=account_type,
+                bridge_id=bridge_id,
+            )
+            value = (self._data.get("account_configs") or {}).get(key) if key else None
+            return json.loads(json.dumps(value, ensure_ascii=False)) if value else None
+
+    def account_config_by_key(self, account_key):
+        account_key = str(account_key or "").strip()
+        if not account_key:
             return None
         with self._lock:
-            value = (self._data.get("account_configs") or {}).get(account_id)
+            value = (self._data.get("account_configs") or {}).get(account_key)
             return json.loads(json.dumps(value, ensure_ascii=False)) if value else None
+
+    def _find_account_configs_locked(self, account_id=None, account_type=None, bridge_id=None):
+        account_id = str(account_id or "").strip()
+        account_type = normalize_account_type(account_type) if account_type not in (None, "") else ""
+        bridge_id = normalize_bridge_id(bridge_id) if bridge_id else ""
+        rows = []
+        for key, item in (self._data.get("account_configs") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            if account_id and str(item.get("account_id") or "").strip() != account_id:
+                continue
+            if account_type and normalize_account_type(item.get("account_type") or "STOCK") != account_type:
+                continue
+            if bridge_id and normalize_bridge_id(item.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
+                continue
+            row = dict(item)
+            row.setdefault("account_key", key)
+            rows.append((key, row))
+        return rows
+
+    def _coerce_account_key_locked(self, account_key=None, account_id=None, account_type=None, bridge_id=None):
+        configs = self._data.get("account_configs") or {}
+        account_key = str(account_key or "").strip()
+        if account_key and account_key in configs:
+            return account_key
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            return ""
+        matches = self._find_account_configs_locked(account_id, account_type, bridge_id)
+        if not matches:
+            return ""
+        default_key = str(self._data.get("default_account_key") or "").strip()
+        if default_key:
+            for key, _row in matches:
+                if key == default_key:
+                    return key
+        for key, row in matches:
+            if row.get("enabled", True):
+                return key
+        return matches[0][0]
+
+    def _first_account_key_locked(self):
+        configs = self._data.get("account_configs") or {}
+        for key, row in configs.items():
+            if isinstance(row, dict) and row.get("enabled", True):
+                return key
+        for key in configs:
+            return key
+        return ""
+
+    def _repair_account_defaults_locked(self):
+        configs = self._data.get("account_configs") or {}
+        default_key = str(self._data.get("default_account_key") or "").strip()
+        if default_key not in configs:
+            default_key = self._coerce_account_key_locked(
+                account_id=self._data.get("default_account_id") or DEFAULT_ACCOUNT_ID,
+                account_type=self._data.get("default_account_type") or "STOCK",
+            ) or self._first_account_key_locked()
+            self._data["default_account_key"] = default_key
+        if default_key and default_key in configs:
+            row = configs[default_key]
+            self._data["default_account_id"] = str(row.get("account_id") or DEFAULT_ACCOUNT_ID).strip() or DEFAULT_ACCOUNT_ID
+            self._data["default_account_type"] = normalize_account_type(row.get("account_type") or "STOCK")
+        provider_key = str(self._data.get("data_provider_account_key") or "").strip()
+        if provider_key not in configs:
+            provider_key = self._coerce_account_key_locked(
+                account_id=self._data.get("data_provider_account_id") or "",
+                account_type=self._data.get("data_provider_account_type") or "STOCK",
+            )
+            self._data["data_provider_account_key"] = provider_key
+        if provider_key and provider_key in configs:
+            row = configs[provider_key]
+            self._data["data_provider_account_id"] = str(row.get("account_id") or "").strip()
+            self._data["data_provider_account_type"] = normalize_account_type(row.get("account_type") or "STOCK")
+            for key, item in configs.items():
+                if isinstance(item, dict):
+                    item["data_provider"] = key == provider_key
 
     def initialized(self):
         with self._lock:
@@ -481,16 +677,29 @@ class WebRuntimeConfig(object):
         with self._lock:
             return str(self._data.get("data_provider_account_id") or "").strip()
 
-    def set_data_provider_account_id(self, account_id):
+    def data_provider_account_key(self):
+        with self._lock:
+            return str(self._data.get("data_provider_account_key") or "").strip()
+
+    def set_data_provider_account_id(self, account_id=None, account_type=None, bridge_id=None, account_key=None):
         account_id = str(account_id or "").strip()
         with self._lock:
             configs = self._data.setdefault("account_configs", {})
-            if account_id and account_id not in configs:
-                raise ValueError("unknown account_id: %s" % account_id)
+            selected_key = self._coerce_account_key_locked(
+                account_key=account_key,
+                account_id=account_id,
+                account_type=account_type,
+                bridge_id=bridge_id,
+            )
+            if (account_id or account_key) and not selected_key:
+                raise ValueError("unknown account: %s" % (account_key or account_id))
             for key, item in configs.items():
                 if isinstance(item, dict):
-                    item["data_provider"] = key == account_id
-            self._data["data_provider_account_id"] = account_id
+                    item["data_provider"] = key == selected_key
+            selected = configs.get(selected_key) if selected_key else {}
+            self._data["data_provider_account_key"] = selected_key
+            self._data["data_provider_account_id"] = str((selected or {}).get("account_id") or account_id or "").strip()
+            self._data["data_provider_account_type"] = normalize_account_type((selected or {}).get("account_type") or account_type or "STOCK")
             self._save_locked()
         return self.setup_info()
 
@@ -500,24 +709,33 @@ class WebRuntimeConfig(object):
             default_account_id = str(
                 self._data.get("default_account_id") or DEFAULT_ACCOUNT_ID
             ).strip() or DEFAULT_ACCOUNT_ID
+            default_account_type = normalize_account_type(self._data.get("default_account_type") or "STOCK")
+            default_account_key = str(self._data.get("default_account_key") or "").strip()
             provider = str(self._data.get("data_provider_account_id") or "").strip()
+            provider_type = normalize_account_type(self._data.get("data_provider_account_type") or "STOCK")
+            provider_key = str(self._data.get("data_provider_account_key") or "").strip()
             initialized = bool(self._data.get("initialized"))
-        default_config = configs.get(default_account_id) or {}
+        default_config = configs.get(default_account_key) or {}
         return {
             "initialized": initialized,
             "setup_required": not initialized,
             "default_account_id": default_account_id,
+            "default_account_type": default_account_type,
+            "default_account_key": default_account_key,
             "default_qmt_dir": default_config.get("qmt_dir") or "",
             "default_mode": normalize_transport_mode(
                 default_config.get("mode") or self.transport_mode()
             ),
             "data_provider_account_id": provider,
+            "data_provider_account_type": provider_type,
+            "data_provider_account_key": provider_key,
             "account_configs": configs,
         }
 
     def save_account_config(
         self,
         account_id,
+        account_type="STOCK",
         bridge_id=None,
         qmt_dir=None,
         mode="ctypes",
@@ -527,12 +745,14 @@ class WebRuntimeConfig(object):
         account_id = str(account_id or "").strip()
         if not account_id:
             raise ValueError("account_id is required")
+        account_type = normalize_account_type(account_type)
         qmt_dir = normalize_optional_path(qmt_dir)
         mode = normalize_transport_mode(mode)
         now = time.time()
         with self._lock:
             configs = self._data.setdefault("account_configs", {})
-            bridge_id = self._account_bridge_id_locked(account_id, bridge_id, qmt_dir)
+            bridge_id = self._account_bridge_id_locked(account_id, account_type, bridge_id, qmt_dir)
+            account_key = account_key_for(account_id, account_type, bridge_id)
             if bridge_id not in self.bridges():
                 self._data.setdefault("bridges", {})[bridge_id] = self._bridge_row(
                     bridge_id,
@@ -549,10 +769,13 @@ class WebRuntimeConfig(object):
                         qmt_dir,
                         {},
                     )
-                elif qmt_dir and self._can_update_bridge_python_dir_locked(bridge_id, account_id, qmt_dir):
+                elif qmt_dir and self._can_update_bridge_python_dir_locked(bridge_id, account_key, qmt_dir):
                     bridge["python_dir"] = qmt_dir
             row = {
+                "account_key": account_key,
                 "account_id": account_id,
+                "account_type": account_type,
+                "account_type_label": account_type_label(account_type),
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
                 "mode": mode,
@@ -564,31 +787,39 @@ class WebRuntimeConfig(object):
                 for item in configs.values():
                     if isinstance(item, dict):
                         item["data_provider"] = False
+                self._data["data_provider_account_key"] = account_key
                 self._data["data_provider_account_id"] = account_id
-            elif self._data.get("data_provider_account_id") == account_id:
+                self._data["data_provider_account_type"] = account_type
+            elif self._data.get("data_provider_account_key") == account_key:
+                self._data["data_provider_account_key"] = ""
                 self._data["data_provider_account_id"] = ""
-            configs[account_id] = row
-            self._data.setdefault("account_pairs", {})[account_id] = {
+            configs[account_key] = row
+            self._data.setdefault("account_pairs", {})[account_key] = {
+                "account_key": account_key,
                 "account_id": account_id,
+                "account_type": account_type,
                 "bridge_id": bridge_id,
                 "updated_at": now,
             }
             self._data["initialized"] = True
             if len(configs) == 1:
+                self._data["default_account_key"] = account_key
                 self._data["default_account_id"] = account_id
+                self._data["default_account_type"] = account_type
                 self._data["transport_mode"] = mode
             self._save_locked()
             self._save_settings_locked({"transport_mode": self._data["transport_mode"]})
         return row
 
-    def _account_bridge_id_locked(self, account_id, requested_bridge_id=None, qmt_dir=""):
+    def _account_bridge_id_locked(self, account_id, account_type="STOCK", requested_bridge_id=None, qmt_dir=""):
         requested = str(requested_bridge_id or "").strip()
         if requested:
             return normalize_bridge_id(requested)
 
         configs = self._data.setdefault("account_configs", {})
         qmt_dir_key = normalize_optional_path(qmt_dir).lower()
-        existing = configs.get(account_id)
+        existing_key = self._coerce_account_key_locked(account_id=account_id, account_type=account_type)
+        existing = configs.get(existing_key) if existing_key else None
         if isinstance(existing, dict) and existing.get("bridge_id"):
             existing_bridge_id = normalize_bridge_id(existing.get("bridge_id"))
             existing_qmt_dir_key = normalize_optional_path(
@@ -599,9 +830,9 @@ class WebRuntimeConfig(object):
             same_dir_bridge = self._bridge_id_for_qmt_dir_locked(qmt_dir_key)
             if same_dir_bridge:
                 return same_dir_bridge
-            if not self._bridge_has_other_account_locked(existing_bridge_id, account_id):
+            if not self._bridge_has_other_account_locked(existing_bridge_id, existing_key):
                 return existing_bridge_id
-            return self._new_account_bridge_id_locked(account_id)
+            return self._new_account_bridge_id_locked(account_id, account_type)
 
         if qmt_dir_key:
             same_dir_bridge = self._bridge_id_for_qmt_dir_locked(qmt_dir_key)
@@ -614,7 +845,7 @@ class WebRuntimeConfig(object):
         if not qmt_dir_key:
             return DEFAULT_BRIDGE_ID
 
-        return self._new_account_bridge_id_locked(account_id)
+        return self._new_account_bridge_id_locked(account_id, account_type)
 
     def _bridge_id_for_qmt_dir_locked(self, qmt_dir_key):
         for item in self._data.setdefault("account_configs", {}).values():
@@ -625,16 +856,16 @@ class WebRuntimeConfig(object):
                 return normalize_bridge_id(item.get("bridge_id"))
         return ""
 
-    def _bridge_has_other_account_locked(self, bridge_id, account_id):
+    def _bridge_has_other_account_locked(self, bridge_id, account_key):
         bridge_id = normalize_bridge_id(bridge_id)
         for key, item in self._data.setdefault("account_configs", {}).items():
-            if key == account_id or not isinstance(item, dict):
+            if key == account_key or not isinstance(item, dict):
                 continue
             if normalize_bridge_id(item.get("bridge_id")) == bridge_id:
                 return True
         return False
 
-    def _can_update_bridge_python_dir_locked(self, bridge_id, account_id, qmt_dir):
+    def _can_update_bridge_python_dir_locked(self, bridge_id, account_key, qmt_dir):
         qmt_dir_key = normalize_optional_path(qmt_dir).lower()
         if not qmt_dir_key:
             return False
@@ -643,7 +874,7 @@ class WebRuntimeConfig(object):
         if bridge_qmt_dir_key == qmt_dir_key:
             return False
         for key, item in self._data.setdefault("account_configs", {}).items():
-            if key == account_id or not isinstance(item, dict):
+            if key == account_key or not isinstance(item, dict):
                 continue
             if normalize_bridge_id(item.get("bridge_id")) != normalize_bridge_id(bridge_id):
                 continue
@@ -652,8 +883,9 @@ class WebRuntimeConfig(object):
                 return False
         return True
 
-    def _new_account_bridge_id_locked(self, account_id):
-        prefix = "acct_%s" % hashlib.sha1(account_id.encode("utf-8")).hexdigest()[:10]
+    def _new_account_bridge_id_locked(self, account_id, account_type="STOCK"):
+        seed = "%s:%s" % (normalize_account_type(account_type), str(account_id or "").strip())
+        prefix = "acct_%s" % hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
         bridge_id = normalize_bridge_id(prefix)
         used = set(self.bridges().keys())
         if bridge_id not in used:
@@ -676,7 +908,11 @@ class WebRuntimeConfig(object):
             self._data["account_configs"] = {}
             self._data["account_pairs"] = {}
             self._data["default_account_id"] = DEFAULT_ACCOUNT_ID
+            self._data["default_account_type"] = "STOCK"
+            self._data["default_account_key"] = ""
             self._data["data_provider_account_id"] = ""
+            self._data["data_provider_account_type"] = "STOCK"
+            self._data["data_provider_account_key"] = ""
             self._data["transport_mode"] = "ctypes"
             self._save_locked()
             self._save_settings_locked({"transport_mode": "ctypes"})
@@ -1016,32 +1252,42 @@ class WebRuntimeConfig(object):
         with self._lock:
             self._data.setdefault("bridges", {}).pop(bridge_id, None)
             pairs = self._data.setdefault("account_pairs", {})
-            for account_id, pair in list(pairs.items()):
+            for key, pair in list(pairs.items()):
                 if normalize_bridge_id(pair.get("bridge_id")) == bridge_id:
-                    pairs.pop(account_id, None)
+                    pairs.pop(key, None)
             self._save_locked()
 
-    def save_pair(self, account_id, bridge_id):
+    def save_pair(self, account_id, bridge_id, account_type="STOCK", account_key=None):
         account_id = str(account_id or "").strip()
+        account_type = normalize_account_type(account_type)
         bridge_id = normalize_bridge_id(bridge_id)
         if not account_id:
             raise ValueError("account_id is required")
         if bridge_id not in self.bridges():
             raise ValueError("unknown bridge_id: %s" % bridge_id)
+        account_key = str(account_key or "").strip() or account_key_for(account_id, account_type, bridge_id)
         row = {
+            "account_key": account_key,
             "account_id": account_id,
+            "account_type": account_type,
             "bridge_id": bridge_id,
             "updated_at": time.time(),
         }
         with self._lock:
-            self._data.setdefault("account_pairs", {})[account_id] = row
+            self._data.setdefault("account_pairs", {})[account_key] = row
             self._save_locked()
         return row
 
-    def delete_pair(self, account_id):
+    def delete_pair(self, account_id=None, account_type=None, bridge_id=None, account_key=None):
         account_id = str(account_id or "").strip()
         with self._lock:
-            self._data.setdefault("account_pairs", {}).pop(account_id, None)
+            key = self._coerce_account_key_locked(
+                account_key=account_key,
+                account_id=account_id,
+                account_type=account_type,
+                bridge_id=bridge_id,
+            ) or str(account_key or "").strip() or account_id
+            self._data.setdefault("account_pairs", {}).pop(key, None)
             self._save_locked()
 
     def _ensure_settings_db_locked(self):
@@ -1131,8 +1377,12 @@ class WebRuntimeConfig(object):
                 "account_pairs": self._data.get("account_pairs") or {},
                 "account_configs": self._data.get("account_configs") or {},
                 "default_account_id": self._data.get("default_account_id") or DEFAULT_ACCOUNT_ID,
+                "default_account_type": self._data.get("default_account_type") or "STOCK",
+                "default_account_key": self._data.get("default_account_key") or "",
                 "initialized": bool(self._data.get("initialized")),
                 "data_provider_account_id": self._data.get("data_provider_account_id") or "",
+                "data_provider_account_type": self._data.get("data_provider_account_type") or "STOCK",
+                "data_provider_account_key": self._data.get("data_provider_account_key") or "",
                 "web_port": normalize_web_port(self._data.get("web_port"), default=8765),
             }, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(temp_path, self.path)
@@ -1167,17 +1417,28 @@ class WebRuntimeConfig(object):
         if isinstance(value, list):
             items = value
         elif isinstance(value, dict):
-            items = value.values()
+            items = []
+            for key, item in value.items():
+                if isinstance(item, dict):
+                    row = dict(item)
+                    row.setdefault("account_key", key)
+                    items.append(row)
+                else:
+                    items.append({"account_key": key, "account_id": key, "bridge_id": item})
         else:
             items = []
         for item in items:
             if not isinstance(item, dict):
                 continue
             account_id = str(item.get("account_id") or "").strip()
+            account_type = normalize_account_type(item.get("account_type") or "STOCK")
             bridge_id = normalize_bridge_id(item.get("bridge_id"))
+            account_key = str(item.get("account_key") or "").strip() or account_key_for(account_id, account_type, bridge_id)
             if account_id and bridge_id:
-                result[account_id] = {
+                result[account_key] = {
+                    "account_key": account_key,
                     "account_id": account_id,
+                    "account_type": account_type,
                     "bridge_id": bridge_id,
                     "updated_at": float(item.get("updated_at") or 0),
                 }
@@ -1188,7 +1449,12 @@ class WebRuntimeConfig(object):
         if isinstance(value, list):
             items = value
         elif isinstance(value, dict):
-            items = value.values()
+            items = []
+            for key, item in value.items():
+                if isinstance(item, dict):
+                    row = dict(item)
+                    row.setdefault("account_key", key)
+                    items.append(row)
         else:
             items = []
         for item in items:
@@ -1197,10 +1463,15 @@ class WebRuntimeConfig(object):
             account_id = str(item.get("account_id") or "").strip()
             if not account_id:
                 continue
+            account_type = normalize_account_type(item.get("account_type") or "STOCK")
             bridge_id = normalize_bridge_id(item.get("bridge_id") or DEFAULT_BRIDGE_ID)
             qmt_dir = normalize_optional_path(item.get("qmt_dir") or item.get("python_dir"))
-            result[account_id] = {
+            account_key = str(item.get("account_key") or "").strip() or account_key_for(account_id, account_type, bridge_id)
+            result[account_key] = {
+                "account_key": account_key,
                 "account_id": account_id,
+                "account_type": account_type,
+                "account_type_label": account_type_label(account_type),
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
@@ -1225,6 +1496,20 @@ def configured_default_account_id():
         info = WEB_CONFIG.setup_info()
         return str(info.get("default_account_id") or DEFAULT_ACCOUNT_ID).strip() or DEFAULT_ACCOUNT_ID
     return DEFAULT_ACCOUNT_ID
+
+
+def configured_default_account_type():
+    if WEB_CONFIG is not None:
+        info = WEB_CONFIG.setup_info()
+        return normalize_account_type(info.get("default_account_type") or "STOCK")
+    return "STOCK"
+
+
+def configured_default_account_key():
+    if WEB_CONFIG is not None:
+        info = WEB_CONFIG.setup_info()
+        return str(info.get("default_account_key") or "").strip()
+    return ""
 
 
 def bridge_config(bridge_id=None):
@@ -1313,28 +1598,51 @@ def _advanced_mode_readiness(bridge_id=None):
     }
 
 
-def resolve_bridge_id(account_id=None, bridge_id=None):
+def resolve_bridge_id(account_id=None, bridge_id=None, account_type=None, account_key=None):
     account_id = str(account_id or "").strip()
-    if account_id:
-        runtime = WEB_CONFIG.account_config(account_id) if WEB_CONFIG is not None else None
+    account_key = str(account_key or "").strip()
+    if account_id or account_key:
+        runtime = WEB_CONFIG.account_config(
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=bridge_id,
+            account_key=account_key,
+        ) if WEB_CONFIG is not None else None
         if runtime and runtime.get("bridge_id"):
             return normalize_bridge_id(runtime.get("bridge_id"))
-        pair = WEB_CONFIG.account_pairs().get(account_id)
-        if pair and pair.get("bridge_id"):
-            return normalize_bridge_id(pair.get("bridge_id"))
+        if WEB_CONFIG is not None:
+            pair_key = account_key or account_key_for(account_id, account_type or "STOCK", bridge_id or DEFAULT_BRIDGE_ID)
+            pair = WEB_CONFIG.account_pairs().get(pair_key)
+            if not pair and account_id:
+                for row in WEB_CONFIG.account_pairs().values():
+                    if not isinstance(row, dict):
+                        continue
+                    if str(row.get("account_id") or "").strip() != account_id:
+                        continue
+                    if account_type not in (None, "") and normalize_account_type(row.get("account_type") or "STOCK") != normalize_account_type(account_type):
+                        continue
+                    pair = row
+                    break
+            if pair and pair.get("bridge_id"):
+                return normalize_bridge_id(pair.get("bridge_id"))
     raw_bridge_id = str(bridge_id or "").strip()
     if raw_bridge_id:
         return normalize_bridge_id(raw_bridge_id)
     return DEFAULT_BRIDGE_ID
 
 
-def resolve_account_mode(account_id=None, requested_mode=None):
+def resolve_account_mode(account_id=None, requested_mode=None, account_type=None, bridge_id=None, account_key=None):
     requested_mode = str(requested_mode or "").strip()
     if requested_mode:
         return normalize_transport_mode(requested_mode)
     account_id = str(account_id or "").strip()
-    if account_id and WEB_CONFIG is not None:
-        runtime = WEB_CONFIG.account_config(account_id)
+    if (account_id or account_key) and WEB_CONFIG is not None:
+        runtime = WEB_CONFIG.account_config(
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=bridge_id,
+            account_key=account_key,
+        )
         if runtime and runtime.get("mode"):
             return normalize_transport_mode(runtime.get("mode"))
     return WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes"
@@ -1348,8 +1656,23 @@ def enabled_account_configs():
             continue
         if config.get("enabled", True) is False:
             continue
-        result[str(account_id)] = config
+        result[str(config.get("account_key") or account_id)] = config
     return result
+
+
+def account_identity_is_ambiguous(bridge_id, account_id):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    account_id = str(account_id or "").strip()
+    if not account_id:
+        return False
+    types = set()
+    for config in enabled_account_configs().values():
+        if normalize_bridge_id(config.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
+            continue
+        if str(config.get("account_id") or "").strip() != account_id:
+            continue
+        types.add(normalize_account_type(config.get("account_type") or "STOCK"))
+    return len(types) > 1
 
 
 def configured_runtime_modes():
@@ -1386,9 +1709,9 @@ def default_runtime_client_mode():
     return "ctypes"
 
 
-def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None):
+def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None, account_type=None, bridge_id=None, account_key=None):
     default = normalize_channel(default, "normal")
-    mode = normalize_transport_mode(mode or resolve_account_mode(account_id))
+    mode = normalize_transport_mode(mode or resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key))
     if mode == "ctypes":
         return default
     return normalize_channel(requested_channel, default)
@@ -1540,10 +1863,15 @@ def account_request(
     timeout=8.0,
     mark_offline_on_timeout=True,
     ignore_cooldown=False,
+    account_type=None,
+    account_key=None,
 ):
     account_id = str(account_id or "").strip()
-    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id)
-    preferred_mode = resolve_account_mode(account_id)
+    request_params = params if isinstance(params, dict) else {}
+    request_account = request_params.get("account") if isinstance(request_params.get("account"), dict) else {}
+    account_type = normalize_account_type(account_type or request_account.get("account_type") or request_params.get("account_type") or "STOCK")
+    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
+    preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key)
     modes = [preferred_mode]
     if preferred_mode == "lttx":
         modes.append("ctypes")
@@ -1555,6 +1883,9 @@ def account_request(
             requested_channel=requested_channel,
             default=default_channel,
             mode=mode,
+            account_type=account_type,
+            bridge_id=bridge_id,
+            account_key=account_key,
         )
         started = time.perf_counter()
         try:
@@ -1574,6 +1905,8 @@ def account_request(
                 "channel": channel,
                 "bridge_id": bridge_id,
                 "account_id": account_id,
+                "account_type": account_type,
+                "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
                 "fallback": bool(attempts),
                 "fallback_reason": str(last_error or ""),
                 "attempts": attempts + [{
@@ -1603,19 +1936,26 @@ def account_request(
 
 def data_provider_candidates():
     configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
-    preferred = WEB_CONFIG.data_provider_account_id() if WEB_CONFIG is not None else ""
-    default_account_id = configured_default_account_id()
+    preferred = WEB_CONFIG.data_provider_account_key() if WEB_CONFIG is not None else ""
+    default_account_key = configured_default_account_key()
     result = []
     if preferred and preferred in configs and configs[preferred].get("enabled", True):
-        result.append(preferred)
-    if default_account_id in configs and configs[default_account_id].get("enabled", True):
-        if default_account_id not in result:
-            result.append(default_account_id)
-    for account_id, config in configs.items():
-        if config.get("enabled", True) and account_id not in result:
-            result.append(account_id)
+        result.append(configs[preferred])
+    if default_account_key in configs and configs[default_account_key].get("enabled", True):
+        if default_account_key not in [row.get("account_key") for row in result]:
+            result.append(configs[default_account_key])
+    for account_key, config in configs.items():
+        if not isinstance(config, dict):
+            continue
+        if config.get("enabled", True) and account_key not in [row.get("account_key") for row in result]:
+            result.append(config)
     if not result:
-        result.append(default_account_id)
+        result.append({
+            "account_key": account_key_for(configured_default_account_id(), configured_default_account_type(), DEFAULT_BRIDGE_ID),
+            "account_id": configured_default_account_id(),
+            "account_type": configured_default_account_type(),
+            "bridge_id": DEFAULT_BRIDGE_ID,
+        })
     return result
 
 
@@ -1629,8 +1969,11 @@ def data_provider_request(
 ):
     attempts = []
     last_error = None
-    for account_id in data_provider_candidates():
-        target_bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id)
+    for account in data_provider_candidates():
+        account_id = str(account.get("account_id") or "").strip()
+        account_type = normalize_account_type(account.get("account_type") or "STOCK")
+        account_key = str(account.get("account_key") or "").strip()
+        target_bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id or account.get("bridge_id"), account_type=account_type, account_key=account_key)
         try:
             route = account_request(
                 account_id,
@@ -1642,11 +1985,17 @@ def data_provider_request(
                 timeout=timeout,
                 mark_offline_on_timeout=True,
                 ignore_cooldown=True,
+                account_type=account_type,
+                account_key=account_key,
             )
             route["data_provider"] = account_id
+            route["data_provider_account_type"] = account_type
+            route["data_provider_account_key"] = account_key
             route["provider_fallback"] = bool(attempts)
             route["provider_attempts"] = attempts + [{
                 "account_id": account_id,
+                "account_type": account_type,
+                "account_key": account_key,
                 "ok": True,
                 "mode": route["mode"],
                 "channel": route["channel"],
@@ -1656,11 +2005,13 @@ def data_provider_request(
             last_error = error
             attempts.append({
                 "account_id": account_id,
+                "account_type": account_type,
+                "account_key": account_key,
                 "ok": False,
                 "error": str(error),
             })
     detail = "; ".join(
-        "%s: %s" % (row["account_id"], row.get("error") or "")
+        "%s/%s: %s" % (row["account_id"], row.get("account_type") or "STOCK", row.get("error") or "")
         for row in attempts
     )
     raise RuntimeError(
@@ -1668,10 +2019,12 @@ def data_provider_request(
     )
 
 
-def account_route_status(account_id, bridge_id=None):
+def account_route_status(account_id, bridge_id=None, account_type=None, account_key=None):
     account_id = str(account_id or "").strip() or configured_default_account_id()
-    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id)
-    preferred_mode = resolve_account_mode(account_id)
+    account_type = normalize_account_type(account_type or configured_default_account_type())
+    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
+    account_key = account_key or account_key_for(account_id, account_type, bridge_id)
+    preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key)
     ctypes_status = ctypes_bridge_status(bridge_id)
     if preferred_mode == "lttx":
         advanced = _advanced_mode_readiness(bridge_id)
@@ -1699,12 +2052,15 @@ def account_route_status(account_id, bridge_id=None):
     selected = advanced_status if effective_mode == "lttx" else ctypes_status
     return {
         "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "account_key": account_key,
         "bridge_id": bridge_id,
         "preferred_mode": preferred_mode,
         "effective_mode": effective_mode,
         "fallback": fallback,
-        "qmt_dir": (WEB_CONFIG.account_config(account_id) or {}).get("qmt_dir", ""),
-        "data_provider": account_id == (WEB_CONFIG.data_provider_account_id() if WEB_CONFIG else ""),
+        "qmt_dir": (WEB_CONFIG.account_config(account_id=account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key) or {}).get("qmt_dir", ""),
+        "data_provider": account_key == (WEB_CONFIG.data_provider_account_key() if WEB_CONFIG else ""),
         "ready": advanced_ready if effective_mode == "lttx" else ctypes_ready,
         "status": selected,
         "modes": {
@@ -1884,6 +2240,18 @@ def _external_account_id(params):
     ).strip()
 
 
+def _external_account_type(params):
+    params = params or {}
+    account = params.get("account") if isinstance(params.get("account"), dict) else {}
+    return normalize_account_type(account.get("account_type") or params.get("account_type") or "STOCK")
+
+
+def _external_account_key(params):
+    params = params or {}
+    account = params.get("account") if isinstance(params.get("account"), dict) else {}
+    return str(account.get("account_key") or params.get("account_key") or "").strip()
+
+
 def _external_default_channel(action):
     action = str(action or "")
     if action in {
@@ -1914,11 +2282,17 @@ def _external_default_channel(action):
 def build_lttx_registry():
     configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
     accounts = {}
-    for account_id, row in configs.items():
+    for account_key, row in configs.items():
         if not isinstance(row, dict):
             continue
-        accounts[str(account_id)] = {
-            "account_id": str(row.get("account_id") or account_id),
+        account_id = str(row.get("account_id") or "").strip()
+        account_type = normalize_account_type(row.get("account_type") or "STOCK")
+        key = str(row.get("account_key") or account_key or account_key_for(account_id, account_type, row.get("bridge_id"))).strip()
+        accounts[key] = {
+            "account_key": key,
+            "account_id": account_id,
+            "account_type": account_type,
+            "account_type_label": account_type_label(account_type),
             "bridge_id": normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID),
             "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
             "enabled": bool(row.get("enabled", True)),
@@ -1936,7 +2310,11 @@ def build_lttx_registry():
         "web_request_channel": LTTX_WEB_REQUEST_CHANNEL,
         "transport_mode": WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes",
         "default_account_id": configured_default_account_id(),
+        "default_account_type": configured_default_account_type(),
+        "default_account_key": configured_default_account_key(),
         "data_provider_account_id": WEB_CONFIG.data_provider_account_id() if WEB_CONFIG is not None else "",
+        "data_provider_account_type": WEB_CONFIG.setup_info().get("data_provider_account_type") if WEB_CONFIG is not None else "STOCK",
+        "data_provider_account_key": WEB_CONFIG.data_provider_account_key() if WEB_CONFIG is not None else "",
         "accounts": accounts,
         "bridges": current_bridges(),
         "web_route": {
@@ -1973,13 +2351,17 @@ def route_external_lttx_request(msg):
         }, {"route": "web_lttx"}
     if action == "cfquant.status":
         account_id = _external_account_id(params)
+        account_type = _external_account_type(params)
+        account_key = _external_account_key(params)
         if account_id:
-            return account_route_status(account_id, bridge_id=params.get("bridge_id")), {"route": "account_status"}
+            return account_route_status(account_id, bridge_id=params.get("bridge_id"), account_type=account_type, account_key=account_key), {"route": "account_status"}
         return build_lttx_registry(), {"route": "registry"}
 
     default_channel = normalize_channel(params.get("default_channel") or _external_default_channel(action), "normal")
     requested_channel = params.get("channel") or params.get("request_channel")
     account_id = _external_account_id(params)
+    account_type = _external_account_type(params)
+    account_key = _external_account_key(params)
     timeout = float(params.get("timeout") or msg.get("timeout") or 12.0)
     if action.startswith("xttrader."):
         account_id = account_id or configured_default_account_id()
@@ -1992,6 +2374,8 @@ def route_external_lttx_request(msg):
             default_channel=default_channel,
             timeout=timeout,
             mark_offline_on_timeout=True,
+            account_type=account_type,
+            account_key=account_key,
         )
         meta = dict(route)
         meta.pop("result", None)
@@ -2156,14 +2540,28 @@ class LttxWebRouteServer(object):
                             self._quote_subscribers.pop(subscribe_id, None)
         elif action == "xttrader.subscribe":
             account_id = _external_account_id(params) or configured_default_account_id()
+            account_type = _external_account_type(params)
+            account_key = _external_account_key(params) or account_key_for(
+                account_id,
+                account_type,
+                params.get("bridge_id") or resolve_bridge_id(account_id=account_id, account_type=account_type),
+            )
             if account_id:
                 with self._lock:
-                    self._account_subscribers.setdefault(account_id, set()).add(client_id)
+                    self._account_subscribers.setdefault(account_key, set()).add(client_id)
         elif action == "xttrader.unsubscribe":
             account_id = _external_account_id(params)
+            account_type = _external_account_type(params)
+            account_key = _external_account_key(params)
+            if account_id and not account_key:
+                account_key = account_key_for(
+                    account_id,
+                    account_type,
+                    params.get("bridge_id") or resolve_bridge_id(account_id=account_id, account_type=account_type),
+                )
             with self._lock:
-                if account_id:
-                    subscribers = self._account_subscribers.get(account_id)
+                if account_key:
+                    subscribers = self._account_subscribers.get(account_key)
                     if subscribers:
                         subscribers.discard(client_id)
                 else:
@@ -2186,10 +2584,14 @@ class LttxWebRouteServer(object):
         if not event.startswith("trader:"):
             return
         account_id = CallbackEventStore.event_account_id_static(msg)
+        account_type = CallbackEventStore.event_account_type_static(msg)
+        bridge_id = CallbackEventStore.event_bridge_id_static(msg) or DEFAULT_BRIDGE_ID
         if not account_id and isinstance(msg.get("data"), dict):
             account_id = _external_account_id(msg.get("data"))
+            account_type = _external_account_type(msg.get("data"))
+        account_key = account_key_for(account_id, account_type, bridge_id) if account_id else ""
         with self._lock:
-            client_ids = sorted(self._account_subscribers.get(str(account_id or ""), set()))
+            client_ids = sorted(self._account_subscribers.get(account_key, set()))
         for client_id in client_ids:
             self._push_event(client_id, event, msg.get("data"))
 
@@ -2261,10 +2663,11 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
 
 
 class WebSocketCallbackClient(object):
-    def __init__(self, sock, bridge_id="", account_id="", event_name="", event_prefix="", job_id=""):
+    def __init__(self, sock, bridge_id="", account_id="", account_type="", event_name="", event_prefix="", job_id=""):
         self.sock = sock
         self.bridge_id = normalize_bridge_id(bridge_id) if bridge_id else ""
         self.account_id = str(account_id or "").strip()
+        self.account_type = normalize_account_type(account_type) if account_type not in ("", None) else ""
         self.event_name = str(event_name or "").strip()
         self.event_prefix = str(event_prefix or "").strip()
         self.job_id = str(job_id or "").strip()
@@ -2276,6 +2679,12 @@ class WebSocketCallbackClient(object):
             return False
         if self.account_id and CallbackEventStore.event_account_id_static(event) != self.account_id:
             return False
+        if self.account_type:
+            event_type = CallbackEventStore.event_account_type_static(event)
+            if event_type and event_type != self.account_type:
+                return False
+            if not event_type and self.bridge_id and self.account_id and account_identity_is_ambiguous(self.bridge_id, self.account_id):
+                return False
         event_name = str(event.get("event") or "")
         if self.event_name and event_name != self.event_name:
             return False
@@ -2458,6 +2867,9 @@ class QuoteSubscriptionStore(object):
                         "subscribe_id": existing_id,
                         "bridge_id": existing_bridge_id,
                         "channel": row.get("channel") or "normal",
+                        "account_id": row.get("account_id") or "",
+                        "account_type": row.get("account_type") or "",
+                        "account_key": row.get("account_key") or "",
                         "kind": "whole_quote",
                         "markets": row.get("markets") or markets,
                         "already_subscribed": True,
@@ -2485,6 +2897,8 @@ class QuoteSubscriptionStore(object):
                 "channel": channel,
                 "mode": route["mode"],
                 "account_id": route.get("data_provider") or "",
+                "account_type": route.get("data_provider_account_type") or "",
+                "account_key": route.get("data_provider_account_key") or "",
                 "kind": "whole_quote",
                 "markets": markets,
                 "created_at": time.time(),
@@ -2500,6 +2914,9 @@ class QuoteSubscriptionStore(object):
             "subscribe_id": subscribe_id,
             "bridge_id": bridge_id,
             "channel": channel,
+            "account_id": route.get("data_provider") or "",
+            "account_type": route.get("data_provider_account_type") or "",
+            "account_key": route.get("data_provider_account_key") or "",
             "kind": "whole_quote",
             "markets": markets,
             "already_subscribed": False,
@@ -2519,11 +2936,15 @@ class QuoteSubscriptionStore(object):
         )
         channel = row.get("channel") or (body or {}).get("channel") or "normal"
         account_id = row.get("account_id") or ""
+        account_type = row.get("account_type") or ""
+        account_key = row.get("account_key") or ""
         result = self._request_unsubscribe(
             bridge_id,
             channel,
             subscribe_id,
             account_id=account_id,
+            account_type=account_type,
+            account_key=account_key,
             timeout=8.0,
         )
         with self._lock:
@@ -2532,6 +2953,9 @@ class QuoteSubscriptionStore(object):
             "subscribe_id": subscribe_id,
             "bridge_id": bridge_id,
             "channel": channel,
+            "account_id": account_id,
+            "account_type": account_type,
+            "account_key": account_key,
             "result": result,
         }
 
@@ -2554,6 +2978,8 @@ class QuoteSubscriptionStore(object):
                 channel,
                 subscribe_id,
                 account_id=row.get("account_id") or "",
+                account_type=row.get("account_type") or "",
+                account_key=row.get("account_key") or "",
                 timeout=5.0,
             )
             error = ""
@@ -2573,7 +2999,7 @@ class QuoteSubscriptionStore(object):
             "error": error,
         }
 
-    def _request_unsubscribe(self, bridge_id, channel, subscribe_id, account_id="", timeout=8.0):
+    def _request_unsubscribe(self, bridge_id, channel, subscribe_id, account_id="", account_type="", account_key="", timeout=8.0):
         route = account_request(
             account_id,
             bridge_id,
@@ -2583,6 +3009,8 @@ class QuoteSubscriptionStore(object):
             timeout=timeout,
             default_channel="normal",
             ignore_cooldown=True,
+            account_type=account_type or "STOCK",
+            account_key=account_key,
         )
         return route["result"]
 
@@ -2784,9 +3212,10 @@ class CallbackEventStore(object):
         except Exception:
             pass
 
-    def latest(self, since=0, limit=200, bridge_id=None, account_id=None, event_name=None, event_prefix=None, job_id=None):
+    def latest(self, since=0, limit=200, bridge_id=None, account_id=None, account_type=None, event_name=None, event_prefix=None, job_id=None):
         bridge_id = normalize_bridge_id(bridge_id) if bridge_id else None
         account_id = str(account_id or "").strip()
+        account_type = normalize_account_type(account_type) if account_type not in ("", None) else ""
         event_name = str(event_name or "").strip()
         event_prefix = str(event_prefix or "").strip()
         job_id = str(job_id or "").strip()
@@ -2803,6 +3232,12 @@ class CallbackEventStore(object):
                     row
                     for row in rows
                     if self._event_account_id(row) == account_id
+                ]
+            if account_type:
+                rows = [
+                    row
+                    for row in rows
+                    if self.event_account_type_static(row) == account_type
                 ]
             if event_name:
                 rows = [
@@ -2858,6 +3293,20 @@ class CallbackEventStore(object):
             meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
             if not row.get("bridge_id") and meta.get("bridge_id"):
                 row["bridge_id"] = meta.get("bridge_id")
+            if not row.get("account_id"):
+                account_id = self.event_account_id_static(row)
+                if account_id:
+                    row["account_id"] = account_id
+            if not row.get("account_type"):
+                account_type = self.event_account_type_static(row)
+                if account_type:
+                    row["account_type"] = account_type
+                else:
+                    inferred = self._infer_account_type(row)
+                    if inferred:
+                        row["account_type"] = inferred
+            if row.get("account_id") and row.get("account_type") and row.get("bridge_id") and not row.get("account_key"):
+                row["account_key"] = account_key_for(row.get("account_id"), row.get("account_type"), row.get("bridge_id"))
             row["seq"] = self._seq
             row["received_at"] = time.time()
             self._events.append(row)
@@ -2925,6 +3374,40 @@ class CallbackEventStore(object):
             if value:
                 return str(value).strip()
         return ""
+
+    @staticmethod
+    def event_account_type_static(event):
+        data = event.get("data") if isinstance(event, dict) else {}
+        meta = event.get("meta") if isinstance(event, dict) and isinstance(event.get("meta"), dict) else {}
+        candidates = [
+            event.get("account_type") if isinstance(event, dict) else None,
+            meta.get("account_type"),
+            data.get("account_type") if isinstance(data, dict) else None,
+            data.get("m_nAccountType") if isinstance(data, dict) else None,
+            data.get("m_strAccountType") if isinstance(data, dict) else None,
+        ]
+        for value in candidates:
+            if value not in (None, ""):
+                try:
+                    return normalize_account_type(value)
+                except Exception:
+                    continue
+        return ""
+
+    def _infer_account_type(self, event):
+        bridge_id = normalize_bridge_id(self.event_bridge_id_static(event) or DEFAULT_BRIDGE_ID)
+        account_id = self.event_account_id_static(event)
+        if not account_id:
+            return ""
+        matches = []
+        for config in enabled_account_configs().values():
+            if normalize_bridge_id(config.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
+                continue
+            if str(config.get("account_id") or "").strip() != account_id:
+                continue
+            matches.append(normalize_account_type(config.get("account_type") or "STOCK"))
+        unique = sorted(set(matches))
+        return unique[0] if len(unique) == 1 else ""
 
     @staticmethod
     def event_bridge_id_static(event):
@@ -4408,10 +4891,13 @@ def write_qmt_bridge_identity(row):
     row = row or {}
     bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
     qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
+    account_type = normalize_account_type(row.get("account_type") or "STOCK")
     result = {
         "written": False,
         "bridge_id": bridge_id,
         "account_id": str(row.get("account_id") or ""),
+        "account_type": account_type,
+        "account_key": str(row.get("account_key") or ""),
         "qmt_dir": qmt_dir,
         "path": "",
         "error": "",
@@ -4427,10 +4913,43 @@ def write_qmt_bridge_identity(row):
             result["error"] = "QMT 核心目录不存在: %s" % (core_dir or qmt_dir)
             return result
         channels = bridge_channels(bridge_id)
+        accounts = []
+        if WEB_CONFIG is not None:
+            for item in WEB_CONFIG.account_configs().values():
+                if not isinstance(item, dict):
+                    continue
+                if normalize_bridge_id(item.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
+                    continue
+                if item.get("enabled", True) is False:
+                    continue
+                account_id = str(item.get("account_id") or "").strip()
+                if not account_id:
+                    continue
+                item_type = normalize_account_type(item.get("account_type") or "STOCK")
+                accounts.append({
+                    "account_key": str(item.get("account_key") or account_key_for(account_id, item_type, bridge_id)),
+                    "account_id": account_id,
+                    "account_type": item_type,
+                    "account_type_label": account_type_label(item_type),
+                    "display_name": str(item.get("display_name") or ""),
+                    "data_provider": bool(item.get("data_provider")),
+                })
+        if not accounts and row.get("account_id"):
+            accounts.append({
+                "account_key": str(row.get("account_key") or account_key_for(row.get("account_id"), account_type, bridge_id)),
+                "account_id": str(row.get("account_id") or ""),
+                "account_type": account_type,
+                "account_type_label": account_type_label(account_type),
+                "display_name": str(row.get("display_name") or ""),
+                "data_provider": bool(row.get("data_provider")),
+            })
         payload = {
-            "config_version": 1,
+            "config_version": 2,
             "bridge_id": bridge_id,
             "account_id": str(row.get("account_id") or ""),
+            "account_type": account_type,
+            "account_key": str(row.get("account_key") or account_key_for(row.get("account_id"), account_type, bridge_id)),
+            "accounts": accounts,
             "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
             "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
             "channels": channels,
@@ -4449,6 +4968,7 @@ def write_qmt_bridge_identity(row):
             "core_dir": core_dir,
             "script_dir": normalize_optional_path(target.get("script_dir")),
             "channels": channels,
+            "accounts": accounts,
         })
         return result
     except Exception as e:
@@ -4781,11 +5301,11 @@ def stop_lttx_server():
     }
 
 
-def account_payload(account_id):
+def account_payload(account_id, account_type="STOCK"):
     account_id = str(account_id or "").strip()
     if not account_id:
         raise ValueError("account_id is required")
-    return {"account": {"account_id": account_id, "account_type": "STOCK"}}
+    return {"account": {"account_id": account_id, "account_type": normalize_account_type(account_type)}}
 
 
 def normalize_stock_code(stock_code):
@@ -5162,9 +5682,17 @@ class LogCleanupManager(object):
 LOG_CLEANUP = LogCleanupManager()
 
 
-def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS):
-    payload = account_payload(account_id)
-    result = {"bridge_id": bridge_id, "account_id": account_id, "channel": channel}
+def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS, account_type="STOCK", account_key=None):
+    account_type = normalize_account_type(account_type)
+    payload = account_payload(account_id, account_type)
+    result = {
+        "bridge_id": bridge_id,
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
+        "channel": channel,
+    }
     for section in sections:
         action = ACCOUNT_ACTIONS.get(section)
         if not action:
@@ -5180,6 +5708,8 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 payload,
                 timeout=timeout,
                 mark_offline_on_timeout=False,
+                account_type=account_type,
+                account_key=account_key,
             )
             data = route["result"]
             result[section] = {
@@ -5224,26 +5754,28 @@ class AccountDataCache(object):
         self._running = False
         self._stop_event.set()
 
-    def get(self, bridge_id, channel, account_id, sections, force=False, subscribe=True):
+    def get(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None):
         bridge_id = normalize_bridge_id(bridge_id)
+        account_type = normalize_account_type(account_type)
+        account_key = account_key or account_key_for(account_id, account_type, bridge_id)
         sections = [section for section in sections if section in ACCOUNT_ACTIONS]
         if not sections:
-            return {"bridge_id": bridge_id, "account_id": account_id, "channel": channel}
+            return {"bridge_id": bridge_id, "account_id": account_id, "account_type": account_type, "account_key": account_key, "channel": channel}
         if not subscribe:
-            live = query_account_live(bridge_id, channel, account_id, sections)
+            live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
             live["cache"] = {
                 "enabled": False,
                 "force": bool(force),
                 "subscribed": False,
             }
             return live
-        self._subscribe(bridge_id, channel, account_id, sections)
+        self._subscribe(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
         if force:
-            live = query_account_live(bridge_id, channel, account_id, sections)
-            self._store_result(bridge_id, channel, account_id, live, sections)
-            return self._build_result(bridge_id, channel, account_id, sections, force=True)
+            live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
+            self._store_result(bridge_id, channel, account_id, live, sections, account_type=account_type, account_key=account_key)
+            return self._build_result(bridge_id, channel, account_id, sections, force=True, account_type=account_type, account_key=account_key)
 
-        missing = self._missing_sections(bridge_id, channel, account_id, sections)
+        missing = self._missing_sections(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
         if missing:
             self._wake()
             return self._build_result(
@@ -5253,30 +5785,38 @@ class AccountDataCache(object):
                 sections,
                 force=False,
                 refresh_queued=True,
+                account_type=account_type,
+                account_key=account_key,
             )
-        elif self._needs_refresh(bridge_id, channel, account_id, sections):
+        elif self._needs_refresh(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key):
             self._wake()
-        return self._build_result(bridge_id, channel, account_id, sections, force=False)
+        return self._build_result(bridge_id, channel, account_id, sections, force=False, account_type=account_type, account_key=account_key)
 
-    def _subscribe(self, bridge_id, channel, account_id, sections):
-        key = (bridge_id, channel, account_id)
+    def _cache_key(self, bridge_id, channel, account_id, section=None, account_type="STOCK", account_key=None):
+        account_type = normalize_account_type(account_type)
+        account_key = account_key or account_key_for(account_id, account_type, bridge_id)
+        base = (bridge_id, channel, account_key, account_id, account_type)
+        return base + ((section,) if section is not None else ())
+
+    def _subscribe(self, bridge_id, channel, account_id, sections, account_type="STOCK", account_key=None):
+        key = self._cache_key(bridge_id, channel, account_id, account_type=account_type, account_key=account_key)
         with self._lock:
             current = self._subscriptions.setdefault(key, set())
             current.update(sections)
 
-    def _missing_sections(self, bridge_id, channel, account_id, sections):
+    def _missing_sections(self, bridge_id, channel, account_id, sections, account_type="STOCK", account_key=None):
         with self._lock:
             return [
                 section
                 for section in sections
-                if (bridge_id, channel, account_id, section) not in self._entries
+                if self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key) not in self._entries
             ]
 
-    def _needs_refresh(self, bridge_id, channel, account_id, sections):
+    def _needs_refresh(self, bridge_id, channel, account_id, sections, account_type="STOCK", account_key=None):
         now = time.time()
         with self._lock:
             for section in sections:
-                entry = self._entries.get((bridge_id, channel, account_id, section))
+                entry = self._entries.get(self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key))
                 if not entry or now - entry.get("checked_at", 0) >= self.interval:
                     return True
         return False
@@ -5284,9 +5824,11 @@ class AccountDataCache(object):
     def _wake(self):
         self._stop_event.set()
 
-    def _store_result(self, bridge_id, channel, account_id, result, sections):
+    def _store_result(self, bridge_id, channel, account_id, result, sections, account_type="STOCK", account_key=None):
         now = time.time()
         checked_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
+        account_type = normalize_account_type(account_type)
+        account_key = account_key or account_key_for(account_id, account_type, bridge_id)
         with self._lock:
             for section in sections:
                 row = result.get(section)
@@ -5295,14 +5837,21 @@ class AccountDataCache(object):
                 stored = dict(row)
                 stored["checked_at"] = now
                 stored["checked_at_text"] = checked_at_text
-                self._entries[(bridge_id, channel, account_id, section)] = stored
+                stored["account_type"] = account_type
+                stored["account_key"] = account_key
+                self._entries[self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)] = stored
 
-    def _build_result(self, bridge_id, channel, account_id, sections, force=False, refresh_queued=False):
+    def _build_result(self, bridge_id, channel, account_id, sections, force=False, refresh_queued=False, account_type="STOCK", account_key=None):
         now = time.time()
+        account_type = normalize_account_type(account_type)
+        account_key = account_key or account_key_for(account_id, account_type, bridge_id)
         result = {
             "bridge_id": bridge_id,
             "bridge_name": bridge_config(bridge_id)["name"],
             "account_id": account_id,
+            "account_type": account_type,
+            "account_type_label": account_type_label(account_type),
+            "account_key": account_key,
             "channel": channel,
             "cache": {
                 "enabled": True,
@@ -5314,7 +5863,7 @@ class AccountDataCache(object):
         ages = []
         with self._lock:
             for section in sections:
-                entry = self._entries.get((bridge_id, channel, account_id, section))
+                entry = self._entries.get(self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key))
                 if not entry:
                     result[section] = {
                         "ok": False,
@@ -5349,20 +5898,20 @@ class AccountDataCache(object):
     def _refresh_subscriptions(self):
         with self._lock:
             subscriptions = [
-                (bridge_id, channel, account_id, sorted(sections))
-                for (bridge_id, channel, account_id), sections in self._subscriptions.items()
+                (bridge_id, channel, account_key, account_id, account_type, sorted(sections))
+                for (bridge_id, channel, account_key, account_id, account_type), sections in self._subscriptions.items()
                 if account_id and sections
             ]
-        for bridge_id, channel, account_id, sections in subscriptions:
+        for bridge_id, channel, account_key, account_id, account_type, sections in subscriptions:
             if not self._running:
                 break
             try:
-                live = query_account_live(bridge_id, channel, account_id, sections)
-                self._store_result(bridge_id, channel, account_id, live, sections)
+                live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
+                self._store_result(bridge_id, channel, account_id, live, sections, account_type=account_type, account_key=account_key)
             except Exception as e:
                 safe_print(
-                    "account data cache refresh failed bridge=%s channel=%s account=%s error=%s"
-                    % (bridge_id, channel, account_id, e)
+                    "account data cache refresh failed bridge=%s channel=%s account=%s type=%s error=%s"
+                    % (bridge_id, channel, account_id, account_type, e)
                 )
 
 
@@ -5371,7 +5920,9 @@ ACCOUNT_CACHE = AccountDataCache()
 
 def submit_order(body):
     account_id = str(body.get("account_id") or "").strip()
-    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=body.get("bridge_id"))
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_key = str(body.get("account_key") or "").strip()
+    bridge_id = resolve_bridge_id(account_id=account_id, account_type=account_type, account_key=account_key, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
     stock_code = normalize_stock_code(body.get("stock_code"))
     side = str(body.get("side") or "").strip().lower()
@@ -5394,7 +5945,7 @@ def submit_order(body):
     order_type = STOCK_BUY if side == "buy" else STOCK_SELL
     remark = body.get("order_remark") or "cfquant_web_%s" % int(time.time() * 1000)
     params = {
-        "account": {"account_id": account_id, "account_type": "STOCK"},
+        "account": {"account_id": account_id, "account_type": account_type},
         "stock_code": stock_code,
         "order_type": order_type,
         "order_volume": volume,
@@ -5414,9 +5965,14 @@ def submit_order(body):
         params,
         default_channel="trade",
         timeout=12.0,
+        account_type=account_type,
+        account_key=account_key,
     )
     return {
         "bridge_id": route["bridge_id"],
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
         "channel": route["channel"],
         "mode": route["mode"],
         "fallback": route["fallback"],
@@ -5429,7 +5985,9 @@ def submit_order(body):
 
 def submit_batch_orders(body):
     account_id = str(body.get("account_id") or "").strip()
-    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=body.get("bridge_id"))
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_key = str(body.get("account_key") or "").strip()
+    bridge_id = resolve_bridge_id(account_id=account_id, account_type=account_type, account_key=account_key, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
     raw_orders = body.get("orders") or []
     if not isinstance(raw_orders, list) or not raw_orders:
@@ -5463,7 +6021,7 @@ def submit_batch_orders(body):
             "order_remark": row.get("order_remark") or "cfquant_batch_%s_%s" % (int(time.time() * 1000), index + 1),
         })
     params = {
-        "account": {"account_id": account_id, "account_type": "STOCK"},
+        "account": {"account_id": account_id, "account_type": account_type},
         "orders": orders,
         "stop_on_error": parse_bool(body.get("stop_on_error")),
         "order_remark": body.get("order_remark") or "cfquant_batch_%s" % int(time.time() * 1000),
@@ -5477,6 +6035,8 @@ def submit_batch_orders(body):
         params,
         default_channel="trade",
         timeout=max(12.0, len(orders) * 3.0),
+        account_type=account_type,
+        account_key=account_key,
     )
     return {
         "bridge_id": route["bridge_id"],
@@ -5485,6 +6045,8 @@ def submit_batch_orders(body):
         "fallback": route["fallback"],
         "fallback_reason": route["fallback_reason"],
         "account_id": account_id,
+        "account_type": account_type,
+        "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
         "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
     }
@@ -5492,7 +6054,9 @@ def submit_batch_orders(body):
 
 def cancel_order(body):
     account_id = str(body.get("account_id") or "").strip()
-    bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=body.get("bridge_id"))
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_key = str(body.get("account_key") or "").strip()
+    bridge_id = resolve_bridge_id(account_id=account_id, account_type=account_type, account_key=account_key, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
     order_id = str(body.get("order_id") or "").strip()
     confirm_text = str(body.get("confirm_text") or "").strip()
@@ -5502,7 +6066,7 @@ def cancel_order(body):
     if confirm_text != expected:
         raise ValueError("confirmation mismatch, expected: %s" % expected)
     params = {
-        "account": {"account_id": account_id, "account_type": "STOCK"},
+        "account": {"account_id": account_id, "account_type": account_type},
         "order_id": order_id,
     }
     started = time.perf_counter()
@@ -5514,9 +6078,14 @@ def cancel_order(body):
         params,
         default_channel="trade",
         timeout=12.0,
+        account_type=account_type,
+        account_key=account_key,
     )
     return {
         "bridge_id": route["bridge_id"],
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
         "channel": route["channel"],
         "mode": route["mode"],
         "fallback": route["fallback"],
@@ -5549,7 +6118,12 @@ def delete_bridge_config(body):
 
 
 def save_account_pair(body):
-    row = WEB_CONFIG.save_pair((body or {}).get("account_id"), (body or {}).get("bridge_id"))
+    row = WEB_CONFIG.save_pair(
+        (body or {}).get("account_id"),
+        (body or {}).get("bridge_id"),
+        account_type=(body or {}).get("account_type") or "STOCK",
+        account_key=(body or {}).get("account_key"),
+    )
     STATUS_MONITOR.wake()
     return {
         "pair": row,
@@ -5589,11 +6163,13 @@ def ensure_account_runtime(mode):
 def save_account_runtime_config(body):
     body = body or {}
     account_id = str(body.get("account_id") or "").strip()
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
     bridge_id = body.get("bridge_id")
     qmt_dir = body.get("qmt_dir") or body.get("python_dir")
     mode = body.get("mode") or body.get("transport_mode") or "ctypes"
     row = WEB_CONFIG.save_account_config(
         account_id=account_id,
+        account_type=account_type,
         bridge_id=bridge_id,
         qmt_dir=qmt_dir,
         mode=mode,
@@ -5616,21 +6192,37 @@ def save_account_runtime_config(body):
 
 def delete_account_runtime_config(body):
     account_id = str((body or {}).get("account_id") or "").strip()
-    if not account_id:
-        raise ValueError("account_id is required")
-    WEB_CONFIG.delete_pair(account_id)
+    account_type = normalize_account_type((body or {}).get("account_type") or "STOCK")
+    account_key = str((body or {}).get("account_key") or "").strip()
+    if not account_id and not account_key:
+        raise ValueError("account_id or account_key is required")
+    WEB_CONFIG.delete_pair(account_id=account_id, account_type=account_type, bridge_id=(body or {}).get("bridge_id"), account_key=account_key)
     with WEB_CONFIG._lock:
         configs = WEB_CONFIG._data.setdefault("account_configs", {})
-        configs.pop(account_id, None)
-        if WEB_CONFIG._data.get("data_provider_account_id") == account_id:
+        key = WEB_CONFIG._coerce_account_key_locked(
+            account_key=account_key,
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=(body or {}).get("bridge_id"),
+        ) or account_key
+        configs.pop(key, None)
+        if WEB_CONFIG._data.get("data_provider_account_key") == key:
+            WEB_CONFIG._data["data_provider_account_key"] = ""
             WEB_CONFIG._data["data_provider_account_id"] = ""
+            WEB_CONFIG._data["data_provider_account_type"] = "STOCK"
         if not configs:
             WEB_CONFIG._data["initialized"] = False
             WEB_CONFIG._data["default_account_id"] = DEFAULT_ACCOUNT_ID
+            WEB_CONFIG._data["default_account_type"] = "STOCK"
+            WEB_CONFIG._data["default_account_key"] = ""
             WEB_CONFIG._data["transport_mode"] = "ctypes"
             WEB_CONFIG._save_settings_locked({"transport_mode": "ctypes"})
-        elif WEB_CONFIG._data.get("default_account_id") == account_id:
-            WEB_CONFIG._data["default_account_id"] = next(iter(configs.keys()))
+        elif WEB_CONFIG._data.get("default_account_key") == key:
+            next_key = next(iter(configs.keys()))
+            next_row = configs[next_key]
+            WEB_CONFIG._data["default_account_key"] = next_key
+            WEB_CONFIG._data["default_account_id"] = str(next_row.get("account_id") or DEFAULT_ACCOUNT_ID).strip() or DEFAULT_ACCOUNT_ID
+            WEB_CONFIG._data["default_account_type"] = normalize_account_type(next_row.get("account_type") or "STOCK")
         WEB_CONFIG._save_locked()
     return {
         "setup": WEB_CONFIG.setup_info(),
@@ -5642,6 +6234,7 @@ def delete_account_runtime_config(body):
 def initialize_web_setup(body):
     body = body or {}
     account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
     if not account_id:
         raise ValueError("account_id is required")
     auth_info = WEB_CONFIG.web_auth_info(include_username=True)
@@ -5668,6 +6261,7 @@ def initialize_web_setup(body):
             raise ValueError("admin passwords do not match")
     row = WEB_CONFIG.save_account_config(
         account_id=account_id,
+        account_type=account_type,
         bridge_id=body.get("bridge_id"),
         qmt_dir=body.get("qmt_dir") or body.get("python_dir"),
         mode=body.get("mode") or "ctypes",
@@ -5708,11 +6302,21 @@ def reset_web_setup():
 
 def set_data_provider(body):
     body = body or {}
-    return WEB_CONFIG.set_data_provider_account_id(body.get("account_id"))
+    return WEB_CONFIG.set_data_provider_account_id(
+        account_id=body.get("account_id"),
+        account_type=body.get("account_type") or "STOCK",
+        bridge_id=body.get("bridge_id"),
+        account_key=body.get("account_key"),
+    )
 
 
 def delete_account_pair(body):
-    WEB_CONFIG.delete_pair((body or {}).get("account_id"))
+    WEB_CONFIG.delete_pair(
+        account_id=(body or {}).get("account_id"),
+        account_type=(body or {}).get("account_type") or "STOCK",
+        bridge_id=(body or {}).get("bridge_id"),
+        account_key=(body or {}).get("account_key"),
+    )
     return {
         "account_pairs": WEB_CONFIG.account_pairs(),
     }
@@ -5720,28 +6324,158 @@ def delete_account_pair(body):
 
 def verify_account_pair(body):
     account_id = str((body or {}).get("account_id") or "").strip()
+    account_type = normalize_account_type((body or {}).get("account_type") or "STOCK")
+    account_key = str((body or {}).get("account_key") or "").strip()
     bridge_id = resolve_bridge_id(
         account_id=account_id,
+        account_type=account_type,
+        account_key=account_key,
         bridge_id=(body or {}).get("bridge_id"),
     )
     channel = (body or {}).get("channel") or "normal"
     if not account_id:
         raise ValueError("account_id is required")
     bridge_config(bridge_id)
-    status = account_route_status(account_id, bridge_id=bridge_id)
+    status = account_route_status(account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
     account = ACCOUNT_CACHE.get(
         bridge_id,
         channel,
         account_id,
         ["asset", "positions"],
         force=parse_bool((body or {}).get("force") or "1"),
+        account_type=account_type,
+        account_key=account_key,
     )
     return {
         "bridge_id": bridge_id,
         "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
         "channel": channel,
         "status": status,
         "account": account,
+    }
+
+
+def query_credit_account(body):
+    body = body or {}
+    account_id = str(body.get("account_id") or "").strip()
+    account_type = normalize_account_type(body.get("account_type") or "CREDIT")
+    account_key = str(body.get("account_key") or "").strip()
+    if account_type != "CREDIT":
+        raise ValueError("credit query requires account_type=CREDIT")
+    if not account_id:
+        raise ValueError("account_id is required")
+    action_key = str(body.get("action") or body.get("query") or "detail").strip().lower()
+    action = CREDIT_ACTIONS.get(action_key)
+    if not action:
+        raise ValueError("unknown credit query action: %s" % action_key)
+    bridge_id = resolve_bridge_id(
+        account_id=account_id,
+        account_type=account_type,
+        account_key=account_key,
+        bridge_id=body.get("bridge_id"),
+    )
+    params = account_payload(account_id, account_type)
+    started = time.perf_counter()
+    route = account_request(
+        account_id,
+        bridge_id,
+        body.get("channel"),
+        action,
+        params,
+        default_channel="normal",
+        timeout=float(body.get("timeout") or ACCOUNT_QUERY_TIMEOUT_SECONDS),
+        mark_offline_on_timeout=False,
+        account_type=account_type,
+        account_key=account_key,
+    )
+    return {
+        "bridge_id": route["bridge_id"],
+        "bridge_name": bridge_config(route["bridge_id"])["name"],
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "account_key": account_key or account_key_for(account_id, account_type, route["bridge_id"]),
+        "action": action,
+        "query": action_key,
+        "channel": route["channel"],
+        "mode": route["mode"],
+        "fallback": route["fallback"],
+        "fallback_reason": route["fallback_reason"],
+        "result": route["result"],
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+        "attempts": route.get("attempts") or [],
+    }
+
+
+def probe_credit_account(body):
+    body = body or {}
+    account_id = str(body.get("account_id") or "").strip()
+    account_type = normalize_account_type(body.get("account_type") or "CREDIT")
+    account_key = str(body.get("account_key") or "").strip()
+    if account_type != "CREDIT":
+        raise ValueError("credit probe requires account_type=CREDIT")
+    if not account_id:
+        raise ValueError("account_id is required")
+    bridge_id = resolve_bridge_id(
+        account_id=account_id,
+        account_type=account_type,
+        account_key=account_key,
+        bridge_id=body.get("bridge_id"),
+    )
+    timeout = float(body.get("timeout") or min(ACCOUNT_QUERY_TIMEOUT_SECONDS, 5.0))
+    params = account_payload(account_id, account_type)
+    checks = []
+    capabilities = {}
+    started = time.perf_counter()
+    for name, action in CREDIT_PROBE_ACTIONS:
+        item_started = time.perf_counter()
+        try:
+            route = account_request(
+                account_id,
+                bridge_id,
+                body.get("channel"),
+                action,
+                params,
+                default_channel="normal",
+                timeout=timeout,
+                mark_offline_on_timeout=False,
+                ignore_cooldown=True,
+                account_type=account_type,
+                account_key=account_key,
+            )
+            capabilities[name] = True
+            checks.append({
+                "name": name,
+                "action": action,
+                "ok": True,
+                "mode": route.get("mode"),
+                "channel": route.get("channel"),
+                "latency_ms": round((time.perf_counter() - item_started) * 1000, 2),
+            })
+        except Exception as error:
+            capabilities[name] = False
+            checks.append({
+                "name": name,
+                "action": action,
+                "ok": False,
+                "error": str(error),
+                "latency_ms": round((time.perf_counter() - item_started) * 1000, 2),
+            })
+    return {
+        "bridge_id": bridge_id,
+        "bridge_name": bridge_config(bridge_id)["name"],
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_type_label": account_type_label(account_type),
+        "account_key": account_key or account_key_for(account_id, account_type, bridge_id),
+        "capabilities": capabilities,
+        "checks": checks,
+        "supported_count": sum(1 for value in capabilities.values() if value),
+        "total_count": len(capabilities),
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
     }
 
 
@@ -6234,6 +6968,8 @@ def channel_online(bridge_id, channel):
 def data_channel_request(body, action, params, default_channel="trade", force_channel=None):
     body = body or {}
     account_id = str(body.get("account_id") or "").strip()
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_key = str(body.get("account_key") or "").strip()
     preferred_channel = force_channel or body.get("channel")
     timeout = float(body.get("timeout") or 12.0)
     started = time.perf_counter()
@@ -6248,8 +6984,12 @@ def data_channel_request(body, action, params, default_channel="trade", force_ch
             default_channel=requested_default,
             timeout=timeout,
             mark_offline_on_timeout=True,
+            account_type=account_type,
+            account_key=account_key,
         )
         provider_account_id = account_id
+        provider_account_type = account_type
+        provider_account_key = account_key or account_key_for(account_id, account_type, route["bridge_id"])
         provider_fallback = False
         provider_attempts = []
     else:
@@ -6262,11 +7002,15 @@ def data_channel_request(body, action, params, default_channel="trade", force_ch
             bridge_id=body.get("bridge_id"),
         )
         provider_account_id = route.get("data_provider") or configured_default_account_id()
+        provider_account_type = route.get("data_provider_account_type") or configured_default_account_type()
+        provider_account_key = route.get("data_provider_account_key") or ""
         provider_fallback = bool(route.get("provider_fallback"))
         provider_attempts = route.get("provider_attempts") or []
     return {
         "bridge_id": route["bridge_id"],
         "account_id": provider_account_id,
+        "account_type": provider_account_type,
+        "account_key": provider_account_key,
         "preferred_channel": preferred_channel or default_channel,
         "channel": route["channel"],
         "mode": route["mode"],
@@ -6403,6 +7147,8 @@ def subscribe_single_quote(body):
     if not stock_code:
         raise ValueError("stock_code is required")
     account_id = str(body.get("account_id") or "").strip()
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_key = str(body.get("account_key") or "").strip()
     started = time.perf_counter()
     QUOTES.start()
     params = {
@@ -6424,8 +7170,12 @@ def subscribe_single_quote(body):
             timeout=12.0,
             mark_offline_on_timeout=True,
             ignore_cooldown=True,
+            account_type=account_type,
+            account_key=account_key,
         )
         provider_account_id = account_id
+        provider_account_type = account_type
+        provider_account_key = account_key or account_key_for(account_id, account_type, route["bridge_id"])
     else:
         route = data_provider_request(
             "xtdata.subscribe_quote",
@@ -6436,6 +7186,8 @@ def subscribe_single_quote(body):
             bridge_id=body.get("bridge_id"),
         )
         provider_account_id = route.get("data_provider") or configured_default_account_id()
+        provider_account_type = route.get("data_provider_account_type") or configured_default_account_type()
+        provider_account_key = route.get("data_provider_account_key") or ""
     result = route["result"]
     channel = route["channel"]
     bridge_id = route["bridge_id"]
@@ -6447,6 +7199,8 @@ def subscribe_single_quote(body):
             "channel": channel,
             "mode": route["mode"],
             "account_id": provider_account_id,
+            "account_type": provider_account_type,
+            "account_key": provider_account_key,
             "kind": "quote",
             "stock_code": stock_code,
             "period": str(body.get("period") or "1d"),
@@ -6459,6 +7213,8 @@ def subscribe_single_quote(body):
         "channel": channel,
         "mode": route["mode"],
         "account_id": provider_account_id,
+        "account_type": provider_account_type,
+        "account_key": provider_account_key,
         "fallback": route["fallback"],
         "kind": "quote",
         "stock_code": stock_code,
@@ -6778,6 +7534,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(submit_batch_orders(body)))
             elif parsed.path == "/api/cancel":
                 self._write_json(ok(cancel_order(body)))
+            elif parsed.path == "/api/credit/query":
+                self._write_json(ok(query_credit_account(body)))
+            elif parsed.path == "/api/credit/probe":
+                self._write_json(ok(probe_credit_account(body)))
             elif parsed.path == "/api/apikey":
                 self._write_json(ok(save_api_key(body)))
             elif parsed.path == "/api/server-access":
@@ -7147,19 +7907,27 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(lttx_status()))
             elif parsed.path == "/api/status":
                 account_id = str((query.get("account_id") or [""])[0] or "").strip()
+                account_type = normalize_account_type((query.get("account_type") or [configured_default_account_type()])[0])
+                account_key = str((query.get("account_key") or [""])[0] or "").strip()
                 bridge_id = resolve_bridge_id(
                     account_id=account_id,
+                    account_type=account_type,
+                    account_key=account_key,
                     bridge_id=(query.get("bridge_id") or [""])[0],
                 )
                 bridge_config(bridge_id)
                 self._write_json(ok(
-                    account_route_status(account_id, bridge_id=bridge_id)
+                    account_route_status(account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
                     if account_id else STATUS_MONITOR.latest(bridge_id=bridge_id)
                 ))
             elif parsed.path == "/api/callbacks":
                 account_id = (query.get("account_id") or [""])[0]
+                account_type = normalize_account_type((query.get("account_type") or ["STOCK"])[0]) if query.get("account_type") else ""
+                account_key = str((query.get("account_key") or [""])[0] or "").strip()
                 bridge_id = resolve_bridge_id(
                     account_id=account_id,
+                    account_type=account_type or None,
+                    account_key=account_key,
                     bridge_id=(query.get("bridge_id") or [""])[0],
                 )
                 bridge = bridge_config(bridge_id)
@@ -7171,6 +7939,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok({
                     "bridge_id": bridge_id,
                     "account_id": account_id,
+                    "account_type": account_type,
+                    "account_key": account_key,
                     "channel": bridge["channels"]["callback"],
                     "event": event_name,
                     "event_prefix": event_prefix,
@@ -7180,6 +7950,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                         limit=limit,
                         bridge_id=bridge_id,
                         account_id=account_id,
+                        account_type=account_type,
                         event_name=event_name,
                         event_prefix=event_prefix,
                         job_id=job_id,
@@ -7187,8 +7958,12 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 }))
             elif parsed.path == "/api/account":
                 account_id = (query.get("account_id") or [configured_default_account_id()])[0]
+                account_type = normalize_account_type((query.get("account_type") or [configured_default_account_type()])[0])
+                account_key = str((query.get("account_key") or [""])[0] or "").strip()
                 bridge_id = resolve_bridge_id(
                     account_id=account_id,
+                    account_type=account_type,
+                    account_key=account_key,
                     bridge_id=(query.get("bridge_id") or [""])[0],
                 )
                 bridge_config(bridge_id)
@@ -7203,6 +7978,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     sections,
                     force=force,
                     subscribe=subscribe,
+                    account_type=account_type,
+                    account_key=account_key,
                 )))
             else:
                 self._write_json(fail("not found", 404), status=404)
@@ -7233,17 +8010,22 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
         query = urllib.parse.parse_qs(parsed.query)
         account_id = (query.get("account_id") or [""])[0]
+        account_type = normalize_account_type((query.get("account_type") or ["STOCK"])[0]) if query.get("account_type") else ""
+        account_key = str((query.get("account_key") or [""])[0] or "").strip()
         event_name = (query.get("event") or [""])[0]
         event_prefix = (query.get("event_prefix") or [""])[0]
         job_id = (query.get("job_id") or [""])[0]
         bridge_id = resolve_bridge_id(
             account_id=account_id,
+            account_type=account_type or None,
+            account_key=account_key,
             bridge_id=(query.get("bridge_id") or [""])[0],
-        ) if account_id or query.get("bridge_id") else ""
+        ) if account_id or account_key or query.get("bridge_id") else ""
         client = WebSocketCallbackClient(
             self.request,
             bridge_id=bridge_id,
             account_id=account_id,
+            account_type=account_type,
             event_name=event_name,
             event_prefix=event_prefix,
             job_id=job_id,
@@ -7259,6 +8041,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 "channel": "callbacks",
                 "bridge_id": bridge_id,
                 "account_id": account_id,
+                "account_type": account_type,
+                "account_key": account_key,
                 "event": event_name,
                 "event_prefix": event_prefix,
                 "job_id": job_id,
@@ -7269,6 +8053,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 limit=100,
                 bridge_id=bridge_id,
                 account_id=account_id,
+                account_type=account_type,
                 event_name=event_name,
                 event_prefix=event_prefix,
                 job_id=job_id,

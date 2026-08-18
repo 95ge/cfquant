@@ -14,6 +14,11 @@ COALESCED_QUERY_ACTIONS = set([
     "xttrader.query_stock_positions",
     "xttrader.query_stock_orders",
     "xttrader.query_stock_trades",
+    "xttrader.query_credit_detail",
+    "xttrader.query_credit_subjects",
+    "xttrader.query_credit_slo_code",
+    "xttrader.query_credit_assure",
+    "xttrader.query_stk_compacts",
 ])
 
 
@@ -429,10 +434,12 @@ class NormalQmtBridge(TxTradeBridge):
             return
         data = self._callback_object_to_dict(obj)
         account_id = self._callback_account_id(obj, data)
+        account_type = self._callback_account_type(obj, data)
         payload = {
             "type": "event",
             "event": event_name,
             "account_id": account_id,
+            "account_type": account_type,
             "bridge_id": self.bridge_id,
             "source": "CFQUANT",
             "ts": int(time.time() * 1000),
@@ -440,16 +447,19 @@ class NormalQmtBridge(TxTradeBridge):
         }
         self.tx.push("event", json.dumps(payload, ensure_ascii=False), self.callback_event_channel)
         if account_id:
-            self._send_trader_event_to_account(account_id, event_name.replace("trader:", "", 1), data)
+            self._send_trader_event_to_account(account_id, event_name.replace("trader:", "", 1), data, account_type=account_type or None)
         self._log("normal bridge callback event sent event=%s account=%s" % (event_name, account_id or "-"))
 
     def _callback_object_to_dict(self, obj):
         fields = [
             "account_id",
+            "account_type",
             "m_strAccountID",
             "m_strAccountId",
             "m_strAccount",
             "m_accountID",
+            "m_nAccountType",
+            "m_strAccountType",
             "order_source",
             "source",
             "order_remark",
@@ -525,6 +535,26 @@ class NormalQmtBridge(TxTradeBridge):
             if value:
                 return str(value).strip()
         return str(self.account_id or "").strip()
+
+    def _callback_account_type(self, obj, data):
+        candidates = [
+            data.get("account_type") if isinstance(data, dict) else None,
+            data.get("m_nAccountType") if isinstance(data, dict) else None,
+            data.get("m_strAccountType") if isinstance(data, dict) else None,
+            self._get_value(obj, "account_type"),
+            self._get_value(obj, "m_nAccountType"),
+            self._get_value(obj, "m_strAccountType"),
+        ]
+        for value in candidates:
+            if value in (None, ""):
+                continue
+            text = str(value).strip().upper()
+            if text in ("2", "SECURITY", "SECURITY_ACCOUNT", "STOCK_ACCOUNT"):
+                return "STOCK"
+            if text in ("3", "CREDIT_ACCOUNT", "MARGIN"):
+                return "CREDIT"
+            return text
+        return ""
 
     def _status_extra(self):
         with self.coalesce_lock:

@@ -1,8 +1,12 @@
-const FRONTEND_VERSION = 'web_20260817_12';
+const FRONTEND_VERSION = 'web_20260818_01';
 
 const state = {
   accountId: '',
+  accountType: 'STOCK',
+  accountKey: '',
   defaultAccountId: '',
+  defaultAccountType: 'STOCK',
+  defaultAccountKey: '',
   bridgeId: 'default',
   defaultBridgeId: 'default',
   queryChannel: 'normal',
@@ -87,6 +91,7 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const ACCOUNT_PAIR_KEY = 'cfquant.account_bridge_pairs';
+const ACCOUNT_SELECTION_KEY = 'cfquant.account_key';
 const TUTORIAL_TOPIC_KEY = 'cfquant.tutorial_topic';
 const ONBOARDING_AUTO_SHOWN_KEY = 'cfquant.onboarding_auto_shown.v3';
 const SETTINGS_TAB_KEY = 'cfquant.settings_tab';
@@ -262,7 +267,7 @@ const API_ENDPOINTS = [
     path: '/api/account',
     desc: '查询指定账号的资金信息。',
     defaults: { sections: 'asset', force: '0' },
-    fields: ['account_id'],
+    fields: ['account_id', 'account_type'],
   },
   {
     id: 'positions',
@@ -272,7 +277,7 @@ const API_ENDPOINTS = [
     path: '/api/account',
     desc: '查询指定账号的持仓列表。',
     defaults: { sections: 'positions', force: '0' },
-    fields: ['account_id'],
+    fields: ['account_id', 'account_type'],
   },
   {
     id: 'orders',
@@ -282,7 +287,7 @@ const API_ENDPOINTS = [
     path: '/api/account',
     desc: '查询指定账号的委托列表。',
     defaults: { sections: 'orders', force: '0' },
-    fields: ['account_id'],
+    fields: ['account_id', 'account_type'],
   },
   {
     id: 'trades',
@@ -292,7 +297,27 @@ const API_ENDPOINTS = [
     path: '/api/account',
     desc: '查询指定账号的成交列表。',
     defaults: { sections: 'trades', force: '0' },
-    fields: ['account_id'],
+    fields: ['account_id', 'account_type'],
+  },
+  {
+    id: 'credit_query',
+    group: 'trade',
+    title: '信用查询',
+    method: 'POST',
+    path: '/api/credit/query',
+    desc: '查询信用账户专用信息，包括融资融券明细、可融券标的、担保品和合约负债。需要选择或填写信用账户。',
+    defaults: { account_type: 'CREDIT', credit_query_action: 'detail' },
+    fields: ['account_id', 'account_type', 'credit_query_action'],
+  },
+  {
+    id: 'credit_probe',
+    group: 'trade',
+    title: '信用能力探测',
+    method: 'POST',
+    path: '/api/credit/probe',
+    desc: '只读探测信用账户在当前 QMT 下可用的资产、持仓、委托、成交和信用专项查询能力。',
+    defaults: { account_type: 'CREDIT' },
+    fields: ['account_id', 'account_type'],
   },
   {
     id: 'xttrader_compat',
@@ -338,7 +363,7 @@ const API_ENDPOINTS = [
     path: '/api/callbacks',
     desc: '按账号拉取委托/成交回调事件，内部通道由账号配置自动决定。',
     defaults: { since: '0', limit: '50' },
-    fields: ['account_id', 'since', 'limit'],
+    fields: ['account_id', 'account_type', 'since', 'limit'],
   },
   {
     id: 'ws_callbacks',
@@ -347,7 +372,7 @@ const API_ENDPOINTS = [
     method: 'WS',
     path: '/ws/callbacks',
     desc: '按账号实时接收委托/成交等回调事件。API Key 会通过 apikey 查询参数传入。',
-    fields: ['account_id'],
+    fields: ['account_id', 'account_type'],
   },
   {
     id: 'order',
@@ -356,7 +381,7 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/order',
     desc: '按账号配置对应的内部通道提交买入或卖出委托。后端要求确认文本完全匹配。',
-    fields: ['account_id', 'side', 'stock_code', 'price', 'volume', 'confirm_text'],
+    fields: ['account_id', 'account_type', 'side', 'stock_code', 'price', 'volume', 'confirm_text'],
   },
   {
     id: 'batch_order',
@@ -369,7 +394,7 @@ const API_ENDPOINTS = [
       orders_json: '[{"stock_code":"000001.SZ","price":10.0,"volume":100},{"stock_code":"600000.SH","price":8.5,"volume":200}]',
       confirm_text: 'BATCH 2',
     },
-    fields: ['account_id', 'batch_orders_json', 'batch_confirm_text'],
+    fields: ['account_id', 'account_type', 'batch_orders_json', 'batch_confirm_text'],
   },
   {
     id: 'cancel',
@@ -378,7 +403,7 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/cancel',
     desc: '按账号配置对应的内部通道撤销指定委托。后端要求确认文本完全匹配。',
-    fields: ['account_id', 'order_id', 'cancel_confirm_text'],
+    fields: ['account_id', 'account_type', 'order_id', 'cancel_confirm_text'],
   },
   {
     id: 'lttx',
@@ -394,6 +419,8 @@ const API_ENDPOINTS = [
 const API_FIELD_META = {
   bridge_id: { label: '内部通道', type: 'bridge' },
   account_id: { label: '账号', type: 'text', placeholder: '2220009880' },
+  account_type: { label: '账户类型', type: 'account_type' },
+  credit_query_action: { label: '信用查询', type: 'credit_query_action', param: 'action' },
   channel: { label: '查询通道', type: 'channel' },
   whole_quote_channel: { label: '订阅通道', type: 'fixed_channel', param: 'channel' },
   trade_channel: { label: '交易通道', type: 'trade_channel', param: 'channel' },
@@ -432,6 +459,8 @@ const API_FIELD_META = {
 const API_PARAM_DOCS = {
   bridge_id: '内部通道 ID。账号接口通常不用填，会按账号配置自动决定。',
   account_id: '资金账号。',
+  account_type: '账户类型。普通证券账户填 STOCK，信用账户填 CREDIT。',
+  action: '信用查询动作，detail/subjects/slo_code/assure/compacts。',
   channel: '高级模式下 normal 为普通 QMT，trade 为极速交易端；通用模式由后端按操作类型自动路由到 ctypes 单桥。',
   sections: '账号数据段，asset/positions/orders/trades。',
   force: '是否强制刷新缓存，1 表示立即查询。',
@@ -570,6 +599,18 @@ const API_RETURN_DOCS = {
     ['price', '成交价格'],
     ['volume', '成交数量'],
     ['trade_amount', '成交金额'],
+  ],
+  credit_query: [
+    ['account_type', '固定为 CREDIT'],
+    ['query', '信用查询动作'],
+    ['result', 'QMT 返回的信用账户查询结果'],
+    ['latency_ms', '请求耗时'],
+  ],
+  credit_probe: [
+    ['account_type', '固定为 CREDIT'],
+    ['capabilities', '各信用查询能力是否可用'],
+    ['checks', '每个探测项的耗时、通道和错误信息'],
+    ['supported_count', '可用能力数量'],
   ],
   status: [
     ['normal.online', '普通 QMT 是否在线'],
@@ -1342,6 +1383,8 @@ function beginDownloadProgress(jobId, requestBody = {}, endpoint = apiEndpointBy
   params.set('job_id', state.downloadJobId);
   if (requestBody.bridge_id) params.set('bridge_id', requestBody.bridge_id);
   if (requestBody.account_id) params.set('account_id', requestBody.account_id);
+  if (requestBody.account_type) params.set('account_type', requestBody.account_type);
+  if (requestBody.account_key) params.set('account_key', requestBody.account_key);
   const url = apiWsUrl(`/ws/callbacks?${params.toString()}`);
   const socket = new WebSocket(url);
   state.downloadSocket = socket;
@@ -2317,6 +2360,7 @@ function showSetupOverlay(message = '') {
   if (!overlay) return;
   overlay.classList.remove('hidden');
   const accountInput = $('setupAccountId');
+  const accountTypeInput = $('setupAccountType');
   const qmtDirInput = $('setupQmtDir');
   const modeInput = $('setupMode');
   const adminFields = $('setupAdminFields');
@@ -2325,7 +2369,8 @@ function showSetupOverlay(message = '') {
   const adminPasswordConfirmInput = $('setupAdminPasswordConfirm');
   const adminRequired = setupRequiresAdminRegistration();
   const setup = state.setup || {};
-  const defaultConfig = setup.account_configs && setup.account_configs[setup.default_account_id];
+  const defaultKey = setup.default_account_key || state.defaultAccountKey || setup.default_account_id;
+  const defaultConfig = setup.account_configs && setup.account_configs[defaultKey];
   if (adminFields) adminFields.classList.toggle('hidden', !adminRequired);
   if (adminUsernameInput && adminRequired && !adminUsernameInput.value) {
     adminUsernameInput.value = (state.serverAccess && state.serverAccess.web_auth_username) || 'admin';
@@ -2334,6 +2379,9 @@ function showSetupOverlay(message = '') {
   if (adminPasswordConfirmInput) adminPasswordConfirmInput.value = '';
   if (accountInput && !accountInput.value) {
     accountInput.value = setup.default_account_id || state.defaultAccountId || '';
+  }
+  if (accountTypeInput) {
+    accountTypeInput.value = normalizeAccountType(setup.default_account_type || state.defaultAccountType || (defaultConfig && defaultConfig.account_type) || 'STOCK');
   }
   if (qmtDirInput && !qmtDirInput.value) {
     qmtDirInput.value = setup.default_qmt_dir || (defaultConfig && defaultConfig.qmt_dir) || '';
@@ -2359,8 +2407,9 @@ function clearOnboardingAutoShown() {
 function onboardingAutoShownKey() {
   const setup = state.setup || {};
   const accountId = setup.default_account_id || state.defaultAccountId || state.accountId || 'default';
+  const accountType = normalizeAccountType(setup.default_account_type || state.defaultAccountType || state.accountType || 'STOCK');
   const mode = setup.default_mode || activeAccountMode() || 'ctypes';
-  return `${ONBOARDING_AUTO_SHOWN_KEY}.${accountId}.${mode}`;
+  return `${ONBOARDING_AUTO_SHOWN_KEY}.${accountType}.${accountId}.${mode}`;
 }
 
 function updateSetupSteps(activeStep) {
@@ -2384,6 +2433,7 @@ async function submitSetupForm(event) {
   const adminRequired = setupRequiresAdminRegistration();
   const body = {
     account_id: $('setupAccountId') ? $('setupAccountId').value.trim() : '',
+    account_type: $('setupAccountType') ? $('setupAccountType').value : 'STOCK',
     qmt_dir: $('setupQmtDir') ? $('setupQmtDir').value.trim() : '',
     mode: $('setupMode') ? $('setupMode').value : 'ctypes',
   };
@@ -2454,6 +2504,7 @@ async function submitSetupForm(event) {
     openOnboardingGuide({ auto: true, reason: 'setup' });
     log('初始化配置已保存', {
       account_id: body.account_id,
+      account_type: body.account_type,
       mode: body.mode,
       qmt_dir_configured: !!body.qmt_dir,
       admin_registered: adminRequired,
@@ -3482,6 +3533,12 @@ function apiFieldHtml(fieldName) {
   if (meta.type === 'transport_mode') {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="ctypes">通用模式（ctypes 单桥）</option><option value="lttx">高级模式（两个 QMT）</option></select></label>`;
   }
+  if (meta.type === 'account_type') {
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="STOCK">普通证券账户</option><option value="CREDIT">信用账户</option></select></label>`;
+  }
+  if (meta.type === 'credit_query_action') {
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="detail">信用明细</option><option value="subjects">可融券标的</option><option value="slo_code">可融券代码</option><option value="assure">担保品信息</option><option value="compacts">合约负债</option></select></label>`;
+  }
   if (meta.type === 'report_type') {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="announce_time">公告日期</option><option value="report_time">报告期</option></select></label>`;
   }
@@ -3502,6 +3559,8 @@ function setApiDefaults(endpoint) {
   const values = {
     bridge_id: selectedBridge(),
     account_id: selectedAccount(),
+    account_type: selectedAccountType(),
+    account_key: selectedAccountKey(),
     channel: selectedChannel(),
     whole_quote_channel: 'normal',
     trade_channel: selectedTradeChannel(),
@@ -3540,6 +3599,13 @@ function currentApiRequest() {
     if (!element.name || element.tagName === 'BUTTON') return;
     params[element.name] = element.value;
   });
+  if (params.account_id && params.account_type && !params.account_key) {
+    const currentAccountId = selectedAccount();
+    const currentAccountType = selectedAccountType();
+    if (String(params.account_id) === currentAccountId && normalizeAccountType(params.account_type) === currentAccountType) {
+      params.account_key = selectedAccountKey();
+    }
+  }
   if (endpoint.id === 'batch_order') {
     try {
       params.orders = params.orders_json ? JSON.parse(params.orders_json) : [];
@@ -4029,11 +4095,80 @@ function setDataTab(name, shouldRefresh = true) {
   }
 }
 
+function normalizeAccountType(value = 'STOCK') {
+  const text = String(value || 'STOCK').trim().toUpperCase();
+  if (['3', 'CREDIT', 'CREDIT_ACCOUNT', 'MARGIN'].includes(text)) return 'CREDIT';
+  return 'STOCK';
+}
+
+function accountTypeLabel(value = 'STOCK') {
+  return normalizeAccountType(value) === 'CREDIT' ? '信用' : '普通';
+}
+
+function makeAccountKey(accountId, accountType = 'STOCK', bridgeId = 'default') {
+  const id = String(accountId || '').trim();
+  if (!id) return '';
+  return `${String(bridgeId || 'default').trim()}:${normalizeAccountType(accountType)}:${id}`;
+}
+
+function accountConfigKey(rawKey, config = {}) {
+  return String((config && config.account_key) || rawKey || '').trim()
+    || makeAccountKey(config.account_id, config.account_type, config.bridge_id || state.defaultBridgeId || 'default');
+}
+
+function findAccountConfigByKey(accountKey) {
+  accountKey = String(accountKey || '').trim();
+  if (!accountKey) return null;
+  const direct = state.accountConfigs && state.accountConfigs[accountKey];
+  if (direct) return direct;
+  return accountConfigEntries().find((item) => item.accountKey === accountKey)?.config || null;
+}
+
+function findAccountEntryById(accountId, accountType = '') {
+  accountId = String(accountId || '').trim();
+  const wantedType = accountType ? normalizeAccountType(accountType) : '';
+  return accountConfigEntries().find(({ accountId: id, accountType: type }) => (
+    id === accountId && (!wantedType || type === wantedType)
+  )) || null;
+}
+
+function selectedAccountInfo() {
+  const select = $('accountInput');
+  const selectedKey = String((select && select.value) || state.accountKey || '').trim();
+  const config = findAccountConfigByKey(selectedKey);
+  if (config) {
+    const accountType = normalizeAccountType(config.account_type || 'STOCK');
+    const bridgeId = config.bridge_id || state.defaultBridgeId || 'default';
+    return {
+      accountKey: accountConfigKey(selectedKey, config),
+      accountId: String(config.account_id || '').trim(),
+      accountType,
+      bridgeId,
+      config,
+    };
+  }
+  const fallbackId = String(state.accountId || state.defaultAccountId || '').trim();
+  const fallbackType = normalizeAccountType(state.accountType || state.defaultAccountType || 'STOCK');
+  const fallbackBridge = state.bridgeId || state.defaultBridgeId || 'default';
+  return {
+    accountKey: selectedKey || makeAccountKey(fallbackId, fallbackType, fallbackBridge),
+    accountId: fallbackId,
+    accountType: fallbackType,
+    bridgeId: fallbackBridge,
+    config: null,
+  };
+}
+
 function loadAccountPairs() {
   const pairs = {};
-  Object.entries(state.accountPairs || {}).forEach(([accountId, pair]) => {
-    if (pair && typeof pair === 'object') pairs[accountId] = pair.bridge_id;
-    else pairs[accountId] = pair;
+  Object.entries(state.accountPairs || {}).forEach(([rawKey, pair]) => {
+    if (pair && typeof pair === 'object') {
+      const key = accountConfigKey(rawKey, pair);
+      pairs[key] = pair.bridge_id;
+      if (pair.account_id && !pairs[pair.account_id]) pairs[pair.account_id] = pair.bridge_id;
+    } else {
+      pairs[rawKey] = pair;
+    }
   });
   if (Object.keys(pairs).length) return pairs;
   try {
@@ -4046,10 +4181,17 @@ function loadAccountPairs() {
 
 function accountPairEntries() {
   return Object.entries(state.accountPairs || {})
-    .map(([accountId, pair]) => {
+    .map(([rawKey, pair]) => {
       const bridgeId = pair && typeof pair === 'object' ? pair.bridge_id : pair;
+      const accountId = pair && typeof pair === 'object' ? pair.account_id : rawKey;
+      const accountType = normalizeAccountType(pair && typeof pair === 'object' ? pair.account_type : 'STOCK');
+      const accountKey = pair && typeof pair === 'object'
+        ? accountConfigKey(rawKey, pair)
+        : makeAccountKey(accountId, accountType, bridgeId);
       return {
+        accountKey,
         accountId: String(accountId || '').trim(),
+        accountType,
         bridgeId: String(bridgeId || '').trim(),
       };
     })
@@ -4058,16 +4200,25 @@ function accountPairEntries() {
 
 function accountConfigEntries() {
   return Object.entries(state.accountConfigs || {})
-    .map(([accountId, config]) => ({
-      accountId: String(accountId || '').trim(),
-      config: config && typeof config === 'object' ? config : {},
-    }))
+    .map(([rawKey, config]) => {
+      const row = config && typeof config === 'object' ? config : {};
+      const accountType = normalizeAccountType(row.account_type || 'STOCK');
+      const bridgeId = row.bridge_id || state.defaultBridgeId || 'default';
+      const accountId = String(row.account_id || rawKey || '').trim();
+      return {
+        accountKey: accountConfigKey(rawKey, row),
+        accountId,
+        accountType,
+        bridgeId,
+        config: row,
+      };
+    })
     .filter((item) => item.accountId);
 }
 
 function activeAccountMode() {
-  const accountId = String(state.accountId || '').trim();
-  const config = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
+  const info = selectedAccountInfo();
+  const config = info.config;
   return state.accountRouteMode
     || (config && config.mode)
     || state.transportMode
@@ -4075,8 +4226,8 @@ function activeAccountMode() {
 }
 
 function preferredAccountMode() {
-  const accountId = String(state.accountId || '').trim();
-  const config = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
+  const info = selectedAccountInfo();
+  const config = info.config;
   return (config && config.mode)
     || state.transportMode
     || 'ctypes';
@@ -4086,10 +4237,11 @@ function shouldUseLttxStatus() {
   return preferredAccountMode() === 'lttx';
 }
 
-function bridgeIdForAccount(accountId) {
+function bridgeIdForAccount(accountId, accountType = state.accountType) {
   accountId = String(accountId || '').trim();
-  const config = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
-  const pairBridge = accountId ? loadAccountPairs()[accountId] : '';
+  const entry = findAccountEntryById(accountId, accountType);
+  const config = entry ? entry.config : null;
+  const pairBridge = entry ? entry.bridgeId : (accountId ? loadAccountPairs()[accountId] : '');
   return (config && config.bridge_id)
     || pairBridge
     || state.defaultBridgeId
@@ -4106,11 +4258,13 @@ async function saveAccountConfigRequest(body) {
     if (error.status !== 404 && error.message !== 'not found') {
       throw error;
     }
-    const legacyBridgeId = bridgeIdForAccount(body.account_id) || state.defaultBridgeId || 'default';
+    const legacyBridgeId = bridgeIdForAccount(body.account_id, body.account_type || 'STOCK') || state.defaultBridgeId || 'default';
     const data = await api('/api/account-pairs', {
       method: 'POST',
       body: JSON.stringify({
         account_id: body.account_id,
+        account_type: body.account_type || 'STOCK',
+        account_key: body.account_key || '',
         bridge_id: legacyBridgeId,
       }),
     });
@@ -4122,6 +4276,8 @@ async function saveAccountConfigRequest(body) {
       ...data,
       account: data.account || {
         account_id: body.account_id,
+        account_type: body.account_type || 'STOCK',
+        account_key: body.account_key || makeAccountKey(body.account_id, body.account_type || 'STOCK', legacyBridgeId),
         bridge_id: legacyBridgeId,
         qmt_dir: body.qmt_dir || '',
         mode: body.mode || 'ctypes',
@@ -4136,11 +4292,11 @@ async function saveAccountConfigRequest(body) {
   }
 }
 
-async function deleteAccountConfigRequest(accountId) {
+async function deleteAccountConfigRequest(accountId, accountType = 'STOCK', accountKey = '') {
   try {
     return await api('/api/account-config/delete', {
       method: 'POST',
-      body: JSON.stringify({ account_id: accountId }),
+      body: JSON.stringify({ account_id: accountId, account_type: accountType, account_key: accountKey }),
     });
   } catch (error) {
     if (error.status !== 404 && error.message !== 'not found') {
@@ -4148,13 +4304,13 @@ async function deleteAccountConfigRequest(accountId) {
     }
     const data = await api('/api/account-pairs/delete', {
       method: 'POST',
-      body: JSON.stringify({ account_id: accountId }),
+      body: JSON.stringify({ account_id: accountId, account_type: accountType, account_key: accountKey }),
     });
     log('当前 Web 后端未加载账号配置删除接口，已按旧账号绑定删除；重启 Web 后完整配置删除会生效', {
       account_id: accountId,
     });
     const nextConfigs = { ...(state.accountConfigs || {}) };
-    delete nextConfigs[accountId];
+    delete nextConfigs[accountKey || accountId];
     return {
       ...data,
       account_pairs: data.account_pairs || {},
@@ -4168,44 +4324,62 @@ async function deleteAccountConfigRequest(accountId) {
 function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
   const select = $('accountInput');
   if (!select) return;
-  const current = String(state.accountId || select.value || '').trim();
+  const current = String(state.accountKey || select.value || '').trim();
   const accountMap = new Map();
   const defaultId = String(defaultAccountId || '').trim();
+  const defaultKey = String(state.defaultAccountKey || '').trim();
   const defaultBridgeId = state.defaultBridgeId || 'default';
 
   if (defaultId) {
-    accountMap.set(defaultId, {
-      bridgeId: loadAccountPairs()[defaultId] || defaultBridgeId,
+    const key = defaultKey || makeAccountKey(defaultId, state.defaultAccountType || 'STOCK', defaultBridgeId);
+    accountMap.set(key, {
+      accountId: defaultId,
+      accountType: normalizeAccountType(state.defaultAccountType || 'STOCK'),
+      bridgeId: loadAccountPairs()[key] || loadAccountPairs()[defaultId] || defaultBridgeId,
       defaultAccount: true,
     });
   }
-  accountPairEntries().forEach(({ accountId, bridgeId }) => {
-    accountMap.set(accountId, { bridgeId, defaultAccount: accountId === defaultId });
-  });
-  accountConfigEntries().forEach(({ accountId, config }) => {
-    accountMap.set(accountId, {
-      bridgeId: config.bridge_id || loadAccountPairs()[accountId] || defaultBridgeId,
-      defaultAccount: accountId === defaultId,
-      mode: config.mode || 'ctypes',
-      provider: !!config.data_provider,
+  accountPairEntries().forEach(({ accountKey, accountId, accountType, bridgeId }) => {
+    accountMap.set(accountKey, {
+      accountId,
+      accountType,
+      bridgeId,
+      defaultAccount: accountKey === defaultKey || (!defaultKey && accountId === defaultId),
     });
   });
-  const options = Array.from(accountMap.entries()).map(([accountId, info]) => {
+  accountConfigEntries().forEach(({ accountKey, accountId, accountType, config }) => {
+    accountMap.set(accountKey, {
+      accountId,
+      accountType,
+      bridgeId: config.bridge_id || loadAccountPairs()[accountKey] || loadAccountPairs()[accountId] || defaultBridgeId,
+      defaultAccount: accountKey === defaultKey || (!defaultKey && accountId === defaultId),
+      mode: config.mode || 'ctypes',
+      provider: !!config.data_provider,
+      name: config.display_name || '',
+    });
+  });
+  const options = Array.from(accountMap.entries()).map(([accountKey, info]) => {
     const modeLabel = info.mode === 'lttx' ? '高级' : '通用';
     const providerLabel = info.provider ? '，数据源' : '';
+    const typeLabel = accountTypeLabel(info.accountType);
+    const bridgeName = (state.bridges && state.bridges[info.bridgeId] && state.bridges[info.bridgeId].name) || info.bridgeId || 'default';
     const suffix = info.defaultAccount
-      ? `（默认账号，${modeLabel}${providerLabel}）`
-      : `（${modeLabel}${providerLabel}）`;
-    return `<option value="${plain(accountId)}">${plain(`${accountId} ${suffix}`)}</option>`;
+      ? `（默认，${typeLabel}，${modeLabel}${providerLabel}，${bridgeName}）`
+      : `（${typeLabel}，${modeLabel}${providerLabel}，${bridgeName}）`;
+    const label = info.name || info.accountId;
+    return `<option value="${plain(accountKey)}">${plain(`${label} / ${info.accountId} ${suffix}`)}</option>`;
   }).join('');
 
   select.innerHTML = options || '<option value="">暂无可用账号</option>';
   const selected = accountMap.has(current)
     ? current
-    : (defaultId && accountMap.has(defaultId) ? defaultId : (accountMap.keys().next().value || ''));
+    : (defaultKey && accountMap.has(defaultKey) ? defaultKey : (accountMap.keys().next().value || ''));
   select.value = selected;
-  state.accountId = selected;
-  state.accountRouteMode = (state.accountConfigs && state.accountConfigs[selected] && state.accountConfigs[selected].mode) || state.transportMode || 'ctypes';
+  const info = accountMap.get(selected) || {};
+  state.accountKey = selected;
+  state.accountId = info.accountId || '';
+  state.accountType = normalizeAccountType(info.accountType || 'STOCK');
+  state.accountRouteMode = (info && info.mode) || state.transportMode || 'ctypes';
   state.accountRouteFallback = false;
 }
 
@@ -4222,18 +4396,22 @@ function bridgeOptionExists(bridgeId) {
 function renderAccountPairs() {
   const overviewList = $('accountPairList');
   const bindingList = $('bindingAccountConfigList');
-  const configEntries = accountConfigEntries().map(({ accountId, config }) => ({
+  const configEntries = accountConfigEntries().map(({ accountKey, accountId, accountType, bridgeId, config }) => ({
+    accountKey,
     accountId,
-    bridgeId: config.bridge_id || bridgeIdForAccount(accountId),
+    accountType,
+    bridgeId: config.bridge_id || bridgeId,
     config,
   }));
-  const seen = new Set(configEntries.map((item) => item.accountId));
+  const seen = new Set(configEntries.map((item) => item.accountKey));
   const legacyEntries = accountPairEntries()
-    .filter(({ accountId }) => !seen.has(accountId))
-    .map(({ accountId, bridgeId }) => ({
+    .filter(({ accountKey }) => !seen.has(accountKey))
+    .map(({ accountKey, accountId, accountType, bridgeId }) => ({
+      accountKey,
       accountId,
+      accountType,
       bridgeId,
-      config: { bridge_id: bridgeId, mode: 'ctypes', qmt_dir: '', data_provider: false },
+      config: { account_key: accountKey, account_id: accountId, account_type: accountType, bridge_id: bridgeId, mode: 'ctypes', qmt_dir: '', data_provider: false },
     }));
   const entries = [...configEntries, ...legacyEntries].filter((item) => item.accountId);
   renderAccountSelect();
@@ -4248,17 +4426,20 @@ function renderAccountPairs() {
     if (bindingList) bindingList.appendChild(empty);
     return;
   }
-  entries.forEach(({ accountId, bridgeId, config }) => {
+  entries.forEach(({ accountKey, accountId, accountType, bridgeId, config }) => {
     const row = document.createElement('div');
     row.className = 'pair-row';
     const label = document.createElement('span');
     const modeLabel = config.mode === 'lttx' ? '高级模式' : '通用模式';
     const providerLabel = config.data_provider ? ' / 共享行情源' : '';
-    label.textContent = `${accountId} / ${modeLabel}${providerLabel}`;
+    const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
+    label.textContent = `${accountId} / ${accountTypeLabel(accountType)} / ${bridgeName} / ${modeLabel}${providerLabel}`;
     const useBtn = document.createElement('button');
     useBtn.type = 'button';
     useBtn.textContent = '使用';
+    useBtn.dataset.accountKey = accountKey;
     useBtn.dataset.accountId = accountId;
+    useBtn.dataset.accountType = accountType;
     useBtn.dataset.bridgeId = bridgeId;
     row.appendChild(label);
     row.appendChild(useBtn);
@@ -4270,7 +4451,7 @@ function renderAccountPairs() {
       const info = document.createElement('div');
       info.className = 'config-info';
       const strong = document.createElement('strong');
-      strong.textContent = accountId;
+      strong.textContent = `${accountId} / ${accountTypeLabel(accountType)}`;
       const summary = document.createElement('div');
       summary.className = 'config-summary';
       const modeLine = document.createElement('small');
@@ -4286,12 +4467,17 @@ function renderAccountPairs() {
       const editBtn = document.createElement('button');
       editBtn.type = 'button';
       editBtn.textContent = '编辑';
+      editBtn.dataset.accountKey = accountKey;
       editBtn.dataset.accountId = accountId;
+      editBtn.dataset.accountType = accountType;
       editBtn.dataset.bridgeId = bridgeId;
       const deleteBtn = document.createElement('button');
       deleteBtn.type = 'button';
       deleteBtn.textContent = '删除';
+      deleteBtn.dataset.accountKey = accountKey;
       deleteBtn.dataset.accountId = accountId;
+      deleteBtn.dataset.accountType = accountType;
+      deleteBtn.dataset.bridgeId = bridgeId;
       deleteBtn.dataset.action = 'delete-account';
       configRow.appendChild(info);
       configRow.appendChild(editBtn);
@@ -4303,6 +4489,8 @@ function renderAccountPairs() {
 
 async function saveCurrentAccountPair() {
   const accountId = selectedAccount();
+  const accountType = selectedAccountType();
+  const accountKey = selectedAccountKey();
   const form = $('bindingForm');
   const qmtDir = form && form.qmt_dir ? form.qmt_dir.value.trim() : '';
   const mode = form && form.mode ? form.mode.value : 'ctypes';
@@ -4313,6 +4501,8 @@ async function saveCurrentAccountPair() {
   }
   const data = await saveAccountConfigRequest({
     account_id: accountId,
+    account_type: accountType,
+    account_key: accountKey,
     qmt_dir: qmtDir,
     mode,
     data_provider: dataProvider,
@@ -4323,70 +4513,94 @@ async function saveCurrentAccountPair() {
   state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
   state.bridges = data.bridges || state.bridges;
   state.accountId = accountId;
+  state.accountType = accountType;
+  state.accountKey = (data.account && data.account.account_key) || accountKey;
   renderBridgeSelect(state.bridges);
   renderAccountSelect();
-  applyAccountPair(accountId);
+  applyAccountPair(state.accountKey || accountId);
   syncBindingForm();
   renderAccountPairs();
   await refreshBindingStatuses();
-  log('账号配置已保存', { account_id: accountId, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
+  log('账号配置已保存', { account_id: accountId, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
   if (data.qmt_bridge_identity) {
     log('ctypes 身份配置已处理', data.qmt_bridge_identity);
   }
-  if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId });
+  if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
 }
 
 async function removeCurrentAccountPair() {
   const accountId = selectedAccount();
+  const accountType = selectedAccountType();
+  const accountKey = selectedAccountKey();
   if (!accountId) return;
-  const data = await deleteAccountConfigRequest(accountId);
+  const data = await deleteAccountConfigRequest(accountId, accountType, accountKey);
   state.accountPairs = data.account_pairs || {};
   state.accountConfigs = data.account_configs || {};
   state.setup = data.setup || state.setup;
   state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
-  if (state.accountId === accountId) {
+  state.defaultAccountType = normalizeAccountType((data.setup && data.setup.default_account_type) || state.defaultAccountType || 'STOCK');
+  state.defaultAccountKey = (data.setup && data.setup.default_account_key) || state.defaultAccountKey || '';
+  if ((accountKey && state.accountKey === accountKey) || (!accountKey && state.accountId === accountId && state.accountType === accountType)) {
     state.accountId = '';
+    state.accountKey = '';
   }
   renderAccountPairs();
   if (!state.accountId) {
     state.accountId = state.defaultAccountId || '';
+    state.accountType = state.defaultAccountType || 'STOCK';
+    state.accountKey = state.defaultAccountKey || '';
     renderAccountSelect();
-    applyAccountPair(state.accountId);
+    applyAccountPair(state.accountKey || state.accountId);
     syncBindingForm();
   }
   await refreshBindingStatuses();
-  log('账号配置已删除', { account_id: accountId });
+  log('账号配置已删除', { account_id: accountId, account_type: accountType });
 }
 
-function applyAccountPair(accountId) {
-  accountId = String(accountId || '').trim();
-  if (!accountId) return false;
-  const bridgeId = bridgeIdForAccount(accountId);
+function applyAccountPair(accountKeyOrId) {
+  const value = String(accountKeyOrId || '').trim();
+  if (!value) return false;
+  const config = findAccountConfigByKey(value);
+  const entry = config ? {
+    accountKey: accountConfigKey(value, config),
+    accountId: config.account_id,
+    accountType: normalizeAccountType(config.account_type || 'STOCK'),
+    bridgeId: config.bridge_id || state.defaultBridgeId || 'default',
+  } : (findAccountEntryById(value, state.accountType) || null);
+  const bridgeId = (entry && entry.bridgeId) || bridgeIdForAccount(value, entry && entry.accountType);
   const select = $('bridgeSelect');
   if (select && bridgeOptionExists(bridgeId)) {
     select.value = bridgeId;
   }
+  if (entry) {
+    state.accountKey = entry.accountKey || value;
+    state.accountId = entry.accountId || value;
+    state.accountType = normalizeAccountType(entry.accountType || 'STOCK');
+  }
   selectedBridge();
-  return !!((state.accountConfigs && state.accountConfigs[accountId]) || loadAccountPairs()[accountId]);
+  return !!entry || !!loadAccountPairs()[value];
 }
 
 function syncBindingForm() {
   const form = $('bindingForm');
   if (!form) return;
-  form.account_id.value = $('accountInput').value.trim();
-  const accountId = form.account_id.value.trim();
-  const config = state.accountConfigs && state.accountConfigs[accountId];
+  const info = selectedAccountInfo();
+  form.account_id.value = info.accountId || '';
+  if (form.account_type) form.account_type.value = normalizeAccountType(info.accountType || 'STOCK');
+  const config = info.config;
   if (form.qmt_dir) form.qmt_dir.value = config && config.qmt_dir ? config.qmt_dir : '';
   if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
   if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
 }
 
-function selectAccountPair(accountId, bridgeId) {
+function selectAccountPair(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
   if (accountId) {
     state.accountId = accountId;
+    state.accountType = normalizeAccountType(accountType);
+    state.accountKey = accountKey || makeAccountKey(accountId, state.accountType, bridgeId || state.defaultBridgeId || 'default');
     renderAccountSelect();
     selectedAccount();
-    applyAccountPair(accountId);
+    applyAccountPair(state.accountKey);
   }
   if (!accountId && bridgeId && $('bridgeSelect') && bridgeOptionExists(bridgeId)) {
     $('bridgeSelect').value = bridgeId;
@@ -4483,6 +4697,7 @@ async function submitBindingForm(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const accountId = form.account_id.value.trim();
+  const accountType = normalizeAccountType(form.account_type ? form.account_type.value : 'STOCK');
   const qmtDir = form.qmt_dir ? form.qmt_dir.value.trim() : '';
   const mode = form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
@@ -4493,6 +4708,7 @@ async function submitBindingForm(event) {
   try {
     const data = await saveAccountConfigRequest({
       account_id: accountId,
+      account_type: accountType,
       qmt_dir: qmtDir,
       mode,
       data_provider: dataProvider,
@@ -4502,18 +4718,20 @@ async function submitBindingForm(event) {
     state.setup = data.setup || state.setup;
     state.bridges = data.bridges || state.bridges;
     state.accountId = accountId;
+    state.accountType = accountType;
+    state.accountKey = (data.account && data.account.account_key) || makeAccountKey(accountId, accountType, (data.account && data.account.bridge_id) || state.defaultBridgeId || 'default');
     renderBridgeSelect(state.bridges);
     renderAccountSelect();
     selectedAccount();
-    applyAccountPair(accountId);
+    applyAccountPair(state.accountKey);
     syncBindingForm();
     renderAccountPairs();
     await refreshBindingStatuses();
-    log('账号配置已保存', { account_id: accountId, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
+    log('账号配置已保存', { account_id: accountId, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
     if (data.qmt_bridge_identity) {
       log('ctypes 身份配置已处理', data.qmt_bridge_identity);
     }
-    if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId });
+    if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
   } catch (error) {
     log('账号配置保存失败', { error: error.message });
   }
@@ -4545,6 +4763,9 @@ async function refreshConfig() {
   state.accountPairs = data.account_pairs || {};
   state.accountConfigs = data.account_configs || {};
   state.setup = data.setup || null;
+  state.defaultAccountId = data.default_account_id || (data.setup && data.setup.default_account_id) || state.defaultAccountId;
+  state.defaultAccountType = normalizeAccountType(data.default_account_type || (data.setup && data.setup.default_account_type) || state.defaultAccountType || 'STOCK');
+  state.defaultAccountKey = data.default_account_key || (data.setup && data.setup.default_account_key) || state.defaultAccountKey || '';
   state.bridgeId = data.bridges && data.bridges[currentBridgeId] ? currentBridgeId : (data.default_bridge_id || Object.keys(data.bridges || {})[0] || 'default');
   renderBridgeSelect(data.bridges || {});
   renderAccountPairs();
@@ -4557,15 +4778,16 @@ async function refreshConfig() {
 async function refreshBindingStatuses() {
   const body = $('bindingStatusBody');
   const overviewBody = $('overviewBindingBody');
-  const configs = state.accountConfigs || {};
-  const pairEntries = Object.values(configs).filter((config) => config && config.account_id && config.bridge_id);
-  const legacyPairs = Object.values(state.accountPairs || {}).filter((pair) => (
-    pair && pair.account_id && pair.bridge_id && !configs[pair.account_id]
-  ));
-  pairEntries.push(...legacyPairs);
-  const entries = pairEntries
-    .map((pair) => ({ kind: 'pair', pair, bridge_id: pair.bridge_id, account_id: pair.account_id }))
-    .filter((item) => item.account_id);
+  const configEntries = accountConfigEntries().map((item) => ({ ...item, kind: 'pair' }));
+  const known = new Set(configEntries.map((item) => item.accountKey));
+  const pairEntries = accountPairEntries()
+    .filter((item) => !known.has(item.accountKey))
+    .map((item) => ({
+      ...item,
+      kind: 'pair',
+      config: { account_id: item.accountId, account_type: item.accountType, account_key: item.accountKey, bridge_id: item.bridgeId },
+    }));
+  const entries = [...configEntries, ...pairEntries].filter((item) => item.accountId);
   if (!entries.length) {
     if (body) body.innerHTML = '<tr><td colspan="6">暂无账号配置</td></tr>';
     if (overviewBody) overviewBody.innerHTML = '<tr><td colspan="5">暂无账号配置</td></tr>';
@@ -4575,7 +4797,12 @@ async function refreshBindingStatuses() {
   }
   const rows = await Promise.all(entries.map(async (entry) => {
     try {
-      const status = await api(`/api/status?account_id=${encodeURIComponent(entry.account_id)}`);
+      const params = new URLSearchParams();
+      params.set('account_id', entry.accountId);
+      params.set('account_type', entry.accountType);
+      params.set('account_key', entry.accountKey);
+      if (entry.bridgeId) params.set('bridge_id', entry.bridgeId);
+      const status = await api(`/api/status?${params.toString()}`);
       return { item: entry, status };
     } catch (error) {
       return { item: entry, error };
@@ -4597,18 +4824,21 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const selected = status && status.status ? status.status : status;
   const normalOnline = selected && selected.normal && selected.normal.online;
   const tradeOnline = selected && selected.trade && selected.trade.online;
-  const config = state.accountConfigs && state.accountConfigs[item.account_id];
+  const config = item.config || findAccountConfigByKey(item.accountKey) || {};
   const preferred = (status && status.preferred_mode) || (config && config.mode) || 'ctypes';
   const effective = (status && status.effective_mode) || preferred;
   const provider = (status && status.data_provider) || (config && config.data_provider);
   const qmtDirText = config && config.qmt_dir ? config.qmt_dir : '未填写（自动更新不可用）';
   const title = error ? error.message : '';
-  const accountText = item.account_id || '未绑定';
+  const accountText = item.accountId || item.account_id || '未绑定';
+  const accountType = normalizeAccountType(item.accountType || item.account_type || (config && config.account_type) || 'STOCK');
+  const accountKey = item.accountKey || item.account_key || accountConfigKey('', config);
+  const bridgeId = item.bridgeId || item.bridge_id || (config && config.bridge_id) || '';
   const verifyCell = withVerify
-    ? `<td>${item.account_id ? `<button class="verify-pair-btn" data-account-id="${esc(item.account_id)}" data-bridge-id="${esc(item.bridge_id)}">查资金/持仓</button>` : '--'}</td>`
+    ? `<td>${accountText ? `<button class="verify-pair-btn" data-account-id="${esc(accountText)}" data-account-type="${esc(accountType)}" data-account-key="${esc(accountKey)}" data-bridge-id="${esc(bridgeId)}">查资金/持仓</button>` : '--'}</td>`
     : '';
   return `<tr title="${esc(title)}">
-    <td>${esc(accountText)}</td>
+    <td>${esc(accountText)}<br><small>${esc(accountTypeLabel(accountType))}</small></td>
     <td>${preferred === 'lttx' ? '高级' : '通用'}</td>
     <td><span class="status-dot ${normalOnline && tradeOnline ? 'online' : 'offline'}">${effective === 'lttx' ? '高级' : '通用'}${status && status.fallback ? '（已回退）' : ''}</span></td>
     <td>${esc(qmtDirText)}</td>
@@ -4617,24 +4847,27 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   </tr>`;
 }
 
-async function verifyPair(accountId, bridgeId) {
+async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
+  accountType = normalizeAccountType(accountType);
   $('pairVerifyNote').textContent = `${accountId}`;
   try {
     const data = await api('/api/account-pairs/verify', {
       method: 'POST',
       body: JSON.stringify({
         account_id: accountId,
-        bridge_id: bridgeId || bridgeIdForAccount(accountId),
+        account_type: accountType,
+        account_key: accountKey,
+        bridge_id: bridgeId || bridgeIdForAccount(accountId, accountType),
         channel: selectedChannel(),
         force: 1,
       }),
     });
     renderPairVerification(data);
-    log('账号验证完成', { account_id: accountId });
+    log('账号验证完成', { account_id: accountId, account_type: accountType });
   } catch (error) {
     renderPairVerification(null);
     $('pairVerifyNote').textContent = `验证失败：${error.message}`;
-    log('账号验证失败', { account_id: accountId, error: error.message });
+    log('账号验证失败', { account_id: accountId, account_type: accountType, error: error.message });
   }
 }
 
@@ -4730,7 +4963,7 @@ function renderBridgeSelect(bridges) {
   state.bridges = bridges || {};
   const bridgeSelect = $('bridgeSelect');
   if (!bridgeSelect) return;
-  const current = bridgeIdForAccount(state.accountId) || bridgeSelect.value || state.bridgeId;
+  const current = bridgeIdForAccount(state.accountId, state.accountType) || bridgeSelect.value || state.bridgeId;
   const optionsHtml = Object.keys(state.bridges).map((id) => {
     const bridge = state.bridges[id] || {};
     return `<option value="${plain(id)}">${plain(bridge.name || id)}</option>`;
@@ -4804,6 +5037,8 @@ async function refreshLttxStatus(options = {}) {
 async function loadConfigLegacy() {
   const data = await api('/api/config');
   state.defaultAccountId = data.default_account_id || '';
+  state.defaultAccountType = normalizeAccountType(data.default_account_type || (data.setup && data.setup.default_account_type) || 'STOCK');
+  state.defaultAccountKey = data.default_account_key || (data.setup && data.setup.default_account_key) || '';
   const bridges = data.bridges || {};
   state.envBridges = data.env_bridges || {};
   state.accountPairs = data.account_pairs || {};
@@ -4811,14 +5046,16 @@ async function loadConfigLegacy() {
   state.setup = data.setup || null;
   state.defaultAccountId = data.default_account_id || state.defaultAccountId;
   state.defaultBridgeId = data.default_bridge_id || 'default';
+  state.accountKey = localStorage.getItem(ACCOUNT_SELECTION_KEY) || state.defaultAccountKey || '';
   state.accountId = localStorage.getItem('cfquant.account') || state.defaultAccountId || '';
+  state.accountType = state.defaultAccountType || 'STOCK';
   state.bridgeId = localStorage.getItem('cfquant.bridge_id') || state.defaultBridgeId;
   if (!bridges[state.bridgeId]) {
     state.bridgeId = state.defaultBridgeId || Object.keys(bridges)[0] || 'default';
   }
   renderBridgeSelect(bridges);
   renderAccountSelect(state.defaultAccountId);
-  applyAccountPair(state.accountId);
+  applyAccountPair(state.accountKey || state.accountId);
   syncBindingForm();
   const queryChannel = localStorage.getItem('cfquant.query_channel');
   if (queryChannel && $('queryChannel').querySelector(`option[value="${queryChannel}"]`)) {
@@ -4855,6 +5092,8 @@ async function loadConfigLegacy() {
 async function loadConfig() {
   const data = await api('/api/config');
   state.defaultAccountId = data.default_account_id || '';
+  state.defaultAccountType = normalizeAccountType(data.default_account_type || (data.setup && data.setup.default_account_type) || 'STOCK');
+  state.defaultAccountKey = data.default_account_key || (data.setup && data.setup.default_account_key) || '';
   const bridges = data.bridges || {};
   state.envBridges = data.env_bridges || {};
   state.accountPairs = data.account_pairs || {};
@@ -4862,14 +5101,16 @@ async function loadConfig() {
   state.setup = data.setup || null;
   state.defaultAccountId = data.default_account_id || state.defaultAccountId;
   state.defaultBridgeId = data.default_bridge_id || 'default';
+  state.accountKey = localStorage.getItem(ACCOUNT_SELECTION_KEY) || state.defaultAccountKey || '';
   state.accountId = localStorage.getItem('cfquant.account') || state.defaultAccountId || '';
+  state.accountType = state.defaultAccountType || 'STOCK';
   state.bridgeId = localStorage.getItem('cfquant.bridge_id') || state.defaultBridgeId;
   if (!bridges[state.bridgeId]) {
     state.bridgeId = state.defaultBridgeId || Object.keys(bridges)[0] || 'default';
   }
   renderBridgeSelect(bridges);
   renderAccountSelect(state.defaultAccountId);
-  applyAccountPair(state.accountId);
+  applyAccountPair(state.accountKey || state.accountId);
   syncBindingForm();
   const queryChannel = localStorage.getItem('cfquant.query_channel');
   if (queryChannel && $('queryChannel').querySelector(`option[value="${queryChannel}"]`)) {
@@ -4927,7 +5168,12 @@ async function refreshStatus() {
     : Promise.resolve(null);
   const transportPromise = refreshTransport();
   try {
-    const data = await api(`/api/status?account_id=${encodeURIComponent(selectedAccount())}&bridge_id=${encodeURIComponent(selectedBridge())}`);
+    const params = new URLSearchParams();
+    params.set('account_id', selectedAccount());
+    params.set('account_type', selectedAccountType());
+    params.set('account_key', selectedAccountKey());
+    params.set('bridge_id', selectedBridge());
+    const data = await api(`/api/status?${params.toString()}`);
     state.bridgeStatus = data;
     const lttx = await lttxPromise;
     const transport = await transportPromise;
@@ -5025,15 +5271,29 @@ async function stopLttx() {
 }
 
 function selectedAccount() {
-  const accountId = $('accountInput').value.trim();
-  localStorage.setItem('cfquant.account', accountId);
-  state.accountId = accountId;
-  return accountId;
+  const info = selectedAccountInfo();
+  state.accountKey = info.accountKey || '';
+  state.accountId = info.accountId || '';
+  state.accountType = normalizeAccountType(info.accountType || 'STOCK');
+  if (state.accountKey) localStorage.setItem(ACCOUNT_SELECTION_KEY, state.accountKey);
+  if (state.accountId) localStorage.setItem('cfquant.account', state.accountId);
+  return state.accountId;
+}
+
+function selectedAccountType() {
+  selectedAccount();
+  return normalizeAccountType(state.accountType || 'STOCK');
+}
+
+function selectedAccountKey() {
+  selectedAccount();
+  return state.accountKey || makeAccountKey(state.accountId, state.accountType, selectedBridge());
 }
 
 function selectedBridge() {
   const select = $('bridgeSelect');
-  const accountBridgeId = bridgeIdForAccount(state.accountId);
+  const info = selectedAccountInfo();
+  const accountBridgeId = info.bridgeId || bridgeIdForAccount(info.accountId, info.accountType);
   const bridgeId = accountBridgeId || (select ? select.value : '') || state.bridgeId || 'default';
   if (select && state.bridges && state.bridges[bridgeId]) {
     select.value = bridgeId;
@@ -5102,8 +5362,9 @@ function handleAccountChange() {
     log('请选择账号');
     return;
   }
-  applyAccountPair(accountId);
-  state.accountRouteMode = (state.accountConfigs && state.accountConfigs[accountId] && state.accountConfigs[accountId].mode) || state.transportMode || 'ctypes';
+  const info = selectedAccountInfo();
+  applyAccountPair(info.accountKey || accountId);
+  state.accountRouteMode = (info.config && info.config.mode) || state.transportMode || 'ctypes';
   state.accountRouteFallback = false;
   syncBindingForm();
   resetSelectionState();
@@ -5119,7 +5380,7 @@ function switchAccountFromToolbar() {
     return;
   }
   handleAccountChange();
-  log('账号已切换', { account_id: accountId });
+  log('账号已切换', { account_id: accountId, account_type: selectedAccountType(), account_key: selectedAccountKey() });
 }
 
 function firstRow(section) {
@@ -5767,13 +6028,17 @@ function connectOrderCallbackSocket(options = {}) {
     return;
   }
   const bridgeId = selectedBridge();
-  const socketKey = `${bridgeId}|${accountId}`;
+  const accountType = selectedAccountType();
+  const accountKey = selectedAccountKey();
+  const socketKey = `${bridgeId}|${accountType}|${accountKey || accountId}`;
   if (!options.force && state.orderCallbackSocket && state.orderCallbackKey === socketKey) return;
   closeOrderCallbackSocket();
 
   const params = new URLSearchParams();
   params.set('bridge_id', bridgeId);
   params.set('account_id', accountId);
+  params.set('account_type', accountType);
+  if (accountKey) params.set('account_key', accountKey);
   params.set('event_prefix', 'trader:');
   const socket = new WebSocket(apiWsUrl(`/ws/callbacks?${params.toString()}`));
   state.orderCallbackSocket = socket;
@@ -5808,7 +6073,15 @@ function restartOrderCallbackSocket() {
 
 async function refreshCallbacks() {
   try {
-    const payload = await api(`/api/callbacks?bridge_id=${encodeURIComponent(selectedBridge())}&account_id=${encodeURIComponent(selectedAccount())}&since=${state.callbackSeq}&limit=200`);
+    const params = new URLSearchParams();
+    params.set('bridge_id', selectedBridge());
+    params.set('account_id', selectedAccount());
+    params.set('account_type', selectedAccountType());
+    const accountKey = selectedAccountKey();
+    if (accountKey) params.set('account_key', accountKey);
+    params.set('since', state.callbackSeq);
+    params.set('limit', 200);
+    const payload = await api(`/api/callbacks?${params.toString()}`);
     const events = payload.events || [];
     if (!events.length) return;
     events.forEach((event) => appendServerCallbackEvent(event, { render: false }));
@@ -5897,14 +6170,23 @@ function renderTrades(section) {
 
 async function refreshAccount(sections = 'asset,positions', options = {}) {
   const accountId = selectedAccount();
+  const accountType = selectedAccountType();
+  const accountKey = selectedAccountKey();
   const channel = selectedChannel();
   if (!accountId) {
     log('账号为空');
     return;
   }
-  const force = options.force ? '&force=1' : '';
-  const subscribe = options.subscribe === false ? '&subscribe=0' : '';
-  const data = await api(`/api/account?bridge_id=${encodeURIComponent(selectedBridge())}&account_id=${encodeURIComponent(accountId)}&channel=${channel}&sections=${sections}${force}${subscribe}`);
+  const params = new URLSearchParams();
+  params.set('bridge_id', selectedBridge());
+  params.set('account_id', accountId);
+  params.set('account_type', accountType);
+  if (accountKey) params.set('account_key', accountKey);
+  params.set('channel', channel);
+  params.set('sections', sections);
+  if (options.force) params.set('force', '1');
+  if (options.subscribe === false) params.set('subscribe', '0');
+  const data = await api(`/api/account?${params.toString()}`);
   if (data.asset) {
     if (data.asset.ok) renderAsset(data.asset);
     else log('资产查询失败', data.asset);
@@ -5960,6 +6242,8 @@ async function submitOrder(event) {
     bridge_id: selectedBridge(),
     channel: selectedTradeChannel(),
     account_id: selectedAccount(),
+    account_type: selectedAccountType(),
+    account_key: selectedAccountKey(),
     side: form.side.value,
     stock_code: normalizeStockCode(form.stock_code.value),
     price: Number(form.price.value),
@@ -6026,6 +6310,8 @@ async function submitBatchOrders(event) {
       bridge_id: selectedBridge(),
       channel: selectedTradeChannel(),
       account_id: selectedAccount(),
+      account_type: selectedAccountType(),
+      account_key: selectedAccountKey(),
       orders,
       confirm_text: form.confirm_text.value.trim(),
     };
@@ -6044,6 +6330,8 @@ async function sendCancel(orderId, channel) {
     bridge_id: selectedBridge(),
     channel: channel || selectedTradeChannel(),
     account_id: selectedAccount(),
+    account_type: selectedAccountType(),
+    account_key: selectedAccountKey(),
     order_id: String(orderId || '').trim(),
     confirm_text: `CANCEL ${String(orderId || '').trim()}`,
   };
@@ -6199,9 +6487,20 @@ function onboardingCurrentConfig() {
     || state.defaultAccountId
     || (state.setup && state.setup.default_account_id)
     || '';
-  const existing = accountId && state.accountConfigs ? state.accountConfigs[accountId] : null;
+  const accountType = normalizeAccountType(
+    ($('onboardingAccountType') && $('onboardingAccountType').value)
+    || state.accountType
+    || state.defaultAccountType
+    || (state.setup && state.setup.default_account_type)
+    || 'STOCK'
+  );
+  const exact = accountId ? accountConfigEntries().find((item) => (
+    item.accountId === accountId && item.accountType === accountType
+  )) : null;
+  const existing = exact ? exact.config : null;
+  const setupKey = state.setup && (state.setup.default_account_key || state.setup.default_account_id);
   const setupConfig = state.setup && state.setup.account_configs
-    ? state.setup.account_configs[state.setup.default_account_id]
+    ? state.setup.account_configs[setupKey]
     : null;
   return existing || setupConfig || {};
 }
@@ -6211,8 +6510,15 @@ function onboardingValues() {
   const accountId = $('onboardingAccountId')
     ? $('onboardingAccountId').value.trim()
     : (config.account_id || state.accountId || state.defaultAccountId || '');
+  const accountType = normalizeAccountType(
+    $('onboardingAccountType')
+      ? $('onboardingAccountType').value
+      : (config.account_type || state.accountType || state.defaultAccountType || 'STOCK')
+  );
   return {
     account_id: accountId,
+    account_type: accountType,
+    account_key: config.account_key || makeAccountKey(accountId, accountType, config.bridge_id || state.defaultBridgeId || 'default'),
     qmt_dir: $('onboardingQmtDir') ? $('onboardingQmtDir').value.trim() : (config.qmt_dir || ''),
     mode: $('onboardingMode') ? $('onboardingMode').value : (config.mode || 'ctypes'),
     data_provider: $('onboardingDataProvider') ? $('onboardingDataProvider').checked : !!config.data_provider,
@@ -6224,6 +6530,7 @@ function onboardingDeployPlan(values = onboardingValues()) {
   const installDir = parentWinPath(qmtDir);
   const pythonDir = installDir ? joinWinPath(installDir, 'python') : '';
   const baseRows = [
+    ['账户类型', accountTypeLabel(values.account_type)],
     ['资金账号', values.account_id || '--'],
     ['运行模式', values.mode === 'lttx' ? '高级模式' : '通用模式'],
     ['当前填写的 QMT 核心目录', qmtDir || '未填写'],
@@ -6274,7 +6581,8 @@ function renderOnboardingBridgeSummary(data = state.bridgeStatus, error = null) 
   const tradeOnline = !!(selected && selected.trade && selected.trade.online);
   const rows = [
     ['资金账号', values.account_id || '--'],
-    ['内部通道', bridgeIdForAccount(values.account_id) || selectedBridge()],
+    ['账户类型', accountTypeLabel(values.account_type)],
+    ['内部通道', bridgeIdForAccount(values.account_id, values.account_type) || selectedBridge()],
     ['查询通道', error ? `检测失败：${error.message}` : (normalOnline ? '在线' : '未在线')],
     ['交易通道', error ? `检测失败：${error.message}` : (tradeOnline ? '在线' : '未在线')],
   ];
@@ -6299,6 +6607,7 @@ function renderOnboardingDataSummary(payload = null, error = null) {
   const positionsRows = positionData.length;
   const rows = [
     ['资金账号', onboardingValues().account_id || '--'],
+    ['账户类型', accountTypeLabel(onboardingValues().account_type)],
     ['资产查询', error ? `失败：${error.message}` : (payload ? (assetOk ? '成功' : '未返回资产') : '尚未查询')],
     ['持仓查询', error ? `失败：${error.message}` : (payload ? (positionsOk ? '成功' : '未返回持仓') : '尚未查询')],
     ['持仓数量', payload ? `${positionsRows} 条` : '尚未查询'],
@@ -6378,6 +6687,10 @@ function syncOnboardingWizard(options = {}) {
   if (accountInput && (shouldFill || !accountInput.value.trim())) {
     accountInput.value = config.account_id || state.accountId || state.defaultAccountId || '';
   }
+  const accountTypeInput = $('onboardingAccountType');
+  if (accountTypeInput) {
+    accountTypeInput.value = normalizeAccountType(config.account_type || state.accountType || state.defaultAccountType || 'STOCK');
+  }
   const qmtInput = $('onboardingQmtDir');
   if (qmtInput && (shouldFill || !qmtInput.value.trim())) {
     qmtInput.value = config.qmt_dir || (state.setup && state.setup.default_qmt_dir) || '';
@@ -6416,10 +6729,14 @@ async function saveOnboardingConfig(event) {
     state.setup = data.setup || state.setup;
     state.bridges = data.bridges || state.bridges;
     state.defaultAccountId = (state.setup && state.setup.default_account_id) || state.defaultAccountId;
+    state.defaultAccountType = normalizeAccountType((state.setup && state.setup.default_account_type) || state.defaultAccountType || values.account_type);
+    state.defaultAccountKey = (state.setup && state.setup.default_account_key) || state.defaultAccountKey || values.account_key;
     state.accountId = values.account_id;
+    state.accountType = normalizeAccountType(values.account_type);
+    state.accountKey = (data.account && data.account.account_key) || values.account_key;
     renderBridgeSelect(state.bridges);
     renderAccountSelect();
-    applyAccountPair(values.account_id);
+    applyAccountPair(state.accountKey || values.account_id);
     syncBindingForm();
     renderAccountPairs();
     markOnboardingStepDone('config');
@@ -6432,7 +6749,7 @@ async function saveOnboardingConfig(event) {
     }
     await refreshBindingStatuses();
     setOnboardingStep('deploy');
-    log('新手引导账号配置已保存', { account_id: values.account_id, mode: values.mode, qmt_dir_configured: !!values.qmt_dir });
+    log('新手引导账号配置已保存', { account_id: values.account_id, account_type: values.account_type, mode: values.mode, qmt_dir_configured: !!values.qmt_dir });
   } catch (error) {
     setOnboardingStatus('onboardingConfigStatus', `保存失败：${error.message}`, 'error');
     log('新手引导账号配置保存失败', { error: error.message });
@@ -6457,11 +6774,18 @@ async function refreshOnboardingBridge() {
     return;
   }
   state.accountId = values.account_id;
+  state.accountType = normalizeAccountType(values.account_type);
+  state.accountKey = values.account_key || state.accountKey;
   renderAccountSelect();
-  applyAccountPair(values.account_id);
+  applyAccountPair(state.accountKey || values.account_id);
   setOnboardingStatus('onboardingBridgeStatus', '正在检测通道...', 'busy');
   try {
-    const data = await api(`/api/status?account_id=${encodeURIComponent(values.account_id)}`);
+    const params = new URLSearchParams();
+    params.set('account_id', values.account_id);
+    params.set('account_type', values.account_type);
+    if (values.account_key) params.set('account_key', values.account_key);
+    params.set('bridge_id', bridgeIdForAccount(values.account_id, values.account_type) || selectedBridge());
+    const data = await api(`/api/status?${params.toString()}`);
     state.bridgeStatus = data;
     renderOnboardingBridgeSummary(data);
     await refreshStatus();
@@ -6485,13 +6809,23 @@ async function verifyOnboardingData() {
     return;
   }
   state.accountId = values.account_id;
+  state.accountType = normalizeAccountType(values.account_type);
+  state.accountKey = values.account_key || state.accountKey;
   renderAccountSelect();
-  applyAccountPair(values.account_id);
+  applyAccountPair(state.accountKey || values.account_id);
   setOnboardingStatus('onboardingDataStatus', '正在查询资金和持仓...', 'busy');
   try {
     const channel = selectedChannel();
-    const bridgeId = bridgeIdForAccount(values.account_id) || selectedBridge();
-    const data = await api(`/api/account?bridge_id=${encodeURIComponent(bridgeId)}&account_id=${encodeURIComponent(values.account_id)}&channel=${channel}&sections=asset,positions&force=1`);
+    const bridgeId = bridgeIdForAccount(values.account_id, values.account_type) || selectedBridge();
+    const params = new URLSearchParams();
+    params.set('bridge_id', bridgeId);
+    params.set('account_id', values.account_id);
+    params.set('account_type', values.account_type);
+    if (values.account_key) params.set('account_key', values.account_key);
+    params.set('channel', channel);
+    params.set('sections', 'asset,positions');
+    params.set('force', '1');
+    const data = await api(`/api/account?${params.toString()}`);
     renderOnboardingDataSummary(data);
     if (data.asset && data.asset.ok) renderAsset(data.asset);
     if (data.positions && data.positions.ok) renderPositions(data.positions);
@@ -6523,7 +6857,7 @@ function wireOnboardingGuide() {
     markOnboardingStepDone('intro');
     setOnboardingStep('config');
   });
-  ['onboardingAccountId', 'onboardingQmtDir', 'onboardingMode', 'onboardingDataProvider'].forEach((id) => {
+  ['onboardingAccountId', 'onboardingAccountType', 'onboardingQmtDir', 'onboardingMode', 'onboardingDataProvider'].forEach((id) => {
     const input = $(id);
     if (input) input.addEventListener('input', renderOnboardingDeployPlan);
     if (input) input.addEventListener('change', renderOnboardingDeployPlan);
@@ -6833,7 +7167,7 @@ async function boot() {
   $('accountPairList').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-account-id]');
     if (!button) return;
-    selectAccountPair(button.dataset.accountId, button.dataset.bridgeId);
+    selectAccountPair(button.dataset.accountId, button.dataset.bridgeId, button.dataset.accountType, button.dataset.accountKey);
   });
   const bindingConfigList = $('bindingAccountConfigList');
   if (bindingConfigList) {
@@ -6842,11 +7176,13 @@ async function boot() {
       if (!button) return;
       if (button.dataset.action === 'delete-account') {
         state.accountId = button.dataset.accountId || state.accountId;
+        state.accountType = normalizeAccountType(button.dataset.accountType || state.accountType);
+        state.accountKey = button.dataset.accountKey || state.accountKey;
         renderAccountSelect();
         removeCurrentAccountPair().catch((error) => log('账号配置删除失败', { error: error.message }));
         return;
       }
-      selectAccountPair(button.dataset.accountId, button.dataset.bridgeId);
+      selectAccountPair(button.dataset.accountId, button.dataset.bridgeId, button.dataset.accountType, button.dataset.accountKey);
     });
   }
   const bridgeForm = $('bridgeForm');
@@ -6869,7 +7205,7 @@ async function boot() {
   $('bindingStatusBody').addEventListener('click', (event) => {
     const button = event.target.closest('.verify-pair-btn');
     if (!button) return;
-    verifyPair(button.dataset.accountId, button.dataset.bridgeId);
+    verifyPair(button.dataset.accountId, button.dataset.bridgeId, button.dataset.accountType, button.dataset.accountKey);
   });
   $('apiEndpointList').addEventListener('click', (event) => {
     const groupButton = event.target.closest('button[data-api-group]');

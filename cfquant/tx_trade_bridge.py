@@ -436,6 +436,7 @@ class TxTradeBridge(object):
         data = {
             "seq": params.get("seq"),
             "account_id": (params.get("account") or {}).get("account_id", params.get("account_id", "")),
+            "account_type": self._account_type_name((params.get("account") or {}).get("account_type") or params.get("account_type")).upper(),
             "order_id": result.get("order_id", -1) if isinstance(result, dict) else result,
             "order_remark": result.get("order_remark", params.get("order_remark", "")) if isinstance(result, dict) else params.get("order_remark", ""),
         }
@@ -501,6 +502,7 @@ class TxTradeBridge(object):
         data = {
             "seq": params.get("seq"),
             "account_id": (params.get("account") or {}).get("account_id", params.get("account_id", "")),
+            "account_type": self._account_type_name((params.get("account") or {}).get("account_type") or params.get("account_type")).upper(),
             "order_id": params.get("order_id"),
             "cancel_result": result.get("cancel_result", -1) if isinstance(result, dict) else result,
         }
@@ -1160,14 +1162,15 @@ class TxTradeBridge(object):
         account_id = str(account_id).strip()
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
         self.account_id = account_id
+        subscriber_key = (account_type.upper(), account_id)
         client_id = ""
         if msg:
             client_id = msg.get("client_id") or msg.get("reply_channel") or ""
         if client_id:
             with self.subscriber_lock:
-                self.account_subscribers.setdefault(account_id, set()).add(client_id)
-                self.client_accounts.setdefault(client_id, set()).add(account_id)
-            account_routing.subscribe(self.bridge_id, account_id, client_id)
+                self.account_subscribers.setdefault(subscriber_key, set()).add(client_id)
+                self.client_accounts.setdefault(client_id, set()).add(subscriber_key)
+            account_routing.subscribe(self.bridge_id, account_id, client_id, account_type=account_type)
         if self.context is not None:
             try:
                 self.context.set_account(account_id, account_type.upper())
@@ -1179,20 +1182,24 @@ class TxTradeBridge(object):
     def _unsubscribe_account(self, params, msg=None):
         account = params.get("account") or {}
         account_id = account.get("account_id") or params.get("account_id")
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        subscriber_key = None
         client_id = ""
         if msg:
             client_id = msg.get("client_id") or msg.get("reply_channel") or ""
         if account_id:
             account_id = str(account_id).strip()
+            subscriber_key = (account_type.upper(), account_id)
         with self.subscriber_lock:
             if account_id and client_id:
-                subscribers = self.account_subscribers.get(account_id)
+                subscribers = self.account_subscribers.get(subscriber_key)
                 if subscribers:
                     subscribers.discard(client_id)
                     if not subscribers:
-                        self.account_subscribers.pop(account_id, None)
+                        self.account_subscribers.pop(subscriber_key, None)
                 accounts = self.client_accounts.get(client_id)
                 if accounts:
+                    accounts.discard(subscriber_key)
                     accounts.discard(account_id)
                     if not accounts:
                         self.client_accounts.pop(client_id, None)
@@ -1204,7 +1211,7 @@ class TxTradeBridge(object):
                         subscribers.discard(client_id)
                         if not subscribers:
                             self.account_subscribers.pop(item, None)
-        account_routing.unsubscribe(self.bridge_id, account_id=account_id, client_id=client_id)
+        account_routing.unsubscribe(self.bridge_id, account_id=account_id, client_id=client_id, account_type=account_type if account_id else None)
         if account_id and account_id == self.account_id:
             self.account_id = ""
         self._log("account unsubscribed account=%s client_id=%s" % (account_id or "-", client_id or "-"))
@@ -1460,22 +1467,40 @@ class TxTradeBridge(object):
         if client_id:
             self._send_event(client_id, "trader:%s" % name, data)
 
-    def _client_ids_for_account(self, account_id):
+    def _client_ids_for_account(self, account_id, account_type=None):
         account_id = str(account_id or "").strip()
         if not account_id:
             return []
+        account_type = self._account_type_name(account_type).upper() if account_type not in (None, "") else ""
         with self.subscriber_lock:
-            client_ids = set(self.account_subscribers.get(account_id, set()))
-        client_ids.update(account_routing.client_ids(self.bridge_id, account_id))
+            if account_type:
+                client_ids = set(self.account_subscribers.get((account_type, account_id), set()))
+            else:
+                client_ids = set()
+                for key, ids in self.account_subscribers.items():
+                    if isinstance(key, tuple) and len(key) == 2 and key[1] == account_id:
+                        client_ids.update(ids)
+                    elif key == account_id:
+                        client_ids.update(ids)
+        if account_type:
+            client_ids.update(account_routing.client_ids(self.bridge_id, account_id, account_type=account_type))
         return sorted(client_ids)
 
-    def _send_trader_event_to_account(self, account_id, name, data):
-        for client_id in self._client_ids_for_account(account_id):
+    def _send_trader_event_to_account(self, account_id, name, data, account_type=None):
+        if account_type and isinstance(data, dict):
+            data.setdefault("account_type", self._account_type_name(account_type).upper())
+        for client_id in self._client_ids_for_account(account_id, account_type=account_type):
             self._send_trader_event(client_id, name, data)
 
     def _account_subscriber_status(self):
         with self.subscriber_lock:
-            status = dict((account_id, len(client_ids)) for account_id, client_ids in self.account_subscribers.items())
+            status = {}
+            for key, client_ids in self.account_subscribers.items():
+                if isinstance(key, tuple) and len(key) == 2:
+                    label = "%s:%s" % (key[0], key[1])
+                else:
+                    label = "STOCK:%s" % key
+                status[label] = len(client_ids)
         for account_id, count in account_routing.status(self.bridge_id).items():
             status[account_id] = max(status.get(account_id, 0), count)
         return status

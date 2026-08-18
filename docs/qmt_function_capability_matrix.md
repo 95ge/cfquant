@@ -1,6 +1,6 @@
 # cfquant 大 QMT 函数封装能力清单
 
-更新时间：2026-08-13
+更新时间：2026-08-18
 
 ## 定位说明
 
@@ -33,7 +33,7 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 桥接状态查询 | `cfquant.status` / `GET /api/status` | 返回 context、tx、通道、队列等状态。 |
 | 通信模式切换 | `GET /api/transport` / `POST /api/transport` | 支持通用模式 `ctypes` 和高级模式 `lttx`；高级模式要求普通 QMT、极速交易端同时在线。 |
 | PipeHub 状态 | `GET /api/pipe-hub` / `POST /api/pipe-hub/start` / `POST /api/pipe-hub/stop` | 通用模式使用；负责单文件 ctypes 双通道的请求、响应和回调转发。 |
-| 多账号路由 | Web 账号绑定 / `account_id` | 同一 QMT 的多个账号共用一个 `bridge_id`，请求按 `account_id` 路由；多个 QMT 使用不同 `bridge_id` 和对应频道。 |
+| 多账号路由 | Web 账号绑定 / `account_key` | 同一 QMT 的多个普通/信用账户共用一个 `bridge_id`，请求按 `bridge_id:account_type:account_id` 路由；多个 QMT 使用不同 `bridge_id` 和对应频道。 |
 | QMT 日志语言设置 | `cfquant.set_log_language` | 用于桥接脚本日志中英文切换。 |
 | QMT userdata/log 清理 | `cfquant.cleanup_qmt_logs` | 清理 QMT 用户日志目录的过期日志。 |
 
@@ -53,6 +53,8 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 异步下单响应 | `order_stock_async` | `passorder` + 本地事件转发 | 已实现为桥接事件。 |
 | 异步撤单响应 | `cancel_order_stock_async` | `cancel` + 本地事件转发 | 已实现为桥接事件。 |
 | 交易回调转发 | WebSocket `/ws/callbacks` | QMT 策略回调函数 | 已实现资金、持仓、委托、成交、错误等回调转发。 |
+| 信用专项查询 | `query_credit_detail` / `query_credit_subjects` / `query_credit_slo_code` / `query_credit_assure` / `query_stk_compacts` / `POST /api/credit/query` | QMT 信用账户 callable 候选 | 已实现；实际可用性取决于当前券商 QMT 是否暴露对应 callable。 |
+| 信用能力探测 | `POST /api/credit/probe` | 只读调用资产、持仓、委托、成交和信用专项查询 | 已实现；用于部署后确认当前信用账户能力，不触发交易委托。 |
 
 ### 行情与基础数据
 

@@ -6,7 +6,7 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 
 - **miniQMT 无缝切换**：外部程序可按接近 `xtquant` 的方式导入 `cfquant`，默认自动识别通用模式或高级模式。
 - **大 QMT 功能转接**：通过 QMT 策略脚本承接行情订阅、账户查询、委托成交、下单撤单和回调事件。
-- **多账号运行**：支持单账号快速部署，也支持多账号、多 QMT 独立绑定，并可指定共享行情数据源。
+- **多账号运行**：支持单账号快速部署，也支持普通账户、信用账户、多账号、多 QMT 独立绑定，并可指定共享行情数据源。
 - **低延迟链路**：通用模式使用 ctypes named pipe；高级模式可接入极速交易端，进一步压低下单和撤单耗时。
 
 新用户默认推荐使用**通用模式**：一个 QMT、一个入口脚本即可跑通。需要进一步压低下单、撤单延迟时，再切换到**高级模式**。
@@ -17,7 +17,7 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 |---|---|
 | 第一次部署和验证 | 打开 Web 后按“新手初始化向导”操作 |
 | 单账号快速跑通 | 使用通用模式，QMT 加载 `CFQUANT_CTYPE_ALL_LOWLAT.py` |
-| 多账号、多 QMT | 在 Web“绑定”页逐个配置账号和 QMT 核心目录 |
+| 普通/信用账户、多账号、多 QMT | 在 Web“绑定”页逐个配置账号类型、账号和 QMT 核心目录 |
 | 追求更低交易延迟 | 使用高级模式，需要普通 QMT + 极速交易端 QMT |
 | 从 miniQMT / `xtquant` 切换 | 看 [外部 Python 接入](docs/README_外部Python接入.md) |
 | 日志、重启、更新、回滚 | 看 [运维与更新](docs/README_运维与更新.md) |
@@ -78,6 +78,7 @@ restart_cfquant.bat    重启本地服务
 |---|---|
 | 部署教程 | [通用模式部署指南](docs/通用模式部署指南.md)、[高级模式部署指南](docs/高级模式部署指南.md) |
 | 账号配置 | [账号运行配置说明](docs/web_account_runtime_configuration.md) |
+| 信用账户 | [信用账户支持方案](docs/信用账户支持方案.md) |
 | 外部接入 | [外部 Python 接入](docs/README_外部Python接入.md) |
 | 运维更新 | [运维与更新](docs/README_运维与更新.md) |
 | 接口兼容 | [xtdata 兼容说明](docs/xtdata_compatibility.md)、[xttrader 兼容说明](docs/xttrader_compatibility.md) |
@@ -147,6 +148,13 @@ cfquant/
 ```
 
 ## 版本日志
+
+### core_20260818_01
+
+- 新增信用账户第一阶段支持：账号绑定、初始化向导、首页账号下拉、状态查询、资金持仓、委托成交、下单撤单和回调过滤均贯通 `account_type=STOCK/CREDIT`。
+- 后端账号路由升级为 `account_key = bridge_id:account_type:account_id`，支持一个 QMT 实例同时承载多个普通账户和多个信用账户，并兼容历史普通账户配置。
+- 新增 `POST /api/credit/query` 和 `POST /api/credit/probe`，用于信用专项查询和只读能力探测；信用专项委托动作暂不开放，需先完成券商 QMT 常量验证。
+- 前端版本同步为 `web_20260818_01`，接口调试页新增信用查询和信用能力探测入口。
 
 ### core_20260817_13
 

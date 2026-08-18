@@ -176,6 +176,14 @@
           <input id="setupAccountId" name="account_id" autocomplete="off" placeholder="2220009880">
         </label>
         <label class="field wide">
+          <span>账户类型</span>
+          <select id="setupAccountType" name="account_type">
+            <option value="STOCK">普通证券账户</option>
+            <option value="CREDIT">信用账户</option>
+          </select>
+          <small>信用账户一般有独立资金号；如果普通和信用资金号相同，系统会用账户类型继续区分。</small>
+        </label>
+        <label class="field wide">
           <span>QMT 核心目录（可选）</span>
           <input id="setupQmtDir" name="qmt_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端\bin.x64">
           <small>建议填写 QMT 的 bin.x64 目录，用于后续自动更新和多账号部署定位；留空时自动更新不可用。</small>
@@ -529,6 +537,13 @@
               <label class="field">
                 <span>账号</span>
                 <input name="account_id" placeholder="2220009880" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>账户类型</span>
+                <select name="account_type">
+                  <option value="STOCK">普通证券账户</option>
+                  <option value="CREDIT">信用账户</option>
+                </select>
               </label>
               <label class="field wide">
                 <span>QMT 核心目录（可选）</span>
@@ -1153,6 +1168,14 @@
                           <label class="field">
                             <span>资金账号</span>
                             <input id="onboardingAccountId" autocomplete="off" placeholder="2220009880">
+                          </label>
+                          <label class="field">
+                            <span>账户类型</span>
+                            <select id="onboardingAccountType">
+                              <option value="STOCK">普通证券账户</option>
+                              <option value="CREDIT">信用账户</option>
+                            </select>
+                            <small>普通账户和信用账户资金号相同也可以区分。</small>
                           </label>
                           <label class="field">
                             <span>运行模式</span>
