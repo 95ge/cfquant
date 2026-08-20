@@ -674,7 +674,7 @@ function stopProjectCarousel() {
 }
 
 async function handleRoute() {
-  const route = (location.hash || '#forum').slice(1);
+  const route = currentRoute();
   if (/^thread-\d+$/.test(route)) {
     await openThread(route.replace('thread-', ''));
     return;
@@ -682,6 +682,15 @@ async function handleRoute() {
   if (['forum', 'downloads', 'project', 'feedback', 'center'].includes(route)) {
     switchView(route, { skipHash: true });
   }
+}
+
+function currentRoute() {
+  const hashRoute = (location.hash || '').replace(/^#\/?/, '').trim();
+  if (hashRoute) return hashRoute;
+  const pathRoute = location.pathname.replace(/^\/+|\/+$/g, '').trim();
+  if (['forum', 'downloads', 'project', 'feedback', 'center'].includes(pathRoute)) return pathRoute;
+  if (/^thread-\d+$/.test(pathRoute)) return pathRoute;
+  return 'forum';
 }
 
 function bindEvents() {

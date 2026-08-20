@@ -419,6 +419,9 @@ class SiteHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:
         self._handle_request("GET")
 
+    def do_HEAD(self) -> None:
+        self._handle_request("HEAD")
+
     def do_POST(self) -> None:
         self._handle_request("POST")
 
@@ -432,7 +435,7 @@ class SiteHandler(SimpleHTTPRequestHandler):
             if path.startswith("/api/"):
                 self._dispatch_api(method, path, parsed.query)
                 return
-            if path.startswith("/downloads/"):
+            if path != "/downloads/" and path.startswith("/downloads/"):
                 self._serve_package_file(path)
                 return
             self._serve_frontend(path)
@@ -597,6 +600,8 @@ class SiteHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        if self.command == "HEAD":
+            return
         self.wfile.write(body)
 
     def _cors_headers(self) -> None:
@@ -1649,7 +1654,19 @@ class SiteHandler(SimpleHTTPRequestHandler):
         if target.is_file():
             self._send_file(target)
             return
+        if self._is_spa_route(path):
+            self._record_pageview(path)
+            self._send_file(FRONTEND_DIR / "index.html")
+            return
         self._send_response_text("Not found", status=404)
+
+    def _is_spa_route(self, path: str) -> bool:
+        clean_path = path.strip("/")
+        if not clean_path:
+            return True
+        if clean_path in {"forum", "downloads", "project", "feedback", "center"}:
+            return True
+        return bool(re.fullmatch(r"thread-\d+", clean_path))
 
     def _serve_package_file(self, path: str) -> None:
         file_name = Path(path.removeprefix("/downloads/")).name
@@ -1687,6 +1704,8 @@ class SiteHandler(SimpleHTTPRequestHandler):
         if download_name:
             self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         self.end_headers()
+        if self.command == "HEAD":
+            return
         with target.open("rb") as file_obj:
             while True:
                 chunk = file_obj.read(1024 * 1024)
@@ -1700,6 +1719,8 @@ class SiteHandler(SimpleHTTPRequestHandler):
         self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
+        if self.command == "HEAD":
+            return
         self.wfile.write(body)
 
     def _record_pageview(self, path: str) -> None:
