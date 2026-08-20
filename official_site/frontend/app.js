@@ -381,7 +381,7 @@ async function loadDownloads() {
         <span class="tag">${escapeHtml(item.channel || 'stable')}</span>
       </div>
       <h2>${escapeHtml(item.title)}</h2>
-      <p>版本：${escapeHtml(item.version)} · 大小：${formatSize(item.file_size)} · 下载次数：${item.download_count}</p>
+      <p>核心：${escapeHtml(item.core_version || item.version)}${item.web_version ? ` · Web：${escapeHtml(item.web_version)}` : ''} · 大小：${formatSize(item.file_size)} · 下载次数：${item.download_count}</p>
       <p>${escapeHtml(item.notes || '')}</p>
       ${item.sha256 ? `<code class="hash-line" title="${escapeHtml(item.sha256)}">SHA256 ${escapeHtml(item.sha256.slice(0, 16))}...</code>` : ''}
       <div class="form-actions">
@@ -411,7 +411,8 @@ function renderLatestRelease(release, error = '') {
         <span class="tag">${escapeHtml(release.channel || 'project')}</span>
         <h2>${escapeHtml(release.title || 'cfquant 项目包')}</h2>
         <div class="release-meta">
-          <span>版本 ${escapeHtml(release.version || '--')}</span>
+          <span>核心 ${escapeHtml(release.core_version || release.version || '--')}</span>
+          ${release.web_version ? `<span>Web ${escapeHtml(release.web_version)}</span>` : ''}
           <span>大小 ${formatSize(release.file_size)}</span>
           <span>更新 ${escapeHtml(formatTime(release.updated_at))}</span>
           <span>下载 ${Number(release.download_count || 0)}</span>

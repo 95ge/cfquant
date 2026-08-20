@@ -57,7 +57,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260820_02"
+WEB_VERSION = "web_20260820_03"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -4118,6 +4118,8 @@ class CfquantUpdater(object):
             "ref": ref,
             "remote_ref": "",
             "version": "",
+            "core_version": "",
+            "web_version": "",
             "commit": "",
             "short_commit": "",
             "checked_at": now,
@@ -4132,8 +4134,11 @@ class CfquantUpdater(object):
         }
         try:
             release = official_release_info(site_url)
+            core_version = str(release.get("core_version") or release.get("version") or "")
             result.update({
-                "version": str(release.get("version") or ""),
+                "version": core_version,
+                "core_version": core_version,
+                "web_version": str(release.get("web_version") or ""),
                 "source": "cfquant.org",
                 "download_url": str(release.get("download_url") or ""),
                 "sha256": str(release.get("sha256") or ""),
@@ -7171,6 +7176,8 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
         "site_url": site_url,
         "readme_url": "",
         "version": "",
+        "core_version": "",
+        "web_version": "",
         "checked_at": now,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
         "cached": False,
@@ -7188,8 +7195,12 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
     try:
         release = official_release_info(site_url)
         changelog = release.get("changelog") if isinstance(release.get("changelog"), dict) else {}
+        core_version = str(release.get("core_version") or release.get("version") or "")
+        web_version = str(release.get("web_version") or "")
         result.update({
-            "version": str(release.get("version") or ""),
+            "version": core_version,
+            "core_version": core_version,
+            "web_version": web_version,
             "source": "cfquant.org",
             "download_url": str(release.get("download_url") or ""),
             "sha256": str(release.get("sha256") or ""),
@@ -7251,10 +7262,14 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
     }
     if include_remote:
         remote = _remote_project_version_info(repo_url=repo_url, ref=ref, force=force)
-        comparison = _compare_project_versions(core_version, remote.get("version"))
+        comparison = _compare_project_versions(core_version, remote.get("core_version") or remote.get("version"))
+        web_comparison = _compare_project_versions(WEB_VERSION, remote.get("web_version")) if remote.get("web_version") else "unknown"
+        if web_comparison in ("newer", "different") and comparison in ("same", "unknown"):
+            comparison = web_comparison
         data["remote"] = remote
         data["comparison"] = comparison
-        data["update_available"] = comparison in ("newer", "different")
+        data["web_comparison"] = web_comparison
+        data["update_available"] = comparison in ("newer", "different") or web_comparison in ("newer", "different")
     return data
 
 

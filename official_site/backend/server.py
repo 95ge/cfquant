@@ -22,6 +22,7 @@ import secrets
 import sqlite3
 import sys
 import traceback
+import zipfile
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -80,6 +81,79 @@ def changelog_from_notes(version: str, notes: str) -> dict[str, Any]:
         "body": text,
         "items": items,
     }
+
+
+def extract_latest_readme_changelog(readme_text: str) -> dict[str, Any]:
+    result = {"version": "", "body": "", "items": []}
+    if not readme_text:
+        return result
+    match = re.search(r"(?m)^##\s+版本日志\s*$", readme_text)
+    if not match:
+        return result
+    section = readme_text[match.end():]
+    next_section = re.search(r"(?m)^##\s+", section)
+    if next_section:
+        section = section[:next_section.start()]
+    heading = re.search(r"(?m)^###\s+(.+?)\s*$", section)
+    if not heading:
+        return result
+    body = section[heading.end():]
+    next_heading = re.search(r"(?m)^###\s+", body)
+    if next_heading:
+        body = body[:next_heading.start()]
+    items = []
+    for line in body.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if text.startswith("- "):
+            text = text[2:].strip()
+        items.append(text)
+    result["version"] = heading.group(1).strip()
+    result["body"] = body.strip()
+    result["items"] = items[:12]
+    return result
+
+
+def read_zip_text(zf: zipfile.ZipFile, candidates: list[str]) -> str:
+    names = zf.namelist()
+    normalized = {name.replace("\\", "/"): name for name in names}
+    for candidate in candidates:
+        key = candidate.replace("\\", "/").strip("/")
+        if key in normalized:
+            return zf.read(normalized[key]).decode("utf-8", errors="replace")
+    suffixes = ["/" + item.replace("\\", "/").strip("/") for item in candidates]
+    for name in names:
+        clean = name.replace("\\", "/")
+        if any(clean.endswith(suffix) for suffix in suffixes):
+            return zf.read(name).decode("utf-8", errors="replace")
+    return ""
+
+
+def parse_assignment(text: str, name: str) -> str:
+    match = re.search(rf"{re.escape(name)}\s*=\s*['\"]([^'\"]+)['\"]", text or "")
+    return match.group(1).strip() if match else ""
+
+
+def inspect_project_package(path: Path) -> dict[str, Any]:
+    result = {
+        "core_version": "",
+        "web_version": "",
+        "changelog": {},
+    }
+    if not path.is_file() or path.suffix.lower() != ".zip":
+        return result
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            core_text = read_zip_text(zf, ["cfquant/version.py", "cfquant/__init__.py"])
+            web_text = read_zip_text(zf, ["cfquant_web_server.py"])
+            readme_text = read_zip_text(zf, ["README.md"])
+        result["core_version"] = parse_assignment(core_text, "__version__")
+        result["web_version"] = parse_assignment(web_text, "WEB_VERSION")
+        result["changelog"] = extract_latest_readme_changelog(readme_text)
+    except Exception:
+        pass
+    return result
 
 
 def now_iso() -> str:
@@ -775,10 +849,10 @@ class SiteHandler(SimpleHTTPRequestHandler):
 
     def _api_download_latest_release(self) -> None:
         with db.connect() as conn:
-            row = self._latest_release_row(conn)
-            if row is None:
+            package = self._latest_release_payload(conn)
+            if not package:
                 raise ApiError(404, "暂未发布项目更新包")
-            package_id = int(row["id"])
+            package_id = int(package["id"])
         self._api_download_package(package_id)
 
     def _api_download_package(self, package_id: int) -> None:
@@ -804,15 +878,11 @@ class SiteHandler(SimpleHTTPRequestHandler):
             return
         raise ApiError(404, "后台尚未配置本地更新包文件")
 
-    def _latest_release_payload(self) -> dict[str, Any] | None:
-        with db.connect() as conn:
-            row = self._latest_release_row(conn)
-            if row is None:
-                return None
-            return self._download_package_payload(dict_from_row(row), include_changelog=True)
-
-    def _latest_release_row(self, conn: sqlite3.Connection) -> sqlite3.Row | None:
-        return conn.execute(
+    def _latest_release_payload(self, conn: sqlite3.Connection | None = None) -> dict[str, Any] | None:
+        should_close = conn is None
+        conn = conn or db.connect()
+        try:
+            for row in conn.execute(
             """
             SELECT id, title, version, channel, file_name, file_path, external_url,
                    notes, is_active, download_count, created_at, updated_at
@@ -826,9 +896,21 @@ class SiteHandler(SimpleHTTPRequestHandler):
               END,
               updated_at DESC,
               id DESC
-            LIMIT 1
             """
-        ).fetchone()
+            ):
+                payload = self._download_package_payload(dict_from_row(row), include_changelog=True)
+                if payload and self._is_release_package(payload):
+                    return payload
+            return None
+        finally:
+            if should_close:
+                conn.close()
+
+    def _is_release_package(self, package: dict[str, Any]) -> bool:
+        if package.get("file_exists"):
+            return True
+        external_url = str(package.get("external_url") or "").lower()
+        return external_url.startswith(("http://", "https://")) and ".zip" in external_url.split("?", 1)[0]
 
     def _download_package_payload(self, package: dict[str, Any] | None, include_changelog: bool = False) -> dict[str, Any] | None:
         if not package:
@@ -840,11 +922,16 @@ class SiteHandler(SimpleHTTPRequestHandler):
         item["file_exists"] = file_exists
         item["file_size"] = file_path.stat().st_size if file_exists else 0
         item["sha256"] = file_sha256(file_path) if file_exists else ""
+        package_info = inspect_project_package(file_path) if file_exists and file_path else {}
+        item["release_version"] = item.get("version") or ""
+        item["core_version"] = package_info.get("core_version") or item.get("version") or ""
+        item["web_version"] = package_info.get("web_version") or ""
+        item["version"] = item["core_version"] or item["release_version"]
         item["download_url"] = self._absolute_url(f"/api/downloads/{package_id}/download") if package_id else ""
         item["latest_download_url"] = self._absolute_url("/api/releases/latest/download")
         item["repo_url"] = PROJECT_REPO_URL
         if include_changelog:
-            item["changelog"] = changelog_from_notes(item.get("version") or "", item.get("notes") or "")
+            item["changelog"] = package_info.get("changelog") or changelog_from_notes(item.get("version") or "", item.get("notes") or "")
         return item
 
     def _absolute_url(self, path: str) -> str:
