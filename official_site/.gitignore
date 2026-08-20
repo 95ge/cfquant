@@ -1,5 +1,7 @@
 data/
 uploads/
+ssh_info.env
+*.env
 __pycache__/
 *.py[cod]
 *.log
