@@ -57,7 +57,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260820_01"
+WEB_VERSION = "web_20260820_02"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -105,6 +105,54 @@ def current_core_version():
     return current_core_version_info().get("version") or CORE_VERSION
 
 
+def normalize_official_site_url(site_url=None):
+    value = str(site_url or DEFAULT_OFFICIAL_SITE_URL or "").strip()
+    return value.rstrip("/")
+
+
+def official_site_api_url(path, site_url=None):
+    base = normalize_official_site_url(site_url)
+    if not base:
+        return ""
+    return urllib.parse.urljoin(base + "/", str(path or "").lstrip("/"))
+
+
+def fetch_json_url(url, timeout=None):
+    if timeout is None:
+        timeout = UPDATE_REMOTE_TIMEOUT_SECONDS
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "cfquant-web/%s" % current_core_version()},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        raw = response.read(1024 * 1024)
+    text = raw.decode("utf-8", errors="replace")
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise RuntimeError("invalid json response")
+    if data.get("ok") is False:
+        raise RuntimeError(str(data.get("error") or "official site api failed"))
+    return data
+
+
+def official_release_info(site_url=None):
+    endpoint = official_site_api_url("/api/releases/latest", site_url)
+    if not endpoint:
+        raise RuntimeError("未配置 cfquant 官网地址")
+    data = fetch_json_url(endpoint)
+    release = data.get("release") if isinstance(data.get("release"), dict) else data
+    release = dict(release)
+    download_url = str(release.get("download_url") or release.get("latest_download_url") or "").strip()
+    if download_url and not re.match(r"^https?://", download_url, re.I):
+        download_url = urllib.parse.urljoin(endpoint, download_url)
+    if not download_url:
+        download_url = official_site_api_url("/api/releases/latest/download", site_url)
+    release["download_url"] = download_url
+    release.setdefault("source", "cfquant.org")
+    release.setdefault("site_url", normalize_official_site_url(site_url))
+    return release
+
+
 LTTX_HOST = os.environ.get("CFQUANT_LTTX_HOST", "127.0.0.1")
 LTTX_PORT = int(os.environ.get("CFQUANT_LTTX_PORT", "2049"))
 LTTX_DIR = os.path.join(BASE_DIR, "LTtx", "tx")
@@ -147,6 +195,7 @@ ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
 DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://github.com/95ge/cfquant.git").strip()
+DEFAULT_OFFICIAL_SITE_URL = os.environ.get("CFQUANT_OFFICIAL_SITE_URL", "https://cfquant.org").strip().rstrip("/")
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
 UPDATE_REMOTE_CACHE_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_CACHE_SECONDS", "300"))
 UPDATE_REMOTE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_TIMEOUT_SECONDS", "12"))
@@ -3751,6 +3800,7 @@ class CfquantUpdater(object):
             "last_update": {},
             "version_status": self._build_version_status(None, "", {}, repo_url, ref),
             "default_repo_url": repo_url,
+            "default_official_site_url": DEFAULT_OFFICIAL_SITE_URL,
             "default_ref": ref,
         }
         if not python_dir:
@@ -3797,6 +3847,36 @@ class CfquantUpdater(object):
                     "source": "github",
                     "repo_url": repo_url,
                     "ref": ref,
+                    "fetch": fetched,
+                })
+
+    def update_from_official(self, bridge_id, site_url="", fallback_repo_url="", fallback_ref=""):
+        site_url = normalize_official_site_url(site_url)
+        fallback_repo_url = str(fallback_repo_url or DEFAULT_UPDATE_REPO_URL).strip()
+        fallback_ref = str(fallback_ref or DEFAULT_UPDATE_REF).strip()
+        official_error = ""
+        with self._lock:
+            with tempfile.TemporaryDirectory(prefix="cfquant_update_") as work_dir:
+                source_dir = os.path.join(work_dir, "source")
+                try:
+                    fetched = self._fetch_official_package(site_url, source_dir)
+                    return self._install_source(bridge_id, source_dir, {
+                        "source": "official_site",
+                        "site_url": site_url or DEFAULT_OFFICIAL_SITE_URL,
+                        "fetch": fetched,
+                    })
+                except Exception as e:
+                    official_error = str(e) or repr(e)
+                    safe_print("official site update failed, fallback to GitHub: %s" % official_error)
+                if not fallback_repo_url:
+                    raise RuntimeError("官网下载失败且未配置 GitHub 回退源: %s" % official_error)
+                source_dir = os.path.join(work_dir, "github_source")
+                fetched = self._fetch_github(fallback_repo_url, fallback_ref, source_dir)
+                return self._install_source(bridge_id, source_dir, {
+                    "source": "github_fallback",
+                    "repo_url": fallback_repo_url,
+                    "ref": fallback_ref,
+                    "official_site_error": official_error,
                     "fetch": fetched,
                 })
 
@@ -3988,14 +4068,18 @@ class CfquantUpdater(object):
         current = self._current_version_info(target, current_version, last_update)
         remote = self._remote_version_info(repo_url, ref)
         matches_remote = None
+        version_comparison = _compare_project_versions(current.get("version"), remote.get("version"))
         current_commit = (current.get("commit") or "").lower()
         remote_commit = (remote.get("commit") or "").lower()
         if current_commit and remote_commit:
             matches_remote = current_commit == remote_commit
+        elif remote.get("version") and current.get("version"):
+            matches_remote = version_comparison == "same"
         return {
             "current": current,
             "remote": remote,
             "matches_remote": matches_remote,
+            "comparison": version_comparison,
         }
 
     def _current_version_info(self, target, current_version, last_update):
@@ -4020,7 +4104,8 @@ class CfquantUpdater(object):
     def _remote_version_info(self, repo_url, ref):
         repo_url = str(repo_url or "").strip()
         ref = str(ref or "").strip()
-        cache_key = "%s#%s" % (repo_url, ref)
+        site_url = normalize_official_site_url()
+        cache_key = "%s#%s#%s" % (site_url, repo_url, ref)
         now = time.time()
         with self._remote_lock:
             cached = self._remote_cache.get(cache_key)
@@ -4032,45 +4117,89 @@ class CfquantUpdater(object):
             "repo_url": repo_url,
             "ref": ref,
             "remote_ref": "",
+            "version": "",
             "commit": "",
             "short_commit": "",
             "checked_at": now,
             "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
             "cached": False,
             "error": "",
+            "source": "",
+            "site_url": site_url,
+            "download_url": "",
+            "sha256": "",
+            "fallback_error": "",
+        }
+        try:
+            release = official_release_info(site_url)
+            result.update({
+                "version": str(release.get("version") or ""),
+                "source": "cfquant.org",
+                "download_url": str(release.get("download_url") or ""),
+                "sha256": str(release.get("sha256") or ""),
+                "checked_at": now,
+                "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "error": "" if release.get("version") else "官网未返回版本号",
+            })
+        except Exception as e:
+            result["fallback_error"] = str(e) or repr(e)
+        if result.get("error") or not result.get("version"):
+            if not repo_url:
+                result["error"] = "官网不可用且未配置 GitHub 仓库: %s" % (result.get("fallback_error") or "")
+            else:
+                result.update(self._github_remote_version_info(repo_url, ref, now, result.get("fallback_error") or ""))
+        with self._remote_lock:
+            self._remote_cache[cache_key] = dict(result)
+        return result
+
+    def _github_remote_version_info(self, repo_url, ref, now, official_error=""):
+        result = {
+            "repo_url": repo_url,
+            "ref": ref,
+            "remote_ref": "",
+            "version": "",
+            "commit": "",
+            "short_commit": "",
+            "checked_at": now,
+            "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "cached": False,
+            "error": "",
+            "source": "github",
+            "site_url": normalize_official_site_url(),
+            "download_url": "",
+            "sha256": "",
+            "fallback_error": official_error,
         }
         if not repo_url:
             result["error"] = "未配置 GitHub 仓库"
-        else:
-            errors = []
-            for ref_name in self._remote_ref_candidates(ref):
-                try:
-                    completed = subprocess.run(
-                        ["git", "ls-remote", repo_url, ref_name],
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        timeout=UPDATE_REMOTE_TIMEOUT_SECONDS,
-                    )
-                    output = (completed.stdout or "").strip()
-                    if completed.returncode == 0 and output:
-                        first = output.splitlines()[0].split()
-                        if first:
-                            result["commit"] = first[0]
-                            result["short_commit"] = self._short_commit(first[0])
-                            result["remote_ref"] = first[1] if len(first) > 1 else ref_name
-                            result["source"] = "git ls-remote"
-                            break
-                    message = (completed.stderr or completed.stdout or "").strip()
-                    errors.append("%s: %s" % (ref_name, message or ("exit %s" % completed.returncode)))
-                except Exception as e:
-                    errors.append("%s: %s" % (ref_name, str(e) or repr(e)))
-            if not result["commit"]:
-                result["error"] = "; ".join(errors) or "未获取到远端版本"
-        with self._remote_lock:
-            self._remote_cache[cache_key] = dict(result)
+            return result
+        errors = []
+        for ref_name in self._remote_ref_candidates(ref):
+            try:
+                completed = subprocess.run(
+                    ["git", "ls-remote", repo_url, ref_name],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=UPDATE_REMOTE_TIMEOUT_SECONDS,
+                )
+                output = (completed.stdout or "").strip()
+                if completed.returncode == 0 and output:
+                    first = output.splitlines()[0].split()
+                    if first:
+                        result["commit"] = first[0]
+                        result["short_commit"] = self._short_commit(first[0])
+                        result["remote_ref"] = first[1] if len(first) > 1 else ref_name
+                        result["source"] = "github"
+                        break
+                message = (completed.stderr or completed.stdout or "").strip()
+                errors.append("%s: %s" % (ref_name, message or ("exit %s" % completed.returncode)))
+            except Exception as e:
+                errors.append("%s: %s" % (ref_name, str(e) or repr(e)))
+        if not result["commit"]:
+            result["error"] = "; ".join(errors) or "未获取到远端版本"
         return result
 
     def _remote_ref_candidates(self, ref):
@@ -4175,6 +4304,53 @@ class CfquantUpdater(object):
             except Exception as e:
                 errors.append("%s %s: %s" % (method, archive_url, str(e) or repr(e)))
         raise RuntimeError("GitHub fetch failed: %s" % "; ".join(errors))
+
+    def _fetch_official_package(self, site_url, output_dir):
+        release = official_release_info(site_url)
+        download_url = str(release.get("download_url") or "").strip()
+        if not download_url:
+            raise RuntimeError("官网未返回项目包下载地址")
+        os.makedirs(output_dir, exist_ok=True)
+        zip_path = os.path.join(output_dir, "source.zip")
+        request = urllib.request.Request(
+            download_url,
+            headers={"User-Agent": "cfquant-updater/%s" % current_core_version()},
+        )
+        with urllib.request.urlopen(request, timeout=90) as response:
+            data = response.read()
+        if not data:
+            raise RuntimeError("官网下载包为空")
+        actual_sha256 = hashlib.sha256(data).hexdigest()
+        expected_sha256 = str(release.get("sha256") or "").strip().lower()
+        if expected_sha256 and actual_sha256.lower() != expected_sha256:
+            raise RuntimeError("官网包 SHA256 校验失败")
+        with open(zip_path, "wb") as f:
+            f.write(data)
+        extract_dir = os.path.join(output_dir, "extract")
+        self._safe_extract_zip(zip_path, extract_dir)
+        for name in os.listdir(extract_dir):
+            src = os.path.join(extract_dir, name)
+            dst = os.path.join(output_dir, name)
+            os.replace(src, dst)
+        self._remove_tree(extract_dir)
+        try:
+            os.remove(zip_path)
+        except Exception:
+            pass
+        return {
+            "method": "official-site-zip",
+            "site_url": normalize_official_site_url(site_url),
+            "url": download_url,
+            "version": str(release.get("version") or ""),
+            "bytes": len(data),
+            "sha256": actual_sha256,
+            "release": {
+                "title": release.get("title") or "",
+                "version": release.get("version") or "",
+                "updated_at": release.get("updated_at") or "",
+                "channel": release.get("channel") or "",
+            },
+        }
 
     def _git_current_commit(self, repo_dir):
         try:
@@ -4516,6 +4692,7 @@ class CfquantProjectUpdater(object):
                 ref=ref,
             ),
             "default_repo_url": repo_url,
+            "default_official_site_url": DEFAULT_OFFICIAL_SITE_URL,
             "default_ref": ref,
             "preserved_paths": sorted(self.PRESERVED_REL_PATHS),
             "excluded_dirs": sorted(self.EXCLUDED_DIR_NAMES),
@@ -4534,6 +4711,36 @@ class CfquantProjectUpdater(object):
                     "source": "github",
                     "repo_url": repo_url,
                     "ref": ref,
+                    "fetch": fetched,
+                })
+
+    def update_from_official(self, site_url="", fallback_repo_url="", fallback_ref=""):
+        site_url = normalize_official_site_url(site_url)
+        fallback_repo_url = str(fallback_repo_url or DEFAULT_UPDATE_REPO_URL).strip()
+        fallback_ref = str(fallback_ref or DEFAULT_UPDATE_REF).strip()
+        official_error = ""
+        with self._lock:
+            with tempfile.TemporaryDirectory(prefix="cfquant_project_update_") as work_dir:
+                source_dir = os.path.join(work_dir, "source")
+                try:
+                    fetched = UPDATER._fetch_official_package(site_url, source_dir)
+                    return self._install_source(source_dir, {
+                        "source": "official_site",
+                        "site_url": site_url or DEFAULT_OFFICIAL_SITE_URL,
+                        "fetch": fetched,
+                    })
+                except Exception as e:
+                    official_error = str(e) or repr(e)
+                    safe_print("official site project update failed, fallback to GitHub: %s" % official_error)
+                if not fallback_repo_url:
+                    raise RuntimeError("官网下载失败且未配置 GitHub 回退源: %s" % official_error)
+                source_dir = os.path.join(work_dir, "github_source")
+                fetched = UPDATER._fetch_github(fallback_repo_url, fallback_ref, source_dir)
+                return self._install_source(source_dir, {
+                    "source": "github_fallback",
+                    "repo_url": fallback_repo_url,
+                    "ref": fallback_ref,
+                    "official_site_error": official_error,
                     "fetch": fetched,
                 })
 
@@ -6947,7 +7154,8 @@ def _local_project_version_info():
 def _remote_project_version_info(repo_url=None, ref=None, force=False):
     repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
     ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
-    cache_key = "%s#%s" % (repo_url, ref)
+    site_url = normalize_official_site_url()
+    cache_key = "%s#%s#%s" % (site_url, repo_url, ref)
     now = time.time()
     if not force:
         with _PROJECT_VERSION_LOCK:
@@ -6958,37 +7166,63 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
                 return result
     result = {
         "repo_url": repo_url,
+        "official_site_url": DEFAULT_OFFICIAL_SITE_URL,
         "ref": ref,
+        "site_url": site_url,
         "readme_url": "",
         "version": "",
         "checked_at": now,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
         "cached": False,
         "error": "",
+        "source": "",
+        "download_url": "",
+        "sha256": "",
+        "fallback_error": "",
         "changelog": {
             "version": "",
             "body": "",
             "items": [],
         },
     }
-    if not repo_url:
-        result["error"] = "未配置 GitHub 仓库"
-        return result
     try:
-        result["readme_url"] = _github_raw_readme_url(repo_url, ref)
-        request = urllib.request.Request(
-            result["readme_url"],
-            headers={"User-Agent": "cfquant-web/%s" % current_core_version()},
-        )
-        with urllib.request.urlopen(request, timeout=UPDATE_REMOTE_TIMEOUT_SECONDS) as response:
-            raw = response.read(512 * 1024)
-        text = raw.decode("utf-8", errors="replace")
-        result["changelog"] = _extract_latest_changelog(text)
-        result["version"] = result["changelog"].get("version") or ""
+        release = official_release_info(site_url)
+        changelog = release.get("changelog") if isinstance(release.get("changelog"), dict) else {}
+        result.update({
+            "version": str(release.get("version") or ""),
+            "source": "cfquant.org",
+            "download_url": str(release.get("download_url") or ""),
+            "sha256": str(release.get("sha256") or ""),
+            "changelog": {
+                "version": changelog.get("version") or release.get("version") or "",
+                "body": changelog.get("body") or release.get("notes") or "",
+                "items": changelog.get("items") if isinstance(changelog.get("items"), list) else [],
+            },
+        })
         if not result["version"]:
-            result["error"] = "远端 README 未解析到版本日志"
+            result["error"] = "官网未返回版本号"
     except Exception as e:
-        result["error"] = str(e) or repr(e)
+        result["fallback_error"] = str(e) or repr(e)
+    if result.get("error") or not result.get("version"):
+        if not repo_url:
+            result["error"] = "官网不可用且未配置 GitHub 仓库: %s" % (result.get("fallback_error") or "")
+            return result
+        try:
+            result["readme_url"] = _github_raw_readme_url(repo_url, ref)
+            request = urllib.request.Request(
+                result["readme_url"],
+                headers={"User-Agent": "cfquant-web/%s" % current_core_version()},
+            )
+            with urllib.request.urlopen(request, timeout=UPDATE_REMOTE_TIMEOUT_SECONDS) as response:
+                raw = response.read(512 * 1024)
+            text = raw.decode("utf-8", errors="replace")
+            result["changelog"] = _extract_latest_changelog(text)
+            result["version"] = result["changelog"].get("version") or ""
+            result["source"] = "github"
+            if not result["version"]:
+                result["error"] = "远端 README 未解析到版本日志"
+        except Exception as e:
+            result["error"] = str(e) or repr(e)
     with _PROJECT_VERSION_LOCK:
         _PROJECT_VERSION_CACHE[cache_key] = dict(result)
     return result
@@ -7036,6 +7270,17 @@ def bridge_update_github(body):
     )
 
 
+def bridge_update_official(body):
+    body = body or {}
+    bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    return UPDATER.update_from_official(
+        bridge_id,
+        site_url=body.get("site_url") or body.get("official_site_url") or DEFAULT_OFFICIAL_SITE_URL,
+        fallback_repo_url=body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL,
+        fallback_ref=body.get("ref") or body.get("branch") or body.get("tag") or DEFAULT_UPDATE_REF,
+    )
+
+
 def bridge_update_rollback(body):
     body = body or {}
     bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
@@ -7051,6 +7296,15 @@ def project_update_github(body):
     repo_url = body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL
     ref = body.get("ref") or body.get("branch") or body.get("tag") or DEFAULT_UPDATE_REF
     return PROJECT_UPDATER.update_from_github(repo_url, ref)
+
+
+def project_update_official(body):
+    body = body or {}
+    return PROJECT_UPDATER.update_from_official(
+        site_url=body.get("site_url") or body.get("official_site_url") or DEFAULT_OFFICIAL_SITE_URL,
+        fallback_repo_url=body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL,
+        fallback_ref=body.get("ref") or body.get("branch") or body.get("tag") or DEFAULT_UPDATE_REF,
+    )
 
 
 def project_update_rollback(body):
@@ -7689,10 +7943,20 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(run_log_cleanup(body)))
             elif parsed.path == "/api/updates/github":
                 self._write_json(ok(bridge_update_github(body)))
+            elif parsed.path == "/api/updates/official":
+                self._write_json(ok(bridge_update_official(body)))
             elif parsed.path == "/api/updates/rollback":
                 self._write_json(ok(bridge_update_rollback(body)))
             elif parsed.path == "/api/project-updates/github":
                 result = project_update_github(body)
+                reload_requested = parse_bool(body.get("reload")) if "reload" in body else True
+                if reload_requested:
+                    result["reload"] = web_reload_info(reason="project-update")
+                self._write_json(ok(result))
+                if reload_requested:
+                    schedule_web_reload(self.server, result["reload"])
+            elif parsed.path == "/api/project-updates/official":
+                result = project_update_official(body)
                 reload_requested = parse_bool(body.get("reload")) if "reload" in body else True
                 if reload_requested:
                     result["reload"] = web_reload_info(reason="project-update")
