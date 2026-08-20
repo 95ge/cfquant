@@ -57,8 +57,9 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260819_01"
+WEB_VERSION = "web_20260820_01"
 BASE_DIR = _PROJECT_DIR
+CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
 LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
 try:
@@ -68,6 +69,42 @@ except Exception:
 LOG_FILE = os.path.join(LOG_DIR, "cfquant_web_server.runtime.log")
 LOG_RETENTION_DAYS = int(os.environ.get("CFQUANT_LOG_RETENTION_DAYS", "30"))
 LOG_CLEANUP_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_LOG_CLEANUP_INTERVAL_SECONDS", "21600"))
+
+
+def read_python_dunder_version(path):
+    path = os.path.abspath(str(path or ""))
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            text = f.read(8192)
+        match = re.search(r"__version__\s*=\s*['\"]([^'\"]+)['\"]", text)
+        return match.group(1).strip() if match else ""
+    except Exception:
+        return ""
+
+
+def current_core_version_info():
+    file_version = read_python_dunder_version(CORE_VERSION_PATH)
+    version = file_version or CORE_VERSION
+    source = "cfquant/version.py" if file_version else "imported cfquant.version"
+    checked_at = time.time()
+    return {
+        "version": version,
+        "source": source,
+        "path": CORE_VERSION_PATH if file_version else "",
+        "file_version": file_version,
+        "imported_version": CORE_VERSION,
+        "import_stale": bool(file_version and file_version != CORE_VERSION),
+        "checked_at": checked_at,
+        "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(checked_at)),
+    }
+
+
+def current_core_version():
+    return current_core_version_info().get("version") or CORE_VERSION
+
+
 LTTX_HOST = os.environ.get("CFQUANT_LTTX_HOST", "127.0.0.1")
 LTTX_PORT = int(os.environ.get("CFQUANT_LTTX_PORT", "2049"))
 LTTX_DIR = os.path.join(BASE_DIR, "LTtx", "tx")
@@ -2280,6 +2317,7 @@ def _external_default_channel(action):
 
 
 def build_lttx_registry():
+    core_info = current_core_version_info()
     configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
     accounts = {}
     for account_key, row in configs.items():
@@ -2301,7 +2339,9 @@ def build_lttx_registry():
     now = time.time()
     return {
         "schema": "cfquant.lttx.registry",
-        "version": CORE_VERSION,
+        "version": core_info["version"],
+        "core_version": core_info["version"],
+        "core_version_info": core_info,
         "web_version": WEB_VERSION,
         "frontend_version": WEB_VERSION,
         "updated_at": now,
@@ -2347,7 +2387,7 @@ def route_external_lttx_request(msg):
             "via": "web_lttx",
             "ts": time.time(),
             "web_request_channel": LTTX_WEB_REQUEST_CHANNEL,
-            "version": CORE_VERSION,
+            "version": current_core_version(),
         }, {"route": "web_lttx"}
     if action == "cfquant.status":
         account_id = _external_account_id(params)
@@ -4467,7 +4507,7 @@ class CfquantProjectUpdater(object):
             "ready": not errors,
             "errors": errors,
             "warnings": warnings,
-            "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+            "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
             "last_update": self._read_install_meta(),
             "backups": backups,
             "version_info": project_version_info(
@@ -4539,7 +4579,7 @@ class CfquantProjectUpdater(object):
                 "restored_backup": selected,
                 "rollback_backup": rollback_backup,
                 "removed_backups": removed,
-                "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+                "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
                 "backups": self._list_backups(),
                 "qmt_restart_required": (
                     qmt_restart_required_info(
@@ -4593,7 +4633,7 @@ class CfquantProjectUpdater(object):
                 "changed_files": len(changed),
                 "changed_qmt_entry_files": entry_info.get("entry_files") or [],
                 "removed_backups": removed,
-                "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+                "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
                 "backups": self._list_backups(),
                 "qmt_restart_required": (
                     qmt_restart_required_info(
@@ -4762,7 +4802,7 @@ class CfquantProjectUpdater(object):
             "copied_files": copied,
             "changed_files": changed,
             "entry_manual_update": entry_info,
-            "current_version": self._read_project_version(BASE_DIR) or CORE_VERSION,
+            "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
         }
         os.makedirs(PROJECT_UPDATE_DIR, exist_ok=True)
         self._write_json_file(os.path.join(PROJECT_UPDATE_DIR, "last_update.json"), payload)
@@ -6886,12 +6926,20 @@ def _compare_project_versions(current_version, remote_version):
 def _local_project_version_info():
     readme_path = os.path.join(BASE_DIR, "README.md")
     changelog = _extract_latest_changelog(_read_text_file(readme_path))
+    core_info = current_core_version_info()
+    version = core_info["version"]
     return {
-        "version": CORE_VERSION,
+        "version": version,
         "readme_version": changelog.get("version") or "",
-        "source": "README.md",
+        "source": core_info["source"],
+        "version_path": core_info["path"],
+        "file_version": core_info["file_version"],
+        "imported_version": core_info["imported_version"],
+        "import_stale": core_info["import_stale"],
+        "checked_at": core_info["checked_at"],
+        "checked_at_text": core_info["checked_at_text"],
         "readme_path": readme_path,
-        "matches_readme": (changelog.get("version") or "") == CORE_VERSION if changelog.get("version") else None,
+        "matches_readme": (changelog.get("version") or "") == version if changelog.get("version") else None,
         "changelog": changelog,
     }
 
@@ -6930,7 +6978,7 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
         result["readme_url"] = _github_raw_readme_url(repo_url, ref)
         request = urllib.request.Request(
             result["readme_url"],
-            headers={"User-Agent": "cfquant-web/%s" % CORE_VERSION},
+            headers={"User-Agent": "cfquant-web/%s" % current_core_version()},
         )
         with urllib.request.urlopen(request, timeout=UPDATE_REMOTE_TIMEOUT_SECONDS) as response:
             raw = response.read(512 * 1024)
@@ -6950,9 +6998,14 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
     repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
     ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
     local = _local_project_version_info()
+    core_version = local.get("version") or current_core_version()
     data = {
-        "current_version": CORE_VERSION,
-        "core_version": CORE_VERSION,
+        "current_version": core_version,
+        "core_version": core_version,
+        "imported_core_version": CORE_VERSION,
+        "core_version_source": local.get("source") or "",
+        "core_version_path": local.get("version_path") or "",
+        "core_version_import_stale": bool(local.get("import_stale")),
         "web_version": WEB_VERSION,
         "frontend_version": WEB_VERSION,
         "repo_url": repo_url,
@@ -6964,7 +7017,7 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
     }
     if include_remote:
         remote = _remote_project_version_info(repo_url=repo_url, ref=ref, force=force)
-        comparison = _compare_project_versions(CORE_VERSION, remote.get("version"))
+        comparison = _compare_project_versions(core_version, remote.get("version"))
         data["remote"] = remote
         data["comparison"] = comparison
         data["update_available"] = comparison in ("newer", "different")

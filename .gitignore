@@ -16,6 +16,7 @@ reports/
 *.err.log
 *.stdout.log
 *.stderr.log
+*.env
 
 cfquant_web_config.db
 cfquant_web_config.json

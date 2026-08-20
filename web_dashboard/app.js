@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260819_01';
+const FRONTEND_VERSION = 'web_20260820_01';
 
 const state = {
   accountId: '',
@@ -1037,9 +1037,14 @@ function renderProjectVersion(info) {
   }
   if (!body) return;
   const local = data.local || {};
-  const readmeNote = local.matches_readme === false
-    ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
-    : `来源：${local.source || '本地版本文件'}`;
+  const importedCoreVersion = data.imported_core_version || local.imported_version || '';
+  const coreImportStale = Boolean(data.core_version_import_stale || local.import_stale);
+  const coreSource = data.core_version_source || local.source || '本地版本文件';
+  const readmeNote = coreImportStale
+    ? `磁盘版本 ${coreVersion} / Web进程导入 ${importedCoreVersion || '--'}，建议重启 Web 后端完成运行态切换`
+    : (local.matches_readme === false
+      ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
+      : `来源：${coreSource}${local.checked_at_text ? ` / ${local.checked_at_text}` : ''}`);
   const frontendNote = serverFrontendVersion && serverFrontendVersion !== '--' && serverFrontendVersion !== browserFrontendVersion
     ? `浏览器 ${browserFrontendVersion} / 服务端 ${serverFrontendVersion}，建议强制刷新页面`
     : `浏览器前端 ${browserFrontendVersion}${serverFrontendVersion && serverFrontendVersion !== '--' ? ` / 服务端 ${serverFrontendVersion}` : ''}`;

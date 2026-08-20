@@ -360,6 +360,9 @@ def _attach_normal_status_extra():
     def status_extra_with_trade():
         data = original_status_extra()
         data.update({
+            "qmt_runtime_core_version": _ENTRY_VERSION,
+            "qmt_runtime_module_file": getattr(_cfquant, "__file__", ""),
+            "qmt_runtime_entry_file": _entry_file_path() or "<string>",
             "ctype_trade_bridge_running": bool(_trade_bridge and _trade_bridge.running),
             "ctype_trade_thread_alive": bool(_trade_thread and _trade_thread.is_alive()),
             "ctype_trade_queue_size": _trade_request_queue.qsize(),
