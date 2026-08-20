@@ -159,6 +159,7 @@ cfquant/
 - Web 控制台版本检测与 Web/QMT 更新改为优先使用官网发布包，官网不可用时自动回退 GitHub。
 - Web 项目更新和 QMT 核心更新新增 `/api/project-updates/official`、`/api/updates/official` 入口，并保留原 GitHub 更新入口。
 - 前端版本同步为 `web_20260820_03`，更新页文案改为“官网优先 / GitHub 回退”。
+- 官网社区登录改为“用户名 / 手机号 / 邮箱 + 密码”，新注册用户使用 PBKDF2-SHA256 密码哈希；既有账号可在现有登录会话的用户中心设置密码。
 
 ### core_20260818_01
 
