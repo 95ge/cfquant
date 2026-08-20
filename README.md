@@ -149,6 +149,13 @@ cfquant/
 
 ## 版本日志
 
+### core_20260820_01
+
+- 官网 `cfquant.org` 增加项目下载与最新版本发布接口，支持展示更新日志、文件大小和 SHA256。
+- Web 控制台版本检测与 Web/QMT 更新改为优先使用官网发布包，官网不可用时自动回退 GitHub。
+- Web 项目更新和 QMT 核心更新新增 `/api/project-updates/official`、`/api/updates/official` 入口，并保留原 GitHub 更新入口。
+- 前端版本同步为 `web_20260820_03`，更新页文案改为“官网优先 / GitHub 回退”。
+
 ### core_20260818_01
 
 - 新增信用账户第一阶段支持：账号绑定、初始化向导、首页账号下拉、状态查询、资金持仓、委托成交、下单撤单和回调过滤均贯通 `account_type=STOCK/CREDIT`。

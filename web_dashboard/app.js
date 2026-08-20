@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260820_02';
+const FRONTEND_VERSION = 'web_20260820_03';
 
 const state = {
   accountId: '',
@@ -1026,6 +1026,9 @@ function renderProjectVersion(info) {
     widget.classList.add(projectVersionClass(data));
   }
   const remote = data.remote || {};
+  const remoteVersionText = remote.web_version
+    ? `${remote.version || remote.core_version || '--'} / ${remote.web_version}`
+    : (remote.version || remote.core_version || '--');
   const stateText = state.versionCheckInFlight ? '正在检查远端' : versionCompareText(data.comparison, remote.error);
   if (checkState) checkState.textContent = stateText;
   if (alert) {
@@ -1076,7 +1079,7 @@ function renderProjectVersion(info) {
       </div>
       <div class="version-info-row">
         <span>${esc(remoteUpdateSourceLabel(remote))}</span>
-        <strong>${esc(remote.version || '--')}</strong>
+        <strong>${esc(remoteVersionText)}</strong>
         <small>${esc(remoteNote)}</small>
       </div>
       <div class="version-info-row">
@@ -3225,6 +3228,9 @@ function renderProjectUpdateVersionInfo(data) {
   const version = data && data.version_info ? data.version_info : {};
   const local = version.local || {};
   const remote = version.remote || {};
+  const projectRemoteVersion = remote.web_version
+    ? `${remote.version || remote.core_version || '--'} / ${remote.web_version}`
+    : (remote.version || remote.core_version || '--');
   const currentVersion = version.current_version || local.version || data && data.current_version || '--';
   const localDetail = local.matches_readme === false
     ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
@@ -3239,7 +3245,7 @@ function renderProjectUpdateVersionInfo(data) {
     </div>
     <div class="update-version-item">
       <span>${esc(remoteUpdateSourceLabel(remote))}</span>
-      <strong>${esc(remote.version || '--')}</strong>
+      <strong>${esc(projectRemoteVersion)}</strong>
       <small>${esc(remote.version || remote.error ? remoteDetail : '未检查远端版本')}</small>
     </div>
     <div class="update-version-item update-version-compare ${compareClass}">
