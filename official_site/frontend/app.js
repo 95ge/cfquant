@@ -9,6 +9,7 @@ const state = {
   feedbackPreviewUrls: [],
   projectSlide: 0,
   projectTimer: null,
+  projectPaused: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -218,6 +219,7 @@ function initTheme() {
 
 function switchView(view, options = {}) {
   const navView = view === 'thread' ? 'forum' : view;
+  document.querySelector('.site-shell')?.classList.toggle('project-mode', view === 'project');
   document.querySelectorAll('.nav-tab').forEach((button) => {
     button.classList.toggle('is-active', button.dataset.view === navView);
   });
@@ -234,6 +236,7 @@ function switchView(view, options = {}) {
   if (view === 'feedback') loadFeedbackPanels().catch((error) => toast(error.message));
   if (view === 'project') startProjectCarousel();
   if (view !== 'project') stopProjectCarousel();
+  if (view !== 'project') loadPublic().catch((error) => toast(error.message));
 }
 
 async function loadPublic() {
@@ -664,6 +667,7 @@ function nextProjectSlide(delta = 1) {
 function startProjectCarousel() {
   renderProjectDots();
   stopProjectCarousel();
+  if (state.projectPaused || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   state.projectTimer = setInterval(() => nextProjectSlide(1), 5200);
 }
 
@@ -671,6 +675,16 @@ function stopProjectCarousel() {
   if (!state.projectTimer) return;
   clearInterval(state.projectTimer);
   state.projectTimer = null;
+}
+
+function toggleProjectAutoplay() {
+  state.projectPaused = !state.projectPaused;
+  const button = $('projectPause');
+  button.textContent = state.projectPaused ? '▶' : 'Ⅱ';
+  button.title = state.projectPaused ? '继续轮播' : '暂停轮播';
+  button.setAttribute('aria-label', button.title);
+  if (state.projectPaused) stopProjectCarousel();
+  else startProjectCarousel();
 }
 
 async function handleRoute() {
@@ -690,7 +704,7 @@ function currentRoute() {
   const pathRoute = location.pathname.replace(/^\/+|\/+$/g, '').trim();
   if (['forum', 'downloads', 'project', 'feedback', 'center'].includes(pathRoute)) return pathRoute;
   if (/^thread-\d+$/.test(pathRoute)) return pathRoute;
-  return 'forum';
+  return 'project';
 }
 
 function bindEvents() {
@@ -703,6 +717,13 @@ function bindEvents() {
     button.addEventListener('click', () => switchView(button.dataset.view));
   });
 
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-jump-view]');
+    if (!button) return;
+    event.preventDefault();
+    switchView(button.dataset.jumpView);
+  });
+
   $('projectPrev').addEventListener('click', () => {
     nextProjectSlide(-1);
     startProjectCarousel();
@@ -712,6 +733,8 @@ function bindEvents() {
     nextProjectSlide(1);
     startProjectCarousel();
   });
+
+  $('projectPause').addEventListener('click', toggleProjectAutoplay);
 
   $('projectDots').addEventListener('click', (event) => {
     const button = event.target.closest('[data-project-slide]');
@@ -959,7 +982,7 @@ async function init() {
   initTheme();
   bindEvents();
   updateAuthUi();
-  await Promise.all([loadPublic(), loadCategories(), loadThreads(), loadDownloads(), refreshMe()]);
+  await Promise.all([loadPublic(), loadCategories(), loadThreads(), refreshMe()]);
   await handleRoute();
 }
 

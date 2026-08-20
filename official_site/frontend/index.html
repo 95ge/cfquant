@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>cfquant.org | cfquant 社区</title>
+  <title>cfquant.org | QMT 本地桥接与社区</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=site_20260820_01">
 </head>
 <body>
   <header class="topbar">
@@ -17,9 +17,9 @@
       </span>
     </a>
     <nav class="nav-tabs" aria-label="主导航">
-      <button class="nav-tab is-active" type="button" data-view="forum">论坛</button>
+      <button class="nav-tab is-active" type="button" data-view="project">项目</button>
+      <button class="nav-tab" type="button" data-view="forum">论坛</button>
       <button class="nav-tab" type="button" data-view="downloads">下载</button>
-      <button class="nav-tab" type="button" data-view="project">项目</button>
       <button class="nav-tab" type="button" data-view="feedback">反馈</button>
       <button class="nav-tab" type="button" data-view="center">用户中心</button>
     </nav>
@@ -32,8 +32,17 @@
     </div>
   </header>
 
-  <main class="site-shell">
+  <main class="site-shell project-mode">
     <aside class="left-rail">
+      <div class="rail-block rail-project">
+        <span class="rail-label">项目入口</span>
+        <strong>CFQuant for QMT</strong>
+        <p>面向本地 QMT 环境的行情、交易与更新桥接层。</p>
+        <div class="rail-actions">
+          <button class="primary-button full" type="button" data-jump-view="downloads">下载项目</button>
+          <button class="ghost-button full" type="button" data-jump-view="forum">进入讨论</button>
+        </div>
+      </div>
       <div class="rail-block">
         <span class="rail-label">社区数据</span>
         <dl class="stat-grid">
@@ -49,7 +58,7 @@
       </div>
     </aside>
 
-    <section id="view-forum" class="view is-active" aria-label="论坛讨论">
+    <section id="view-forum" class="view" aria-label="论坛讨论">
       <div class="section-head">
         <div>
           <p class="eyebrow">Forum</p>
@@ -116,12 +125,82 @@
       <div id="downloadList" class="download-grid"></div>
     </section>
 
-    <section id="view-project" class="view" aria-label="项目介绍">
-      <div class="section-head">
+    <section id="view-project" class="view is-active project-view" aria-label="项目介绍">
+      <section class="project-hero" aria-label="cfquant 项目概览">
+        <div class="hero-copy">
+          <p class="eyebrow">CFQuant Official</p>
+          <h1>把 QMT 的行情与交易能力封装成稳定的本地接口</h1>
+          <p class="hero-lead">cfquant 运行在本地 QMT Python 环境中，通过 Socket / Pipe / Web 服务把行情订阅、账户查询、交易请求、回调事件和更新能力统一暴露给外部程序，适合策略研发、实盘监控和自动化交易工具接入。</p>
+          <div class="hero-actions">
+            <button class="primary-button" type="button" data-jump-view="downloads">下载最新版本</button>
+            <button class="ghost-button" type="button" data-jump-view="forum">查看论坛问题</button>
+            <button class="ghost-button" type="button" data-jump-view="feedback">提交反馈</button>
+          </div>
+          <div class="hero-points">
+            <span>本地运行，不依赖云端托管</span>
+            <span>官网优先更新，GitHub 自动回退</span>
+            <span>围绕 QMT 行情与交易链路优化</span>
+          </div>
+        </div>
+        <div class="hero-visual" aria-label="cfquant 本地桥接架构示意">
+          <div class="visual-toolbar">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>Local Bridge Runtime</strong>
+          </div>
+          <div class="visual-grid">
+            <div class="visual-panel source">
+              <small>External Python</small>
+              <strong>策略研究 / 监控面板 / 自动化程序</strong>
+              <i></i>
+            </div>
+            <div class="visual-pipe">
+              <span>Socket</span>
+              <span>Pipe</span>
+              <span>Web API</span>
+            </div>
+            <div class="visual-panel core">
+              <small>cfquant</small>
+              <strong>行情订阅 · 交易请求 · 事件回调 · 日志追踪</strong>
+              <div class="signal-lines"><b></b><b></b><b></b><b></b></div>
+            </div>
+            <div class="visual-panel terminal">
+              <small>QMT Terminal</small>
+              <strong>账号 / 委托 / 成交 / 持仓</strong>
+              <div class="market-bars"><b></b><b></b><b></b><b></b><b></b></div>
+            </div>
+          </div>
+          <figure class="console-preview">
+            <img src="/assets/qmt-console-clean.png" width="1140" height="260" fetchpriority="high" alt="QMT 中 cfquant 策略运行状态预览">
+            <figcaption>QMT 策略运行状态预览</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <div class="project-capabilities" aria-label="核心能力">
+        <article class="feature-item">
+          <span class="feature-index">01</span>
+          <strong>本地桥接运行时</strong>
+          <span>在 QMT 策略目录内启动桥接层，外部程序通过统一协议接入，减少直接耦合 QMT 环境带来的不稳定。</span>
+        </article>
+        <article class="feature-item">
+          <span class="feature-index">02</span>
+          <strong>行情与交易双通道</strong>
+          <span>行情订阅、快照查询、下单撤单、委托成交、持仓查询按通道组织，便于排查延迟和链路问题。</span>
+        </article>
+        <article class="feature-item">
+          <span class="feature-index">03</span>
+          <strong>版本更新与问题跟踪</strong>
+          <span>官网提供项目包下载、更新日志、反馈截图和论坛讨论，方便在 GitHub 不稳定时继续分发和收集问题。</span>
+        </article>
+      </div>
+
+      <div class="section-head project-subhead">
         <div>
-          <p class="eyebrow">Project</p>
-          <h1>面向大 QMT 的本地桥接层</h1>
-          <p>cfquant 以本地 Web 服务和外部 Python API 为入口，转发行情、查询、交易和回调能力。</p>
+          <p class="eyebrow">Capabilities</p>
+          <h1>核心链路说明</h1>
+          <p>下面按运行时、行情和交易三个方向概览项目能力，后续会持续在论坛和更新日志里补充使用场景。</p>
         </div>
       </div>
       <div id="projectCarousel" class="project-carousel" aria-live="polite">
@@ -137,9 +216,13 @@
                 <span>本地可观测</span>
               </div>
             </div>
-            <figure class="slide-media">
-              <img src="/assets/product-console.png" alt="cfquant 在 QMT 中配置策略入口的界面截图">
-            </figure>
+            <div class="runtime-map" aria-label="cfquant 运行时连接关系">
+              <span>外部 Python 程序</span>
+              <i></i>
+              <strong>cfquant 本地服务</strong>
+              <i></i>
+              <span>QMT 策略入口</span>
+            </div>
           </article>
           <article class="project-slide" data-slide="1">
             <div class="slide-copy">
@@ -179,6 +262,7 @@
         <div class="carousel-controls">
           <button id="projectPrev" class="icon-button" type="button" aria-label="上一张">‹</button>
           <div id="projectDots" class="carousel-dots" aria-label="项目介绍轮播分页"></div>
+          <button id="projectPause" class="icon-button" type="button" title="暂停轮播" aria-label="暂停轮播">Ⅱ</button>
           <button id="projectNext" class="icon-button" type="button" aria-label="下一张">›</button>
         </div>
       </div>
@@ -297,6 +381,6 @@
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="/config.js"></script>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=site_20260820_01"></script>
 </body>
 </html>
