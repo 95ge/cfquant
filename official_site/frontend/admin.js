@@ -171,11 +171,12 @@ async function loadOverview() {
 async function loadUsers() {
   const data = await api('/api/admin/users');
   $('userTable').innerHTML = table(
-    ['ID', '昵称', '手机号', '邮箱', '状态', '发帖', '回复', '操作'],
+    ['ID', '昵称', '用户名', '手机号', '邮箱', '状态', '发帖', '回复', '操作'],
     (data.users || []).map((item) => `
       <tr>
         <td>${item.id}</td>
         <td>${escapeHtml(item.display_name)}</td>
+        <td>${escapeHtml(item.username || '-')}</td>
         <td>${escapeHtml(item.phone)}</td>
         <td>${escapeHtml(item.email || '-')}</td>
         <td class="${statusClass(item.status)}">${escapeHtml(item.status)}</td>

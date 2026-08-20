@@ -610,9 +610,22 @@ async function renderCenter() {
   target.innerHTML = `
     <aside class="profile-panel">
       <h2>${escapeHtml(state.user.display_name)}</h2>
+      <p class="meta-line">用户名：${escapeHtml(state.user.username || '未设置')}</p>
       <p class="meta-line">手机号：${escapeHtml(state.user.phone)}</p>
       <p class="meta-line">邮箱：${escapeHtml(state.user.email || '未填写')}</p>
       <p class="meta-line">注册时间：${formatTime(state.user.created_at)}</p>
+      <form class="auth-form account-password-form" data-password-form>
+        <input name="username" type="text" autocomplete="username" value="${escapeHtml(state.user.username || '')}" hidden>
+        <label>
+          <span>${state.user.has_password ? '更新登录密码' : '设置登录密码'}</span>
+          <input name="password" type="password" minlength="6" maxlength="128" autocomplete="new-password" required>
+        </label>
+        <label>
+          <span>确认密码</span>
+          <input name="passwordConfirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required>
+        </label>
+        <button class="ghost-button" type="submit">${state.user.has_password ? '更新密码' : '设置密码'}</button>
+      </form>
       <div class="form-actions">
         <button class="ghost-button" type="button" data-logout>退出登录</button>
       </div>
@@ -935,15 +948,44 @@ function bindEvents() {
     }
   });
 
+  $('centerContent').addEventListener('submit', async (event) => {
+    const form = event.target.closest('[data-password-form]');
+    if (!form) return;
+    event.preventDefault();
+    const password = form.elements.password.value;
+    if (password !== form.elements.passwordConfirm.value) {
+      toast('两次输入的密码不一致');
+      return;
+    }
+    try {
+      const data = await api('/api/auth/password', {
+        method: 'POST',
+        body: JSON.stringify({ password }),
+      });
+      state.user = data.user;
+      updateAuthUi();
+      await renderCenter();
+      toast('登录密码已更新');
+    } catch (error) {
+      toast(error.message);
+    }
+  });
+
   $('registerForm').addEventListener('submit', async (event) => {
     event.preventDefault();
+    if ($('registerPassword').value !== $('registerPasswordConfirm').value) {
+      toast('两次输入的密码不一致');
+      return;
+    }
     try {
       const data = await api('/api/auth/register', {
         method: 'POST',
         body: JSON.stringify({
+          username: $('registerUsername').value,
           phone: $('registerPhone').value,
           email: $('registerEmail').value,
           display_name: $('registerName').value,
+          password: $('registerPassword').value,
         }),
       });
       saveSession(data.token, data.user);
@@ -961,7 +1003,10 @@ function bindEvents() {
     try {
       const data = await api('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ account: $('loginAccount').value }),
+        body: JSON.stringify({
+          account: $('loginAccount').value,
+          password: $('loginPassword').value,
+        }),
       });
       saveSession(data.token, data.user);
       hideAuth();

@@ -1561,6 +1561,12 @@ label span {
   margin: 0 0 12px;
 }
 
+.account-password-form {
+  margin: 18px 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
 .notification-list {
   display: grid;
   gap: 10px;

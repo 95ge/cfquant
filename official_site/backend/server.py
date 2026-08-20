@@ -45,7 +45,10 @@ ADMIN_PASSWORD = os.getenv("CFQUANT_SITE_ADMIN_PASSWORD", "root123456")
 
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
 TOKEN_TTL_DAYS = 30
+PASSWORD_MIN_LENGTH = 6
+PASSWORD_HASH_ITERATIONS = 240_000
 MAX_FEEDBACK_ATTACHMENTS = 4
 MAX_FEEDBACK_ATTACHMENT_BYTES = 3 * 1024 * 1024
 ALLOWED_FEEDBACK_IMAGE_TYPES = {
@@ -164,6 +167,35 @@ def normalize_email(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def normalize_username(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def password_hash(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def password_matches(password: str, encoded: str) -> bool:
+    try:
+        algorithm, raw_iterations, salt_hex, digest_hex = str(encoded or "").split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(raw_iterations)
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+        actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
+
+
 def json_dumps(data: Any) -> bytes:
     return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
@@ -204,8 +236,10 @@ class Database:
                 CREATE TABLE IF NOT EXISTS users (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   phone TEXT UNIQUE NOT NULL,
+                  username TEXT UNIQUE,
                   email TEXT UNIQUE,
                   display_name TEXT NOT NULL,
+                  password_hash TEXT,
                   avatar_color TEXT NOT NULL DEFAULT '#1f6feb',
                   role TEXT NOT NULL DEFAULT 'user',
                   status TEXT NOT NULL DEFAULT 'active',
@@ -332,6 +366,26 @@ class Database:
             self._seed(conn)
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
+        user_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+        if "username" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        if "password_hash" not in user_columns:
+            conn.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+        legacy_users = conn.execute(
+            "SELECT id FROM users WHERE username IS NULL OR TRIM(username) = ''"
+        ).fetchall()
+        for row in legacy_users:
+            conn.execute(
+                "UPDATE users SET username = ? WHERE id = ?",
+                (f"cfuser{row['id']}", row["id"]),
+            )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)"
+        )
+
         feedback_columns = {
             row["name"]
             for row in conn.execute("PRAGMA table_info(feedback)").fetchall()
@@ -460,6 +514,9 @@ class SiteHandler(SimpleHTTPRequestHandler):
             return
         if method == "POST" and path == "/api/auth/login":
             self._api_login()
+            return
+        if method == "POST" and path == "/api/auth/password":
+            self._api_set_password()
             return
         if method == "POST" and path == "/api/auth/logout":
             self._api_logout()
@@ -625,7 +682,8 @@ class SiteHandler(SimpleHTTPRequestHandler):
         with db.connect() as conn:
             row = conn.execute(
                 """
-                SELECT s.*, u.phone, u.email, u.display_name, u.status AS user_status, u.role AS user_role
+                SELECT s.*, u.username, u.phone, u.email, u.display_name,
+                       u.status AS user_status, u.role AS user_role
                 FROM sessions s
                 LEFT JOIN users u ON u.id = s.user_id
                 WHERE s.token_hash = ?
@@ -667,7 +725,13 @@ class SiteHandler(SimpleHTTPRequestHandler):
 
     def _user_payload(self, conn: sqlite3.Connection, user_id: int) -> dict[str, Any]:
         row = conn.execute(
-            "SELECT id, phone, email, display_name, avatar_color, status, created_at, last_login_at FROM users WHERE id = ?",
+            """
+            SELECT id, username, phone, email, display_name, avatar_color, status,
+                   created_at, last_login_at,
+                   CASE WHEN password_hash IS NULL OR password_hash = '' THEN 0 ELSE 1 END AS has_password
+            FROM users
+            WHERE id = ?
+            """,
             (user_id,),
         ).fetchone()
         if row is None:
@@ -744,30 +808,41 @@ class SiteHandler(SimpleHTTPRequestHandler):
 
     def _api_register(self) -> None:
         data = self._parse_json()
+        username = normalize_username(data.get("username"))
         phone = str(data.get("phone") or "").strip()
         email = normalize_email(data.get("email"))
         display_name = str(data.get("display_name") or "").strip()
+        password = str(data.get("password") or "")
+        if not USERNAME_RE.fullmatch(username):
+            raise ApiError(400, "用户名为 3-32 位字母、数字、下划线、点或短横线")
         if not PHONE_RE.fullmatch(phone):
             raise ApiError(400, "请输入有效的 11 位手机号")
         if email and not EMAIL_RE.fullmatch(email):
             raise ApiError(400, "邮箱格式不正确")
+        if len(password) < PASSWORD_MIN_LENGTH:
+            raise ApiError(400, f"密码至少需要 {PASSWORD_MIN_LENGTH} 位")
+        if len(password) > 128:
+            raise ApiError(400, "密码不能超过 128 位")
         if not display_name:
-            display_name = f"用户{phone[-4:]}"
+            display_name = username
         display_name = display_name[:32]
         colors = ["#1f6feb", "#147d64", "#a15c07", "#7c3aed", "#b42318", "#0f766e"]
         avatar_color = colors[int(phone[-1]) % len(colors)]
+        encoded_password = password_hash(password)
         ts = now_iso()
         with db.connect() as conn:
+            if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+                raise ApiError(409, "用户名已注册")
             if conn.execute("SELECT 1 FROM users WHERE phone = ?", (phone,)).fetchone():
                 raise ApiError(409, "手机号已注册")
             if email and conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
                 raise ApiError(409, "邮箱已注册")
             cur = conn.execute(
                 """
-                INSERT INTO users(phone, email, display_name, avatar_color, role, status, created_at, last_login_at)
-                VALUES(?, ?, ?, ?, 'user', 'active', ?, ?)
+                INSERT INTO users(username, phone, email, display_name, password_hash, avatar_color, role, status, created_at, last_login_at)
+                VALUES(?, ?, ?, ?, ?, ?, 'user', 'active', ?, ?)
                 """,
-                (phone, email or None, display_name, avatar_color, ts, ts),
+                (username, phone, email or None, display_name, encoded_password, avatar_color, ts, ts),
             )
             user_id = int(cur.lastrowid)
             conn.execute(
@@ -789,26 +864,51 @@ class SiteHandler(SimpleHTTPRequestHandler):
     def _api_login(self) -> None:
         data = self._parse_json()
         account = str(data.get("account") or "").strip()
+        password = str(data.get("password") or "")
         if not account:
-            raise ApiError(400, "请输入手机号或邮箱")
+            raise ApiError(400, "请输入用户名、手机号或邮箱")
+        if not password:
+            raise ApiError(400, "请输入密码")
+        username = normalize_username(account)
         email = normalize_email(account)
         with db.connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM users
-                WHERE role = 'user' AND (phone = ? OR email = ?)
+                WHERE role = 'user' AND (username = ? OR phone = ? OR email = ?)
                 """,
-                (account, email),
+                (username, account, email),
             ).fetchone()
             if row is None:
-                raise ApiError(404, "账号不存在")
+                raise ApiError(401, "账号或密码错误")
             if row["status"] != "active":
                 raise ApiError(403, "账号已被限制")
+            if not row["password_hash"]:
+                raise ApiError(403, "该账号尚未设置密码，请使用已有登录会话在用户中心设置密码")
+            if not password_matches(password, row["password_hash"]):
+                raise ApiError(401, "账号或密码错误")
             ts = now_iso()
             conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (ts, row["id"]))
             token = self._create_session(conn, int(row["id"]), "user")
             user = self._user_payload(conn, int(row["id"]))
         self._send_json({"ok": True, "token": token, "user": user})
+
+    def _api_set_password(self) -> None:
+        session = self._current_session(role="user")
+        assert session is not None
+        data = self._parse_json()
+        password = str(data.get("password") or "")
+        if len(password) < PASSWORD_MIN_LENGTH:
+            raise ApiError(400, f"密码至少需要 {PASSWORD_MIN_LENGTH} 位")
+        if len(password) > 128:
+            raise ApiError(400, "密码不能超过 128 位")
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (password_hash(password), int(session["user_id"])),
+            )
+            user = self._user_payload(conn, int(session["user_id"]))
+        self._send_json({"ok": True, "user": user})
 
     def _api_logout(self) -> None:
         token = self._read_token()
@@ -1340,7 +1440,7 @@ class SiteHandler(SimpleHTTPRequestHandler):
                 dict_from_row(row)
                 for row in conn.execute(
                     """
-                    SELECT id, phone, email, display_name, status, created_at, last_login_at
+                    SELECT id, username, phone, email, display_name, status, created_at, last_login_at
                     FROM users
                     WHERE role = 'user'
                     ORDER BY created_at DESC
@@ -1397,7 +1497,7 @@ class SiteHandler(SimpleHTTPRequestHandler):
                 dict_from_row(row)
                 for row in conn.execute(
                     """
-                    SELECT u.id, u.phone, u.email, u.display_name, u.status, u.created_at,
+                    SELECT u.id, u.username, u.phone, u.email, u.display_name, u.status, u.created_at,
                            u.last_login_at,
                            COUNT(DISTINCT t.id) AS thread_count,
                            COUNT(DISTINCT r.id) AS reply_count

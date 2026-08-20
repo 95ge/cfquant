@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant.org | QMT 本地桥接与社区</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css?v=site_20260820_01">
+  <link rel="stylesheet" href="/styles.css?v=site_20260820_02">
 </head>
 <body>
   <header class="topbar">
@@ -355,32 +355,48 @@
       </div>
       <form id="registerForm" class="auth-form">
         <label>
+          <span>用户名</span>
+          <input id="registerUsername" name="username" type="text" minlength="3" maxlength="32" autocomplete="username" placeholder="3-32 位字母、数字或符号" required>
+        </label>
+        <label>
           <span>手机号</span>
-          <input id="registerPhone" type="tel" inputmode="numeric" maxlength="11" required>
+          <input id="registerPhone" name="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="11" required>
         </label>
         <label>
           <span>邮箱</span>
-          <input id="registerEmail" type="email" placeholder="可选，不验证">
+          <input id="registerEmail" name="email" type="email" autocomplete="email" placeholder="可选，不验证">
         </label>
         <label>
           <span>昵称</span>
-          <input id="registerName" type="text" maxlength="32" placeholder="可选">
+          <input id="registerName" name="display_name" type="text" autocomplete="nickname" maxlength="32" placeholder="可选">
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="registerPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" required>
+        </label>
+        <label>
+          <span>确认密码</span>
+          <input id="registerPasswordConfirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required>
         </label>
         <button class="primary-button full" type="submit">注册并登录</button>
       </form>
       <form id="loginForm" class="auth-form hidden">
         <label>
-          <span>手机号或邮箱</span>
-          <input id="loginAccount" type="text" required>
+          <span>用户名 / 手机号 / 邮箱</span>
+          <input id="loginAccount" type="text" autocomplete="username" required>
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="loginPassword" type="password" autocomplete="current-password" required>
         </label>
         <button class="primary-button full" type="submit">登录</button>
       </form>
-      <p class="auth-note">当前版本按手机号或邮箱唯一性登录，未接入短信验证码和邮箱验证。</p>
+      <p class="auth-note">用户名、手机号、邮箱均可作为登录账号。手机号注册必填，邮箱可选且不做验证；已有旧账号请在用户中心设置密码。</p>
     </div>
   </div>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="/config.js"></script>
-  <script src="/app.js?v=site_20260820_01"></script>
+  <script src="/app.js?v=site_20260820_02"></script>
 </body>
 </html>
