@@ -57,7 +57,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260818_01"
+WEB_VERSION = "web_20260819_01"
 BASE_DIR = _PROJECT_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
 LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
@@ -6479,6 +6479,80 @@ def probe_credit_account(body):
     }
 
 
+def parse_export_user_param(value):
+    if value is None or value == "":
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("user_param must be a JSON object")
+        return parsed
+    raise ValueError("user_param must be an object")
+
+
+def export_trade_data(body):
+    body = body or {}
+    account_id = str(body.get("account_id") or "").strip()
+    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_key = str(body.get("account_key") or "").strip()
+    if not account_id:
+        raise ValueError("account_id is required")
+    result_path = str(body.get("result_path") or "").strip()
+    data_type = str(body.get("data_type") or "").strip()
+    start_time = str(body.get("start_time") or "").strip() or None
+    end_time = str(body.get("end_time") or "").strip() or None
+    user_param = parse_export_user_param(body.get("user_param"))
+    job_id = str(body.get("job_id") or "").strip()
+    if not result_path:
+        raise ValueError("result_path is required")
+    if not data_type:
+        raise ValueError("data_type is required")
+    bridge_id = resolve_bridge_id(
+        account_id=account_id,
+        account_type=account_type,
+        account_key=account_key,
+        bridge_id=body.get("bridge_id"),
+    )
+    params = {
+        "account": {"account_id": account_id, "account_type": account_type},
+        "args": [result_path, data_type, start_time, end_time, user_param],
+    }
+    started = time.perf_counter()
+    route = account_request(
+        account_id,
+        bridge_id,
+        body.get("channel"),
+        "xttrader.export_data",
+        params,
+        default_channel="trade",
+        timeout=float(body.get("timeout") or 120.0),
+        mark_offline_on_timeout=False,
+        account_type=account_type,
+        account_key=account_key,
+    )
+    return {
+        "job_id": job_id,
+        "bridge_id": route["bridge_id"],
+        "account_id": account_id,
+        "account_type": account_type,
+        "account_key": account_key or account_key_for(account_id, account_type, route["bridge_id"]),
+        "channel": route["channel"],
+        "mode": route["mode"],
+        "fallback": route["fallback"],
+        "fallback_reason": route["fallback_reason"],
+        "result_path": result_path,
+        "data_type": data_type,
+        "result": route["result"],
+        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+        "attempts": route.get("attempts") or [],
+    }
+
+
 def api_key_info(include_secret=True):
     return WEB_CONFIG.api_key_info(include_secret=include_secret)
 
@@ -7602,6 +7676,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(get_financial_data(body)))
             elif parsed.path == "/api/data/financial/download":
                 self._write_json(ok(download_financial_data(body)))
+            elif parsed.path == "/api/trade/export-data":
+                self._write_json(ok(export_trade_data(body)))
             elif parsed.path == "/api/lttx/start":
                 self._write_json(ok(start_lttx_server()))
             elif parsed.path == "/api/lttx/stop":

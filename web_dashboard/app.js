@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260818_01';
+const FRONTEND_VERSION = 'web_20260819_01';
 
 const state = {
   accountId: '',
@@ -48,6 +48,8 @@ const state = {
   downloadEvents: [],
   downloadStartedAt: 0,
   downloadRequestDoneAt: 0,
+  downloadProgressTimer: null,
+  taskProgressKind: 'download',
   serverAccess: null,
   webAuthToken: '',
   webAuthStatus: null,
@@ -239,6 +241,16 @@ const API_ENDPOINTS = [
     desc: '按大 QMT 官方能力读取并校验本地财务数据。财务数据需要先在 QMT 客户端“数据管理 - 财务数据下载”中下载，脚本侧不提供真正下载函数。',
     defaults: { channel: 'normal', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'raw', report_type: 'report_time' },
     fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type'],
+  },
+  {
+    id: 'data_export',
+    group: 'data',
+    title: '导出交易数据',
+    method: 'POST',
+    path: '/api/trade/export-data',
+    desc: '调用 QMT xttrader.export_data 导出指定账号的数据。导出耗时较长时会显示任务进度，避免误判为失败。',
+    defaults: { channel: 'trade', result_path: 'D:\\cfquant_export', data_type: 'order', user_param_json: '{}' },
+    fields: ['bridge_id', 'trade_channel', 'account_id', 'account_type', 'export_result_path', 'export_data_type', 'start_time', 'end_time', 'export_user_param_json'],
   },
   {
     id: 'quote_unsubscribe',
@@ -453,6 +465,9 @@ const API_FIELD_META = {
   financial_fields: { label: '财务字段', type: 'text', placeholder: 'fix_assets 或 ASHAREBALANCESHEET.fix_assets', param: 'fields' },
   financial_mode: { label: '财务模式', type: 'financial_mode', param: 'mode' },
   report_type: { label: '报表时间', type: 'report_type' },
+  export_result_path: { label: '导出目录', type: 'text', placeholder: 'D:\\cfquant_export', param: 'result_path', wide: true },
+  export_data_type: { label: '导出数据类型', type: 'text', placeholder: 'order / deal / position / account', param: 'data_type' },
+  export_user_param_json: { label: '导出参数 JSON', type: 'textarea', placeholder: '{"remark":"cfquant"}', param: 'user_param_json', wide: true },
   transport_mode: { label: '通信模式', type: 'transport_mode' },
 };
 
@@ -491,6 +506,10 @@ const API_PARAM_DOCS = {
   fields: '财务字段列表，多个字段用英文逗号分隔。可填 fix_assets，服务端会与 table 组合；也可直接填 ASHAREBALANCESHEET.fix_assets。',
   mode: '财务查询模式，filled 调用 get_financial_data，raw 调用 get_raw_financial_data。',
   report_type: '报表时间类型，announce_time 按公告日期，report_time 按报告期。',
+  result_path: '导出结果目录，必须是 QMT 所在机器可访问的本地路径。',
+  data_type: '导出数据类型，按 QMT export_data 支持值填写，例如 order、deal、position、account 等。',
+  user_param: '导出附加参数 JSON 对象，不需要时填 {}。',
+  user_param_json: '导出附加参数 JSON 对象，不需要时填 {}。页面会在发送前转换为 user_param。',
   transport_mode: '通信模式，ctypes 表示通用模式单文件桥，lttx 表示高级模式两个 QMT 终端双桥。',
 };
 
@@ -559,6 +578,15 @@ const API_RETURN_DOCS = {
     ['progress_ws_path', '本次任务对应的 WebSocket 进度地址'],
     ['channel', '实际调用通道'],
     ['fallback', '是否从极速回退到普通 QMT'],
+  ],
+  data_export: [
+    ['job_id', '导出任务 ID，用于页面进度展示'],
+    ['result_path', 'QMT 侧导出的目标目录'],
+    ['data_type', '导出的数据类型'],
+    ['result', '底层 export_data 返回值'],
+    ['latency_ms', '请求耗时'],
+    ['channel', '实际调用通道'],
+    ['fallback', '是否从高级模式回退'],
   ],
   quote_unsubscribe: [
     ['subscribe_id', '已取消的订阅 ID'],
@@ -1254,6 +1282,14 @@ function isDownloadEndpoint(endpoint) {
   return !!endpoint && (endpoint.id === 'history_download' || endpoint.id === 'financial_download');
 }
 
+function isExportEndpoint(endpoint) {
+  return !!endpoint && endpoint.id === 'data_export';
+}
+
+function isTaskProgressEndpoint(endpoint) {
+  return isDownloadEndpoint(endpoint) || isExportEndpoint(endpoint);
+}
+
 function apiGroupForEndpoint(endpointId) {
   const endpoint = apiEndpointById(endpointId);
   return endpoint.group || 'trade';
@@ -1348,13 +1384,19 @@ function updateQuoteLivePanel(endpoint) {
 function updateDownloadProgressPanel(endpoint) {
   const panel = $('downloadProgressPanel');
   if (!panel) return;
-  const show = isDownloadEndpoint(endpoint) || !!state.downloadJobId;
+  const show = isTaskProgressEndpoint(endpoint) || !!state.downloadJobId;
   panel.classList.toggle('hidden', !show);
   if (show) renderDownloadProgress();
 }
 
 function newDownloadJobId(endpointId) {
   return `${endpointId || 'download'}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function clearTaskProgressTimer() {
+  if (!state.downloadProgressTimer) return;
+  window.clearInterval(state.downloadProgressTimer);
+  state.downloadProgressTimer = null;
 }
 
 function closeDownloadSocket() {
@@ -1369,6 +1411,8 @@ function closeDownloadSocket() {
 
 function beginDownloadProgress(jobId, requestBody = {}, endpoint = apiEndpointById(state.apiEndpointId)) {
   closeDownloadSocket();
+  clearTaskProgressTimer();
+  state.taskProgressKind = 'download';
   state.downloadJobId = String(jobId || '');
   state.downloadJobStatus = 'connecting';
   state.downloadEvents = [];
@@ -1418,6 +1462,46 @@ function beginDownloadProgress(jobId, requestBody = {}, endpoint = apiEndpointBy
       renderDownloadProgress();
     }
   };
+}
+
+function beginExportProgress(jobId, requestBody = {}, endpoint = apiEndpointById(state.apiEndpointId)) {
+  closeDownloadSocket();
+  clearTaskProgressTimer();
+  state.taskProgressKind = 'export';
+  state.downloadJobId = String(jobId || '');
+  state.downloadJobStatus = 'running';
+  state.downloadEvents = [{
+    event: 'xttrader:export_progress',
+    meta: {
+      job_id: state.downloadJobId,
+      stage: 'running',
+      task_kind: 'export',
+      bridge_id: requestBody.bridge_id || selectedBridge(),
+      account_id: requestBody.account_id || '',
+    },
+    data: {
+      percent: 8,
+      message: '导出请求已提交，等待 QMT 返回结果。',
+    },
+    received_at: Date.now() / 1000,
+  }];
+  state.downloadStartedAt = Date.now();
+  state.downloadRequestDoneAt = 0;
+  updateDownloadProgressPanel(endpoint);
+  renderDownloadProgress();
+  state.downloadProgressTimer = window.setInterval(() => {
+    if (downloadStatusIsTerminal(state.downloadJobStatus)) {
+      clearTaskProgressTimer();
+      return;
+    }
+    const latest = state.downloadEvents[0];
+    if (!latest || !latest.data) return;
+    const current = Number(latest.data.percent || 0);
+    latest.data.percent = Math.min(92, current + Math.max(1, Math.round((92 - current) * 0.08)));
+    latest.data.message = 'QMT 正在导出数据，页面会在完成后自动更新。';
+    latest.received_at = Date.now() / 1000;
+    renderDownloadProgress();
+  }, 900);
 }
 
 function handleDownloadSocketPayload(payload) {
@@ -1502,13 +1586,37 @@ function finishDownloadRequest(payload, error = null) {
     .catch((pollError) => log('下载进度拉取失败', { error: pollError.message }));
 }
 
+function finishExportProgress(payload, error = null) {
+  if (!state.downloadJobId) return;
+  clearTaskProgressTimer();
+  state.downloadRequestDoneAt = Date.now();
+  appendDownloadEvent({
+    event: 'xttrader:export_progress',
+    meta: {
+      job_id: state.downloadJobId,
+      stage: error || (payload && payload.ok === false) ? 'error' : 'done',
+      task_kind: 'export',
+    },
+    data: error ? {
+      percent: 100,
+      error: error.message,
+    } : {
+      percent: 100,
+      message: '导出请求已返回，结果已写入 QMT 侧指定目录。',
+    },
+    received_at: Date.now() / 1000,
+  });
+}
+
 function clearDownloadProgress() {
   closeDownloadSocket();
+  clearTaskProgressTimer();
   state.downloadJobId = '';
   state.downloadJobStatus = 'idle';
   state.downloadEvents = [];
   state.downloadStartedAt = 0;
   state.downloadRequestDoneAt = 0;
+  state.taskProgressKind = 'download';
   renderDownloadProgress();
   updateDownloadProgressPanel(apiEndpointById(state.apiEndpointId));
 }
@@ -1580,6 +1688,18 @@ function downloadEventSummary(event) {
 }
 
 function downloadStatusText() {
+  if (state.taskProgressKind === 'export') {
+    const map = {
+      idle: '未开始',
+      running: '导出中',
+      request_done: '导出请求已返回',
+      done: '导出已完成',
+      error: '导出失败',
+      socket_error: '进度连接错误',
+      socket_closed: '进度连接已断开',
+    };
+    return map[state.downloadJobStatus] || state.downloadJobStatus || '未开始';
+  }
   const map = {
     idle: '未开始',
     connecting: '正在连接进度回调',
@@ -1597,18 +1717,23 @@ function downloadStatusText() {
 function renderDownloadProgress() {
   const panel = $('downloadProgressPanel');
   if (!panel) return;
+  const progressTitle = panel.querySelector('.download-progress-head h3');
   const status = $('downloadProgressStatus');
   const job = $('downloadProgressJob');
   const meta = $('downloadProgressMeta');
   const bar = $('downloadProgressBar');
   const eventsBox = $('downloadProgressEvents');
+  const isExport = state.taskProgressKind === 'export';
   const latest = state.downloadEvents[0] || null;
   const percent = latest ? downloadEventPercent(latest) : null;
+  if (progressTitle) progressTitle.textContent = isExport ? '导出进度' : '任务进度';
   if (status) status.textContent = downloadStatusText();
   if (job) job.textContent = state.downloadJobId || '--';
   if (bar) {
     bar.style.width = percent === null ? '0%' : `${percent.toFixed(0)}%`;
     bar.classList.toggle('is-indeterminate', percent === null && ['connecting', 'waiting', 'running', 'request_done'].includes(state.downloadJobStatus));
+    bar.classList.toggle('is-done', state.downloadJobStatus === 'done');
+    bar.classList.toggle('is-error', state.downloadJobStatus === 'error');
   }
   if (meta) {
     const elapsed = state.downloadStartedAt ? `${((Date.now() - state.downloadStartedAt) / 1000).toFixed(1)}s` : '--';
@@ -1619,7 +1744,7 @@ function renderDownloadProgress() {
     eventsBox.innerHTML = state.downloadEvents.slice(0, 8).map((event) => {
       const time = event.received_at ? new Date(Number(event.received_at) * 1000).toLocaleTimeString('zh-CN', { hour12: false }) : nowText();
       return `<div><span>${esc(time)}</span><strong>${esc(downloadEventSummary(event))}</strong></div>`;
-    }).join('') || '<div><span>--</span><strong>暂无下载回调</strong></div>';
+    }).join('') || `<div><span>--</span><strong>${isExport ? '等待导出任务开始' : '暂无下载回调'}</strong></div>`;
   }
 }
 
@@ -3622,6 +3747,15 @@ function currentApiRequest() {
       .map((item) => item.trim().toUpperCase())
       .filter(Boolean);
   }
+  if (endpoint.id === 'data_export') {
+    try {
+      params.user_param = params.user_param_json ? JSON.parse(params.user_param_json) : {};
+      delete params.user_param_json;
+    } catch (error) {
+      params.user_param = {};
+      params.user_param_json_error = error.message;
+    }
+  }
   ['code_list', 'stock_list', 'field_list'].forEach((name) => {
     if (params[name] !== undefined && typeof params[name] === 'string') {
       params[name] = params[name].split(',').map((item) => item.trim()).filter(Boolean);
@@ -3717,8 +3851,8 @@ async function sendApiDebugRequest(event) {
     connectApiWebSocket(request);
     return;
   }
-  if (request.body && request.body.orders_json_error) {
-    $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: request.body.orders_json_error }, null, 2);
+  if (request.body && (request.body.orders_json_error || request.body.user_param_json_error)) {
+    $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: request.body.orders_json_error || request.body.user_param_json_error }, null, 2);
     return;
   }
   if (isDownloadEndpoint(endpoint)) {
@@ -3727,6 +3861,12 @@ async function sendApiDebugRequest(event) {
     beginDownloadProgress(request.body.job_id, request.body, endpoint);
     $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
     $('apiResponseBox').textContent = `请求中...\n已开始监听下载进度 job_id=${request.body.job_id}`;
+  } else if (isExportEndpoint(endpoint)) {
+    request.body = request.body || {};
+    request.body.job_id = request.body.job_id || newDownloadJobId(endpoint.id);
+    beginExportProgress(request.body.job_id, request.body, endpoint);
+    $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
+    $('apiResponseBox').textContent = `导出中...\n任务 ID=${request.body.job_id}\n结果会写入 QMT 侧 result_path 指定目录。`;
   } else {
     $('apiResponseBox').textContent = '请求中...';
   }
@@ -3750,11 +3890,15 @@ async function sendApiDebugRequest(event) {
     handleApiDebugPayload(payload);
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(payload);
+    } else if (isExportEndpoint(endpoint)) {
+      finishExportProgress(payload, payload && payload.ok === false ? new Error(payload.error || '导出失败') : null);
     }
   } catch (error) {
     $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: error.message }, null, 2);
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(null, error);
+    } else if (isExportEndpoint(endpoint)) {
+      finishExportProgress(null, error);
     }
   }
 }
