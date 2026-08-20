@@ -264,10 +264,14 @@ _apply_runtime_config()
 _write_runtime_log("cfquant ctypes entry executing file=%s sys_path_head=%s" % (_entry_file_path() or "<string>", sys.path[:5]))
 
 try:
+    import cfquant as _cfquant
     from cfquant import __version__ as _ENTRY_VERSION
     from cfquant.logging_i18n import get_log_enabled, translate_log
     from cfquant.protocol import loads_message
-    _write_runtime_log("cfquant import ok version=%s" % _ENTRY_VERSION)
+    _write_runtime_log(
+        "cfquant import ok version=%s module_file=%s"
+        % (_ENTRY_VERSION, getattr(_cfquant, "__file__", "<unknown>"))
+    )
 except Exception as e:
     _write_runtime_log("cfquant import failed:%s sys_path_head=%s" % (e, sys.path[:8]))
     raise

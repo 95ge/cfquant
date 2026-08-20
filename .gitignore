@@ -31,7 +31,6 @@ cfquant_pipe_hub_status.json
 # Local video synthesis workspace and generated media.
 remotion_intro/
 
-# Local official-site / article assets, not part of the deployable package.
-official_site/
+# Local article assets, not part of the deployable package.
 pic/
 公众号/

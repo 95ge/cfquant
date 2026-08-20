@@ -2878,6 +2878,14 @@ input[type="file"] {
   animation: downloadProgressMove 1.4s ease-in-out infinite;
 }
 
+.download-progress-meter span.is-done {
+  background: linear-gradient(90deg, #148a57, #20a36b);
+}
+
+.download-progress-meter span.is-error {
+  background: linear-gradient(90deg, #c2410c, #dc2626);
+}
+
 .download-progress-meta {
   color: var(--muted);
   font-size: 12px;
