@@ -37,6 +37,7 @@ DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = BASE_DIR / "uploads"
 FEEDBACK_UPLOAD_DIR = UPLOAD_DIR / "feedback"
 DB_PATH = DATA_DIR / "cfquant_site.sqlite3"
+PROJECT_REPO_URL = os.getenv("CFQUANT_PROJECT_REPO_URL", "https://github.com/95ge/cfquant.git")
 
 ADMIN_USERNAME = os.getenv("CFQUANT_SITE_ADMIN_USER", "root")
 ADMIN_PASSWORD = os.getenv("CFQUANT_SITE_ADMIN_PASSWORD", "root123456")
@@ -52,6 +53,33 @@ ALLOWED_FEEDBACK_IMAGE_TYPES = {
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file_obj:
+        while True:
+            chunk = file_obj.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def changelog_from_notes(version: str, notes: str) -> dict[str, Any]:
+    text = str(notes or "").strip()
+    items = []
+    for line in text.splitlines():
+        item = re.sub(r"^\s*[-*]\s*", "", line).strip()
+        if item:
+            items.append(item)
+    if not items and text:
+        items = [text]
+    return {
+        "version": str(version or "").strip(),
+        "body": text,
+        "items": items,
+    }
 
 
 def now_iso() -> str:
@@ -364,6 +392,12 @@ class SiteHandler(SimpleHTTPRequestHandler):
             return
         if method == "GET" and path == "/api/downloads":
             self._api_downloads()
+            return
+        if method == "GET" and path == "/api/releases/latest":
+            self._api_latest_release()
+            return
+        if method == "GET" and path == "/api/releases/latest/download":
+            self._api_download_latest_release()
             return
         match = re.fullmatch(r"/api/downloads/(\d+)/download", path)
         if method == "GET" and match:
@@ -712,9 +746,8 @@ class SiteHandler(SimpleHTTPRequestHandler):
 
     def _api_downloads(self) -> None:
         with db.connect() as conn:
-            packages = [
-                dict_from_row(row)
-                for row in conn.execute(
+            packages = []
+            for row in conn.execute(
                     """
                     SELECT id, title, version, channel, file_name, external_url, notes,
                            is_active, download_count, created_at, updated_at
@@ -722,9 +755,31 @@ class SiteHandler(SimpleHTTPRequestHandler):
                     WHERE is_active = 1
                     ORDER BY updated_at DESC, id DESC
                     """
-                )
-            ]
+            ):
+                item = self._download_package_payload(dict_from_row(row))
+                if item:
+                    packages.append(item)
         self._send_json({"ok": True, "downloads": packages})
+
+    def _api_latest_release(self) -> None:
+        package = self._latest_release_payload()
+        if not package:
+            raise ApiError(404, "暂未发布项目更新包")
+        self._send_json({
+            "ok": True,
+            "release": package,
+            "version": package.get("version") or "",
+            "changelog": package.get("changelog") or {},
+            "repo_url": PROJECT_REPO_URL,
+        })
+
+    def _api_download_latest_release(self) -> None:
+        with db.connect() as conn:
+            row = self._latest_release_row(conn)
+            if row is None:
+                raise ApiError(404, "暂未发布项目更新包")
+            package_id = int(row["id"])
+        self._api_download_package(package_id)
 
     def _api_download_package(self, package_id: int) -> None:
         with db.connect() as conn:
@@ -748,6 +803,54 @@ class SiteHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         raise ApiError(404, "后台尚未配置本地更新包文件")
+
+    def _latest_release_payload(self) -> dict[str, Any] | None:
+        with db.connect() as conn:
+            row = self._latest_release_row(conn)
+            if row is None:
+                return None
+            return self._download_package_payload(dict_from_row(row), include_changelog=True)
+
+    def _latest_release_row(self, conn: sqlite3.Connection) -> sqlite3.Row | None:
+        return conn.execute(
+            """
+            SELECT id, title, version, channel, file_name, file_path, external_url,
+                   notes, is_active, download_count, created_at, updated_at
+            FROM download_packages
+            WHERE is_active = 1
+            ORDER BY
+              CASE
+                WHEN channel = 'project' THEN 0
+                WHEN channel = 'stable' THEN 1
+                ELSE 2
+              END,
+              updated_at DESC,
+              id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    def _download_package_payload(self, package: dict[str, Any] | None, include_changelog: bool = False) -> dict[str, Any] | None:
+        if not package:
+            return None
+        item = dict(package)
+        package_id = int(item.get("id") or 0)
+        file_path = self._resolve_package_path(item.get("file_path") or item.get("file_name") or "")
+        file_exists = bool(file_path and file_path.is_file())
+        item["file_exists"] = file_exists
+        item["file_size"] = file_path.stat().st_size if file_exists else 0
+        item["sha256"] = file_sha256(file_path) if file_exists else ""
+        item["download_url"] = self._absolute_url(f"/api/downloads/{package_id}/download") if package_id else ""
+        item["latest_download_url"] = self._absolute_url("/api/releases/latest/download")
+        item["repo_url"] = PROJECT_REPO_URL
+        if include_changelog:
+            item["changelog"] = changelog_from_notes(item.get("version") or "", item.get("notes") or "")
+        return item
+
+    def _absolute_url(self, path: str) -> str:
+        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "cfquant.org"
+        proto = self.headers.get("X-Forwarded-Proto") or ("https" if host == "cfquant.org" else "http")
+        return f"{proto}://{host}{path}"
 
     def _api_forum_categories(self) -> None:
         with db.connect() as conn:

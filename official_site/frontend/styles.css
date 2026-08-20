@@ -704,6 +704,82 @@ label span {
   padding: 18px;
 }
 
+.release-panel {
+  margin-bottom: 18px;
+}
+
+.release-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 18px;
+  align-items: start;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--surface), var(--surface-strong));
+  box-shadow: var(--shadow);
+}
+
+.release-main {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.release-main h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.release-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.release-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.release-log {
+  grid-column: 1 / -1;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.release-log h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.release-log ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.release-log li + li {
+  margin-top: 6px;
+}
+
+.hash-line {
+  display: block;
+  max-width: 100%;
+  padding: 8px 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .download-card h2 {
   margin: 0;
   font-size: 18px;
@@ -1431,8 +1507,14 @@ td {
   }
 
   .thread-card,
+  .release-card,
   .project-slide {
     grid-template-columns: 1fr;
+  }
+
+  .release-actions {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .carousel-viewport {

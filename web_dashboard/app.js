@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260820_01';
+const FRONTEND_VERSION = 'web_20260820_02';
 
 const state = {
   accountId: '',
@@ -102,6 +102,7 @@ const WEB_AUTH_TOKEN_KEY = 'cfquant.web_auth_token';
 const WEB_AUTH_SESSION_TOKEN_KEY = 'cfquant.web_auth_session_token';
 const WEB_AUTH_REMEMBER_KEY = 'cfquant.web_auth_remember';
 const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
+const DEFAULT_OFFICIAL_SITE_URL = 'https://cfquant.org';
 const DEFAULT_UPDATE_REF = 'main';
 const QUOTE_RENDER_INTERVAL_MS = 500;
 const QUOTE_RESPONSE_LOG_LIMIT = 20;
@@ -1031,7 +1032,7 @@ function renderProjectVersion(info) {
     const showAlert = !!(remote.error && !state.versionCheckInFlight);
     alert.classList.toggle('hidden', !showAlert);
     alert.textContent = showAlert
-      ? '版本探测失败：当前网络可能无法访问 GitHub，不影响交易和行情功能'
+      ? '版本探测失败：当前网络可能无法访问官网或 GitHub，不影响交易和行情功能'
       : '版本探测失败，不影响交易和行情功能';
     alert.title = showAlert ? `版本探测失败：${remote.error}` : '';
   }
@@ -1051,8 +1052,8 @@ function renderProjectVersion(info) {
   const remoteNote = remote.error
     ? `检查失败：${remote.error}`
     : remote.version
-      ? `${remote.repo_url || data.repo_url || DEFAULT_UPDATE_REPO_URL}#${remote.ref || data.ref || DEFAULT_UPDATE_REF}${remote.checked_at_text ? ` / ${remote.checked_at_text}` : ''}${remote.cached ? ' / 缓存' : ''}`
-      : '尚未检查 GitHub 版本';
+      ? remoteUpdateDetail(remote, data.repo_url || DEFAULT_UPDATE_REPO_URL)
+      : '尚未检查官网版本';
   const actionBusy = state.versionCheckInFlight || state.projectUpdateBusy || state.versionUpdateBusy;
   const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
   const recheckDisabled = state.versionCheckInFlight ? ' disabled' : '';
@@ -1074,19 +1075,19 @@ function renderProjectVersion(info) {
         <small>${esc(frontendNote)}</small>
       </div>
       <div class="version-info-row">
-        <span>GitHub 版本</span>
+        <span>${esc(remoteUpdateSourceLabel(remote))}</span>
         <strong>${esc(remote.version || '--')}</strong>
         <small>${esc(remoteNote)}</small>
       </div>
       <div class="version-info-row">
         <span>版本状态</span>
         <strong>${esc(stateText)}</strong>
-        <small>${esc(data.update_available ? 'GitHub 上有新版本，进入设置页可执行更新。' : '基于 README 版本号判断。')}</small>
+        <small>${esc(data.update_available ? '远端有新版本，进入设置页可执行更新。' : '基于官网发布包或 README 版本号判断。')}</small>
       </div>
     </div>
     <div class="version-log-wrap">
       ${renderVersionLog(local.changelog, '当前更新日志')}
-      ${remote.version || remote.error ? renderVersionLog(remote.changelog, 'GitHub 更新日志') : ''}
+      ${remote.version || remote.error ? renderVersionLog(remote.changelog, `${remoteUpdateSourceLabel(remote)}更新日志`) : ''}
     </div>
     <div class="version-actions">
       <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
@@ -2820,7 +2821,7 @@ function qmtUpdateProgressSteps(kind) {
   }
   return [
     { key: 'prepare', label: '确认更新目标', percent: 8 },
-    { key: 'download', label: '连接 GitHub 并下载源码', percent: 38 },
+    { key: 'download', label: '连接官网并下载源码', percent: 38 },
     { key: 'backup', label: '备份当前 QMT 核心包', percent: 58 },
     { key: 'install', label: '替换 cfquant 核心包', percent: 82 },
     { key: 'refresh', label: '刷新更新状态', percent: 94 },
@@ -3157,6 +3158,26 @@ function updateCompareClass(value) {
   return 'unknown';
 }
 
+function remoteUpdateSourceLabel(remote = {}) {
+  const source = String(remote.source || '').toLowerCase();
+  if (source.includes('cfquant') || source.includes('official')) return '官网版本';
+  if (source.includes('github') || remote.repo_url) return 'GitHub 版本';
+  return '远端版本';
+}
+
+function remoteUpdateDetail(remote = {}, fallback = DEFAULT_UPDATE_REPO_URL) {
+  if (remote.error) return `获取失败：${remote.error}`;
+  const source = String(remote.source || '').toLowerCase();
+  const base = source.includes('cfquant') || remote.download_url
+    ? (remote.site_url || DEFAULT_OFFICIAL_SITE_URL)
+    : (remote.repo_url || fallback);
+  const suffix = remote.ref && !source.includes('cfquant') ? `#${remote.ref}` : '';
+  const checked = remote.checked_at_text ? ` / ${remote.checked_at_text}` : '';
+  const cached = remote.cached ? ' / 缓存' : '';
+  const fallbackNote = remote.fallback_error && source.includes('github') ? ` / 官网失败后回退：${remote.fallback_error}` : '';
+  return `${base || '--'}${suffix}${checked}${cached}${fallbackNote}`;
+}
+
 function renderUpdateVersionInfo(data) {
   const box = $('updateVersionInfo');
   if (!box) return;
@@ -3164,9 +3185,7 @@ function renderUpdateVersionInfo(data) {
   const current = version.current || {};
   const remote = version.remote || {};
   const compareClass = updateCompareClass(version.matches_remote);
-  const remoteDetail = remote.error
-    ? `获取失败：${remote.error}`
-    : `${remote.repo_url || DEFAULT_UPDATE_REPO_URL}${remote.ref ? `#${remote.ref}` : ''}${remote.checked_at_text ? ` / ${remote.checked_at_text}` : ''}${remote.cached ? ' / 缓存' : ''}`;
+  const remoteDetail = remoteUpdateDetail(remote);
   box.innerHTML = `
     <div class="update-version-item">
       <span>当前版本</span>
@@ -3174,14 +3193,14 @@ function renderUpdateVersionInfo(data) {
       <small>${esc(current.source ? `来源：${current.source}` : '未检测到本地版本号或更新记录')}</small>
     </div>
     <div class="update-version-item">
-      <span>GitHub 版本</span>
+      <span>${esc(remoteUpdateSourceLabel(remote))}</span>
       <strong>${esc(updateVersionLabel(remote))}</strong>
       <small>${esc(remoteDetail)}</small>
     </div>
     <div class="update-version-item update-version-compare ${compareClass}">
       <span>版本对比</span>
       <strong>${esc(updateCompareText(version.matches_remote))}</strong>
-      <small>${version.matches_remote === false ? 'GitHub 上有不同提交' : '基于 commit 判断'}</small>
+      <small>${version.matches_remote === false ? '远端有不同版本' : '优先基于官网包版本判断，回退时基于 commit 判断'}</small>
     </div>`;
 }
 
@@ -3210,9 +3229,7 @@ function renderProjectUpdateVersionInfo(data) {
   const localDetail = local.matches_readme === false
     ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
     : `来源：${local.source || '本地项目'}`;
-  const remoteDetail = remote.error
-    ? `获取失败：${remote.error}`
-    : `${remote.repo_url || DEFAULT_UPDATE_REPO_URL}${remote.ref ? `#${remote.ref}` : ''}${remote.checked_at_text ? ` / ${remote.checked_at_text}` : ''}${remote.cached ? ' / 缓存' : ''}`;
+  const remoteDetail = remoteUpdateDetail(remote);
   const compareClass = projectUpdateCompareClass(version.comparison, remote.error);
   box.innerHTML = `
     <div class="update-version-item">
@@ -3221,14 +3238,14 @@ function renderProjectUpdateVersionInfo(data) {
       <small>${esc(localDetail)}</small>
     </div>
     <div class="update-version-item">
-      <span>GitHub 项目版本</span>
+      <span>${esc(remoteUpdateSourceLabel(remote))}</span>
       <strong>${esc(remote.version || '--')}</strong>
       <small>${esc(remote.version || remote.error ? remoteDetail : '未检查远端版本')}</small>
     </div>
     <div class="update-version-item update-version-compare ${compareClass}">
       <span>版本对比</span>
       <strong>${esc(projectUpdateCompareText(version.comparison, remote.error))}</strong>
-      <small>${remote.error ? '网络不通时不影响本地功能' : '基于 README 版本日志判断'}</small>
+      <small>${remote.error ? '网络不通时不影响本地功能' : '优先基于官网发布包判断，回退时基于 README 版本日志判断'}</small>
     </div>`;
 }
 
@@ -3240,6 +3257,7 @@ function renderProjectUpdateStatus(data) {
   const repoInput = $('projectUpdateRepoInput');
   const refInput = $('projectUpdateRefInput');
   const defaultRepo = (data && data.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
+  const defaultOfficial = (data && data.default_official_site_url) || DEFAULT_OFFICIAL_SITE_URL;
   const defaultRef = (data && data.default_ref) || DEFAULT_UPDATE_REF;
   if (repoInput && !repoInput.value.trim()) repoInput.value = defaultRepo;
   if (refInput && !refInput.value.trim()) refInput.value = defaultRef;
@@ -3266,7 +3284,8 @@ function renderProjectUpdateStatus(data) {
         data.target_dir ? `目录 ${data.target_dir}` : '',
         data.current_version ? `版本 ${data.current_version}` : '',
         version.comparison ? `版本对比 ${projectUpdateCompareText(version.comparison, remote.error)}` : '',
-        defaultRepo ? `默认仓库 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}` : '',
+        defaultOfficial ? `官网 ${defaultOfficial}` : '',
+        defaultRepo ? `GitHub 回退 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}` : '',
         `备份 ${backups.length} 个`,
       ].filter(Boolean);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
@@ -3320,16 +3339,16 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   if (repoInput && !repoInput.value.trim()) repoInput.value = repoUrl;
   if (refInput && !refInput.value.trim()) refInput.value = ref;
   if (!repoUrl) {
-    log('GitHub 仓库为空，无法更新 Web 项目');
+    log('官网和 GitHub 回退源均不可用，无法更新 Web 项目');
     return;
   }
   const versionInfo = state.versionInfo || {};
   const remoteInfo = versionInfo.remote || {};
-  let confirmText = '确认从 GitHub 更新当前 Web 项目并自动重启？本地配置、数据库和日志会保留。';
+  let confirmText = '确认从官网优先源更新当前 Web 项目并自动重启？本地配置、数据库和日志会保留；官网不可用时会回退 GitHub。';
   if (versionInfo.comparison === 'older') {
-    confirmText = '当前本地版本显示比 GitHub 更新，继续会用 GitHub 当前内容覆盖 Web 项目。确认继续？本地配置、数据库和日志会保留。';
+    confirmText = '当前本地版本显示比远端更新，继续会用远端当前内容覆盖 Web 项目。确认继续？本地配置、数据库和日志会保留。';
   } else if (remoteInfo.error) {
-    confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从 GitHub 更新 Web 项目吗？`;
+    confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从官网优先源更新 Web 项目吗？`;
   }
   const confirmed = window.confirm(confirmText);
   if (!confirmed) return;
@@ -3337,13 +3356,13 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
-    const data = await api('/api/project-updates/github', {
+    const data = await api('/api/project-updates/official', {
       method: 'POST',
-      body: JSON.stringify({ repo_url: repoUrl, ref, reload: true }),
+      body: JSON.stringify({ site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, reload: true }),
     });
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: false });
-    log('Web 项目已从 GitHub 更新', {
+    log('Web 项目已从官网优先更新', {
       version: data.current_version || '',
       copied_files: data.copied_files || 0,
       source: options.source || 'settings',
@@ -3427,6 +3446,7 @@ function renderUpdateStatus(data) {
   const repoInput = $('updateRepoInput');
   const refInput = $('updateRefInput');
   const defaultRepo = (data && data.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
+  const defaultOfficial = (data && data.default_official_site_url) || DEFAULT_OFFICIAL_SITE_URL;
   const defaultRef = (data && data.default_ref) || DEFAULT_UPDATE_REF;
   if (repoInput && !repoInput.value.trim()) repoInput.value = defaultRepo;
   if (refInput && !refInput.value.trim()) refInput.value = defaultRef;
@@ -3454,7 +3474,8 @@ function renderUpdateStatus(data) {
       if (layoutText) parts.push(layoutText);
       if (data.current_version) parts.push(`版本 ${data.current_version}`);
       if (data.version_status) parts.push(`版本对比 ${updateCompareText(data.version_status.matches_remote)}`);
-      if (defaultRepo) parts.push(`默认仓库 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}`);
+      if (defaultOfficial) parts.push(`官网 ${defaultOfficial}`);
+      if (defaultRepo) parts.push(`GitHub 回退 ${defaultRepo}${defaultRef ? `#${defaultRef}` : ''}`);
       parts.push(`备份 ${backups.length} 个`);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
       if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
@@ -3524,22 +3545,22 @@ async function runGithubUpdateFromUi() {
   if (repoInput && !repoInput.value.trim()) repoInput.value = repoUrl;
   if (refInput && !refInput.value.trim()) refInput.value = ref;
   if (!repoUrl) {
-    log('GitHub 仓库为空，无法更新');
+    log('官网和 GitHub 回退源均不可用，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认从 GitHub 更新当前账号 QMT 目录中的核心代码？更新完成后需要重启 QMT 桥接脚本。');
+  const confirmed = window.confirm('确认从官网优先源更新当前账号 QMT 目录中的核心代码？官网不可用时会回退 GitHub，更新完成后需要重启 QMT 桥接脚本。');
   if (!confirmed) return;
   openQmtUpdateProgress(
-    'github',
+    'official',
     'QMT 核心更新',
-    `正在从 ${repoUrl}${ref ? `#${ref}` : ''} 更新 ${selectedAccount() || selectedBridge()} 的 QMT 核心包`
+    `正在从官网优先源更新 ${selectedAccount() || selectedBridge()} 的 QMT 核心包`
   );
   setUpdateControlsBusy(true);
   try {
-    setQmtUpdateProgressStep('download', '正在连接 GitHub 并下载源码包...');
-    const data = await api('/api/updates/github', {
+    setQmtUpdateProgressStep('download', '正在连接官网并下载源码包...');
+    const data = await api('/api/updates/official', {
       method: 'POST',
-      body: JSON.stringify({ bridge_id: selectedBridge(), repo_url: repoUrl, ref }),
+      body: JSON.stringify({ bridge_id: selectedBridge(), site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref }),
     });
     setQmtUpdateProgressStep('refresh', '核心包已替换，正在刷新更新状态...');
     renderUpdateResult(data);
@@ -3550,7 +3571,7 @@ async function runGithubUpdateFromUi() {
       log('核心更新后刷新状态失败', { error: refreshError.message });
     }
     finishQmtUpdateProgress(data);
-    log('核心代码已从 GitHub 更新', { bridge_id: data.bridge_id, version: data.current_version || '' });
+    log('核心代码已从官网优先源更新', { bridge_id: data.bridge_id, version: data.current_version || '' });
   } catch (error) {
     failQmtUpdateProgress(error);
     throw error;
@@ -7426,7 +7447,7 @@ async function boot() {
   $('runProjectGithubUpdateBtn').addEventListener('click', () => {
     runProjectGithubUpdateFromUi({ source: 'settings' }).catch((error) => {
       renderProjectUpdateResult({ error: error.message });
-      log('Web 项目 GitHub 更新失败', { error: error.message });
+      log('Web 项目官网优先更新失败', { error: error.message });
     });
   });
   $('uploadProjectZipUpdateBtn').addEventListener('click', () => {
@@ -7447,7 +7468,7 @@ async function boot() {
   $('runGithubUpdateBtn').addEventListener('click', () => {
     runGithubUpdateFromUi().catch((error) => {
       renderUpdateResult({ error: error.message });
-      log('GitHub 更新失败', { error: error.message });
+      log('官网优先更新失败', { error: error.message });
     });
   });
   $('uploadZipUpdateBtn').addEventListener('click', () => {

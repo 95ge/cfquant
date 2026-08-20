@@ -88,6 +88,15 @@ official_site\data\cfquant_site.sqlite3
 official_site\packages
 ```
 
+对外版本接口：
+
+```text
+GET /api/releases/latest
+GET /api/releases/latest/download
+```
+
+控制台更新会优先读取官网最新项目包；官网不可达或未配置本地 zip 包时，再回退到 GitHub。
+
 反馈截图保存目录：
 
 ```text

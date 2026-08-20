@@ -369,7 +369,11 @@ function renderReplyForm(thread) {
 }
 
 async function loadDownloads() {
-  const data = await api('/api/downloads');
+  const [data, releaseResult] = await Promise.all([
+    api('/api/downloads'),
+    api('/api/releases/latest').catch((error) => ({ error: error.message })),
+  ]);
+  renderLatestRelease(releaseResult && releaseResult.release ? releaseResult.release : null, releaseResult && releaseResult.error);
   const downloads = data.downloads || [];
   $('downloadList').innerHTML = downloads.map((item) => `
     <article class="download-card">
@@ -377,14 +381,52 @@ async function loadDownloads() {
         <span class="tag">${escapeHtml(item.channel || 'stable')}</span>
       </div>
       <h2>${escapeHtml(item.title)}</h2>
-      <p>版本：${escapeHtml(item.version)} · 下载次数：${item.download_count}</p>
+      <p>版本：${escapeHtml(item.version)} · 大小：${formatSize(item.file_size)} · 下载次数：${item.download_count}</p>
       <p>${escapeHtml(item.notes || '')}</p>
+      ${item.sha256 ? `<code class="hash-line" title="${escapeHtml(item.sha256)}">SHA256 ${escapeHtml(item.sha256.slice(0, 16))}...</code>` : ''}
       <div class="form-actions">
         <a class="primary-button" href="${escapeHtml(apiUrl(`/api/downloads/${item.id}/download`))}" data-download-id="${item.id}">下载</a>
         ${item.external_url ? `<a class="ghost-button" href="${escapeHtml(item.external_url)}" target="_blank" rel="noreferrer">外部链接</a>` : ''}
       </div>
     </article>
   `).join('') || '<div class="empty-state"><strong>暂无更新包</strong><span>管理员可在后台登记本地包或镜像链接。</span></div>';
+}
+
+function renderLatestRelease(release, error = '') {
+  const panel = $('releasePanel');
+  if (!panel) return;
+  if (!release) {
+    panel.innerHTML = `
+      <div class="empty-state">
+        <strong>暂无官网项目包</strong>
+        <span>${escapeHtml(error || '管理员发布后会在这里显示最新版本和更新日志。')}</span>
+      </div>`;
+    return;
+  }
+  const changelog = release.changelog || {};
+  const items = Array.isArray(changelog.items) ? changelog.items : [];
+  panel.innerHTML = `
+    <article class="release-card">
+      <div class="release-main">
+        <span class="tag">${escapeHtml(release.channel || 'project')}</span>
+        <h2>${escapeHtml(release.title || 'cfquant 项目包')}</h2>
+        <div class="release-meta">
+          <span>版本 ${escapeHtml(release.version || '--')}</span>
+          <span>大小 ${formatSize(release.file_size)}</span>
+          <span>更新 ${escapeHtml(formatTime(release.updated_at))}</span>
+          <span>下载 ${Number(release.download_count || 0)}</span>
+        </div>
+        ${release.sha256 ? `<code class="hash-line" title="${escapeHtml(release.sha256)}">SHA256 ${escapeHtml(release.sha256)}</code>` : ''}
+      </div>
+      <div class="release-actions">
+        <a class="primary-button" href="${escapeHtml(apiUrl('/api/releases/latest/download'))}" data-download-id="${release.id || 'latest'}">下载最新项目</a>
+        ${release.repo_url ? `<a class="ghost-button" href="${escapeHtml(release.repo_url)}" target="_blank" rel="noreferrer">GitHub</a>` : ''}
+      </div>
+      <div class="release-log">
+        <h3>更新日志</h3>
+        <ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>暂无更新日志</li>'}</ul>
+      </div>
+    </article>`;
 }
 
 function feedbackStatusLabel(value) {

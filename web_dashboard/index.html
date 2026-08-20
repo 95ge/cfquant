@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260820_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260820_02">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -929,14 +929,14 @@
                 <div id="projectUpdateVersionInfo" class="update-version-info"></div>
                 <div class="api-serverbar update-bar">
                   <label class="field">
-                    <span>GitHub 仓库</span>
+                    <span>GitHub 回退仓库</span>
                     <input id="projectUpdateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
                   </label>
                   <label class="field compact">
                     <span>分支 / 标签</span>
                     <input id="projectUpdateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
                   </label>
-                  <button id="runProjectGithubUpdateBtn" class="primary" type="button">更新 Web 并重启</button>
+                  <button id="runProjectGithubUpdateBtn" class="primary" type="button">官网优先更新 Web</button>
                 </div>
                 <div class="api-serverbar update-bar">
                   <label class="field">
@@ -962,14 +962,14 @@
                 <div id="updateVersionInfo" class="update-version-info"></div>
                 <div class="api-serverbar update-bar">
                   <label class="field">
-                    <span>GitHub 仓库</span>
+                    <span>GitHub 回退仓库</span>
                     <input id="updateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
                   </label>
                   <label class="field compact">
                     <span>分支 / 标签</span>
                     <input id="updateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
                   </label>
-                  <button id="runGithubUpdateBtn" class="primary" type="button">从 GitHub 更新</button>
+                  <button id="runGithubUpdateBtn" class="primary" type="button">官网优先更新</button>
                 </div>
                 <div class="api-serverbar update-bar">
                   <label class="field">
@@ -2137,6 +2137,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=web_20260820_01"></script>
+  <script src="/app.js?v=web_20260820_02"></script>
 </body>
 </html>
