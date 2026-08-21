@@ -112,15 +112,18 @@ class LTtxRpcClient(object):
         self._callbacks = {}
         self._lock = threading.RLock()
         self._pending_lock = threading.RLock()
+        self._show = True
         self._started = False
         self._recv_thread = None
 
-    def start(self):
+    def start(self, show=None):
         with self._lock:
             if self._started:
                 return
+            if show is not None:
+                self._show = show
             txl = self._load_txl()
-            self._tx = txl(self.host, self.port, self.token)
+            self._tx = txl(self.host, self.port, self.token, show=self._show)
             self._tx.start_tx()
             self._tx.start_txg(self.client_id)
             self._started = True
