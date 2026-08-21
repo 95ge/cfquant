@@ -47,6 +47,54 @@ XTTRADER_COMPAT_CANDIDATES = {
 }
 
 
+XTDATA_COMPAT_CANDIDATES = {
+    "get_trading_calendar": ("get_trading_calendar",),
+    "get_trading_period": ("get_trading_period",),
+    "get_kline_trading_period": ("get_kline_trading_period",),
+    "get_all_trading_periods": ("get_all_trading_periods",),
+    "get_period_list": ("get_period_list",),
+    "create_sector": ("create_sector",),
+    "add_sector": ("add_sector",),
+    "remove_sector": ("remove_sector",),
+    "reset_sector": ("reset_sector",),
+    "remove_stock_from_sector": ("remove_stock_from_sector",),
+    "create_formula": ("create_formula",),
+    "call_formula": ("call_formula",),
+    "subscribe_formula": ("subscribe_formula",),
+    "unsubscribe_formula": ("unsubscribe_formula",),
+    "get_formula_result": ("get_formula_result",),
+    "get_l2_quote": ("get_l2_quote",),
+    "get_l2_order": ("get_l2_order",),
+    "get_l2_transaction": ("get_l2_transaction",),
+    "subscribe_l2thousand": ("subscribe_l2thousand",),
+    "get_l2thousand_queue": ("get_l2thousand_queue",),
+    "get_tabular_data": ("get_tabular_data",),
+    "download_tabular_data": ("download_tabular_data", "down_tabular_data"),
+    "push_custom_data": ("push_custom_data",),
+    "download_sector_data": ("download_sector_data", "down_sector_data"),
+    "download_index_weight": ("download_index_weight", "down_index_weight"),
+    "download_history_contracts": ("download_history_contracts", "down_history_contracts"),
+    "download_holiday_data": ("download_holiday_data", "down_holiday_data"),
+    "download_etf_info": ("download_etf_info", "down_etf_info"),
+    "download_cb_data": ("download_cb_data", "down_cb_data"),
+    "download_his_st_data": ("download_his_st_data", "down_his_st_data"),
+    "download_metatable_data": ("download_metatable_data", "down_metatable_data"),
+}
+
+XTDATA_MAINCHAIN_UNSUPPORTED = {
+    "connect",
+    "disconnect",
+    "reconnect",
+    "get_quote_server_status",
+    "watch_quote_server_status",
+    "get_quote_server_config",
+    "get_data_dir",
+    "set_data_dir",
+    "read_feather",
+    "write_feather",
+}
+
+
 class TxTradeBridge(object):
     def __init__(
         self,
@@ -642,7 +690,73 @@ class TxTradeBridge(object):
             return self._get_factor_data(params)
         if method in ("get_financial_data_ori", "get_financial_data_raw"):
             return self._get_raw_financial_data(params)
+        if method in XTDATA_MAINCHAIN_UNSUPPORTED:
+            raise NotImplementedError(
+                "xtdata.%s belongs to MiniQMT client/local data-dir management and is not implemented in cfquant QMT bridge"
+                % method
+            )
+        if method in XTDATA_COMPAT_CANDIDATES:
+            return self._generic_xtdata_call(method, params, msg)
         raise NotImplementedError("xtdata.%s is not implemented by cfquant QMT bridge" % method)
+
+    def _generic_xtdata_call(self, method, params, msg=None):
+        candidates = XTDATA_COMPAT_CANDIDATES.get(method, (method,))
+        func = self._get_callable(*candidates)
+        if not func:
+            raise NotImplementedError(
+                "xtdata.%s requires QMT callable: %s"
+                % (method, ", ".join(candidates))
+            )
+        args = list(params.get("args") or [])
+        kwargs = dict(params.get("kwargs") or {})
+        callback_event = params.get("callback_event")
+        callback_positions = []
+        for item in params.get("callback_positions") or []:
+            try:
+                callback_positions.append(int(item))
+            except Exception:
+                pass
+        client_id = msg.get("client_id") if msg else None
+
+        variants = []
+        if callback_event and client_id:
+            def callback(data):
+                self._send_event(
+                    client_id,
+                    callback_event,
+                    data,
+                    meta=self._generic_xtdata_event_meta(params, method, "callback"),
+                )
+
+            callback_args = list(args)
+            for index in callback_positions:
+                if 0 <= index < len(callback_args):
+                    callback_args[index] = callback
+            if callback_positions:
+                variants.append((tuple(callback_args), dict(kwargs)))
+            callback_kwargs = dict(kwargs)
+            callback_kwargs.setdefault(params.get("callback_name") or "callback", callback)
+            variants.append((tuple(args), callback_kwargs))
+            variants.append((tuple(args) + (callback,), dict(kwargs)))
+        variants.extend([
+            (tuple(args), dict(kwargs)),
+            ((params,), {}),
+            ((), {}),
+        ])
+        return self._call_variants(func, variants)
+
+    def _generic_xtdata_event_meta(self, params, method, stage):
+        meta = {
+            "xtdata_generic": True,
+            "method": method,
+            "stage": stage,
+            "bridge_id": self.bridge_id,
+        }
+        for key in ("job_id", "download_job_id", "stock_code", "stockcode", "period", "start_time", "end_time"):
+            value = params.get(key)
+            if value not in (None, ""):
+                meta[key] = value
+        return meta
 
     def _generic_xttrader_call(self, method, params):
         candidates = XTTRADER_COMPAT_CANDIDATES.get(method, (method,))

@@ -83,6 +83,11 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 批量历史行情下载 | `xtdata.download_history_data2` | `download_history_data2` 或 `down_history_data2` | 已实现，支持 `callback_event` 事件转发。 |
 | 财务数据查询 | `xtdata.get_financial_data` / `get_financial_data_ori` / `get_raw_financial_data` / `/api/data/financial` | `get_financial_data` 或 `get_raw_financial_data` | 已实现。 |
 | 财务本地校验 | `xtdata.download_financial_data` / `download_financial_data2` / `/api/data/financial/download` | `get_financial_data` 或 `get_raw_financial_data` | 大 QMT 官网脚本侧未提供财务下载函数；兼容入口降级为读取/校验本地已下载财务数据，并提示用户先在 QMT 客户端“数据管理 - 财务数据下载”中下载。 |
+| 交易时段补充 | `get_trading_calendar` / `get_trading_period` / `get_kline_trading_period` / `get_all_trading_periods` / `get_period_list` | 同名 QMT callable | 条件实现；当前 QMT 暴露对应 callable 时直接转发。 |
+| 板块维护 | `create_sector` / `add_sector` / `remove_sector` / `reset_sector` / `remove_stock_from_sector` | 同名 QMT callable | 条件实现；实际取决于 QMT 策略环境权限和 callable。 |
+| 公式系统 | `create_formula` / `call_formula` / `subscribe_formula` / `unsubscribe_formula` / `get_formula_result` | 同名 QMT callable | 条件实现；订阅 callback 通过 cfquant 事件通道转发。 |
+| L2 行情 | `get_l2_quote` / `get_l2_order` / `get_l2_transaction` / `subscribe_l2thousand` / `get_l2thousand_queue` | 同名 QMT callable | 条件实现；需要券商 QMT 本身支持 L2。 |
+| 下载类补充 | `download_sector_data` / `download_index_weight` / `download_history_contracts` / `download_holiday_data` / `download_etf_info` / `download_cb_data` / `download_his_st_data` / `download_metatable_data` / `download_tabular_data` | 同名或 `down_*` QMT callable | 条件实现；返回结构以 QMT callable 为准。 |
 
 ## 部分实现或待补强
 
@@ -90,8 +95,9 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | --- | --- | --- |
 | `get_local_data` 的原版目录参数 | 兼容参数 `data_dir` 还保留在 Python 层，但桥接层不真正接管本地目录。 | 如果后续要严格复刻原版，再补本地数据目录语义。 |
 | `get_stock_list_in_sector` 的原版参数 | 当前只保留常用参数，`real_timetag` 还未完整暴露。 | 需要时补齐参数并按真实 QMT 返回验证。 |
-| `download_history_data2` 的 Web 入口 | 底层桥接已能接收 `callback_event` 并转发事件，但 Web 还没有单独做批量下载页面。 | 增加 `/api/data/history/download-batch`。 |
+| `download_history_data2` 的 Web 入口 | 底层桥接已能接收 `callback_event` 并转发事件；Web 单证券下载会优先走 `download_history_data2`。 | 如需页面批量下载，再增加 `/api/data/history/download-batch`。 |
 | 财务数据脚本下载 | 官网未提供等价脚本 callable，当前不能保证由脚本触发真实下载。 | 保留 `/api/data/financial/download` 兼容入口，内部改为本地财务数据校验；真实下载仍由 QMT 客户端数据管理完成。 |
+| 条件实现接口的签名精度 | 部分边缘接口目前通过 `*args/**kwargs` 同名转发，未逐一固化原版签名。 | 用真实 QMT 版本逐项验证后，再把高频接口升级为明确签名和 Web 表单。 |
 | 系统编号撤单 | 当前复用 `cancel(order_id, account_id, account_type, context)`。 | 需要真实系统编号撤单验证不同 QMT 版本参数。 |
 | 交易兼容入口 | `xttrader` 已补齐大量同名方法，但很多是候选 callable 转发。 | 用真实大 QMT 版本逐项确认 callable 名称和返回结构。 |
 

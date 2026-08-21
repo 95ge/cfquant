@@ -5,9 +5,9 @@
 ## 总体结论
 
 - 原版 `xtquant.xtdata` 当前检测到 138 个公开函数。
-- `cfquant.xtdata` 当前暴露 40 个公开函数，其中 24 个与原版同名，另外 16 个是便捷辅助或别名函数。
+- `cfquant.xtdata` 当前采用三层策略：核心能力实装、边缘能力同名条件转发、MiniQMT 客户端/本地文件语义不放进 QMT 桥接主链路。
 - 当前已经覆盖行情查询、订阅、历史下载、财务数据读取、基础资料、交易日历、ETF/期权/因子等常用能力。
-- 还没有做到 `xtdata` 全量平替，L2、板块维护、公式、外部数据读写、行情服务器管理等大类仍未补齐。
+- 交易时段、板块维护、公式、L2、表格数据和下载类补充接口已补同名条件入口；只有当前运行的 QMT 环境暴露对应 callable 时才可用。
 
 ## 状态定义
 
@@ -55,6 +55,12 @@
 | --- | --- |
 | `get_local_data` | 已接入，但仍保留兼容参数写法，和原版 `data_dir` 的本地目录语义不完全一致。 |
 | `get_stock_list_in_sector` | 当前支持常用参数，原版还有 `real_timetag` 等参数。 |
+| 交易日历/交易时段 | `get_trading_calendar`、`get_trading_period`、`get_kline_trading_period`、`get_all_trading_periods`、`get_period_list` 已补同名条件入口；实际依赖 QMT 是否暴露对应 callable。 |
+| 板块维护 | `create_sector`、`add_sector`、`remove_sector`、`reset_sector`、`remove_stock_from_sector` 已补同名条件入口；实际依赖 QMT 权限和 callable。 |
+| 公式系统 | `create_formula`、`call_formula`、`subscribe_formula`、`unsubscribe_formula`、`get_formula_result` 已补同名条件入口；订阅 callback 会通过 cfquant 事件通道转发。 |
+| L2 行情 | `get_l2_quote`、`get_l2_order`、`get_l2_transaction`、`subscribe_l2thousand`、`get_l2thousand_queue` 已补同名条件入口；需要券商 QMT 环境本身支持 L2 能力。 |
+| 表格/外部数据 | `get_tabular_data`、`download_tabular_data`、`push_custom_data` 已补同名条件入口；返回结构以 QMT 原 callable 为准。 |
+| 下载类补充 | `download_sector_data`、`download_index_weight`、`download_history_contracts`、`download_holiday_data`、`download_etf_info`、`download_cb_data`、`download_his_st_data`、`download_metatable_data` 已补同名条件入口。 |
 
 ## Web 已开放的数据接口
 
@@ -73,16 +79,14 @@
 | `POST /api/quotes/unsubscribe` | `unsubscribe_quote` |
 | `GET /api/quotes/latest` / `WS /ws/quotes` | 读取或接收行情推送事件。 |
 
-## 未平替大类
+## 不建议强行平替的大类
 
 | 大类 | 代表接口 |
 | --- | --- |
-| 板块维护 | `create_sector`, `add_sector`, `remove_sector`, `reset_sector`, `remove_stock_from_sector` |
-| 公式系统 | `create_formula`, `call_formula`, `subscribe_formula`, `unsubscribe_formula`, `get_formula_result` |
-| L2 行情 | `get_l2_quote`, `get_l2_order`, `get_l2_transaction`, `subscribe_l2thousand`, `get_l2thousand_queue` |
-| 行情服务器管理 | `connect`, `disconnect`, `reconnect`, `get_quote_server_status`, `watch_quote_server_status` |
-| 外部数据/表格数据 | `get_tabular_data`, `download_tabular_data`, `read_feather`, `write_feather`, `push_custom_data` |
-| 下载类补充 | `download_sector_data`, `download_index_weight`, `download_history_contracts`, `download_holiday_data`, `download_etf_info`, `download_cb_data`, `download_his_st_data`, `download_metatable_data` |
+| 行情服务器管理 | `connect`, `disconnect`, `reconnect`, `get_quote_server_status`, `watch_quote_server_status`, `get_quote_server_config` |
+| 本地数据目录/文件工具 | `get_data_dir`, `read_feather`, `write_feather` |
+
+这些接口属于 MiniQMT 客户端连接状态或本地文件工具语义，不等价于大 QMT 策略桥接。当前建议用 `cfquant.status`、Web 状态页和独立本地文件工具替代。
 
 ## 当前验证记录
 

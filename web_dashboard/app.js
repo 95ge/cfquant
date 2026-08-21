@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260821_02';
+const FRONTEND_VERSION = 'web_20260821_03';
 
 const state = {
   accountId: '',
@@ -2017,6 +2017,14 @@ function xttraderCompatDocHtml() {
     ['ETF/期权/因子', 'get_ETF_list、get_etf_list、get_option_detail_data、get_option_list、get_option_undl、get_option_undl_data、get_weight_in_index、get_turnover_rate、get_his_st_data、get_his_index_data、get_factor_data'],
     ['运行/客户端', 'get_client、run；额外提供 configure 用于配置 cfquant 客户端'],
   ];
+  const dataConditionalRows = [
+    ['交易日历/交易时段', 'get_trading_calendar、get_trading_period、get_kline_trading_period、get_all_trading_periods、get_period_list 已补同名条件入口；当前 QMT 暴露对应 callable 时可直接转发。'],
+    ['板块维护', 'create_sector、add_sector、remove_sector、reset_sector、remove_stock_from_sector 已补同名条件入口；实际可用性取决于 QMT 策略环境权限和 callable。'],
+    ['公式系统', 'create_formula、call_formula、subscribe_formula、unsubscribe_formula、get_formula_result 已补同名条件入口；订阅类 callback 会通过 cfquant 事件通道转发。'],
+    ['L2 行情', 'get_l2_quote、get_l2_order、get_l2_transaction、subscribe_l2thousand、get_l2thousand_queue 已补同名条件入口；需要券商 QMT 环境本身支持 L2 callable。'],
+    ['下载类补充', 'download_sector_data、download_index_weight、download_history_contracts、download_holiday_data、download_etf_info、download_cb_data、download_his_st_data、download_metatable_data、download_tabular_data 已补同名条件入口。'],
+    ['外部/表格数据', 'get_tabular_data、push_custom_data 已补同名条件入口；read_feather、write_feather 属于本地文件工具，暂不放入 QMT 桥接主链路。'],
+  ];
   const dataWebRows = [
     ['实时行情', 'POST /api/data/full-tick、POST /api/data/market、POST /api/data/market-ex'],
     ['基础资料', 'POST /api/data/instrument、POST /api/data/sector'],
@@ -2024,18 +2032,15 @@ function xttraderCompatDocHtml() {
     ['订阅推送', 'POST /api/quotes/whole/subscribe、POST /api/quotes/subscribe、POST /api/quotes/unsubscribe、GET /api/quotes/latest、WS /ws/quotes'],
   ];
   const dataMissingRows = [
-    ['交易日历/交易时段', 'get_trading_calendar、get_trading_period、get_kline_trading_period、get_all_trading_periods、get_period_list 等仍未平替。'],
-    ['板块维护/公式系统', 'create_sector、add_sector、create_formula、call_formula、subscribe_formula 等未平替。'],
-    ['L2 行情', 'get_l2_quote、get_l2_order、get_l2_transaction、subscribe_l2thousand、get_l2thousand_queue 等未平替。'],
-    ['行情服务器/外部数据', 'connect、disconnect、reconnect、get_quote_server_status、read_feather、write_feather、push_custom_data 等未平替。'],
-    ['下载类补充', 'download_sector_data、download_index_weight、download_history_contracts、download_holiday_data、download_etf_info、download_cb_data、download_his_st_data、download_metatable_data、download_tabular_data 等未平替。'],
+    ['行情服务器连接管理', 'connect、disconnect、reconnect、get_quote_server_status、watch_quote_server_status 属于 MiniQMT 客户端连接控制，不等价于大 QMT 策略桥接；当前用 cfquant.status / Web 状态页表达桥接状态。'],
+    ['本地数据目录/文件工具', 'get_data_dir、read_feather、write_feather 属于 MiniQMT 本地目录或文件工具语义，不应强行映射到 QMT 运行端；后续可作为独立本地工具补充。'],
   ];
   return `
     <div class="api-doc-extra xt-compat-doc">
       <section>
         <h3>总体进度</h3>
         <p><code>xttrader</code> 已补齐原版 75 个公开方法的同名入口，签名已对齐；已补齐 <code>XtQuantTraderCallback</code> 原版 14 个公开回调方法。</p>
-        <p><code>xtdata</code> 原版当前检测到 138 个公开函数，cfquant 当前暴露 40 个公开函数，其中 24 个与原版同名，另外提供 16 个便捷辅助/别名函数。核心行情查询、订阅、历史下载、财务数据读取、基础资料、ETF/期权和因子查询已覆盖，但还没有做到全量平替。</p>
+        <p><code>xtdata</code> 原版函数数量较多，cfquant 当前分为三类处理：核心行情/交易数据已实装；部分边缘能力已补同名条件入口；MiniQMT 客户端连接管理和本地文件工具不放进 QMT 桥接主链路。</p>
       </section>
       <section>
         <h3>xttrader 已平替</h3>
@@ -2058,7 +2063,11 @@ function xttraderCompatDocHtml() {
         ${apiDocTable(dataWebRows)}
       </section>
       <section>
-        <h3>xtdata 未全量平替</h3>
+        <h3>xtdata 条件平替</h3>
+        ${apiDocTable(dataConditionalRows)}
+      </section>
+      <section>
+        <h3>xtdata 不建议强行平替</h3>
         ${apiDocTable(dataMissingRows)}
       </section>
       <section>
