@@ -360,6 +360,96 @@ def get_factor_data(field_list, stock_list, start_date="", end_date=""):
     })
 
 
+def _callback_placeholder():
+    return {"__cfquant_callback_arg__": True}
+
+
+def _generic_xtdata_request(action, *args, **kwargs):
+    timeout = kwargs.pop("timeout", None)
+    keep_callback = bool(kwargs.pop("keep_callback", str(action).startswith("subscribe_")))
+    callback_name = str(kwargs.pop("callback_name", "callback") or "callback")
+    callback = kwargs.pop(callback_name, None)
+    callback_positions = []
+    wire_args = []
+    for index, value in enumerate(args):
+        if callable(value):
+            if callback is not None:
+                raise TypeError("only one callback can be passed to xtdata.%s" % action)
+            callback = value
+            callback_positions.append(index)
+            wire_args.append(_callback_placeholder())
+        else:
+            wire_args.append(value)
+    event_name = None
+    if callback is not None:
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        event_name = "xtdata:%s:%s" % (action, int(time.time() * 1000))
+        get_client().add_callback(event_name, callback)
+    try:
+        return get_client().request("xtdata.%s" % action, {
+            "args": wire_args,
+            "kwargs": kwargs,
+            "callback_event": event_name,
+            "callback_positions": callback_positions,
+            "callback_name": callback_name,
+        }, timeout=timeout)
+    finally:
+        if event_name and callback and not keep_callback:
+            get_client().remove_callback(event_name, callback)
+
+
+def _make_generic_xtdata_func(action):
+    def func(*args, **kwargs):
+        return _generic_xtdata_request(action, *args, **kwargs)
+    func.__name__ = action
+    func.__qualname__ = action
+    func.__doc__ = (
+        "Conditional xtdata compatibility wrapper. "
+        "It forwards to the same-named QMT callable when the running QMT environment exposes it."
+    )
+    return func
+
+
+_CONDITIONAL_XTDATA_METHODS = [
+    "get_trading_calendar",
+    "get_trading_period",
+    "get_kline_trading_period",
+    "get_all_trading_periods",
+    "get_period_list",
+    "create_sector",
+    "add_sector",
+    "remove_sector",
+    "reset_sector",
+    "remove_stock_from_sector",
+    "create_formula",
+    "call_formula",
+    "subscribe_formula",
+    "unsubscribe_formula",
+    "get_formula_result",
+    "get_l2_quote",
+    "get_l2_order",
+    "get_l2_transaction",
+    "subscribe_l2thousand",
+    "get_l2thousand_queue",
+    "get_tabular_data",
+    "download_tabular_data",
+    "push_custom_data",
+    "download_sector_data",
+    "download_index_weight",
+    "download_history_contracts",
+    "download_holiday_data",
+    "download_etf_info",
+    "download_cb_data",
+    "download_his_st_data",
+    "download_metatable_data",
+]
+
+for _method in _CONDITIONAL_XTDATA_METHODS:
+    globals()[_method] = _make_generic_xtdata_func(_method)
+del _method
+
+
 def _stock_basic_request(action, stock_code):
     return get_client().request("xtdata.%s" % action, {
         "stock_code": stock_code,
