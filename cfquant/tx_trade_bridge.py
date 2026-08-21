@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import os
+import json
 import sys
 import threading
 import time
 
 from .protocol import loads_message, pack_event, pack_response
+from .version import __version__ as CORE_VERSION
 from . import account_routing
 from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, set_log_language, translate_log
 
@@ -73,15 +75,19 @@ class TxTradeBridge(object):
         self.account_subscribers = {}
         self.client_accounts = {}
         self.subscriber_lock = threading.RLock()
+        self.started_at = 0.0
 
     def set_context(self, context):
         self.context = context
         self._log("tx trade bridge context ready")
+        self._publish_runtime_report("context_ready")
 
     def start(self):
         if self.running:
             return self
         self.running = True
+        if not self.started_at:
+            self.started_at = time.time()
         txl = self._load_txl()
         self.tx = txl(self.ip, self.port, self.token)
         self.tx.start_tx()
@@ -90,6 +96,7 @@ class TxTradeBridge(object):
             "tx trade bridge started LTtx=%s:%s request_channel=%s"
             % (self.ip, self.port, self.request_channel)
         )
+        self._publish_runtime_report("start")
         return self
 
     def close(self):
@@ -223,12 +230,18 @@ class TxTradeBridge(object):
         raise ValueError("unsupported action: %s" % action)
 
     def _status(self):
+        runtime = self._runtime_info()
         status = {
             "bridge": type(self).__name__,
             "bridge_id": self.bridge_id,
             "running": self.running,
             "request_channel": self.request_channel,
             "account_id": self.account_id,
+            "version": CORE_VERSION,
+            "core_version": CORE_VERSION,
+            "runtime_core_version": CORE_VERSION,
+            "qmt_runtime_core_version": CORE_VERSION,
+            "runtime": runtime,
             "account_subscribers": self._account_subscriber_status(),
             "log_language": get_log_language(),
             "log_enabled": get_log_enabled(),
@@ -243,6 +256,53 @@ class TxTradeBridge(object):
         except Exception as e:
             status["status_extra_error"] = str(e)
         return status
+
+    def _runtime_info(self):
+        now = time.time()
+        entry_file = ""
+        try:
+            entry_file = str((self.globals_dict or {}).get("__file__") or "")
+        except Exception:
+            entry_file = ""
+        return {
+            "schema": "cfquant.qmt.runtime",
+            "version": CORE_VERSION,
+            "core_version": CORE_VERSION,
+            "bridge": type(self).__name__,
+            "bridge_id": self.bridge_id,
+            "account_id": self.account_id,
+            "request_channel": self.request_channel,
+            "pid": os.getpid(),
+            "python": sys.executable,
+            "core_dir": os.path.dirname(os.path.abspath(__file__)),
+            "version_file": os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.py"),
+            "entry_file": entry_file,
+            "started_at": self.started_at,
+            "started_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.started_at)) if self.started_at else "",
+            "reported_at": now,
+            "reported_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+        }
+
+    def _publish_runtime_report(self, reason):
+        tx = self.tx
+        if tx is None or not hasattr(tx, "put"):
+            return
+        try:
+            channel_key = "normal" if "normal" in str(self.request_channel or "").lower() else "trade"
+            data = self._runtime_info()
+            data.update({
+                "reason": reason,
+                "transport": "lttx",
+                "channel_key": channel_key,
+            })
+            payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+            key = "cfquant.qmt.runtime.%s" % self.bridge_id
+            tx.put(key, payload)
+            tx.put("%s.%s" % (key, channel_key), payload)
+            tx.put("%s.version" % key, CORE_VERSION)
+            self._log("tx trade runtime report published version=%s reason=%s" % (CORE_VERSION, reason))
+        except Exception as e:
+            self._log("tx trade runtime report failed:%s" % e)
 
     def _status_extra(self):
         return {}

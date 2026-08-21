@@ -15,6 +15,11 @@ from .pipe_transport import (
 from .protocol import loads_message, pack_event, pack_response
 
 
+def default_status_file(filename):
+    runtime_dir = os.path.abspath(os.environ.get("CFQUANT_RUNTIME_DIR") or os.path.join(os.getcwd(), "runtime"))
+    return os.path.join(runtime_dir, "status", filename)
+
+
 class CfquantPipeHub(object):
     """
     External named-pipe hub.
@@ -47,7 +52,7 @@ class CfquantPipeHub(object):
         self.client_ids_by_conn = {}
         self.state_lock = threading.RLock()
         self.status_file = os.path.abspath(
-            os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or "cfquant_pipe_hub_status.json"
+            os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or default_status_file("cfquant_pipe_hub_status.json")
         )
 
     def start(self):
@@ -422,6 +427,9 @@ class CfquantPipeHub(object):
                 "pending_ids": pending_ids,
                 "api_client_count": client_count,
             }
+            status_dir = os.path.dirname(self.status_file)
+            if status_dir:
+                os.makedirs(status_dir, exist_ok=True)
             with open(self.status_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:

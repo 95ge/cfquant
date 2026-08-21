@@ -1,9 +1,29 @@
+const SITE_TOKEN_KEY = 'cfquant_site_token';
+const SITE_USER_KEY = 'cfquant_site_user';
+
+function readStoredUser() {
+  try {
+    const user = JSON.parse(localStorage.getItem(SITE_USER_KEY) || 'null');
+    return user && typeof user === 'object' ? user : null;
+  } catch (_error) {
+    localStorage.removeItem(SITE_USER_KEY);
+    return null;
+  }
+}
+
 const state = {
-  token: localStorage.getItem('cfquant_site_token') || '',
-  user: null,
+  token: localStorage.getItem(SITE_TOKEN_KEY) || '',
+  user: readStoredUser(),
   categories: [],
   activeCategory: '',
   selectedThreadId: null,
+  currentThread: null,
+  currentReplies: [],
+  expandedReplyIds: new Set(),
+  replyComposeParentId: null,
+  replyFiles: {},
+  replyPreviewUrls: {},
+  imageModalObjectUrl: '',
   authMode: 'register',
   feedbackFiles: [],
   feedbackPreviewUrls: [],
@@ -15,6 +35,8 @@ const state = {
 const $ = (id) => document.getElementById(id);
 const CONFIG = window.CFQUANT_SITE_CONFIG || {};
 const API_BASE = String(CONFIG.apiBase || '').replace(/\/$/, '');
+const LOGIN_MEMORY_KEY = 'cfquant_site_login_memory';
+const MAX_REPLY_IMAGES = 10;
 
 function apiUrl(path) {
   if (!API_BASE) return path;
@@ -67,7 +89,7 @@ function fileToAttachment(file) {
   });
 }
 
-function normalizeFeedbackFile(file, index = 0) {
+function normalizeImageFile(file, index = 0) {
   if (file.name) return file;
   const ext = {
     'image/png': 'png',
@@ -81,20 +103,24 @@ function normalizeFeedbackFile(file, index = 0) {
   });
 }
 
-function validateFeedbackFiles(files) {
+function validateImageFiles(files, label = '图片') {
   const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-  const selected = Array.from(files || []).filter(Boolean).map(normalizeFeedbackFile);
+  const selected = Array.from(files || []).filter(Boolean).map(normalizeImageFile);
   for (const file of selected) {
     if (!allowed.has(file.type)) {
-      toast('截图只支持 png、jpg、webp、gif');
+      toast(`${label}只支持 png、jpg、webp、gif`);
       return [];
     }
     if (file.size > 3 * 1024 * 1024) {
-      toast('单张截图不能超过 3MB');
+      toast(`单张${label}不能超过 3MB`);
       return [];
     }
   }
   return selected;
+}
+
+function validateFeedbackFiles(files) {
+  return validateImageFiles(files, '截图');
 }
 
 function setFeedbackFiles(files, options = {}) {
@@ -161,6 +187,99 @@ function handleFeedbackPaste(event) {
   handleFeedbackPaste.timer = setTimeout(() => hint.classList.remove('is-active'), 1200);
 }
 
+function replyKey(parentId = null) {
+  return parentId ? String(parentId) : 'root';
+}
+
+function replyFiles(parentId = null) {
+  return state.replyFiles[replyKey(parentId)] || [];
+}
+
+function revokeReplyPreviewUrls(key) {
+  (state.replyPreviewUrls[key] || []).forEach((url) => URL.revokeObjectURL(url));
+  state.replyPreviewUrls[key] = [];
+}
+
+function renderReplyImagePreview(parentId = null) {
+  const key = replyKey(parentId);
+  const files = replyFiles(parentId);
+  revokeReplyPreviewUrls(key);
+  state.replyPreviewUrls[key] = files.map((file) => URL.createObjectURL(file));
+  return files.map((file, index) => `
+    <figure class="reply-image-item">
+      <button
+        class="reply-image-preview-button"
+        type="button"
+        data-preview-reply-image="${index}"
+        aria-label="查看图片：${escapeHtml(file.name)}"
+      >
+        <img src="${escapeHtml(state.replyPreviewUrls[key][index])}" alt="${escapeHtml(file.name)}">
+      </button>
+      <figcaption>
+        <span>${escapeHtml(file.name)}</span>
+        <button class="icon-button" type="button" data-remove-reply-image="${index}" aria-label="移除图片">X</button>
+      </figcaption>
+    </figure>
+  `).join('');
+}
+
+function updateReplyImagePreview(parentId = null) {
+  const key = replyKey(parentId);
+  const target = document.querySelector(`[data-reply-preview="${key}"]`);
+  if (!target) return;
+  target.innerHTML = renderReplyImagePreview(parentId);
+  target.classList.toggle('is-empty', !replyFiles(parentId).length);
+}
+
+function setReplyFiles(parentId, files, options = {}) {
+  const selected = validateImageFiles(files, '图片');
+  if (!selected.length) return;
+  const key = replyKey(parentId);
+  const append = options.append === true;
+  const current = append ? replyFiles(parentId) : [];
+  const capacity = MAX_REPLY_IMAGES - current.length;
+  if (capacity <= 0) {
+    toast(`单次回复最多上传 ${MAX_REPLY_IMAGES} 张图片`);
+    return;
+  }
+  const kept = selected.slice(0, capacity);
+  if (selected.length > capacity) {
+    toast(`单次回复最多上传 ${MAX_REPLY_IMAGES} 张图片，已保留 ${capacity} 张`);
+  }
+  state.replyFiles[key] = [...current, ...kept];
+  updateReplyImagePreview(parentId);
+}
+
+function clearReplyFiles(parentId = null) {
+  const key = replyKey(parentId);
+  revokeReplyPreviewUrls(key);
+  delete state.replyFiles[key];
+  delete state.replyPreviewUrls[key];
+}
+
+function clearAllReplyFiles() {
+  Object.keys(state.replyPreviewUrls).forEach(revokeReplyPreviewUrls);
+  state.replyFiles = {};
+  state.replyPreviewUrls = {};
+}
+
+function parentIdFromReplyForm(form) {
+  const value = form?.dataset.parentId || '';
+  return value ? Number(value) : null;
+}
+
+function handleReplyPaste(event) {
+  const view = $('view-thread');
+  if (!view || !view.classList.contains('is-active')) return;
+  const target = event.target instanceof Element ? event.target : null;
+  const form = target?.closest('[data-reply-form]') || document.querySelector('[data-reply-form]:focus-within');
+  if (!form) return;
+  const files = pastedImageFiles(event);
+  if (!files.length) return;
+  event.preventDefault();
+  setReplyFiles(parentIdFromReplyForm(form), files, { append: true });
+}
+
 function authHeaders() {
   const headers = { 'Content-Type': 'application/json' };
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -215,6 +334,85 @@ function initTheme() {
   const saved = localStorage.getItem('cfquant_site_theme');
   const preferred = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   setTheme(saved || preferred);
+}
+
+function emptyLoginMemory() {
+  return { account: '', remember: true };
+}
+
+function encodeLoginMemory(value) {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(value))));
+}
+
+function decodeLoginMemory(value) {
+  return JSON.parse(decodeURIComponent(escape(atob(value))));
+}
+
+function readLoginMemory() {
+  const raw = localStorage.getItem(LOGIN_MEMORY_KEY);
+  if (!raw) return emptyLoginMemory();
+  try {
+    const data = decodeLoginMemory(raw);
+    const memory = {
+      account: String(data.account || ''),
+      remember: data.remember !== false,
+    };
+    if (data.password || Object.prototype.hasOwnProperty.call(data, 'autoLogin')) {
+      writeLoginMemory(memory);
+    }
+    return memory;
+  } catch (_error) {
+    localStorage.removeItem(LOGIN_MEMORY_KEY);
+    return emptyLoginMemory();
+  }
+}
+
+function writeLoginMemory(data) {
+  if (!data.remember) {
+    localStorage.removeItem(LOGIN_MEMORY_KEY);
+    return;
+  }
+  localStorage.setItem(LOGIN_MEMORY_KEY, encodeLoginMemory({
+    account: String(data.account || '').trim(),
+    remember: true,
+  }));
+}
+
+function fillLoginFormFromMemory() {
+  const accountInput = $('loginAccount');
+  const passwordInput = $('loginPassword');
+  const rememberInput = $('loginRemember');
+  const autoLoginInput = $('loginAutoLogin');
+  if (!accountInput || !passwordInput || !rememberInput || !autoLoginInput) return;
+  const memory = readLoginMemory();
+  if (memory.account && !accountInput.value) accountInput.value = memory.account;
+  rememberInput.checked = memory.remember;
+  autoLoginInput.checked = true;
+  autoLoginInput.disabled = true;
+}
+
+function saveLoginMemoryFromForm() {
+  const rememberInput = $('loginRemember');
+  const autoLoginInput = $('loginAutoLogin');
+  if (!rememberInput || !autoLoginInput) return;
+  writeLoginMemory({
+    account: $('loginAccount').value,
+    remember: rememberInput.checked,
+  });
+}
+
+function disableRememberedAutoLogin() {
+  fillLoginFormFromMemory();
+}
+
+function bindLoginMemoryControls() {
+  fillLoginFormFromMemory();
+  $('loginRemember').addEventListener('change', () => {
+    $('loginAutoLogin').checked = true;
+    $('loginAutoLogin').disabled = true;
+    saveLoginMemoryFromForm();
+  });
+  $('loginAutoLogin').addEventListener('change', saveLoginMemoryFromForm);
 }
 
 function switchView(view, options = {}) {
@@ -285,10 +483,8 @@ function renderThreads(threads) {
   $('threadList').innerHTML = threads.map((thread) => {
     const tags = String(thread.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
     return `
-      <article class="thread-card">
-        <button type="button" data-thread-id="${thread.id}">
-          <h2>${escapeHtml(thread.title)}</h2>
-        </button>
+      <article class="thread-card" role="button" tabindex="0" data-thread-id="${thread.id}" aria-label="进入讨论：${escapeHtml(thread.title)}">
+        <h2>${escapeHtml(thread.title)}</h2>
         <p>${escapeHtml(excerpt(thread.body))}</p>
         <div class="tag-line">
           <span class="status-pill ${thread.status === 'locked' ? 'locked' : ''}">${thread.status === 'locked' ? '已锁定' : '开放'}</span>
@@ -306,12 +502,27 @@ function renderThreads(threads) {
   }).join('');
 }
 
-async function openThread(threadId) {
+async function openThread(threadId, options = {}) {
+  const changedThread = String(state.selectedThreadId || '') !== String(threadId);
   state.selectedThreadId = threadId;
+  if (changedThread) {
+    state.expandedReplyIds.clear();
+    state.replyComposeParentId = null;
+    clearAllReplyFiles();
+  }
   const data = await api(`/api/forum/threads/${threadId}`);
   const thread = data.thread;
-  const tags = String(thread.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
   const replies = data.replies || [];
+  state.currentThread = thread;
+  state.currentReplies = replies;
+  renderThreadPage(thread, replies);
+  switchView('thread', { hash: `thread-${threadId}` });
+  if (!options.skipTrack) track('thread_open', String(threadId));
+}
+
+function renderThreadPage(thread, replies) {
+  const tags = String(thread.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+  const { roots, childrenByParent } = groupReplies(replies);
   $('threadPageContent').innerHTML = `
     <article class="thread-article">
       <div class="detail-head">
@@ -336,37 +547,130 @@ async function openThread(threadId) {
         <span class="meta-line">${replies.length} 条回复</span>
       </div>
       <div class="reply-list">
-        ${replies.map((reply) => `
-          <article class="reply-item">
-            <div class="reply-author">
-              <span><i class="avatar-dot" style="background:${escapeHtml(reply.author_color || '#1f6feb')}"></i>${escapeHtml(reply.author_name || '')}</span>
-              <span>${formatTime(reply.created_at)}</span>
-            </div>
-            <div class="reply-body">${escapeHtml(reply.body)}</div>
-          </article>
-        `).join('') || '<div class="empty-state"><span>还没有回复</span></div>'}
+        ${roots.map((reply) => renderReplyThread(reply, childrenByParent.get(Number(reply.id)) || [], thread)).join('') || '<div class="empty-state"><span>还没有回复</span></div>'}
       </div>
       ${renderReplyForm(thread)}
     </section>
   `;
-  switchView('thread', { hash: `thread-${threadId}` });
-  track('thread_open', String(threadId));
 }
 
-function renderReplyForm(thread) {
+function groupReplies(replies) {
+  const byId = new Map(replies.map((reply) => [Number(reply.id), reply]));
+  const roots = [];
+  const childrenByParent = new Map();
+  replies.forEach((reply) => {
+    const parentId = Number(reply.parent_id || 0);
+    if (!parentId || !byId.has(parentId)) {
+      roots.push(reply);
+      return;
+    }
+    const parent = byId.get(parentId);
+    const rootId = Number(parent.parent_id || parentId);
+    if (!childrenByParent.has(rootId)) childrenByParent.set(rootId, []);
+    childrenByParent.get(rootId).push(reply);
+  });
+  return { roots, childrenByParent };
+}
+
+function renderReplyAttachments(attachments = []) {
+  if (!attachments.length) return '';
+  return `
+    <div class="reply-attachments">
+      ${attachments.map((attachment) => `
+        <button
+          class="reply-image-thumb"
+          type="button"
+          data-reply-attachment-url="${escapeHtml(attachment.url || '')}"
+          data-reply-attachment-name="${escapeHtml(attachment.file_name || '回复图片')}"
+          aria-label="查看图片：${escapeHtml(attachment.file_name || '回复图片')}"
+        >
+          <img src="${escapeHtml(apiUrl(attachment.url || ''))}" alt="${escapeHtml(attachment.file_name || '回复图片')}">
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderReplyBody(reply) {
+  return `
+    <div class="reply-author">
+      <span><i class="avatar-dot" style="background:${escapeHtml(reply.author_color || '#1f6feb')}"></i>${escapeHtml(reply.author_name || '')}</span>
+      <span>${formatTime(reply.created_at)}</span>
+    </div>
+    ${reply.body ? `<div class="reply-body">${escapeHtml(reply.body)}</div>` : ''}
+    ${renderReplyAttachments(reply.attachments || [])}
+  `;
+}
+
+function renderReplyActions(reply, thread) {
+  if (thread.status === 'locked') return '';
+  return `
+    <div class="reply-actions">
+      <button class="reply-link-button" type="button" data-reply-parent-id="${reply.id}">回复</button>
+    </div>
+  `;
+}
+
+function renderChildReply(reply, thread) {
+  const parentId = Number(reply.id);
+  return `
+    <article class="reply-item reply-child" data-reply-id="${parentId}">
+      ${renderReplyBody(reply)}
+      ${renderReplyActions(reply, thread)}
+      ${state.replyComposeParentId === parentId ? renderReplyForm(thread, parentId) : ''}
+    </article>
+  `;
+}
+
+function renderReplyThread(reply, children, thread) {
+  const replyId = Number(reply.id);
+  const expanded = state.expandedReplyIds.has(replyId);
+  return `
+    <article class="reply-item reply-root" data-reply-id="${replyId}">
+      ${renderReplyBody(reply)}
+      ${renderReplyActions(reply, thread)}
+      ${state.replyComposeParentId === replyId ? renderReplyForm(thread, replyId) : ''}
+      ${children.length ? `
+        <button class="reply-expand" type="button" data-toggle-replies="${replyId}" data-child-count="${children.length}">
+          ${expanded ? '收起回复' : `展开 ${children.length} 条回复`}
+        </button>
+        <div class="child-replies ${expanded ? '' : 'hidden'}" data-child-replies="${replyId}">
+          ${children.map((child) => renderChildReply(child, thread)).join('')}
+        </div>
+      ` : ''}
+    </article>
+  `;
+}
+
+function renderReplyForm(thread, parentId = null) {
   if (thread.status === 'locked') {
     return '<div class="empty-state"><span>帖子已锁定，暂不能继续回复。</span></div>';
   }
   if (!state.user) {
     return '<button class="primary-button full" type="button" data-open-auth>登录后回复</button>';
   }
+  const key = replyKey(parentId);
+  const childClass = parentId ? ' is-child-form' : '';
+  const previewClass = replyFiles(parentId).length ? '' : ' is-empty';
   return `
-    <form id="replyForm" class="reply-form">
-      <label>
-        <span>回复内容</span>
-        <textarea id="replyBody" rows="4" required></textarea>
+    <form class="reply-form${childClass}" data-reply-form data-parent-id="${parentId || ''}">
+      <label class="reply-editor-label">
+        <span>${parentId ? '回复这条讨论' : '回复内容'}</span>
+        <div class="reply-editor-box">
+          <textarea name="body" rows="${parentId ? 3 : 4}"></textarea>
+          <div class="reply-image-preview${previewClass}" data-reply-preview="${key}">
+            ${renderReplyImagePreview(parentId)}
+          </div>
+        </div>
       </label>
-      <button class="primary-button" type="submit">提交回复</button>
+      <div class="reply-tool-row">
+        <label class="reply-image-picker" title="选择图片，或在回复框中粘贴图片">
+          <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple data-reply-upload>
+          <span>图片</span>
+        </label>
+        ${parentId ? '<button class="ghost-button" type="button" data-cancel-reply>取消</button>' : ''}
+        <button class="primary-button" type="submit">提交回复</button>
+      </div>
     </form>
   `;
 }
@@ -400,10 +704,17 @@ function renderLatestRelease(release, error = '') {
   if (!panel) return;
   if (!release) {
     panel.innerHTML = `
-      <div class="empty-state">
-        <strong>暂无官网项目包</strong>
-        <span>${escapeHtml(error || '管理员发布后会在这里显示最新版本和更新日志。')}</span>
-      </div>`;
+      <article class="release-card release-placeholder">
+        <div class="release-main">
+          <span class="tag">fallback</span>
+          <h2>官网镜像包待登记</h2>
+          <p>后台登记 official_site/packages 里的 zip 后，这里会显示版本、大小、SHA256 和更新日志。</p>
+          ${error ? `<p class="meta-line">${escapeHtml(error)}</p>` : ''}
+        </div>
+        <div class="release-actions">
+          <a class="ghost-button" href="https://github.com/95ge/cfquant" target="_blank" rel="noreferrer">GitHub</a>
+        </div>
+      </article>`;
     return;
   }
   const changelog = release.changelog || {};
@@ -454,6 +765,7 @@ function renderFeedbackAttachments(attachments = []) {
           class="attachment-chip"
           type="button"
           data-feedback-attachment-url="${escapeHtml(attachment.url || '')}"
+          data-feedback-attachment-name="${escapeHtml(attachment.file_name || '反馈图片')}"
         >
           <span>${escapeHtml(attachment.file_name || '截图')}</span>
           <small>${formatSize(attachment.file_size)}</small>
@@ -525,7 +837,41 @@ async function loadFeedbackPanels() {
   await Promise.all([loadPublicFeedback(), loadMyFeedback()]);
 }
 
-async function openFeedbackAttachment(url) {
+function hideImageModal() {
+  const modal = $('imageModal');
+  const image = $('imageModalImage');
+  if (!modal || !image) return;
+  modal.classList.add('hidden');
+  image.removeAttribute('src');
+  image.alt = '图片预览';
+  if (state.imageModalObjectUrl) {
+    URL.revokeObjectURL(state.imageModalObjectUrl);
+    state.imageModalObjectUrl = '';
+  }
+}
+
+function showImageModal(src, title = '图片预览', options = {}) {
+  const modal = $('imageModal');
+  const image = $('imageModalImage');
+  const titleNode = $('imageModalTitle');
+  if (!modal || !image || !titleNode || !src) return;
+  if (state.imageModalObjectUrl && state.imageModalObjectUrl !== src) {
+    URL.revokeObjectURL(state.imageModalObjectUrl);
+    state.imageModalObjectUrl = '';
+  }
+  state.imageModalObjectUrl = options.objectUrl ? src : '';
+  titleNode.textContent = title || '图片预览';
+  image.src = src;
+  image.alt = title || '图片预览';
+  modal.classList.remove('hidden');
+}
+
+function openReplyAttachment(url, title = '回复图片') {
+  if (!url) return;
+  showImageModal(apiUrl(url), title || '回复图片');
+}
+
+async function openFeedbackAttachment(url, title = '反馈图片') {
   if (!url) return;
   const headers = {};
   if (state.token) headers.Authorization = `Bearer ${state.token}`;
@@ -536,8 +882,7 @@ async function openFeedbackAttachment(url) {
   }
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);
-  window.open(objectUrl, '_blank', 'noopener,noreferrer');
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+  showImageModal(objectUrl, title || '反馈图片', { objectUrl: true });
 }
 
 function showAuth(mode = 'register') {
@@ -547,6 +892,7 @@ function showAuth(mode = 'register') {
   });
   $('registerForm').classList.toggle('hidden', mode !== 'register');
   $('loginForm').classList.toggle('hidden', mode !== 'login');
+  if (mode === 'login') fillLoginFormFromMemory();
   $('authModal').classList.remove('hidden');
 }
 
@@ -557,14 +903,16 @@ function hideAuth() {
 function saveSession(token, user) {
   state.token = token;
   state.user = user;
-  localStorage.setItem('cfquant_site_token', token);
+  localStorage.setItem(SITE_TOKEN_KEY, token);
+  localStorage.setItem(SITE_USER_KEY, JSON.stringify(user || null));
   updateAuthUi();
 }
 
 function clearSession() {
   state.token = '';
   state.user = null;
-  localStorage.removeItem('cfquant_site_token');
+  localStorage.removeItem(SITE_TOKEN_KEY);
+  localStorage.removeItem(SITE_USER_KEY);
 }
 
 function updateAuthUi() {
@@ -586,11 +934,23 @@ async function refreshMe() {
   }
   try {
     const data = await api('/api/me');
-    state.user = data.user;
+    saveSession(state.token, data.user);
   } catch (_error) {
     clearSession();
   }
   updateAuthUi();
+}
+
+async function refreshActiveAuthViews() {
+  if ($('view-center').classList.contains('is-active')) {
+    await renderCenter();
+  }
+  if ($('view-feedback').classList.contains('is-active')) {
+    await loadMyFeedback();
+  }
+  if ($('view-thread').classList.contains('is-active') && state.selectedThreadId) {
+    await openThread(state.selectedThreadId, { skipTrack: true });
+  }
 }
 
 async function renderCenter() {
@@ -721,6 +1081,8 @@ function currentRoute() {
 }
 
 function bindEvents() {
+  bindLoginMemoryControls();
+
   $('themeToggle').addEventListener('click', () => {
     setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
     track('theme_toggle', document.documentElement.dataset.theme);
@@ -762,6 +1124,17 @@ function bindEvents() {
   $('authModal').addEventListener('click', (event) => {
     if (event.target === $('authModal')) hideAuth();
   });
+  $('closeImageModal').addEventListener('click', hideImageModal);
+  $('imageModal').addEventListener('click', (event) => {
+    if (event.target === $('imageModal')) hideImageModal();
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (!$('imageModal').classList.contains('hidden')) {
+      hideImageModal();
+    }
+  });
 
   document.querySelectorAll('.switch-tab').forEach((button) => {
     button.addEventListener('click', () => showAuth(button.dataset.authMode));
@@ -783,9 +1156,17 @@ function bindEvents() {
   });
 
   $('threadList').addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-thread-id]');
-    if (!button) return;
-    openThread(button.dataset.threadId).catch((error) => toast(error.message));
+    const card = event.target.closest('[data-thread-id]');
+    if (!card) return;
+    openThread(card.dataset.threadId).catch((error) => toast(error.message));
+  });
+
+  $('threadList').addEventListener('keydown', (event) => {
+    if (!['Enter', ' '].includes(event.key)) return;
+    const card = event.target.closest('[data-thread-id]');
+    if (!card) return;
+    event.preventDefault();
+    openThread(card.dataset.threadId).catch((error) => toast(error.message));
   });
 
   $('hotThreads').addEventListener('click', (event) => {
@@ -836,17 +1217,104 @@ function bindEvents() {
   });
 
   $('threadPageContent').addEventListener('click', (event) => {
-    if (event.target.closest('[data-open-auth]')) showAuth('login');
+    if (event.target.closest('[data-open-auth]')) {
+      showAuth('login');
+      return;
+    }
+    const expandButton = event.target.closest('[data-toggle-replies]');
+    if (expandButton) {
+      const replyId = Number(expandButton.dataset.toggleReplies);
+      const children = document.querySelector(`[data-child-replies="${replyId}"]`);
+      if (!children) return;
+      const nextExpanded = children.classList.contains('hidden');
+      children.classList.toggle('hidden', !nextExpanded);
+      if (nextExpanded) state.expandedReplyIds.add(replyId);
+      else state.expandedReplyIds.delete(replyId);
+      expandButton.textContent = nextExpanded ? '收起回复' : `展开 ${expandButton.dataset.childCount} 条回复`;
+      return;
+    }
+    const replyButton = event.target.closest('[data-reply-parent-id]');
+    if (replyButton) {
+      if (!state.user) {
+        showAuth('login');
+        return;
+      }
+      const parentId = Number(replyButton.dataset.replyParentId);
+      if (state.replyComposeParentId && state.replyComposeParentId !== parentId) {
+        clearReplyFiles(state.replyComposeParentId);
+      }
+      state.replyComposeParentId = state.replyComposeParentId === parentId ? null : parentId;
+      if (state.replyComposeParentId) {
+        const parentReply = state.currentReplies.find((reply) => Number(reply.id) === parentId);
+        const rootId = Number(parentReply?.parent_id || parentId);
+        state.expandedReplyIds.add(rootId);
+      }
+      renderThreadPage(state.currentThread, state.currentReplies);
+      return;
+    }
+    if (event.target.closest('[data-cancel-reply]')) {
+      if (state.replyComposeParentId) clearReplyFiles(state.replyComposeParentId);
+      state.replyComposeParentId = null;
+      renderThreadPage(state.currentThread, state.currentReplies);
+      return;
+    }
+    const removeImageButton = event.target.closest('[data-remove-reply-image]');
+    if (removeImageButton) {
+      const form = removeImageButton.closest('[data-reply-form]');
+      const parentId = parentIdFromReplyForm(form);
+      const files = replyFiles(parentId);
+      files.splice(Number(removeImageButton.dataset.removeReplyImage), 1);
+      state.replyFiles[replyKey(parentId)] = files;
+      updateReplyImagePreview(parentId);
+      return;
+    }
+    const previewImageButton = event.target.closest('[data-preview-reply-image]');
+    if (previewImageButton) {
+      const form = previewImageButton.closest('[data-reply-form]');
+      const parentId = parentIdFromReplyForm(form);
+      const index = Number(previewImageButton.dataset.previewReplyImage);
+      const file = replyFiles(parentId)[index];
+      const url = state.replyPreviewUrls[replyKey(parentId)]?.[index];
+      if (url) showImageModal(url, file?.name || '回复图片');
+      return;
+    }
+    const attachment = event.target.closest('[data-reply-attachment-url]');
+    if (attachment) {
+      openReplyAttachment(attachment.dataset.replyAttachmentUrl, attachment.dataset.replyAttachmentName);
+    }
+  });
+
+  $('threadPageContent').addEventListener('change', (event) => {
+    const input = event.target.closest('[data-reply-upload]');
+    if (!input) return;
+    const form = input.closest('[data-reply-form]');
+    setReplyFiles(parentIdFromReplyForm(form), input.files, { append: true });
+    input.value = '';
   });
 
   $('threadPageContent').addEventListener('submit', async (event) => {
-    if (event.target.id !== 'replyForm') return;
+    const form = event.target.closest('[data-reply-form]');
+    if (!form) return;
     event.preventDefault();
+    const parentId = parentIdFromReplyForm(form);
+    const body = form.elements.body.value;
+    const files = replyFiles(parentId);
+    if (body.trim().length < 2 && !files.length) {
+      toast('回复内容不能为空');
+      return;
+    }
     try {
+      const parentReply = parentId ? state.currentReplies.find((reply) => Number(reply.id) === parentId) : null;
+      const rootId = parentId ? Number(parentReply?.parent_id || parentId) : null;
+      const attachments = await Promise.all(files.map(fileToAttachment));
       await api(`/api/forum/threads/${state.selectedThreadId}/replies`, {
         method: 'POST',
-        body: JSON.stringify({ body: $('replyBody').value }),
+        body: JSON.stringify({ body, parent_id: parentId, attachments }),
       });
+      form.reset();
+      clearReplyFiles(parentId);
+      if (rootId) state.expandedReplyIds.add(rootId);
+      state.replyComposeParentId = null;
       await loadPublic();
       await loadThreads();
       await openThread(state.selectedThreadId);
@@ -875,6 +1343,7 @@ function bindEvents() {
   });
 
   document.addEventListener('paste', handleFeedbackPaste);
+  document.addEventListener('paste', handleReplyPaste);
 
   $('refreshMyFeedback').addEventListener('click', () => {
     loadMyFeedback().catch((error) => toast(error.message));
@@ -892,7 +1361,7 @@ function bindEvents() {
     const attachment = event.target.closest('[data-feedback-attachment-url]');
     if (!attachment) return;
     try {
-      await openFeedbackAttachment(attachment.dataset.feedbackAttachmentUrl);
+      await openFeedbackAttachment(attachment.dataset.feedbackAttachmentUrl, attachment.dataset.feedbackAttachmentName);
     } catch (error) {
       toast(error.message);
     }
@@ -929,8 +1398,9 @@ function bindEvents() {
     if (event.target.closest('[data-logout]')) {
       await api('/api/auth/logout', { method: 'POST', body: '{}' }).catch(() => {});
       clearSession();
+      disableRememberedAutoLogin();
       updateAuthUi();
-      renderCenter();
+      await refreshActiveAuthViews();
       toast('已退出登录');
       return;
     }
@@ -991,8 +1461,7 @@ function bindEvents() {
       saveSession(data.token, data.user);
       hideAuth();
       toast('注册成功');
-      await renderCenter();
-      if ($('view-feedback').classList.contains('is-active')) await loadMyFeedback();
+      await refreshActiveAuthViews();
     } catch (error) {
       toast(error.message);
     }
@@ -1009,10 +1478,10 @@ function bindEvents() {
         }),
       });
       saveSession(data.token, data.user);
+      saveLoginMemoryFromForm();
       hideAuth();
       toast('登录成功');
-      await renderCenter();
-      if ($('view-feedback').classList.contains('is-active')) await loadMyFeedback();
+      await refreshActiveAuthViews();
     } catch (error) {
       toast(error.message);
     }

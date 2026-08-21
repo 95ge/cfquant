@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260820_03';
+const FRONTEND_VERSION = 'web_20260821_02';
 
 const state = {
   accountId: '',
@@ -1001,7 +1001,122 @@ function renderVersionLog(changelog, title) {
   return `<section class="version-log"><span>${esc(title)}${esc(version)}</span><ul>${items.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></section>`;
 }
 
+function qmtRuntimeLabel(report = {}) {
+  if (report.reported && report.version) return report.version;
+  if (report.has_report) return '未运行';
+  return '未上报';
+}
+
+function qmtRuntimeDetail(report = {}) {
+  if (report.reported && report.version) {
+    const source = report.source || 'QMT 运行时';
+    const mode = report.mode ? ` / ${report.mode}` : '';
+    const checked = report.reported_at_text ? ` / ${report.reported_at_text}` : '';
+    return `来源：${source}${mode}${checked}`;
+  }
+  return report.message || '未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看。';
+}
+
 function renderProjectVersion(info) {
+  state.versionInfo = info || state.versionInfo || null;
+  const data = state.versionInfo || {};
+  const qmtRuntime = data.qmt_runtime || {};
+  const qmtReported = Boolean(qmtRuntime.reported && qmtRuntime.version);
+  const qmtVersion = qmtRuntimeLabel(qmtRuntime);
+  const webCoreVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
+  const serverFrontendVersion = data.frontend_version || data.web_version || '--';
+  const browserFrontendVersion = FRONTEND_VERSION;
+  const widget = $('versionWidget');
+  const label = $('versionBadgeLabel');
+  const checkState = $('versionCheckState');
+  const body = $('versionPopoverBody');
+  const alert = $('versionAlert');
+  if (label) label.textContent = state.versionCheckInFlight ? '检查中...' : `QMT ${qmtVersion}`;
+  const qmtComparison = data.qmt_runtime_comparison || data.comparison;
+  const qmtClassData = { ...data, comparison: qmtComparison, update_available: data.qmt_update_available };
+  if (widget) {
+    widget.classList.remove(
+      'status-same',
+      'status-newer',
+      'status-different',
+      'status-older',
+      'status-error',
+      'status-checking',
+      'status-unknown',
+    );
+    widget.classList.add(state.versionCheckInFlight ? 'status-checking' : (qmtReported ? projectVersionClass(qmtClassData) : 'status-unknown'));
+  }
+  const remote = data.remote || {};
+  const remoteVersionText = remote.web_version
+    ? `${remote.version || remote.core_version || '--'} / ${remote.web_version}`
+    : (remote.version || remote.core_version || '--');
+  const compareText = versionCompareText(qmtComparison, remote.error);
+  if (checkState) checkState.textContent = qmtReported ? compareText : '等待 QMT 上报';
+  if (alert) {
+    const showAlert = !!(remote.error && !state.versionCheckInFlight);
+    alert.classList.toggle('hidden', !showAlert);
+    alert.textContent = showAlert ? `版本探测失败：${remote.error}` : '版本探测失败，不影响交易和行情功能';
+    alert.title = showAlert ? remote.error : '';
+  }
+  if (!body) return;
+  const local = data.local || {};
+  const importedCoreVersion = data.imported_core_version || local.imported_version || '';
+  const coreImportStale = Boolean(data.core_version_import_stale || local.import_stale);
+  const runtimeDetail = qmtRuntimeDetail(qmtRuntime);
+  const webDetail = coreImportStale
+    ? `磁盘 ${webCoreVersion} / Web 进程 ${importedCoreVersion || '--'}，重启 Web 后端后生效`
+    : `Web 后端 ${webCoreVersion} / 前端 ${browserFrontendVersion}`;
+  const remoteDetail = remote.error
+    ? `检查失败：${remote.error}`
+    : remote.version
+      ? remoteUpdateDetail(remote, data.repo_url || DEFAULT_UPDATE_REPO_URL)
+      : '尚未检查官网版本';
+  const actionBusy = state.versionCheckInFlight || state.projectUpdateBusy || state.versionUpdateBusy;
+  const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
+  const recheckDisabled = state.versionCheckInFlight ? ' disabled' : '';
+  const displayCompareText = qmtReported ? compareText : '无法判断';
+  const stateDetail = qmtReported
+    ? (data.qmt_update_available ? '官网有不同的 QMT 核心版本，设置页可执行更新。' : '当前 QMT 运行时未发现需要更新。')
+    : '当前无法确认 QMT 内部实际加载版本，请先运行 QMT 桥接脚本。';
+  body.innerHTML = `
+    <div class="version-quick-grid">
+      <div class="version-quick-item ${qmtReported ? 'is-ok' : 'is-wait'}">
+        <span>QMT 运行时</span>
+        <strong>${esc(qmtVersion)}</strong>
+        <small>${esc(runtimeDetail)}</small>
+      </div>
+      <div class="version-quick-item">
+        <span>${esc(remoteUpdateSourceLabel(remote))}</span>
+        <strong>${esc(remoteVersionText)}</strong>
+        <small>${esc(remoteDetail)}</small>
+      </div>
+      <div class="version-quick-item ${data.qmt_update_available ? 'is-wait' : 'is-ok'}">
+        <span>更新状态</span>
+        <strong>${esc(state.versionCheckInFlight ? '检查中' : displayCompareText)}</strong>
+        <small>${esc(stateDetail)}</small>
+      </div>
+    </div>
+    <details class="version-details">
+      <summary>详细版本</summary>
+      <div class="version-detail-list">
+        <div><span>Web 项目</span><strong>${esc(webCoreVersion)}</strong><small>${esc(webDetail)}</small></div>
+        <div><span>服务端前端</span><strong>${esc(serverFrontendVersion)}</strong><small>${esc(serverFrontendVersion !== browserFrontendVersion ? '浏览器可能仍在使用旧静态资源，建议强制刷新页面。' : '前后端静态资源版本一致。')}</small></div>
+      </div>
+      <div class="version-log-wrap">
+        ${renderVersionLog(local.changelog, '当前更新日志')}
+        ${remote.version || remote.error ? renderVersionLog(remote.changelog, `${remoteUpdateSourceLabel(remote)}更新日志`) : ''}
+      </div>
+    </details>
+    <div class="version-actions">
+      <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
+      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>更新 Web</button>
+      <button type="button" data-version-action="qmt-update"${actionBusy ? ' disabled' : ''}>更新 QMT</button>
+      <button type="button" data-version-action="open-update">更新设置</button>
+    </div>
+    <div class="version-action-status">${esc(state.versionCheckInFlight ? '正在连接官网和 QMT 运行时...' : stateDetail)}</div>`;
+}
+
+function renderProjectVersionLegacy(info) {
   state.versionInfo = info || state.versionInfo || null;
   const data = state.versionInfo || {};
   const coreVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
@@ -1109,7 +1224,7 @@ async function refreshProjectVersion(options = {}) {
   try {
     const remote = options.remote !== false;
     const force = !!options.force;
-    const data = await api(`/api/version?remote=${remote ? '1' : '0'}&force=${force ? '1' : '0'}`);
+    const data = await api(`/api/version?remote=${remote ? '1' : '0'}&force=${force ? '1' : '0'}&bridge_id=${encodeURIComponent(selectedBridge())}`);
     state.versionRemoteChecked = remote || state.versionRemoteChecked;
     renderProjectVersion(data);
     if (options.log) {
@@ -3187,6 +3302,43 @@ function renderUpdateVersionInfo(data) {
   const version = data && data.version_status ? data.version_status : {};
   const current = version.current || {};
   const remote = version.remote || {};
+  const report = data && data.runtime_report ? data.runtime_report : (current.runtime_report || {});
+  const runtimeReported = Boolean((data && data.runtime_reported) || current.runtime_reported || (report.reported && report.version));
+  const runtimeVersion = (data && data.runtime_version) || current.runtime_version || (report.reported ? report.version : '') || '';
+  const fileVersion = (data && data.file_version) || current.file_version || '';
+  const compareClass = runtimeReported ? updateCompareClass(version.matches_remote) : 'unknown';
+  const runtimeDetail = runtimeReported
+    ? qmtRuntimeDetail(report)
+    : (report.message || '未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看。');
+  box.innerHTML = `
+    <div class="update-version-item">
+      <span>QMT 运行时</span>
+      <strong>${esc(runtimeVersion || (report.has_report ? '未运行' : '未上报'))}</strong>
+      <small>${esc(runtimeDetail)}</small>
+    </div>
+    <div class="update-version-item">
+      <span>磁盘核心</span>
+      <strong>${esc(fileVersion || '--')}</strong>
+      <small>${esc(fileVersion ? '仅表示 QMT 目录里的文件版本，QMT 重启前不等于运行时版本。' : '未读取到 QMT 目录中的 cfquant/version.py。')}</small>
+    </div>
+    <div class="update-version-item">
+      <span>${esc(remoteUpdateSourceLabel(remote))}</span>
+      <strong>${esc(updateVersionLabel(remote))}</strong>
+      <small>${esc(remoteUpdateDetail(remote))}</small>
+    </div>
+    <div class="update-version-item update-version-compare ${compareClass}">
+      <span>运行时对比</span>
+      <strong>${esc(runtimeReported ? updateCompareText(version.matches_remote) : '无法判断')}</strong>
+      <small>${esc(runtimeReported ? '基于 QMT 运行时上报版本判断。' : '没有运行时上报时，不再用磁盘版本代替当前运行版本。')}</small>
+    </div>`;
+}
+
+function renderUpdateVersionInfoLegacy(data) {
+  const box = $('updateVersionInfo');
+  if (!box) return;
+  const version = data && data.version_status ? data.version_status : {};
+  const current = version.current || {};
+  const remote = version.remote || {};
   const compareClass = updateCompareClass(version.matches_remote);
   const remoteDetail = remoteUpdateDetail(remote);
   box.innerHTML = `
@@ -3478,6 +3630,8 @@ function renderUpdateStatus(data) {
       ];
       const layoutText = updateLayoutText(targets.layout);
       if (layoutText) parts.push(layoutText);
+      if (!data.current_version) parts.push(data.runtime_reported ? '运行时版本为空' : '运行时未上报');
+      if (data.file_version) parts.push(`磁盘 ${data.file_version}`);
       if (data.current_version) parts.push(`版本 ${data.current_version}`);
       if (data.version_status) parts.push(`版本对比 ${updateCompareText(data.version_status.matches_remote)}`);
       if (defaultOfficial) parts.push(`官网 ${defaultOfficial}`);
@@ -7207,6 +7361,18 @@ function wireTutorialNavigation() {
   setTutorialTopic(localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'onboarding');
 }
 
+function wireViewShortcuts() {
+  document.querySelectorAll('[data-view-jump]').forEach((node) => {
+    node.addEventListener('click', () => {
+      const view = node.dataset.viewJump || 'overview';
+      setView(view);
+      if (view === 'tutorial' && node.dataset.guide) {
+        setTutorialTopic(node.dataset.guide);
+      }
+    });
+  });
+}
+
 function wireSettingsNavigation() {
   document.querySelectorAll('.settings-menu-item').forEach((item) => {
     item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab));
@@ -7311,6 +7477,7 @@ async function boot() {
   wireNavigation();
   wireDataTabs();
   wireTutorialNavigation();
+  wireViewShortcuts();
   wireOnboardingGuide();
   wireSettingsNavigation();
   wireImageLightbox();

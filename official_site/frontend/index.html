@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant.org | QMT 本地桥接与社区</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css?v=site_20260820_02">
+  <link rel="stylesheet" href="/styles.css?v=site_20260821_03">
 </head>
 <body>
   <header class="topbar">
@@ -126,57 +126,111 @@
     </section>
 
     <section id="view-project" class="view is-active project-view" aria-label="项目介绍">
-      <section class="project-hero" aria-label="cfquant 项目概览">
+      <section class="project-hero" aria-label="cfquant 项目架构">
         <div class="hero-copy">
           <p class="eyebrow">CFQuant Official</p>
-          <h1>把 QMT 的行情与交易能力封装成稳定的本地接口</h1>
-          <p class="hero-lead">cfquant 运行在本地 QMT Python 环境中，通过 Socket / Pipe / Web 服务把行情订阅、账户查询、交易请求、回调事件和更新能力统一暴露给外部程序，适合策略研发、实盘监控和自动化交易工具接入。</p>
+          <h1>把 QMT 的行情与交易能力接成外部程序可用的本地接口</h1>
+          <p class="hero-lead">cfquant 在本地 QMT Python 环境中运行，负责接收外部 Socket / Pipe / Web 请求，转发行情订阅、账户查询、交易委托和回调事件，并通过官网分发更新包与问题反馈。</p>
           <div class="hero-actions">
             <button class="primary-button" type="button" data-jump-view="downloads">下载最新版本</button>
             <button class="ghost-button" type="button" data-jump-view="forum">查看论坛问题</button>
             <button class="ghost-button" type="button" data-jump-view="feedback">提交反馈</button>
           </div>
           <div class="hero-points">
-            <span>本地运行，不依赖云端托管</span>
-            <span>官网优先更新，GitHub 自动回退</span>
-            <span>围绕 QMT 行情与交易链路优化</span>
+            <span><strong>本地桥接</strong><small>QMT 内部运行，外部程序按统一协议访问。</small></span>
+            <span><strong>行情与交易</strong><small>订阅、查询、下单、撤单和回调按链路转发。</small></span>
+            <span><strong>官网更新</strong><small>官网镜像优先，GitHub 不稳定时自动回退。</small></span>
           </div>
         </div>
-        <div class="hero-visual" aria-label="cfquant 本地桥接架构示意">
-          <div class="visual-toolbar">
-            <span></span>
-            <span></span>
-            <span></span>
-            <strong>Local Bridge Runtime</strong>
+        <div class="hero-visual" aria-label="cfquant 本地桥接架构动画">
+          <div class="architecture-stage">
+            <div class="arch-topline">
+              <strong>Local Bridge Runtime</strong>
+              <span>quote / order / callback / update</span>
+            </div>
+            <div class="architecture-map">
+              <div class="arch-column arch-clients">
+                <article class="arch-node">
+                  <small>External Python</small>
+                  <strong>策略程序</strong>
+                  <span>xtdata / xttrader 兼容接入</span>
+                </article>
+                <article class="arch-node">
+                  <small>Web Console</small>
+                  <strong>本地控制台</strong>
+                  <span>账号、行情、交易和日志管理</span>
+                </article>
+              </div>
+              <div class="arch-transports">
+                <span>Socket</span>
+                <span>Pipe</span>
+                <span>Web API</span>
+              </div>
+              <article class="arch-node arch-core">
+                <small>cfquant Runtime</small>
+                <strong>统一协议与账号路由</strong>
+                <span>行情订阅、交易请求、事件回调、日志追踪</span>
+                <div class="core-rings">
+                  <b>行情</b>
+                  <b>交易</b>
+                  <b>回调</b>
+                  <b>更新</b>
+                </div>
+              </article>
+              <div class="arch-transports arch-qmt-channel">
+                <span>QMT Script</span>
+                <span>ctypes Pipe</span>
+                <span>LTtx</span>
+              </div>
+              <div class="arch-column arch-qmt">
+                <article class="arch-node">
+                  <small>QMT Terminal</small>
+                  <strong>行情源与交易柜台</strong>
+                  <span>账号、委托、成交、持仓</span>
+                </article>
+                <article class="arch-node arch-site-node">
+                  <small>cfquant.org</small>
+                  <strong>下载与反馈</strong>
+                  <span>更新包、论坛、截图反馈</span>
+                </article>
+              </div>
+              <span class="arch-packet quote-packet"></span>
+              <span class="arch-packet order-packet"></span>
+              <span class="arch-packet callback-packet"></span>
+              <span class="arch-packet update-packet"></span>
+            </div>
+            <div class="arch-status-row" aria-label="运行链路状态">
+              <span><strong>行情</strong><small>订阅转发</small></span>
+              <span><strong>交易</strong><small>下单撤单</small></span>
+              <span><strong>回调</strong><small>事件同步</small></span>
+              <span><strong>更新</strong><small>官网镜像</small></span>
+            </div>
           </div>
-          <div class="visual-grid">
-            <div class="visual-panel source">
-              <small>External Python</small>
-              <strong>策略研究 / 监控面板 / 自动化程序</strong>
-              <i></i>
-            </div>
-            <div class="visual-pipe">
-              <span>Socket</span>
-              <span>Pipe</span>
-              <span>Web API</span>
-            </div>
-            <div class="visual-panel core">
-              <small>cfquant</small>
-              <strong>行情订阅 · 交易请求 · 事件回调 · 日志追踪</strong>
-              <div class="signal-lines"><b></b><b></b><b></b><b></b></div>
-            </div>
-            <div class="visual-panel terminal">
-              <small>QMT Terminal</small>
-              <strong>账号 / 委托 / 成交 / 持仓</strong>
-              <div class="market-bars"><b></b><b></b><b></b><b></b><b></b></div>
-            </div>
-          </div>
-          <figure class="console-preview">
-            <img src="/assets/qmt-console-clean.png" width="1140" height="260" fetchpriority="high" alt="QMT 中 cfquant 策略运行状态预览">
-            <figcaption>QMT 策略运行状态预览</figcaption>
-          </figure>
         </div>
       </section>
+
+      <div class="project-system-strip" aria-label="项目运行流程">
+        <article>
+          <span>01</span>
+          <strong>外部程序发起请求</strong>
+          <p>策略程序、监控面板或 Web 控制台通过统一入口发送行情、查询或交易请求。</p>
+        </article>
+        <article>
+          <span>02</span>
+          <strong>cfquant 本地路由</strong>
+          <p>桥接层识别账号、模式和通道，按 Socket、Pipe 或 Web API 分发到对应运行端。</p>
+        </article>
+        <article>
+          <span>03</span>
+          <strong>QMT 执行业务动作</strong>
+          <p>QMT 入口脚本承接行情源、柜台交易、委托成交和持仓查询等能力。</p>
+        </article>
+        <article>
+          <span>04</span>
+          <strong>事件回传与更新分发</strong>
+          <p>结果、回调、日志和版本更新回到本地服务，再同步给外部程序和官网页面。</p>
+        </article>
+      </div>
 
       <div class="project-capabilities" aria-label="核心能力">
         <article class="feature-item">
@@ -383,20 +437,42 @@
       <form id="loginForm" class="auth-form hidden">
         <label>
           <span>用户名 / 手机号 / 邮箱</span>
-          <input id="loginAccount" type="text" autocomplete="username" required>
+          <input id="loginAccount" name="account" type="text" autocomplete="username" required>
         </label>
         <label>
           <span>密码</span>
-          <input id="loginPassword" type="password" autocomplete="current-password" required>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
         </label>
+        <div class="auth-options">
+          <label class="check-field">
+            <input id="loginRemember" type="checkbox">
+            <span>记住账号</span>
+          </label>
+          <label class="check-field">
+            <input id="loginAutoLogin" type="checkbox">
+            <span>保持登录状态</span>
+          </label>
+        </div>
         <button class="primary-button full" type="submit">登录</button>
       </form>
-      <p class="auth-note">用户名、手机号、邮箱均可作为登录账号。手机号注册必填，邮箱可选且不做验证；已有旧账号请在用户中心设置密码。</p>
+      <p class="auth-note">用户名、手机号、邮箱均可作为登录账号。登录成功后会自动保持登录状态，无需重复输入密码；退出登录会清除当前设备的登录状态。</p>
+    </div>
+  </div>
+
+  <div id="imageModal" class="modal image-modal hidden" role="dialog" aria-modal="true" aria-labelledby="imageModalTitle">
+    <div class="modal-panel image-modal-panel">
+      <div class="modal-head image-modal-head">
+        <h2 id="imageModalTitle">图片预览</h2>
+        <button id="closeImageModal" class="icon-button" type="button" aria-label="关闭图片预览">X</button>
+      </div>
+      <div class="image-modal-body">
+        <img id="imageModalImage" alt="图片预览">
+      </div>
     </div>
   </div>
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="/config.js"></script>
-  <script src="/app.js?v=site_20260820_02"></script>
+  <script src="/app.js?v=site_20260821_03"></script>
 </body>
 </html>

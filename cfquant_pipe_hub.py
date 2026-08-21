@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+import sys
+sys.dont_write_bytecode = True
+
 import argparse
 
 from cfquant.pipe_hub import run_pipe_hub

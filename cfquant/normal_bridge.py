@@ -87,6 +87,7 @@ class NormalQmtBridge(TxTradeBridge):
             "normal bridge started LTtx=%s:%s request_channel=%s"
             % (self.ip, self.port, self.request_channel)
         )
+        self._publish_runtime_report("start")
         return self
 
     def set_context(self, context):
@@ -97,6 +98,7 @@ class NormalQmtBridge(TxTradeBridge):
             self._schedule_timer()
         self._log("normal bridge worker is released by quote/timer/handlebar callbacks")
         self._log("normal bridge context ready")
+        self._publish_runtime_report("context_ready")
 
     def close(self):
         self.running = False
@@ -151,6 +153,33 @@ class NormalQmtBridge(TxTradeBridge):
             )
         except queue.Full as e:
             self._send_error(msg, e)
+
+    def _publish_runtime_report(self, reason):
+        super(NormalQmtBridge, self)._publish_runtime_report(reason)
+        if self.tx is None or not self.callback_event_channel:
+            return
+        try:
+            data = self._runtime_info()
+            data.update({
+                "reason": reason,
+                "transport": "lttx" if self.port else "pipe",
+                "channel_key": "normal",
+                "callback_event_channel": self.callback_event_channel,
+            })
+            payload = pack_event(
+                "cfquant.runtime",
+                data=data,
+                client_id=self.callback_event_channel,
+                meta={
+                    "bridge_id": self.bridge_id,
+                    "account_id": self.account_id,
+                    "source": "qmt_runtime_report",
+                },
+            )
+            self.tx.push("event", payload, self.callback_event_channel)
+            self._log("normal bridge runtime report sent version=%s reason=%s" % (data.get("core_version") or "-", reason))
+        except Exception as e:
+            self._log("normal bridge runtime report failed:%s" % e)
 
     def _start_worker_thread(self, context):
         if self.worker_thread is not None and self.worker_thread.is_alive():

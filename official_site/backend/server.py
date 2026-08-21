@@ -37,26 +37,30 @@ PACKAGE_DIR = BASE_DIR / "packages"
 DATA_DIR = BASE_DIR / "data"
 UPLOAD_DIR = BASE_DIR / "uploads"
 FEEDBACK_UPLOAD_DIR = UPLOAD_DIR / "feedback"
+REPLY_UPLOAD_DIR = UPLOAD_DIR / "replies"
 DB_PATH = DATA_DIR / "cfquant_site.sqlite3"
 PROJECT_REPO_URL = os.getenv("CFQUANT_PROJECT_REPO_URL", "https://github.com/95ge/cfquant.git")
 
-ADMIN_USERNAME = os.getenv("CFQUANT_SITE_ADMIN_USER", "root")
-ADMIN_PASSWORD = os.getenv("CFQUANT_SITE_ADMIN_PASSWORD", "root123456")
+ADMIN_USERNAME = os.getenv("CFQUANT_SITE_ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.getenv("CFQUANT_SITE_ADMIN_PASSWORD", "")
 
 PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
-TOKEN_TTL_DAYS = 30
+TOKEN_TTL_DAYS = int(os.getenv("CFQUANT_SITE_TOKEN_TTL_DAYS", "365"))
 PASSWORD_MIN_LENGTH = 6
 PASSWORD_HASH_ITERATIONS = 240_000
 MAX_FEEDBACK_ATTACHMENTS = 4
 MAX_FEEDBACK_ATTACHMENT_BYTES = 3 * 1024 * 1024
+MAX_REPLY_ATTACHMENTS = 10
+MAX_REPLY_ATTACHMENT_BYTES = 3 * 1024 * 1024
 ALLOWED_FEEDBACK_IMAGE_TYPES = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
     "image/webp": ".webp",
     "image/gif": ".gif",
 }
+ALLOWED_REPLY_IMAGE_TYPES = ALLOWED_FEEDBACK_IMAGE_TYPES
 
 
 def file_sha256(path: Path) -> str:
@@ -286,10 +290,23 @@ class Database:
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   thread_id INTEGER NOT NULL,
                   user_id INTEGER,
+                  parent_id INTEGER,
                   body TEXT NOT NULL,
                   created_at TEXT NOT NULL,
                   FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
-                  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL
+                  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE SET NULL,
+                  FOREIGN KEY(parent_id) REFERENCES replies(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS reply_attachments (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  reply_id INTEGER NOT NULL,
+                  file_name TEXT NOT NULL,
+                  stored_name TEXT NOT NULL UNIQUE,
+                  content_type TEXT NOT NULL,
+                  file_size INTEGER NOT NULL,
+                  created_at TEXT NOT NULL,
+                  FOREIGN KEY(reply_id) REFERENCES replies(id) ON DELETE CASCADE
                 );
 
                 CREATE TABLE IF NOT EXISTS feedback (
@@ -357,6 +374,7 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_threads_activity ON threads(last_activity_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_replies_thread ON replies(thread_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_reply_attachments_reply ON reply_attachments(reply_id);
                 CREATE INDEX IF NOT EXISTS idx_feedback_attachments_feedback ON feedback_attachments(feedback_id);
                 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at);
                 CREATE INDEX IF NOT EXISTS idx_click_events_created ON click_events(created_at DESC);
@@ -384,6 +402,16 @@ class Database:
             )
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)"
+        )
+
+        reply_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(replies)").fetchall()
+        }
+        if "parent_id" not in reply_columns:
+            conn.execute("ALTER TABLE replies ADD COLUMN parent_id INTEGER")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_replies_parent ON replies(parent_id, created_at)"
         )
 
         feedback_columns = {
@@ -453,6 +481,39 @@ class Database:
                     "",
                     "https://github.com/95ge/cfquant",
                     "正式上线后可把 zip 更新包放入 official_site/packages，并在后台登记文件名；GitHub 不可访问时用户可从这里下载镜像包。",
+                    ts,
+                    ts,
+                ),
+            )
+        self._seed_local_packages(conn)
+
+    def _seed_local_packages(self, conn: sqlite3.Connection) -> None:
+        PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
+        for package_path in sorted(PACKAGE_DIR.glob("*.zip"), key=lambda item: item.stat().st_mtime):
+            if conn.execute(
+                "SELECT 1 FROM download_packages WHERE file_name = ? OR file_path = ?",
+                (package_path.name, package_path.name),
+            ).fetchone():
+                continue
+            package_info = inspect_project_package(package_path)
+            version = package_info.get("core_version") or package_path.stem
+            changelog = package_info.get("changelog") or {}
+            notes = "\n".join(changelog.get("items") or []) or f"本地官网镜像包：{package_path.name}"
+            ts = datetime.fromtimestamp(package_path.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+            conn.execute(
+                """
+                INSERT INTO download_packages(
+                  title, version, channel, file_name, file_path, external_url,
+                  notes, is_active, created_at, updated_at
+                )
+                VALUES(?, ?, 'project', ?, ?, '', ?, 1, ?, ?)
+                """,
+                (
+                    "cfquant 项目更新包",
+                    version,
+                    package_path.name,
+                    package_path.name,
+                    notes,
                     ts,
                     ts,
                 ),
@@ -554,6 +615,10 @@ class SiteHandler(SimpleHTTPRequestHandler):
         if method == "POST" and match:
             self._api_create_reply(int(match.group(1)))
             return
+        match = re.fullmatch(r"/api/forum/reply-attachments/(\d+)", path)
+        if method == "GET" and match:
+            self._api_reply_attachment(int(match.group(1)))
+            return
         if method == "POST" and path == "/api/feedback":
             self._api_feedback()
             return
@@ -584,18 +649,38 @@ class SiteHandler(SimpleHTTPRequestHandler):
             self._api_admin_overview()
             return
         if method == "GET" and path == "/api/admin/users":
-            self._api_admin_users()
+            self._api_admin_users(query)
+            return
+        match = re.fullmatch(r"/api/admin/users/(\d+)", path)
+        if method == "POST" and match:
+            self._api_admin_update_user(int(match.group(1)))
+            return
+        match = re.fullmatch(r"/api/admin/users/(\d+)/status", path)
+        if method == "POST" and match:
+            self._api_admin_set_user_status(int(match.group(1)))
             return
         match = re.fullmatch(r"/api/admin/users/(\d+)/toggle", path)
         if method == "POST" and match:
             self._api_admin_toggle_user(int(match.group(1)))
             return
         if method == "GET" and path == "/api/admin/threads":
-            self._api_admin_threads()
+            self._api_admin_threads(query)
+            return
+        match = re.fullmatch(r"/api/admin/threads/(\d+)/replies", path)
+        if method == "GET" and match:
+            self._api_admin_thread_replies(int(match.group(1)))
             return
         match = re.fullmatch(r"/api/admin/threads/(\d+)/lock", path)
         if method == "POST" and match:
             self._api_admin_lock_thread(int(match.group(1)))
+            return
+        match = re.fullmatch(r"/api/admin/threads/(\d+)/delete", path)
+        if method == "POST" and match:
+            self._api_admin_delete_thread(int(match.group(1)))
+            return
+        match = re.fullmatch(r"/api/admin/replies/(\d+)/delete", path)
+        if method == "POST" and match:
+            self._api_admin_delete_reply(int(match.group(1)))
             return
         if method == "GET" and path == "/api/admin/feedback":
             self._api_admin_feedback_list()
@@ -707,7 +792,14 @@ class SiteHandler(SimpleHTTPRequestHandler):
             if session["role"] == "user":
                 if session["user_status"] != "active" or session["user_role"] != "user":
                     raise ApiError(403, "账号已被限制")
-            conn.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?", (now_iso(), session["id"]))
+            ts = now_iso()
+            renewed_expires_at = (datetime.now(timezone.utc) + timedelta(days=TOKEN_TTL_DAYS)).isoformat(timespec="seconds")
+            conn.execute(
+                "UPDATE sessions SET expires_at = ?, last_seen_at = ? WHERE id = ?",
+                (renewed_expires_at, ts, session["id"]),
+            )
+            session["expires_at"] = renewed_expires_at
+            session["last_seen_at"] = ts
             return session
 
     def _create_session(self, conn: sqlite3.Connection, user_id: int | None, role: str) -> str:
@@ -1139,7 +1231,7 @@ class SiteHandler(SimpleHTTPRequestHandler):
                 dict_from_row(row)
                 for row in conn.execute(
                     """
-                    SELECT r.id, r.body, r.created_at,
+                    SELECT r.id, r.parent_id, r.body, r.created_at,
                            COALESCE(u.display_name, 'cfquant 用户') AS author_name,
                            u.avatar_color AS author_color
                     FROM replies r
@@ -1150,6 +1242,7 @@ class SiteHandler(SimpleHTTPRequestHandler):
                     (thread_id,),
                 )
             ]
+            replies = self._with_reply_attachments(conn, replies)
             payload = dict_from_row(thread)
             assert payload is not None
         self._send_json({"ok": True, "thread": payload, "replies": replies})
@@ -1158,7 +1251,15 @@ class SiteHandler(SimpleHTTPRequestHandler):
         session = self._current_session(role="user")
         data = self._parse_json()
         body = str(data.get("body") or "").strip()
-        if len(body) < 2:
+        attachments = data.get("attachments") or []
+        parent_id: int | None = None
+        raw_parent_id = data.get("parent_id")
+        if raw_parent_id not in (None, "", 0, "0"):
+            try:
+                parent_id = int(raw_parent_id)
+            except (TypeError, ValueError):
+                raise ApiError(400, "回复目标无效")
+        if len(body) < 2 and not attachments:
             raise ApiError(400, "回复内容不能为空")
         ts = now_iso()
         with db.connect() as conn:
@@ -1167,10 +1268,22 @@ class SiteHandler(SimpleHTTPRequestHandler):
                 raise ApiError(404, "帖子不存在")
             if thread["status"] == "locked":
                 raise ApiError(423, "帖子已锁定")
+            parent_reply = None
+            if parent_id is not None:
+                parent_reply = conn.execute(
+                    "SELECT id, parent_id, user_id FROM replies WHERE id = ? AND thread_id = ?",
+                    (parent_id, thread_id),
+                ).fetchone()
+                if parent_reply is None:
+                    raise ApiError(404, "回复目标不存在")
+                if parent_reply["parent_id"]:
+                    parent_id = int(parent_reply["parent_id"])
             cur = conn.execute(
-                "INSERT INTO replies(thread_id, user_id, body, created_at) VALUES(?, ?, ?, ?)",
-                (thread_id, session["user_id"], body[:5000], ts),
+                "INSERT INTO replies(thread_id, user_id, parent_id, body, created_at) VALUES(?, ?, ?, ?, ?)",
+                (thread_id, session["user_id"], parent_id, body[:5000], ts),
             )
+            reply_id = int(cur.lastrowid)
+            self._save_reply_attachments(conn, reply_id, attachments, ts)
             conn.execute(
                 "UPDATE threads SET updated_at = ?, last_activity_at = ? WHERE id = ?",
                 (ts, ts, thread_id),
@@ -1186,10 +1299,114 @@ class SiteHandler(SimpleHTTPRequestHandler):
                         "你的帖子有新回复",
                         f"《{thread['title']}》收到一条新回复。",
                         ts,
-                        json.dumps({"thread_id": thread_id, "reply_id": int(cur.lastrowid)}, ensure_ascii=False),
+                        json.dumps({"thread_id": thread_id, "reply_id": reply_id}, ensure_ascii=False),
                     ),
                 )
-        self._send_json({"ok": True}, status=201)
+            if parent_reply and parent_reply["user_id"]:
+                parent_user_id = int(parent_reply["user_id"])
+                if parent_user_id not in {int(session["user_id"]), int(thread["user_id"] or 0)}:
+                    conn.execute(
+                        """
+                        INSERT INTO notifications(user_id, title, body, kind, created_at, metadata)
+                        VALUES(?, ?, ?, 'reply', ?, ?)
+                        """,
+                        (
+                            parent_user_id,
+                            "你的回复有新评论",
+                            f"《{thread['title']}》中有人回复了你。",
+                            ts,
+                            json.dumps({"thread_id": thread_id, "reply_id": reply_id, "parent_id": parent_id}, ensure_ascii=False),
+                        ),
+                    )
+        self._send_json({"ok": True, "reply_id": reply_id}, status=201)
+
+    def _save_reply_attachments(
+        self,
+        conn: sqlite3.Connection,
+        reply_id: int,
+        attachments: Any,
+        ts: str,
+    ) -> None:
+        if not attachments:
+            return
+        if not isinstance(attachments, list):
+            raise ApiError(400, "回复图片格式不正确")
+        if len(attachments) > MAX_REPLY_ATTACHMENTS:
+            raise ApiError(400, f"最多上传 {MAX_REPLY_ATTACHMENTS} 张图片")
+        REPLY_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        for item in attachments:
+            if not isinstance(item, dict):
+                raise ApiError(400, "回复图片格式不正确")
+            original_name = Path(str(item.get("name") or "reply-image.png")).name[:120]
+            content_type = str(item.get("type") or "").lower().strip()
+            if content_type not in ALLOWED_REPLY_IMAGE_TYPES:
+                raise ApiError(400, "回复图片只支持 png、jpg、webp、gif")
+            payload = str(item.get("data") or "")
+            if "," in payload and payload.startswith("data:"):
+                payload = payload.split(",", 1)[1]
+            try:
+                raw = base64.b64decode(payload, validate=True)
+            except (binascii.Error, ValueError):
+                raise ApiError(400, "回复图片数据无法解析")
+            if not raw:
+                raise ApiError(400, "回复图片为空")
+            if len(raw) > MAX_REPLY_ATTACHMENT_BYTES:
+                raise ApiError(400, "单张回复图片不能超过 3MB")
+            ext = ALLOWED_REPLY_IMAGE_TYPES[content_type]
+            stored_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(8)}{ext}"
+            target = (REPLY_UPLOAD_DIR / stored_name).resolve()
+            if REPLY_UPLOAD_DIR.resolve() not in target.parents:
+                raise ApiError(400, "回复图片路径无效")
+            target.write_bytes(raw)
+            conn.execute(
+                """
+                INSERT INTO reply_attachments(
+                  reply_id, file_name, stored_name, content_type, file_size, created_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?)
+                """,
+                (reply_id, original_name, stored_name, content_type, len(raw), ts),
+            )
+
+    def _with_reply_attachments(
+        self,
+        conn: sqlite3.Connection,
+        replies: list[dict[str, Any] | None],
+    ) -> list[dict[str, Any]]:
+        result = [item for item in replies if item is not None]
+        for item in result:
+            item["attachments"] = []
+        if not result:
+            return result
+        replies_by_id = {int(item["id"]): item for item in result}
+        placeholders = ",".join("?" for _ in replies_by_id)
+        for row in conn.execute(
+            f"""
+            SELECT id, reply_id, file_name, content_type, file_size, created_at
+            FROM reply_attachments
+            WHERE reply_id IN ({placeholders})
+            ORDER BY id ASC
+            """,
+            list(replies_by_id.keys()),
+        ):
+            attachment = dict_from_row(row)
+            assert attachment is not None
+            attachment["url"] = f"/api/forum/reply-attachments/{attachment['id']}"
+            replies_by_id[int(attachment["reply_id"])]["attachments"].append(attachment)
+        return result
+
+    def _api_reply_attachment(self, attachment_id: int) -> None:
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT stored_name FROM reply_attachments WHERE id = ?",
+                (attachment_id,),
+            ).fetchone()
+            if row is None:
+                raise ApiError(404, "图片不存在")
+        target = (REPLY_UPLOAD_DIR / row["stored_name"]).resolve()
+        if REPLY_UPLOAD_DIR.resolve() not in target.parents:
+            raise ApiError(403, "图片路径无效")
+        self._send_file(target)
 
     def _api_feedback(self) -> None:
         session = self._current_session(required=False)
@@ -1399,7 +1616,8 @@ class SiteHandler(SimpleHTTPRequestHandler):
         username = str(data.get("username") or "")
         password = str(data.get("password") or "")
         if not (
-            hmac.compare_digest(username, ADMIN_USERNAME)
+            bool(ADMIN_PASSWORD)
+            and hmac.compare_digest(username, ADMIN_USERNAME)
             and hmac.compare_digest(password, ADMIN_PASSWORD)
         ):
             raise ApiError(401, "管理员账号或密码错误")
@@ -1490,28 +1708,179 @@ class SiteHandler(SimpleHTTPRequestHandler):
             }
         )
 
-    def _api_admin_users(self) -> None:
+    def _api_admin_users(self, query: str = "") -> None:
         self._require_admin()
+        params = parse_qs(query)
+        keyword = (params.get("q") or [""])[0].strip()
+        status = (params.get("status") or [""])[0].strip().lower()
+        clauses = ["u.role = 'user'"]
+        values: list[Any] = []
+        if keyword:
+            like = f"%{keyword}%"
+            clauses.append(
+                "(u.username LIKE ? OR u.phone LIKE ? OR u.email LIKE ? "
+                "OR u.display_name LIKE ? OR CAST(u.id AS TEXT) = ?)"
+            )
+            values.extend([like, like, like, like, keyword])
+        if status in {"active", "suspended", "blocked"}:
+            clauses.append("u.status = ?")
+            values.append(status)
+        where = " AND ".join(clauses)
         with db.connect() as conn:
             users = [
                 dict_from_row(row)
                 for row in conn.execute(
-                    """
-                    SELECT u.id, u.username, u.phone, u.email, u.display_name, u.status, u.created_at,
-                           u.last_login_at,
+                    f"""
+                    SELECT u.id, u.username, u.phone, u.email, u.display_name, u.avatar_color,
+                           u.status, u.created_at, u.last_login_at,
+                           CASE WHEN u.password_hash IS NULL OR u.password_hash = '' THEN 0 ELSE 1 END AS has_password,
                            COUNT(DISTINCT t.id) AS thread_count,
                            COUNT(DISTINCT r.id) AS reply_count
                     FROM users u
                     LEFT JOIN threads t ON t.user_id = u.id
                     LEFT JOIN replies r ON r.user_id = u.id
-                    WHERE u.role = 'user'
+                    WHERE {where}
                     GROUP BY u.id
                     ORDER BY u.created_at DESC
                     LIMIT 200
-                    """
+                    """,
+                    values,
                 )
             ]
         self._send_json({"ok": True, "users": users})
+
+    def _api_admin_update_user(self, user_id: int) -> None:
+        self._require_admin()
+        data = self._parse_json()
+        username = normalize_username(data.get("username"))
+        phone = str(data.get("phone") or "").strip()
+        email = normalize_email(data.get("email"))
+        display_name = str(data.get("display_name") or "").strip()
+        status = str(data.get("status") or "active").strip().lower()
+        avatar_color = str(data.get("avatar_color") or "#1f6feb").strip()
+        password = str(data.get("password") or "")
+        if not USERNAME_RE.fullmatch(username):
+            raise ApiError(400, "用户名为 3-32 位字母、数字、下划线、点或短横线")
+        if not PHONE_RE.fullmatch(phone):
+            raise ApiError(400, "请输入有效手机号")
+        if email and not EMAIL_RE.fullmatch(email):
+            raise ApiError(400, "邮箱格式不正确")
+        if not display_name:
+            display_name = username
+        if status not in {"active", "suspended", "blocked"}:
+            raise ApiError(400, "用户状态只支持 active/suspended/blocked")
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", avatar_color):
+            avatar_color = "#1f6feb"
+        if password:
+            if len(password) < PASSWORD_MIN_LENGTH:
+                raise ApiError(400, f"密码至少需要 {PASSWORD_MIN_LENGTH} 位")
+            if len(password) > 128:
+                raise ApiError(400, "密码不能超过 128 位")
+
+        with db.connect() as conn:
+            current = conn.execute(
+                "SELECT id, status FROM users WHERE id = ? AND role = 'user'",
+                (user_id,),
+            ).fetchone()
+            if current is None:
+                raise ApiError(404, "用户不存在")
+            if conn.execute(
+                "SELECT 1 FROM users WHERE username = ? AND id <> ?",
+                (username, user_id),
+            ).fetchone():
+                raise ApiError(409, "用户名已存在")
+            if conn.execute(
+                "SELECT 1 FROM users WHERE phone = ? AND id <> ?",
+                (phone, user_id),
+            ).fetchone():
+                raise ApiError(409, "手机号已注册")
+            if email and conn.execute(
+                "SELECT 1 FROM users WHERE email = ? AND id <> ?",
+                (email, user_id),
+            ).fetchone():
+                raise ApiError(409, "邮箱已注册")
+
+            if password:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET username = ?, phone = ?, email = ?, display_name = ?,
+                        avatar_color = ?, status = ?, password_hash = ?
+                    WHERE id = ? AND role = 'user'
+                    """,
+                    (
+                        username,
+                        phone,
+                        email or None,
+                        display_name[:60],
+                        avatar_color,
+                        status,
+                        password_hash(password),
+                        user_id,
+                    ),
+                )
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            else:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET username = ?, phone = ?, email = ?, display_name = ?,
+                        avatar_color = ?, status = ?
+                    WHERE id = ? AND role = 'user'
+                    """,
+                    (
+                        username,
+                        phone,
+                        email or None,
+                        display_name[:60],
+                        avatar_color,
+                        status,
+                        user_id,
+                    ),
+                )
+                if status != "active" or current["status"] != status:
+                    conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            user = self._admin_user_detail(conn, user_id)
+        self._send_json({"ok": True, "user": user})
+
+    def _admin_user_detail(self, conn: sqlite3.Connection, user_id: int) -> dict[str, Any]:
+        row = conn.execute(
+            """
+            SELECT u.id, u.username, u.phone, u.email, u.display_name, u.avatar_color,
+                   u.status, u.created_at, u.last_login_at,
+                   CASE WHEN u.password_hash IS NULL OR u.password_hash = '' THEN 0 ELSE 1 END AS has_password,
+                   COUNT(DISTINCT t.id) AS thread_count,
+                   COUNT(DISTINCT r.id) AS reply_count
+            FROM users u
+            LEFT JOIN threads t ON t.user_id = u.id
+            LEFT JOIN replies r ON r.user_id = u.id
+            WHERE u.id = ? AND u.role = 'user'
+            GROUP BY u.id
+            """,
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            raise ApiError(404, "用户不存在")
+        item = dict_from_row(row)
+        assert item is not None
+        return item
+
+    def _api_admin_set_user_status(self, user_id: int) -> None:
+        self._require_admin()
+        data = self._parse_json()
+        status = str(data.get("status") or "").strip().lower()
+        if status not in {"active", "suspended", "blocked"}:
+            raise ApiError(400, "用户状态只支持 active/suspended/blocked")
+        with db.connect() as conn:
+            cur = conn.execute(
+                "UPDATE users SET status = ? WHERE id = ? AND role = 'user'",
+                (status, user_id),
+            )
+            if cur.rowcount == 0:
+                raise ApiError(404, "用户不存在")
+            if status != "active":
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        self._send_json({"ok": True, "status": status})
 
     def _api_admin_toggle_user(self, user_id: int) -> None:
         self._require_admin()
@@ -1525,28 +1894,88 @@ class SiteHandler(SimpleHTTPRequestHandler):
                 conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         self._send_json({"ok": True, "status": next_status})
 
-    def _api_admin_threads(self) -> None:
+    def _api_admin_threads(self, query: str = "") -> None:
         self._require_admin()
+        params = parse_qs(query)
+        keyword = (params.get("q") or [""])[0].strip()
+        status = (params.get("status") or [""])[0].strip().lower()
+        clauses: list[str] = []
+        values: list[Any] = []
+        if keyword:
+            like = f"%{keyword}%"
+            clauses.append(
+                "(t.title LIKE ? OR t.body LIKE ? OR t.tags LIKE ? "
+                "OR u.display_name LIKE ? OR u.username LIKE ? OR CAST(t.id AS TEXT) = ?)"
+            )
+            values.extend([like, like, like, like, like, keyword])
+        if status in {"open", "locked"}:
+            clauses.append("t.status = ?")
+            values.append(status)
+        where = "WHERE " + " AND ".join(clauses) if clauses else ""
         with db.connect() as conn:
             threads = [
                 dict_from_row(row)
                 for row in conn.execute(
-                    """
-                    SELECT t.id, t.title, t.status, t.views, t.tags, t.created_at, t.last_activity_at,
+                    f"""
+                    SELECT t.id, t.title, t.body, t.status, t.views, t.tags, t.created_at,
+                           t.updated_at, t.last_activity_at, t.user_id,
                            COALESCE(u.display_name, 'cfquant 官方') AS author_name,
+                           COALESCE(u.username, '') AS author_username,
                            c.name AS category_name,
                            COUNT(r.id) AS reply_count
                     FROM threads t
                     LEFT JOIN users u ON u.id = t.user_id
                     LEFT JOIN categories c ON c.id = t.category_id
                     LEFT JOIN replies r ON r.thread_id = t.id
+                    {where}
                     GROUP BY t.id
                     ORDER BY t.last_activity_at DESC
                     LIMIT 200
-                    """
+                    """,
+                    values,
                 )
             ]
         self._send_json({"ok": True, "threads": threads})
+
+    def _api_admin_thread_replies(self, thread_id: int) -> None:
+        self._require_admin()
+        with db.connect() as conn:
+            thread = conn.execute(
+                """
+                SELECT t.id, t.title, t.body, t.status, t.views, t.tags,
+                       t.created_at, t.updated_at, t.last_activity_at,
+                       COALESCE(u.display_name, 'cfquant 官方') AS author_name,
+                       COALESCE(u.username, '') AS author_username,
+                       c.name AS category_name
+                FROM threads t
+                LEFT JOIN users u ON u.id = t.user_id
+                LEFT JOIN categories c ON c.id = t.category_id
+                WHERE t.id = ?
+                """,
+                (thread_id,),
+            ).fetchone()
+            if thread is None:
+                raise ApiError(404, "帖子不存在")
+            replies = [
+                dict_from_row(row)
+                for row in conn.execute(
+                    """
+                    SELECT r.id, r.parent_id, r.body, r.created_at, r.user_id,
+                           COALESCE(u.display_name, 'cfquant 用户') AS author_name,
+                           COALESCE(u.username, '') AS author_username,
+                           u.avatar_color AS author_color
+                    FROM replies r
+                    LEFT JOIN users u ON u.id = r.user_id
+                    WHERE r.thread_id = ?
+                    ORDER BY r.created_at ASC, r.id ASC
+                    """,
+                    (thread_id,),
+                )
+            ]
+            replies = self._with_reply_attachments(conn, replies)
+            payload = dict_from_row(thread)
+            assert payload is not None
+        self._send_json({"ok": True, "thread": payload, "replies": replies})
 
     def _api_admin_lock_thread(self, thread_id: int) -> None:
         self._require_admin()
@@ -1557,6 +1986,61 @@ class SiteHandler(SimpleHTTPRequestHandler):
             next_status = "locked" if row["status"] == "open" else "open"
             conn.execute("UPDATE threads SET status = ?, updated_at = ? WHERE id = ?", (next_status, now_iso(), thread_id))
         self._send_json({"ok": True, "status": next_status})
+
+    def _api_admin_delete_thread(self, thread_id: int) -> None:
+        self._require_admin()
+        with db.connect() as conn:
+            cur = conn.execute("DELETE FROM threads WHERE id = ?", (thread_id,))
+            if cur.rowcount == 0:
+                raise ApiError(404, "帖子不存在")
+        self._send_json({"ok": True, "deleted": thread_id})
+
+    def _reply_tree_ids(self, conn: sqlite3.Connection, reply_id: int) -> list[int]:
+        pending = [reply_id]
+        result: list[int] = []
+        while pending:
+            current = pending.pop()
+            if current in result:
+                continue
+            result.append(current)
+            children = conn.execute(
+                "SELECT id FROM replies WHERE parent_id = ?",
+                (current,),
+            ).fetchall()
+            pending.extend(int(row["id"]) for row in children)
+        return result
+
+    def _refresh_thread_activity(self, conn: sqlite3.Connection, thread_id: int) -> None:
+        thread = conn.execute(
+            "SELECT created_at FROM threads WHERE id = ?",
+            (thread_id,),
+        ).fetchone()
+        if thread is None:
+            return
+        latest_reply = conn.execute(
+            "SELECT MAX(created_at) FROM replies WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE threads SET updated_at = ?, last_activity_at = ? WHERE id = ?",
+            (now_iso(), latest_reply or thread["created_at"], thread_id),
+        )
+
+    def _api_admin_delete_reply(self, reply_id: int) -> None:
+        self._require_admin()
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT id, thread_id FROM replies WHERE id = ?",
+                (reply_id,),
+            ).fetchone()
+            if row is None:
+                raise ApiError(404, "回复不存在")
+            thread_id = int(row["thread_id"])
+            reply_ids = self._reply_tree_ids(conn, reply_id)
+            placeholders = ",".join("?" for _ in reply_ids)
+            conn.execute(f"DELETE FROM replies WHERE id IN ({placeholders})", reply_ids)
+            self._refresh_thread_activity(conn, thread_id)
+        self._send_json({"ok": True, "deleted": reply_ids})
 
     def _api_admin_feedback_list(self) -> None:
         self._require_admin()
@@ -1856,6 +2340,7 @@ def main() -> None:
     PACKAGE_DIR.mkdir(parents=True, exist_ok=True)
     FRONTEND_DIR.mkdir(parents=True, exist_ok=True)
     FEEDBACK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    REPLY_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     db.initialize()
     args = parse_args()
     server = ThreadingHTTPServer((args.host, args.port), SiteHandler)

@@ -26,21 +26,21 @@ http://127.0.0.1:8780/95ge
 后台默认账号：
 
 ```text
-root
-root123456
+admin
 ```
 
 可用环境变量覆盖：
 
 ```powershell
-$env:CFQUANT_SITE_ADMIN_USER="root"
-$env:CFQUANT_SITE_ADMIN_PASSWORD="your-strong-password"
+$env:CFQUANT_SITE_ADMIN_USER="admin"
+$env:CFQUANT_SITE_ADMIN_PASSWORD="<your-admin-password>"
 ```
 
 ## 功能范围
 
 - 官网首页默认进入项目介绍，游客可先了解本地桥接能力、下载入口和更新策略；论坛仍可查看内容，点击帖子会进入独立详情页，注册用户可发帖和回复。
 - 注册要求用户名、手机号和密码；用户名、手机号、邮箱均保持唯一，邮箱可选且不做验证码验证。登录时可使用用户名、手机号或邮箱加密码；旧账号可在已有登录会话的用户中心设置密码。
+- 官网页面更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 - 下载页支持本地更新包镜像和外部链接。
 - 用户中心支持互动通知、站内通知和已读状态。
 - 反馈表单支持登录用户和未登录联系方式，支持上传最多 4 张截图用于问题排查。
