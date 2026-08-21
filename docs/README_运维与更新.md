@@ -37,6 +37,24 @@ log/
 
 根目录历史遗留的 `*.log`、`log_data/`、`tx_log/` 也纳入清理和 Git 忽略。QMT `userdata/log` 清理默认关闭，需要用户在网页里显式启用。
 
+## 运行数据目录
+
+本地运行状态和配置数据库统一放入 `runtime/`，不提交到 Git：
+
+```text
+runtime/
+  config/cfquant_web_config.json
+  db/cfquant_web_config.db
+  lttx/
+  reports/
+  media/
+  cache/
+  status/cfquant_pipe_hub_status.json
+  screenshots/
+```
+
+旧版本根目录下的 `cfquant_web_config.db` 和 `cfquant_pipe_hub_status.json` 属于历史遗留文件，整理项目时可迁移到上述目录。
+
 常用环境变量：
 
 ```text

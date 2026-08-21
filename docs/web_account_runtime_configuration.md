@@ -97,7 +97,7 @@ Web 服务启动后，第一次访问控制台会显示初始化窗口。需要�
 
 ## 7. 配置保存位置
 
-账号运行配置由 Web 服务保存到 `cfquant_web_config.json`，字段包括：
+账号运行配置由 Web 服务保存到 `runtime/config/cfquant_web_config.json`，字段包括：
 
 - `initialized`
 - `account_configs`

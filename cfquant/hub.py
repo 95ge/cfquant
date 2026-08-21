@@ -9,6 +9,11 @@ import time
 from .protocol import loads_message
 
 
+def default_status_file(filename):
+    runtime_dir = os.path.abspath(os.environ.get("CFQUANT_RUNTIME_DIR") or os.path.join(os.getcwd(), "runtime"))
+    return os.path.join(runtime_dir, "status", filename)
+
+
 class CfquantHub(object):
     """
     外部 Socket Hub。
@@ -31,7 +36,9 @@ class CfquantHub(object):
         self.pending = {}
         self.client_by_id = {}
         self.state_lock = threading.RLock()
-        self.status_file = os.path.abspath("cfquant_hub_status.json")
+        self.status_file = os.path.abspath(
+            os.environ.get("CFQUANT_HUB_STATUS_FILE") or default_status_file("cfquant_hub_status.json")
+        )
 
     def start(self):
         if self.running:
@@ -284,6 +291,9 @@ class CfquantHub(object):
                 "pending_ids": pending_ids,
                 "api_client_count": client_count,
             }
+            status_dir = os.path.dirname(self.status_file)
+            if status_dir:
+                os.makedirs(status_dir, exist_ok=True)
             with open(self.status_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception:

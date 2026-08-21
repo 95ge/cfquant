@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+import sys
+sys.dont_write_bytecode = True
+
 import argparse
 import base64
 import email.parser
@@ -18,7 +21,6 @@ import sqlite3
 import socket
 import stat
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -57,10 +59,29 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260820_03"
+WEB_VERSION = "web_20260821_02"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
+RUNTIME_DIR = os.path.abspath(os.environ.get("CFQUANT_RUNTIME_DIR") or os.path.join(BASE_DIR, "runtime"))
+RUNTIME_CONFIG_DIR = os.path.join(RUNTIME_DIR, "config")
+RUNTIME_DB_DIR = os.path.join(RUNTIME_DIR, "db")
+RUNTIME_LTTX_DIR = os.path.join(RUNTIME_DIR, "lttx")
+RUNTIME_REPORTS_DIR = os.path.join(RUNTIME_DIR, "reports")
+RUNTIME_STATUS_DIR = os.path.join(RUNTIME_DIR, "status")
+try:
+    os.makedirs(RUNTIME_CONFIG_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_DB_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_LTTX_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_REPORTS_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_STATUS_DIR, exist_ok=True)
+except Exception:
+    RUNTIME_DIR = BASE_DIR
+    RUNTIME_CONFIG_DIR = BASE_DIR
+    RUNTIME_DB_DIR = BASE_DIR
+    RUNTIME_LTTX_DIR = BASE_DIR
+    RUNTIME_REPORTS_DIR = BASE_DIR
+    RUNTIME_STATUS_DIR = BASE_DIR
 LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -162,7 +183,10 @@ LTTX_STDERR_LOG = os.path.join(LOG_DIR, "lttx_server.stderr.log")
 PIPE_HUB_ENTRY = os.environ.get("CFQUANT_PIPE_HUB_ENTRY") or os.path.join(BASE_DIR, "cfquant_pipe_hub.py")
 PIPE_HUB_STDOUT_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stdout.log")
 PIPE_HUB_STDERR_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stderr.log")
-PIPE_HUB_STATUS_FILE = os.path.join(BASE_DIR, "cfquant_pipe_hub_status.json")
+PIPE_HUB_STATUS_FILE = os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or os.path.join(
+    RUNTIME_STATUS_DIR,
+    "cfquant_pipe_hub_status.json",
+)
 QMT_BRIDGE_CONFIG_FILENAME = os.environ.get("CFQUANT_QMT_BRIDGE_CONFIG_FILENAME", "cfquant_bridge_config.json")
 LTTX_DISCOVERY_KEY = os.environ.get("CFQUANT_DISCOVERY_KEY", "cfquant.runtime")
 LTTX_WEB_REQUEST_CHANNEL = os.environ.get("CFQUANT_WEB_REQUEST_CHANNEL", "cfquant.web.request")
@@ -177,8 +201,14 @@ try:
 except Exception:
     _LOG_FP = None
 DEFAULT_ACCOUNT_ID = os.environ.get("CFQUANT_ACCOUNT_ID", "2220009880")
-WEB_CONFIG_FILE = os.environ.get("CFQUANT_WEB_CONFIG_FILE") or os.path.join(BASE_DIR, "cfquant_web_config.json")
-WEB_SETTINGS_DB_FILE = os.environ.get("CFQUANT_WEB_SETTINGS_DB_FILE") or os.path.join(BASE_DIR, "cfquant_web_config.db")
+WEB_CONFIG_FILE = os.environ.get("CFQUANT_WEB_CONFIG_FILE") or os.path.join(
+    RUNTIME_CONFIG_DIR,
+    "cfquant_web_config.json",
+)
+WEB_SETTINGS_DB_FILE = os.environ.get("CFQUANT_WEB_SETTINGS_DB_FILE") or os.path.join(
+    RUNTIME_DB_DIR,
+    "cfquant_web_config.db",
+)
 RECONNECT_COOLDOWN_SECONDS = float(os.environ.get("CFQUANT_WEB_RECONNECT_COOLDOWN", "30"))
 ENV_BRIDGES = configured_bridges()
 BRIDGES = dict(ENV_BRIDGES)
@@ -191,6 +221,7 @@ CHANNELS = ENV_BRIDGES[DEFAULT_BRIDGE_ID]["channels"]
 CALLBACK_EVENT_CHANNEL = CHANNELS["callback"]
 STATUS_CHECK_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_INTERVAL", "15"))
 STATUS_PROBE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_PROBE_TIMEOUT", "8"))
+RUNTIME_REPORT_TTL_SECONDS = float(os.environ.get("CFQUANT_QMT_RUNTIME_REPORT_TTL", "75"))
 ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
@@ -2237,6 +2268,7 @@ class PipeHubManager(object):
                 creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
             env = os.environ.copy()
+            env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
             env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
             env.setdefault("CFQUANT_LOG_RETENTION_DAYS", str(LOG_RETENTION_DAYS))
             env.setdefault("CFQUANT_PIPE_HUB_STATUS_FILE", PIPE_HUB_STATUS_FILE)
@@ -2698,6 +2730,153 @@ class LttxWebRouteServer(object):
 LTTX_WEB_ROUTE = LttxWebRouteServer()
 
 
+class RuntimeVersionRegistry(object):
+    def __init__(self, ttl_seconds=RUNTIME_REPORT_TTL_SECONDS):
+        self.ttl_seconds = float(ttl_seconds)
+        self._lock = threading.RLock()
+        self._reports = {}
+
+    def update_from_status(self, bridge_id, channel_key, status, mode="", source="cfquant.status"):
+        if not isinstance(status, dict):
+            return None
+        runtime = status.get("runtime") if isinstance(status.get("runtime"), dict) else {}
+        version = self._first_value(
+            runtime,
+            status,
+            keys=("core_version", "version", "runtime_core_version", "qmt_runtime_core_version"),
+        )
+        if not version:
+            return None
+        report = self._build_report(
+            bridge_id=bridge_id or runtime.get("bridge_id") or status.get("bridge_id"),
+            channel_key=channel_key,
+            version=version,
+            source=source,
+            mode=mode or runtime.get("transport") or status.get("transport") or "",
+            runtime=runtime,
+            status=status,
+        )
+        return self._remember(report)
+
+    def update_from_event(self, event):
+        if not isinstance(event, dict):
+            return None
+        data = event.get("data") if isinstance(event.get("data"), dict) else {}
+        meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+        event_name = str(event.get("event") or data.get("event") or "")
+        schema = str(data.get("schema") or "")
+        if event_name != "cfquant.runtime" and schema != "cfquant.qmt.runtime":
+            return None
+        version = self._first_value(
+            data,
+            keys=("core_version", "version", "runtime_core_version", "qmt_runtime_core_version"),
+        )
+        if not version:
+            return None
+        report = self._build_report(
+            bridge_id=data.get("bridge_id") or event.get("bridge_id") or meta.get("bridge_id"),
+            channel_key=data.get("channel_key") or data.get("channel") or data.get("request_channel") or "",
+            version=version,
+            source=str(meta.get("source") or "qmt_runtime_report"),
+            mode=data.get("transport") or "",
+            runtime=data,
+            status={},
+        )
+        return self._remember(report)
+
+    def latest(self, bridge_id=None):
+        bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+        with self._lock:
+            rows = [
+                dict(row)
+                for (item_bridge_id, _channel), row in self._reports.items()
+                if item_bridge_id == bridge_id
+            ]
+        if not rows:
+            return self._empty_report(bridge_id)
+        rows.sort(key=lambda item: float(item.get("reported_at") or 0), reverse=True)
+        latest = rows[0]
+        age = max(0.0, time.time() - float(latest.get("reported_at") or 0))
+        latest["age_seconds"] = round(age, 1)
+        latest["ttl_seconds"] = self.ttl_seconds
+        latest["stale"] = age > self.ttl_seconds
+        latest["reported"] = not latest["stale"]
+        latest["has_report"] = True
+        latest["message"] = (
+            "QMT 运行时版本已上报"
+            if latest["reported"] else
+            "QMT 运行时版本上报已过期，请确认对应 QMT 桥接脚本正在运行"
+        )
+        latest["reports"] = rows[:6]
+        return latest
+
+    def _remember(self, report):
+        bridge_id = normalize_bridge_id(report.get("bridge_id") or DEFAULT_BRIDGE_ID)
+        channel_key = str(report.get("channel_key") or report.get("request_channel") or "runtime").strip() or "runtime"
+        report["bridge_id"] = bridge_id
+        report["channel_key"] = channel_key
+        with self._lock:
+            self._reports[(bridge_id, channel_key)] = dict(report)
+        return dict(report)
+
+    def _build_report(self, bridge_id, channel_key, version, source, mode, runtime, status):
+        now = time.time()
+        runtime = runtime if isinstance(runtime, dict) else {}
+        status = status if isinstance(status, dict) else {}
+        request_channel = self._first_value(runtime, status, keys=("request_channel", "callback_event_channel"))
+        return {
+            "bridge_id": normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID),
+            "channel_key": str(channel_key or "").strip(),
+            "request_channel": request_channel,
+            "version": str(version or "").strip(),
+            "core_version": str(version or "").strip(),
+            "source": source,
+            "mode": str(mode or "").strip(),
+            "bridge": self._first_value(runtime, status, keys=("bridge",)),
+            "account_id": self._first_value(runtime, status, keys=("account_id",)),
+            "pid": self._first_value(runtime, status, keys=("pid",)),
+            "python": self._first_value(runtime, status, keys=("python",)),
+            "entry_file": self._first_value(runtime, status, keys=("entry_file", "qmt_runtime_entry_file")),
+            "core_dir": self._first_value(runtime, status, keys=("core_dir",)),
+            "version_file": self._first_value(runtime, status, keys=("version_file",)),
+            "started_at": runtime.get("started_at") or status.get("started_at") or 0,
+            "started_at_text": runtime.get("started_at_text") or status.get("started_at_text") or "",
+            "reported_at": now,
+            "reported_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "reported": True,
+            "stale": False,
+            "has_report": True,
+            "message": "QMT 运行时版本已上报",
+        }
+
+    def _empty_report(self, bridge_id):
+        return {
+            "bridge_id": normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID),
+            "version": "",
+            "core_version": "",
+            "reported": False,
+            "has_report": False,
+            "stale": False,
+            "age_seconds": None,
+            "ttl_seconds": self.ttl_seconds,
+            "reports": [],
+            "message": "未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看",
+        }
+
+    def _first_value(self, *items, keys):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in keys:
+                value = item.get(key)
+                if value not in (None, ""):
+                    return str(value).strip()
+        return ""
+
+
+RUNTIME_VERSIONS = RuntimeVersionRegistry()
+
+
 def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
     bridge_id = normalize_bridge_id(bridge_id)
     channels = bridge_channels(bridge_id)
@@ -2708,6 +2887,7 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
     result = {
         "bridge_id": bridge_id,
         "bridge_name": bridge_config(bridge_id)["name"],
+        "runtime_report": RUNTIME_VERSIONS.latest(bridge_id),
         "normal": {
             "online": bool(hub.get("running") and channels["normal"] in connected_channels),
             "channel": channels["normal"],
@@ -3398,6 +3578,10 @@ class CallbackEventStore(object):
                 row["account_key"] = account_key_for(row.get("account_id"), row.get("account_type"), row.get("bridge_id"))
             row["seq"] = self._seq
             row["received_at"] = time.time()
+            try:
+                RUNTIME_VERSIONS.update_from_event(row)
+            except Exception as e:
+                safe_print("runtime version report parse failed: %s" % e)
             self._events.append(row)
             if len(self._events) > self.max_events:
                 self._events = self._events[-self.max_events:]
@@ -3797,6 +3981,11 @@ class CfquantUpdater(object):
             "targets": {},
             "backups": [],
             "current_version": "",
+            "runtime_version": "",
+            "runtime_reported": False,
+            "runtime_report": RUNTIME_VERSIONS.latest(bridge_id),
+            "file_version": "",
+            "version_source": "",
             "last_update": {},
             "version_status": self._build_version_status(None, "", {}, repo_url, ref),
             "default_repo_url": repo_url,
@@ -3810,7 +3999,15 @@ class CfquantUpdater(object):
             target = self._target_paths(python_dir)
             result["targets"] = target
             result["backups"] = self._list_backups(target["backup_dir"])
-            result["current_version"] = self._read_version(target["current_core"])
+            file_version = self._read_version(target["current_core"])
+            runtime_report = refresh_runtime_version_report(bridge_id)
+            runtime_version = runtime_report.get("version") if runtime_report.get("reported") else ""
+            result["file_version"] = file_version
+            result["runtime_report"] = runtime_report
+            result["runtime_reported"] = bool(runtime_report.get("reported"))
+            result["runtime_version"] = runtime_version
+            result["current_version"] = runtime_version
+            result["version_source"] = "qmt_runtime" if runtime_version else ""
             result["last_update"] = self._read_install_meta(target["updates_dir"])
             result["version_status"] = self._build_version_status(
                 target,
@@ -3818,7 +4015,11 @@ class CfquantUpdater(object):
                 result["last_update"],
                 repo_url,
                 ref,
+                runtime_report=runtime_report,
+                file_version=file_version,
             )
+            if not runtime_version:
+                result["warnings"].append(runtime_report.get("message") or "未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看")
             if not os.path.isdir(target["python_dir"]):
                 result["errors"].append("QMT 核心目录不存在: %s" % target["python_dir"])
             if not os.path.isdir(target["project_dir"]):
@@ -4064,8 +4265,8 @@ class CfquantUpdater(object):
             self._restore_backup_dir(backup, current)
             raise
 
-    def _build_version_status(self, target, current_version, last_update, repo_url, ref):
-        current = self._current_version_info(target, current_version, last_update)
+    def _build_version_status(self, target, current_version, last_update, repo_url, ref, runtime_report=None, file_version=""):
+        current = self._current_version_info(target, current_version, last_update, runtime_report=runtime_report, file_version=file_version)
         remote = self._remote_version_info(repo_url, ref)
         matches_remote = None
         version_comparison = _compare_project_versions(current.get("version"), remote.get("version"))
@@ -4082,8 +4283,9 @@ class CfquantUpdater(object):
             "comparison": version_comparison,
         }
 
-    def _current_version_info(self, target, current_version, last_update):
+    def _current_version_info(self, target, current_version, last_update, runtime_report=None, file_version=""):
         last_update = last_update if isinstance(last_update, dict) else {}
+        runtime_report = runtime_report if isinstance(runtime_report, dict) else {}
         source = last_update.get("source") if isinstance(last_update.get("source"), dict) else {}
         fetch = source.get("fetch") if isinstance(source.get("fetch"), dict) else {}
         commit = str(fetch.get("commit") or source.get("commit") or last_update.get("commit") or "").strip()
@@ -4093,12 +4295,23 @@ class CfquantUpdater(object):
             if commit:
                 source_name = "git"
         updated_at_text = str(last_update.get("updated_at_text") or "").strip()
+        runtime_version = str(current_version or "").strip()
+        runtime_reported = bool(runtime_report.get("reported") and runtime_report.get("version"))
         return {
-            "version": str(current_version or "").strip(),
+            "version": runtime_version,
+            "runtime_version": runtime_version,
+            "runtime_reported": runtime_reported,
+            "runtime_report": runtime_report,
+            "file_version": str(file_version or "").strip(),
             "commit": commit,
             "short_commit": self._short_commit(commit),
-            "source": source_name,
+            "source": "qmt_runtime" if runtime_reported else source_name,
             "updated_at_text": updated_at_text,
+            "message": (
+                "QMT 运行时版本已上报"
+                if runtime_reported else
+                (runtime_report.get("message") or "未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看")
+            ),
         }
 
     def _remote_version_info(self, repo_url, ref):
@@ -4647,6 +4860,7 @@ class CfquantProjectUpdater(object):
         "log",
         "log_data",
         "tx_log",
+        "runtime",
         "pic",
         "remotion_intro",
     }
@@ -4656,6 +4870,9 @@ class CfquantProjectUpdater(object):
         "cfquant_web_config.json",
         "cfquant_web_config.db",
         "cfquant_pipe_hub_status.json",
+        "runtime/config/cfquant_web_config.json",
+        "runtime/db/cfquant_web_config.db",
+        "runtime/status/cfquant_pipe_hub_status.json",
         "LTtx/tx/Config.txt",
         "LTtx/tx/data0.txt",
     }
@@ -5474,8 +5691,11 @@ def start_lttx_server():
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
     env = os.environ.copy()
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
     env.setdefault("CFQUANT_LOG_RETENTION_DAYS", str(LOG_RETENTION_DAYS))
+    env.setdefault("CFQUANT_RUNTIME_DIR", RUNTIME_DIR)
+    env.setdefault("CFQUANT_LTTX_RUNTIME_DIR", RUNTIME_LTTX_DIR)
     stdout = open(LTTX_STDOUT_LOG, "a", encoding="utf-8", buffering=1)
     stderr = open(LTTX_STDERR_LOG, "a", encoding="utf-8", buffering=1)
     try:
@@ -5658,10 +5878,17 @@ def probe_bridge_channel_status(
 
     try:
         status = request("cfquant.status")
+        runtime_report = RUNTIME_VERSIONS.update_from_status(
+            bridge_id,
+            channel_key,
+            status,
+            mode=mode or default_runtime_client_mode(),
+        )
         return {
             "online": True,
             "channel": channel,
             "status": status,
+            "runtime_report": runtime_report or {},
             "probe_action": "cfquant.status",
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         }
@@ -7041,6 +7268,124 @@ def bridge_update_status(bridge_id=None, repo_url=None, ref=None):
     return UPDATER.status(bridge_id or DEFAULT_BRIDGE_ID, repo_url=repo_url, ref=ref)
 
 
+def lttx_server_reachable(timeout=0.35):
+    try:
+        sock = socket.create_connection((LTTX_HOST, int(LTTX_PORT)), timeout=float(timeout))
+        sock.close()
+        return True
+    except Exception:
+        return False
+
+
+def read_lttx_runtime_report(bridge_id=None):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    if not lttx_server_reachable():
+        return None
+    tx = None
+    latest = None
+    try:
+        tx = txl(LTTX_HOST, LTTX_PORT, "LTtx", show=False)
+        tx.start_tx(mode="probe")
+        base_key = "cfquant.qmt.runtime.%s" % bridge_id
+        for key in ("%s.normal" % base_key, "%s.trade" % base_key, base_key):
+            value = tx.get(key)
+            if isinstance(value, str):
+                try:
+                    data = json.loads(value)
+                except Exception:
+                    data = {}
+            elif isinstance(value, dict):
+                data = value
+            else:
+                data = {}
+            if not isinstance(data, dict) or not data.get("core_version"):
+                continue
+            report = RUNTIME_VERSIONS.update_from_event({
+                "type": "event",
+                "event": "cfquant.runtime",
+                "bridge_id": bridge_id,
+                "data": data,
+                "meta": {"bridge_id": bridge_id, "source": "lttx_registry"},
+            })
+            latest = report or latest
+        return latest
+    except Exception:
+        return None
+    finally:
+        if tx is not None:
+            try:
+                tx.close()
+            except Exception:
+                pass
+
+
+def runtime_probe_modes(bridge_id=None):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    modes = []
+    for config in enabled_account_configs().values():
+        if normalize_bridge_id(config.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
+            continue
+        if not config.get("enabled", True):
+            continue
+        try:
+            mode = normalize_transport_mode(config.get("mode") or default_runtime_client_mode())
+        except Exception:
+            continue
+        if mode not in modes:
+            modes.append(mode)
+    if bridge_has_lttx_account(bridge_id) and "lttx" not in modes:
+        modes.append("lttx")
+    if not modes:
+        modes.append(default_runtime_client_mode())
+    if "ctypes" not in modes:
+        modes.append("ctypes")
+    return modes
+
+
+def refresh_runtime_version_report(bridge_id=None, timeout=1.6):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    errors = []
+    read_lttx_runtime_report(bridge_id)
+    for mode in runtime_probe_modes(bridge_id):
+        if mode == "ctypes":
+            try:
+                if not PIPE_HUB.status().get("running"):
+                    errors.append("ctypes: PipeHub 未运行")
+                    continue
+            except Exception as e:
+                errors.append("ctypes: %s" % e)
+                continue
+        for channel_key in ("normal", "trade"):
+            try:
+                status = CLIENTS.request(
+                    bridge_id,
+                    channel_key,
+                    "cfquant.status",
+                    {},
+                    timeout=timeout,
+                    mark_offline_on_timeout=False,
+                    ignore_cooldown=True,
+                    mode=mode,
+                )
+                report = RUNTIME_VERSIONS.update_from_status(
+                    bridge_id,
+                    channel_key,
+                    status,
+                    mode=mode,
+                    source="cfquant.status.refresh",
+                )
+                if not report:
+                    errors.append("%s/%s: QMT 已响应但未包含运行时版本字段" % (mode, channel_key))
+            except Exception as e:
+                errors.append("%s/%s: %s" % (mode, channel_key, e))
+    report = RUNTIME_VERSIONS.latest(bridge_id)
+    report["probe_attempted"] = True
+    report["probe_errors"] = errors[-6:]
+    if not report.get("reported") and any("未包含运行时版本字段" in item for item in errors):
+        report["message"] = "QMT 已响应，但当前运行入口未上报版本；请重启已更新的 QMT 桥接脚本后再查看"
+    return report
+
+
 _PROJECT_VERSION_CACHE = {}
 _PROJECT_VERSION_LOCK = threading.RLock()
 
@@ -7239,11 +7584,13 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
     return result
 
 
-def project_version_info(include_remote=False, force=False, repo_url=None, ref=None):
+def project_version_info(include_remote=False, force=False, repo_url=None, ref=None, bridge_id=None):
     repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
     ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
     local = _local_project_version_info()
     core_version = local.get("version") or current_core_version()
+    qmt_runtime = refresh_runtime_version_report(bridge_id, timeout=1.2) if force else RUNTIME_VERSIONS.latest(bridge_id)
     data = {
         "current_version": core_version,
         "core_version": core_version,
@@ -7253,6 +7600,10 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
         "core_version_import_stale": bool(local.get("import_stale")),
         "web_version": WEB_VERSION,
         "frontend_version": WEB_VERSION,
+        "qmt_runtime": qmt_runtime,
+        "qmt_runtime_version": qmt_runtime.get("version") if qmt_runtime.get("reported") else "",
+        "qmt_runtime_reported": bool(qmt_runtime.get("reported")),
+        "bridge_id": bridge_id,
         "repo_url": repo_url,
         "ref": ref,
         "local": local,
@@ -7270,6 +7621,10 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
         data["comparison"] = comparison
         data["web_comparison"] = web_comparison
         data["update_available"] = comparison in ("newer", "different") or web_comparison in ("newer", "different")
+        qmt_runtime_version = data.get("qmt_runtime_version") or ""
+        qmt_runtime_comparison = _compare_project_versions(qmt_runtime_version, remote.get("core_version") or remote.get("version")) if qmt_runtime_version else "unknown"
+        data["qmt_runtime_comparison"] = qmt_runtime_comparison
+        data["qmt_update_available"] = qmt_runtime_comparison in ("newer", "different")
     return data
 
 
@@ -8295,11 +8650,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 force = parse_bool((query.get("force") or ["0"])[0])
                 repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
                 ref = (query.get("ref") or query.get("branch") or query.get("tag") or [""])[0]
+                bridge_id = (query.get("bridge_id") or [""])[0]
                 self._write_json(ok(project_version_info(
                     include_remote=include_remote,
                     force=force,
                     repo_url=repo_url,
                     ref=ref,
+                    bridge_id=bridge_id,
                 )))
             elif parsed.path == "/api/quotes/status":
                 self._write_json(ok(quote_status()))

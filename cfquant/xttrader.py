@@ -821,9 +821,13 @@ def _account_bridge_config_paths():
     env_path = os.environ.get("CFQUANT_WEB_CONFIG_FILE")
     if env_path:
         paths.append(os.path.abspath(env_path))
+    project_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    cwd = os.path.abspath(os.getcwd())
     paths.extend([
-        os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, "cfquant_web_config.json")),
-        os.path.abspath(os.path.join(os.getcwd(), "cfquant_web_config.json")),
+        os.path.join(project_dir, "runtime", "config", "cfquant_web_config.json"),
+        os.path.join(cwd, "runtime", "config", "cfquant_web_config.json"),
+        os.path.join(project_dir, "cfquant_web_config.json"),
+        os.path.join(cwd, "cfquant_web_config.json"),
     ])
     result = []
     seen = set()

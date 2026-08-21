@@ -138,6 +138,40 @@ def start_thread(target,args):
 log_que = queue.Queue()
 log_list = []
 
+def _project_root():
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+
+def _lttx_runtime_dir():
+    configured = os.environ.get("CFQUANT_LTTX_RUNTIME_DIR")
+    if configured:
+        return os.path.abspath(configured)
+    runtime_dir = os.environ.get("CFQUANT_RUNTIME_DIR")
+    if runtime_dir:
+        return os.path.abspath(os.path.join(runtime_dir, "lttx"))
+    return os.path.join(_project_root(), "runtime", "lttx")
+
+def _lttx_file_data_dir():
+    configured = os.environ.get("CFQUANT_LTTX_FILE_DATA_DIR")
+    if configured:
+        return os.path.abspath(configured)
+    return os.path.join(_lttx_runtime_dir(), "file_data")
+
+def _lttx_dataframe_data_dir():
+    configured = os.environ.get("CFQUANT_LTTX_DATAFRAME_DIR")
+    if configured:
+        return os.path.abspath(configured)
+    return os.path.join(_lttx_runtime_dir(), "dataframe_data")
+
+def _ensure_lttx_dir(path):
+    os.makedirs(path, exist_ok=True)
+    return path
+
+def _lttx_file_path(file_name):
+    return os.path.join(_ensure_lttx_dir(_lttx_file_data_dir()), file_name)
+
+def _lttx_dataframe_path(var):
+    return os.path.join(_ensure_lttx_dir(_lttx_dataframe_data_dir()), "%s.csv" % var)
+
 def _lttx_log_dir():
     configured = os.environ.get("CFQUANT_LTTX_LOG_DIR")
     if configured:
@@ -278,7 +312,9 @@ def handle_connect_file(client,address,dict_data):
     if file_mode == 'upload_file':
         file_name = dict_data['file_name']
         file_hash = dict_data['file_hash']
-        file = open('./file_data/%s'%(file_name+'.tmp'),'wb')
+        file_path = _lttx_file_path(file_name)
+        tmp_path = _lttx_file_path(file_name + '.tmp')
+        file = open(tmp_path,'wb')
         client.sendall(b'i am ok')
         file_data = client.recv(1024)
         while file_data:
@@ -286,16 +322,17 @@ def handle_connect_file(client,address,dict_data):
             file_data = client.recv(1024)
         file.close()
         sys_show_on('%s文件接收完成'%(file_name))
-        if os.path.isfile('./file_data/%s'%(file_name)):
-            os.remove('./file_data/%s'%(file_name))
-        os.rename('./file_data/%s'%(file_name + '.tmp'), './file_data/%s'%(file_name))
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+        os.rename(tmp_path, file_path)
        
     elif file_mode == 'download_file':
         file_name = dict_data['file_name']
         hash_md5 = hashlib.md5()
-        if os.path.isfile('./file_data/%s'%(file_name)):
+        file_path = _lttx_file_path(file_name)
+        if os.path.isfile(file_path):
             client.sendall('file exist'.encode())
-            file = open('./file_data/%s'%(file_name), 'rb')
+            file = open(file_path, 'rb')
             file_data = file.read(1024)
             while file_data:
                 client.sendall(file_data)
@@ -563,7 +600,7 @@ def handle_get_dataframe(var):
     import pandas as pd
     if var in dict_df:
         try:
-            df = pd.read_csv('./dataframe_data/%s.csv'%(var))
+            df = pd.read_csv(_lttx_dataframe_path(var))
         except:
             df = pd.DataFrame()
     else:
@@ -576,7 +613,7 @@ def handle_put_dataframe(var,data):
     import pandas as pd
     try:
         df = pd.DataFrame(json.loads(data))
-        df.to_csv('./dataframe_data/%s.csv'%(var),index=False)
+        df.to_csv(_lttx_dataframe_path(var),index=False)
         dict_df[var] = 1
         tem_dict = {'code':0,'msg':'success','value':{}}
     except Exception as e:
@@ -980,10 +1017,10 @@ def main_control():
 
 
 def make_dir():
-    flod_list = ['file_data','dataframe_data']
+    flod_list = [_lttx_file_data_dir(), _lttx_dataframe_data_dir()]
     for i in flod_list:
         try:
-            os.mkdir(i)
+            os.makedirs(i, exist_ok=True)
         except:
             pass
 

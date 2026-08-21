@@ -115,7 +115,15 @@ def safe_request(client, action, timeout=5):
 
 
 def read_hub_status():
-    path = os.path.join(ROOT_DIR, "cfquant_pipe_hub_status.json")
+    path = os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or os.path.join(
+        ROOT_DIR,
+        "runtime",
+        "status",
+        "cfquant_pipe_hub_status.json",
+    )
+    legacy_path = os.path.join(ROOT_DIR, "cfquant_pipe_hub_status.json")
+    if not os.path.isfile(path) and os.path.isfile(legacy_path):
+        path = legacy_path
     if not os.path.isfile(path):
         return {}
     try:
@@ -198,7 +206,7 @@ def main():
     parser.add_argument("--account-id", default="")
     parser.add_argument("--count", type=int, default=30)
     parser.add_argument("--timeout", type=float, default=5.0)
-    parser.add_argument("--out-dir", default=os.path.join(ROOT_DIR, "reports", "latency"))
+    parser.add_argument("--out-dir", default=os.path.join(ROOT_DIR, "runtime", "reports", "latency"))
     parser.add_argument("--skip-normal", action="store_true")
     parser.add_argument("--skip-trade", action="store_true")
     parser.add_argument("--skip-trade-queries", action="store_true")

@@ -191,7 +191,15 @@ def brief_result(value, max_chars=600):
 
 
 def read_pipe_hub_status():
-    path = os.path.join(ROOT_DIR, "cfquant_pipe_hub_status.json")
+    path = os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or os.path.join(
+        ROOT_DIR,
+        "runtime",
+        "status",
+        "cfquant_pipe_hub_status.json",
+    )
+    legacy_path = os.path.join(ROOT_DIR, "cfquant_pipe_hub_status.json")
+    if not os.path.isfile(path) and os.path.isfile(legacy_path):
+        path = legacy_path
     if not os.path.isfile(path):
         return {}
     try:
@@ -540,7 +548,7 @@ def parse_args():
     parser.add_argument("--quick-trade", type=int, default=2)
     parser.add_argument("--find-order-wait", type=float, default=0.3)
     parser.add_argument("--timeout", type=float, default=8.0)
-    parser.add_argument("--out-dir", default=os.path.join(ROOT_DIR, "reports", "latency"))
+    parser.add_argument("--out-dir", default=os.path.join(ROOT_DIR, "runtime", "reports", "latency"))
     parser.add_argument("--pipe-name", default=r"\\.\pipe\cfquant_pipe_hub")
     parser.add_argument("--real-order", action="store_true", help="Actually send order and cancel it after --cancel-delay seconds.")
     parser.add_argument("--confirm", default="", help="Required with --real-order. Exact value is printed in dry-run output.")
