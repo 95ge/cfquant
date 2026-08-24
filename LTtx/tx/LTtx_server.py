@@ -19,17 +19,16 @@ import sys
 from packaging import version
 
 #运行需要的库
+# 注意：只列出本文件真正依赖的第三方包；hashlib 为标准库无需也无法 pip 安装，
+# websockets/lz4/cryptography 在本文件中未使用，均不放入自动安装表，
+# 避免每次启动都反复尝试安装并失败而拖慢 LTtx 启动。
 need_packge = {'psutil':{'pip_name':'psutil','version':'1.0.0'},
-               'pandas':{'pip_name':'pandas','version':'0.0.1'},
-               'orjson':{'pip_name':'orjson','version':'0.0.1'},
-               'zmq':{'pip_name':'pyzmq','version':'0.0.1'},
-               'websockets':{'pip_name':'websockets','version':'0.0.1'},
-               'lz4':{'pip_name':'lz4','version':'0.0.1'},
-               'cryptography':{'pip_name':'cryptography','version':'0.0.1'},
-               'tabulate':{'pip_name':'tabulate','version':'0.0.1'},
-               'hashlib':{'pip_name':'hashlib','version':'0.0.1'},
-               'pandas_market_calendars':{'pip_name':'pandas_market_calendars','version':'latest'},
-               'pytz':{'pip_name':'pytz','version':'0.0.0'}
+               'pandas':{'pip_name':'pandas','version':'1.0.0'},
+               'orjson':{'pip_name':'orjson','version':'1.0.0'},
+               'zmq':{'pip_name':'pyzmq','version':'1.0.0'},
+               'tabulate':{'pip_name':'tabulate','version':'0.8.0'},
+               'pandas_market_calendars':{'pip_name':'pandas_market_calendars','version':'1.0.0'},
+               'pytz':{'pip_name':'pytz','version':'2020.0'}
                }
 
 
@@ -69,7 +68,7 @@ def ensure_modules_with_version(modules: dict):
                     print(f"[AutoInstall] {import_name} 已安装，版本为 {installed_version}，满足要求")
         except ImportError:
             # 安装或升级
-            install_target = pip_name if required_version == "latest" else "lastest"
+            install_target = pip_name
             print(f"[AutoInstall] 正在安装/升级 {pip_name} → {required_version}...")
             try:
                 subprocess.check_call([
