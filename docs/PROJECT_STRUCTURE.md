@@ -16,7 +16,6 @@ Root directory is reserved for stable entry points and project metadata.
 - `LTtx/`: LTtx server and compatibility files.
 - `qmt_scripts/`: QMT-side entry scripts.
 - `web_dashboard/`: local Web dashboard frontend assets.
-- `official_site/`: official website and admin backend.
 - `scripts/`: development and diagnostic scripts.
 - `docs/`: project documentation and documentation assets.
 
