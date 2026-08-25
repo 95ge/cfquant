@@ -34,6 +34,7 @@ cfquant_web_config.json
 cfquant_hub_status.json
 cfquant_pipe_hub_status.json
 official-home-*.png
+official_site/
 LTtx/tx/data0.txt
 
 runtime/db/*
