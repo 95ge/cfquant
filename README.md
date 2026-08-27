@@ -25,7 +25,7 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 | 单账号快速跑通 | 使用通用模式，QMT 加载 `CFQUANT_CTYPE_ALL_LOWLAT.py` |
 | 普通/信用账户、多账号、多 QMT | 在 Web“绑定”页逐个配置账号类型、账号和 QMT 核心目录 |
 | 追求更低交易延迟 | 使用高级模式，需要普通 QMT + 极速交易端 QMT |
-| 从 miniQMT / `xtquant` 切换 | 看 [外部 Python 接入](docs/README_外部Python接入.md) |
+| 从 miniQMT / `xtquant` 切换 | 看 [miniQMT 迁移到大 QMT 指南](docs/miniqmt_to_bigqmt_migration.md)、[外部 Python 接入](docs/README_外部Python接入.md) |
 | 日志、重启、更新、回滚 | 看 [运维与更新](docs/README_运维与更新.md) |
 
 ## 模式区别
@@ -85,7 +85,7 @@ restart_cfquant.bat    重启本地服务
 | 部署教程 | [通用模式部署指南](docs/通用模式部署指南.md)、[高级模式部署指南](docs/高级模式部署指南.md) |
 | 账号配置 | [账号运行配置说明](docs/web_account_runtime_configuration.md) |
 | 信用账户 | [信用账户支持方案](docs/信用账户支持方案.md) |
-| 外部接入 | [外部 Python 接入](docs/README_外部Python接入.md) |
+| 外部接入 | [miniQMT 迁移到大 QMT 指南](docs/miniqmt_to_bigqmt_migration.md)、[外部 Python 接入](docs/README_外部Python接入.md) |
 | 运维更新 | [运维与更新](docs/README_运维与更新.md) |
 | 接口兼容 | [xtdata 兼容说明](docs/xtdata_compatibility.md)、[xttrader 兼容说明](docs/xttrader_compatibility.md) |
 | 能力矩阵 | [QMT 接口能力矩阵](docs/qmt_function_capability_matrix.md) |
