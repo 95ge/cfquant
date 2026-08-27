@@ -54,12 +54,16 @@ class CfquantPipeHub(object):
         self.status_file = os.path.abspath(
             os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or default_status_file("cfquant_pipe_hub_status.json")
         )
+        self.pending_timeout_seconds = float(os.environ.get("CFQUANT_PIPE_HUB_PENDING_TIMEOUT", "60"))
+        self.maintenance_interval_seconds = float(os.environ.get("CFQUANT_PIPE_HUB_MAINTENANCE_INTERVAL", "2"))
+        self.maintenance_thread = None
 
     def start(self):
         if self.running:
             return self
         self.running = True
         self._log("pipe hub started pipe=%s" % self.pipe_name)
+        self._start_maintenance()
         self._write_status()
         while self.running:
             conn = None
@@ -213,6 +217,7 @@ class CfquantPipeHub(object):
             if request_id:
                 self.pending[request_id] = {
                     "conn": response_conn,
+                    "qmt_conn": None,
                     "action": msg.get("action"),
                     "request_channel": request_channel,
                     "api_received_at": api_received_at,
@@ -224,6 +229,10 @@ class CfquantPipeHub(object):
                 self.pending.pop(request_id, None)
             self._send_error(response_conn, request_id, "QMT pipe bridge not connected for channel=%s" % request_channel)
             return
+        with self.state_lock:
+            pending = self.pending.get(request_id)
+            if pending:
+                pending["qmt_conn"] = qmt
         forward_start = time.perf_counter()
         try:
             self._send_delivery(qmt, raw, request_channel=request_channel, client_id=client_id)
@@ -368,6 +377,7 @@ class CfquantPipeHub(object):
             self.client_ids_by_conn.setdefault(conn, set()).add(client_id)
 
     def _drop_conn(self, conn):
+        failed_pending = []
         with self.qmt_lock:
             channels = self.qmt_channel_by_conn.pop(conn, set())
             for channel in channels:
@@ -387,13 +397,64 @@ class CfquantPipeHub(object):
                     self.client_ids_by_conn.pop(peer, None)
             for request_id, pending in list(self.pending.items()):
                 pending_conn = pending.get("conn")
+                qmt_conn = pending.get("qmt_conn")
                 if pending_conn is conn or pending_conn in close_peers:
                     self.pending.pop(request_id, None)
+                elif qmt_conn is conn:
+                    self.pending.pop(request_id, None)
+                    failed_pending.append((
+                        request_id,
+                        pending,
+                        "QMT pipe bridge disconnected for channel=%s" % pending.get("request_channel"),
+                    ))
         for peer in close_peers:
             try:
                 peer.close()
             except Exception:
                 pass
+        for request_id, pending, message in failed_pending:
+            self._send_error(pending.get("conn"), request_id, message)
+
+    def _start_maintenance(self):
+        if self.maintenance_thread is not None and self.maintenance_thread.is_alive():
+            return
+        self.maintenance_thread = threading.Thread(target=self._maintenance_loop)
+        self.maintenance_thread.daemon = True
+        self.maintenance_thread.start()
+
+    def _maintenance_loop(self):
+        while self.running:
+            try:
+                expired_count = self._cleanup_expired_pending()
+                if expired_count:
+                    self._write_status()
+            except Exception as e:
+                self._log("pipe hub maintenance failed: %s" % e)
+            time.sleep(max(0.2, self.maintenance_interval_seconds))
+
+    def _cleanup_expired_pending(self):
+        timeout = max(0.0, self.pending_timeout_seconds)
+        if timeout <= 0:
+            return 0
+        now = time.perf_counter()
+        expired = []
+        with self.state_lock:
+            for request_id, pending in list(self.pending.items()):
+                started = pending.get("api_received_at") or now
+                if now - started < timeout:
+                    continue
+                self.pending.pop(request_id, None)
+                expired.append((request_id, pending))
+        for request_id, pending in expired:
+            self._send_error(
+                pending.get("conn"),
+                request_id,
+                "QMT pipe bridge response timeout for action=%s channel=%s"
+                % (pending.get("action"), pending.get("request_channel")),
+            )
+        if expired:
+            self._log("pipe cleaned expired pending requests count=%s" % len(expired))
+        return len(expired)
 
     def _log(self, msg):
         if self.show:

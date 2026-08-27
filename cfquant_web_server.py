@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260827_01"
+WEB_VERSION = "web_20260828_01"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -67,21 +67,27 @@ RUNTIME_DIR = os.path.abspath(os.environ.get("CFQUANT_RUNTIME_DIR") or os.path.j
 RUNTIME_CONFIG_DIR = os.path.join(RUNTIME_DIR, "config")
 RUNTIME_DB_DIR = os.path.join(RUNTIME_DIR, "db")
 RUNTIME_LTTX_DIR = os.path.join(RUNTIME_DIR, "lttx")
+RUNTIME_MEDIA_DIR = os.path.join(RUNTIME_DIR, "media")
 RUNTIME_REPORTS_DIR = os.path.join(RUNTIME_DIR, "reports")
 RUNTIME_STATUS_DIR = os.path.join(RUNTIME_DIR, "status")
+RUNTIME_AVATAR_DIR = os.path.join(RUNTIME_MEDIA_DIR, "avatars")
 try:
     os.makedirs(RUNTIME_CONFIG_DIR, exist_ok=True)
     os.makedirs(RUNTIME_DB_DIR, exist_ok=True)
     os.makedirs(RUNTIME_LTTX_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_MEDIA_DIR, exist_ok=True)
     os.makedirs(RUNTIME_REPORTS_DIR, exist_ok=True)
     os.makedirs(RUNTIME_STATUS_DIR, exist_ok=True)
+    os.makedirs(RUNTIME_AVATAR_DIR, exist_ok=True)
 except Exception:
     RUNTIME_DIR = BASE_DIR
     RUNTIME_CONFIG_DIR = BASE_DIR
     RUNTIME_DB_DIR = BASE_DIR
     RUNTIME_LTTX_DIR = BASE_DIR
+    RUNTIME_MEDIA_DIR = BASE_DIR
     RUNTIME_REPORTS_DIR = BASE_DIR
     RUNTIME_STATUS_DIR = BASE_DIR
+    RUNTIME_AVATAR_DIR = BASE_DIR
 LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
@@ -225,6 +231,7 @@ RUNTIME_REPORT_TTL_SECONDS = float(os.environ.get("CFQUANT_QMT_RUNTIME_REPORT_TT
 ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
+AVATAR_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_AVATAR_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024)))
 DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://github.com/95ge/cfquant.git").strip()
 DEFAULT_OFFICIAL_SITE_URL = os.environ.get("CFQUANT_OFFICIAL_SITE_URL", "https://cfquant.org").strip().rstrip("/")
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
@@ -234,6 +241,7 @@ PROJECT_UPDATE_DIR = os.path.join(BASE_DIR, ".cfquant_project_updates")
 PROJECT_UPDATE_BACKUP_KEEP = int(os.environ.get("CFQUANT_PROJECT_UPDATE_BACKUP_KEEP", "2"))
 QMT_ENTRY_SCRIPT_NAMES = (
     "CFQUANT_CTYPE_ALL_LOWLAT.py",
+    "CFQUANT_LITE.py",
     "CFQUANT.py",
     "CFQUANT_TRADE_LOWLAT.py",
 )
@@ -245,6 +253,20 @@ WEB_AUTH_TOKENS = {}
 WEB_AUTH_LOCK = threading.RLock()
 WEB_AUTH_COOKIE_NAME = "cfquant_web_token"
 WEB_AUTH_SESSION_TTL_SECONDS = float(os.environ.get("CFQUANT_WEB_AUTH_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
+BUILTIN_AVATARS = (
+    {"id": "market-blue", "name": "Market Blue", "url": "/avatars/market-blue.svg"},
+    {"id": "signal-green", "name": "Signal Green", "url": "/avatars/signal-green.svg"},
+    {"id": "copper-grid", "name": "Copper Grid", "url": "/avatars/copper-grid.svg"},
+    {"id": "violet-node", "name": "Violet Node", "url": "/avatars/violet-node.svg"},
+    {"id": "slate-wave", "name": "Slate Wave", "url": "/avatars/slate-wave.svg"},
+    {"id": "amber-pulse", "name": "Amber Pulse", "url": "/avatars/amber-pulse.svg"},
+    {"id": "teal-orbit", "name": "Teal Orbit", "url": "/avatars/teal-orbit.svg"},
+    {"id": "rose-circuit", "name": "Rose Circuit", "url": "/avatars/rose-circuit.svg"},
+)
+DEFAULT_AVATAR_URL = BUILTIN_AVATARS[0]["url"]
+BUILTIN_AVATAR_URLS = set(item["url"] for item in BUILTIN_AVATARS)
+AVATAR_UPLOAD_URL_PREFIX = "/media/avatars/"
+AVATAR_UPLOAD_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 STOCK_BUY = 23
 STOCK_SELL = 24
 FIX_PRICE = 11
@@ -587,6 +609,83 @@ def revoke_web_auth_token(token):
         _delete_persistent_web_auth_session_locked(token)
 
 
+def builtin_avatar_catalog():
+    return [dict(item) for item in BUILTIN_AVATARS]
+
+
+def normalize_avatar_url(value):
+    url = str(value or "").strip()
+    if not url:
+        return DEFAULT_AVATAR_URL
+    if url in BUILTIN_AVATAR_URLS:
+        return url
+    if url.startswith(AVATAR_UPLOAD_URL_PREFIX):
+        filename = posixpath.basename(url)
+        if (
+            filename
+            and filename == url[len(AVATAR_UPLOAD_URL_PREFIX):]
+            and re.match(r"^[A-Za-z0-9_.-]+$", filename)
+            and os.path.splitext(filename)[1].lower() in AVATAR_UPLOAD_EXTENSIONS
+        ):
+            return AVATAR_UPLOAD_URL_PREFIX + filename
+    return DEFAULT_AVATAR_URL
+
+
+def avatar_kind(url):
+    url = normalize_avatar_url(url)
+    return "upload" if url.startswith(AVATAR_UPLOAD_URL_PREFIX) else "builtin"
+
+
+def normalize_user_profile(value=None):
+    row = value if isinstance(value, dict) else {}
+    avatar_url = normalize_avatar_url(row.get("avatar_url") or row.get("avatar"))
+    display_name = str(row.get("display_name") or row.get("nickname") or "").strip()[:40]
+    return {
+        "display_name": display_name,
+        "avatar_url": avatar_url,
+        "avatar_kind": avatar_kind(avatar_url),
+        "updated_at": float(row.get("updated_at") or 0),
+    }
+
+
+def profile_display_label(profile, username=""):
+    profile = normalize_user_profile(profile)
+    return profile.get("display_name") or str(username or "").strip() or "管理员"
+
+
+def user_profile_response(profile=None):
+    base_profile = profile if profile is not None else (WEB_CONFIG.user_profile() if WEB_CONFIG is not None else {})
+    profile = normalize_user_profile(base_profile)
+    username = WEB_CONFIG.web_auth_info(include_username=True).get("username") if WEB_CONFIG is not None else ""
+    profile["username"] = username or ""
+    profile["display_label"] = profile_display_label(profile, username)
+    return {
+        "profile": profile,
+        "avatars": builtin_avatar_catalog(),
+        "upload": {
+            "max_bytes": AVATAR_UPLOAD_MAX_BYTES,
+            "allowed_extensions": sorted(AVATAR_UPLOAD_EXTENSIONS),
+        },
+    }
+
+
+def detect_avatar_extension(filename, content_type, content):
+    content = content or b""
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return ".gif"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return ".webp"
+    ext = os.path.splitext(str(filename or ""))[1].lower()
+    ctype = str(content_type or "").lower()
+    if ext in AVATAR_UPLOAD_EXTENSIONS and ctype in ("image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"):
+        return ".jpg" if ext == ".jpeg" else ext
+    raise ValueError("只支持 PNG、JPG、WEBP 或 GIF 头像")
+
+
 class WebRuntimeConfig(object):
     def __init__(self, path, settings_db_path=None):
         self.path = path
@@ -612,6 +711,7 @@ class WebRuntimeConfig(object):
             "web_auth_username": "",
             "web_auth_salt": "",
             "web_auth_hash": "",
+            "user_profile": normalize_user_profile({}),
             "cleanup_qmt_userdata_logs": False,
             "qmt_log_language": os.environ.get("CFQUANT_QMT_LOG_LANGUAGE", "zh"),
             "qmt_log_enabled": normalize_log_enabled(os.environ.get("CFQUANT_QMT_LOG_ENABLED", "1")),
@@ -649,6 +749,7 @@ class WebRuntimeConfig(object):
                             account_id=self._data["data_provider_account_id"],
                             account_type=self._data["data_provider_account_type"],
                         )
+                        self._data["user_profile"] = normalize_user_profile(raw.get("user_profile") or {})
                         web_server = raw.get("web_server") if isinstance(raw.get("web_server"), dict) else {}
                         web_port = raw.get("web_port")
                         if web_port in (None, ""):
@@ -854,6 +955,7 @@ class WebRuntimeConfig(object):
         account_id,
         account_type="STOCK",
         bridge_id=None,
+        display_name=None,
         qmt_dir=None,
         mode="ctypes",
         data_provider=False,
@@ -863,6 +965,7 @@ class WebRuntimeConfig(object):
         if not account_id:
             raise ValueError("account_id is required")
         account_type = normalize_account_type(account_type)
+        display_name = None if display_name is None else str(display_name).strip()
         qmt_dir = normalize_optional_path(qmt_dir)
         mode = normalize_transport_mode(mode)
         now = time.time()
@@ -870,6 +973,10 @@ class WebRuntimeConfig(object):
             configs = self._data.setdefault("account_configs", {})
             bridge_id = self._account_bridge_id_locked(account_id, account_type, bridge_id, qmt_dir)
             account_key = account_key_for(account_id, account_type, bridge_id)
+            existing = configs.get(account_key)
+            if display_name is None and isinstance(existing, dict):
+                display_name = str(existing.get("display_name") or existing.get("account_name") or "").strip()
+            display_name = display_name or ""
             if bridge_id not in self.bridges():
                 self._data.setdefault("bridges", {})[bridge_id] = self._bridge_row(
                     bridge_id,
@@ -893,6 +1000,7 @@ class WebRuntimeConfig(object):
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_type_label": account_type_label(account_type),
+                "display_name": display_name,
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
                 "mode": mode,
@@ -916,6 +1024,7 @@ class WebRuntimeConfig(object):
                 "account_id": account_id,
                 "account_type": account_type,
                 "bridge_id": bridge_id,
+                "display_name": display_name,
                 "updated_at": now,
             }
             self._data["initialized"] = True
@@ -1089,6 +1198,23 @@ class WebRuntimeConfig(object):
             "username": username if include_username else "",
             "username_masked": mask_text(username),
         }
+
+    def user_profile(self):
+        with self._lock:
+            return normalize_user_profile(self._data.get("user_profile") or {})
+
+    def set_user_profile(self, display_name=None, avatar_url=None):
+        with self._lock:
+            profile = normalize_user_profile(self._data.get("user_profile") or {})
+            if display_name is not None:
+                profile["display_name"] = str(display_name or "").strip()[:40]
+            if avatar_url is not None:
+                profile["avatar_url"] = normalize_avatar_url(avatar_url)
+                profile["avatar_kind"] = avatar_kind(profile["avatar_url"])
+            profile["updated_at"] = time.time()
+            self._data["user_profile"] = profile
+            self._save_locked()
+            return dict(profile)
 
     def verify_web_auth(self, username, password):
         with self._lock:
@@ -1374,10 +1500,11 @@ class WebRuntimeConfig(object):
                     pairs.pop(key, None)
             self._save_locked()
 
-    def save_pair(self, account_id, bridge_id, account_type="STOCK", account_key=None):
+    def save_pair(self, account_id, bridge_id, account_type="STOCK", account_key=None, display_name=None):
         account_id = str(account_id or "").strip()
         account_type = normalize_account_type(account_type)
         bridge_id = normalize_bridge_id(bridge_id)
+        display_name = str(display_name or "").strip()
         if not account_id:
             raise ValueError("account_id is required")
         if bridge_id not in self.bridges():
@@ -1388,6 +1515,7 @@ class WebRuntimeConfig(object):
             "account_id": account_id,
             "account_type": account_type,
             "bridge_id": bridge_id,
+            "display_name": display_name,
             "updated_at": time.time(),
         }
         with self._lock:
@@ -1557,6 +1685,7 @@ class WebRuntimeConfig(object):
                     "account_id": account_id,
                     "account_type": account_type,
                     "bridge_id": bridge_id,
+                    "display_name": str(item.get("display_name") or item.get("account_name") or ""),
                     "updated_at": float(item.get("updated_at") or 0),
                 }
         return result
@@ -1589,6 +1718,7 @@ class WebRuntimeConfig(object):
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_type_label": account_type_label(account_type),
+                "display_name": str(item.get("display_name") or item.get("account_name") or ""),
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
@@ -1645,18 +1775,32 @@ def normalize_transport_mode(value):
     value = str(value or "ctypes").strip().lower()
     if value in ("pipe", "ctypes", "named_pipe", "named-pipe", "universal", "universal_ctypes"):
         return "ctypes"
+    if value in ("lite", "extreme", "extreme_lite", "lite_extreme", "lite_extreme_pipe", "extreme_pipe", "cfquant_lite", "ultimate"):
+        return "lite"
     if value in ("lttx", "socket", "normal", "default"):
         return "lttx"
     raise ValueError("unknown transport mode: %s" % value)
 
 
+def is_ctypes_transport_mode(mode):
+    return normalize_transport_mode(mode) in ("ctypes", "lite")
+
+
+def transport_client_mode(mode):
+    return "ctypes" if is_ctypes_transport_mode(mode) else "lttx"
+
+
 def transport_mode_label(mode):
     mode = normalize_transport_mode(mode)
+    if mode == "lite":
+        return "极致模式"
     return "通用模式" if mode == "ctypes" else "高级模式"
 
 
 def transport_mode_detail_label(mode):
     mode = normalize_transport_mode(mode)
+    if mode == "lite":
+        return "纯 ctypes 自包含版"
     return "ctypes 通用版" if mode == "ctypes" else "LTtx 普通/极速双桥"
 
 
@@ -1666,7 +1810,7 @@ def transport_mode_summary(mode):
         "mode": mode,
         "label": transport_mode_label(mode),
         "detail_label": transport_mode_detail_label(mode),
-        "request_scope": "单文件双通道" if mode == "ctypes" else "普通桥 + 交易桥",
+        "request_scope": "纯 ctypes 单文件双通道" if mode == "lite" else ("单文件双通道" if mode == "ctypes" else "普通桥 + 交易桥"),
     }
 
 
@@ -1823,13 +1967,15 @@ def default_runtime_client_mode():
     modes = configured_runtime_modes()
     if modes == {"lttx"}:
         return "lttx"
+    if modes == {"lite"}:
+        return "lite"
     return "ctypes"
 
 
 def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None, account_type=None, bridge_id=None, account_key=None):
     default = normalize_channel(default, "normal")
     mode = normalize_transport_mode(mode or resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key))
-    if mode == "ctypes":
+    if is_ctypes_transport_mode(mode):
         return default
     return normalize_channel(requested_channel, default)
 
@@ -1889,6 +2035,7 @@ class GlobalTxClient(object):
         except CfquantTimeout as e:
             if mark_offline_on_timeout:
                 self._mark_failed(cooldown_key, e)
+            self.close(mode)
             raise
         except Exception as e:
             self._mark_failed(cooldown_key, e)
@@ -1896,7 +2043,7 @@ class GlobalTxClient(object):
             raise
 
     def close(self, mode=None):
-        modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lttx"]
+        modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lite", "lttx"]
         with self._lock:
             clients = [self._clients.pop(item, None) for item in modes]
         for client in clients:
@@ -1919,10 +2066,11 @@ class GlobalTxClient(object):
 
     def _get_client(self, mode=None):
         mode = normalize_transport_mode(mode or default_runtime_client_mode())
+        client_mode = transport_client_mode(mode)
         with self._lock:
             client = self._clients.get(mode)
             if client is None:
-                if mode == "ctypes":
+                if client_mode == "ctypes":
                     cfg = get_cfquant_config()
                     from cfquant.pipe_client import PipeRpcClient
 
@@ -1930,7 +2078,7 @@ class GlobalTxClient(object):
                         pipe_name=os.environ.get("CFQUANT_PIPE_NAME") or cfg.get("pipe_name") or DEFAULT_PIPE_NAME,
                         request_channel=CHANNELS["normal"],
                         timeout=cfg.get("timeout"),
-                        client_id="%s_ctypes" % self.client_id,
+                        client_id="%s_%s" % (self.client_id, mode),
                         connect_timeout_ms=cfg.get("pipe_connect_timeout_ms"),
                     )
                 else:
@@ -2832,6 +2980,21 @@ class RuntimeVersionRegistry(object):
             "core_version": str(version or "").strip(),
             "source": source,
             "mode": str(mode or "").strip(),
+            "runtime_mode": self._first_value(
+                runtime,
+                status,
+                keys=("runtime_mode", "qmt_runtime_mode", "transport_mode"),
+            ),
+            "entry_version": self._first_value(
+                runtime,
+                status,
+                keys=("entry_version", "runtime_entry_version", "qmt_runtime_entry_version"),
+            ),
+            "entry_script": self._first_value(
+                runtime,
+                status,
+                keys=("entry_script", "qmt_runtime_entry_script"),
+            ),
             "bridge": self._first_value(runtime, status, keys=("bridge",)),
             "account_id": self._first_value(runtime, status, keys=("account_id",)),
             "pid": self._first_value(runtime, status, keys=("pid",)),
@@ -3904,6 +4067,7 @@ def qmt_entry_manual_update_info(entry_files=None, required=False, reason=""):
         ),
         "mode_files": {
             "通用模式": ["CFQUANT_CTYPE_ALL_LOWLAT.py"],
+            "极致模式": ["CFQUANT_LITE.py"],
             "高级模式": ["CFQUANT.py", "CFQUANT_TRADE_LOWLAT.py"],
         },
     }
@@ -4720,7 +4884,7 @@ class CfquantUpdater(object):
         if not self._looks_like_core(path):
             raise RuntimeError("核心目录结构不完整: %s" % path)
         entries = os.listdir(path)
-        if "CFQUANT.py" in entries or "CFQUANT_TRADE_LOWLAT.py" in entries:
+        if any(name in entries for name in QMT_ENTRY_SCRIPT_NAMES):
             raise RuntimeError("源码核心目录包含入口脚本，已拒绝覆盖")
 
     def _copy_core(self, source_core, target_core):
@@ -5430,7 +5594,7 @@ def write_qmt_bridge_identity(row):
         }
         path = os.path.join(core_dir, QMT_BRIDGE_CONFIG_FILENAME)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dump(payload, f, ensure_ascii=True, indent=2, sort_keys=True)
         result.update({
             "written": True,
             "path": path,
@@ -5828,7 +5992,7 @@ def normalize_channel(value, default="normal"):
 
 def web_request_channel(value=None, default="normal"):
     default = normalize_channel(default, "normal")
-    if WEB_CONFIG.transport_mode() == "ctypes":
+    if is_ctypes_transport_mode(WEB_CONFIG.transport_mode()):
         return default
     return normalize_channel(value, default)
 
@@ -6614,12 +6778,23 @@ def delete_bridge_config(body):
     }
 
 
+def save_user_profile(body):
+    body = body or {}
+    profile = WEB_CONFIG.set_user_profile(
+        display_name=body.get("display_name") if "display_name" in body else None,
+        avatar_url=body.get("avatar_url") if "avatar_url" in body else None,
+    )
+    return user_profile_response(profile)
+
+
 def save_account_pair(body):
+    display_name = (body or {}).get("display_name") if "display_name" in (body or {}) else (body or {}).get("account_name")
     row = WEB_CONFIG.save_pair(
         (body or {}).get("account_id"),
         (body or {}).get("bridge_id"),
         account_type=(body or {}).get("account_type") or "STOCK",
         account_key=(body or {}).get("account_key"),
+        display_name=display_name,
     )
     STATUS_MONITOR.wake()
     return {
@@ -6662,12 +6837,14 @@ def save_account_runtime_config(body):
     account_id = str(body.get("account_id") or "").strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     bridge_id = body.get("bridge_id")
+    display_name = body.get("display_name") if "display_name" in body else body.get("account_name")
     qmt_dir = body.get("qmt_dir") or body.get("python_dir")
     mode = body.get("mode") or body.get("transport_mode") or "ctypes"
     row = WEB_CONFIG.save_account_config(
         account_id=account_id,
         account_type=account_type,
         bridge_id=bridge_id,
+        display_name=display_name,
         qmt_dir=qmt_dir,
         mode=mode,
         data_provider=parse_bool(body.get("data_provider")),
@@ -6732,6 +6909,7 @@ def initialize_web_setup(body):
     body = body or {}
     account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    display_name = body.get("display_name") if "display_name" in body else body.get("account_name")
     if not account_id:
         raise ValueError("account_id is required")
     auth_info = WEB_CONFIG.web_auth_info(include_username=True)
@@ -6760,6 +6938,7 @@ def initialize_web_setup(body):
         account_id=account_id,
         account_type=account_type,
         bridge_id=body.get("bridge_id"),
+        display_name=display_name,
         qmt_dir=body.get("qmt_dir") or body.get("python_dir"),
         mode=body.get("mode") or "ctypes",
         data_provider=True,
@@ -7104,7 +7283,7 @@ def save_transport(body):
     return {
         "transport": info,
         "client": transport_info()["client"],
-        "readiness": _advanced_mode_readiness(bridge_id) if mode == "lttx" else {"ready": True, "mode": "ctypes"},
+        "readiness": _advanced_mode_readiness(bridge_id) if mode == "lttx" else {"ready": True, "mode": mode},
         "pipe_hub": hub,
     }
 
@@ -7355,7 +7534,7 @@ def runtime_probe_modes(bridge_id=None):
         modes.append("lttx")
     if not modes:
         modes.append(default_runtime_client_mode())
-    if "ctypes" not in modes:
+    if not any(is_ctypes_transport_mode(item) for item in modes):
         modes.append("ctypes")
     return modes
 
@@ -7365,7 +7544,7 @@ def refresh_runtime_version_report(bridge_id=None, timeout=1.6):
     errors = []
     read_lttx_runtime_report(bridge_id)
     for mode in runtime_probe_modes(bridge_id):
-        if mode == "ctypes":
+        if is_ctypes_transport_mode(mode):
             try:
                 if not PIPE_HUB.status().get("running"):
                     errors.append("ctypes: PipeHub 未运行")
@@ -8246,6 +8425,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self._handle_ws_callbacks(parsed)
         elif parsed.path == "/ws/quotes":
             self._handle_ws_quotes(parsed)
+        elif parsed.path.startswith("/media/"):
+            self._serve_runtime_media(parsed.path)
         elif parsed.path.startswith("/api/"):
             self._handle_api_get(parsed)
         else:
@@ -8285,6 +8466,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if not self._authorized(parsed):
             self._write_json(fail("invalid credentials", 401), status=401)
             return
+        if parsed.path == "/api/user-profile/avatar":
+            self._handle_avatar_upload(parsed)
+            return
         if parsed.path == "/api/updates/upload":
             self._handle_update_upload(parsed)
             return
@@ -8317,6 +8501,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(result))
                 if reload_requested:
                     schedule_web_reload(self.server, result["reload"])
+            elif parsed.path == "/api/user-profile":
+                self._write_json(ok(save_user_profile(body)))
             elif parsed.path == "/api/transport":
                 self._write_json(ok(save_transport(body)))
             elif parsed.path == "/api/pipe-hub/start":
@@ -8571,6 +8757,46 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._write_json(fail(e, 400), status=400)
 
+    def _handle_avatar_upload(self, parsed):
+        try:
+            content_type = self.headers.get("Content-Type") or ""
+            if "multipart/form-data" not in content_type.lower():
+                self._write_json(fail("multipart/form-data is required", 400), status=400)
+                return
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                self._write_json(fail("empty upload", 400), status=400)
+                return
+            if length > AVATAR_UPLOAD_MAX_BYTES:
+                self._write_json(fail("avatar upload too large: %s bytes" % length, 400), status=400)
+                return
+            raw = self.rfile.read(length)
+            fields, files = self._parse_multipart(content_type, raw)
+            file_item = files.get("file") or files.get("avatar")
+            if not file_item:
+                self._write_json(fail("file is required", 400), status=400)
+                return
+            content = file_item.get("content") or b""
+            if not content:
+                self._write_json(fail("empty avatar file", 400), status=400)
+                return
+            ext = detect_avatar_extension(file_item.get("filename"), file_item.get("content_type"), content)
+            os.makedirs(RUNTIME_AVATAR_DIR, exist_ok=True)
+            filename = "avatar-%s-%s%s" % (int(time.time()), secrets.token_hex(6), ext)
+            full_path = os.path.abspath(os.path.join(RUNTIME_AVATAR_DIR, filename))
+            avatar_root = os.path.abspath(RUNTIME_AVATAR_DIR)
+            if os.path.commonpath([avatar_root, full_path]) != avatar_root:
+                raise ValueError("invalid avatar path")
+            with open(full_path, "wb") as f:
+                f.write(content)
+            profile = WEB_CONFIG.set_user_profile(
+                display_name=fields.get("display_name") if "display_name" in fields else None,
+                avatar_url=AVATAR_UPLOAD_URL_PREFIX + filename,
+            )
+            self._write_json(ok(user_profile_response(profile)))
+        except Exception as e:
+            self._write_json(fail(e, 400), status=400)
+
     def _parse_multipart(self, content_type, raw):
         header = "Content-Type: %s\r\nMIME-Version: 1.0\r\n\r\n" % content_type
         message = email.parser.BytesParser(policy=email.policy.default).parsebytes(header.encode("utf-8") + raw)
@@ -8588,7 +8814,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             filename = part.get_filename()
             payload = part.get_payload(decode=True) or b""
             if filename:
-                files[name] = {"filename": filename, "content": payload}
+                files[name] = {"filename": filename, "content": payload, "content_type": part.get_content_type()}
             else:
                 charset = part.get_content_charset() or "utf-8"
                 fields[name] = payload.decode(charset, errors="replace")
@@ -8629,6 +8855,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "api_key": WEB_CONFIG.api_key_info(include_secret=True),
                     "server_access": server_access_info(include_auth_details=True),
                     "web_auth": WEB_CONFIG.web_auth_info(include_username=True),
+                    "user_profile": user_profile_response(),
                     "transport": WEB_CONFIG.transport_info(),
                     "pipe_hub": PIPE_HUB.status(),
                     "log_cleanup": log_cleanup_info(),
@@ -8639,6 +8866,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(api_key_info()))
             elif parsed.path == "/api/server-access":
                 self._write_json(ok(server_access_info()))
+            elif parsed.path == "/api/user-profile":
+                self._write_json(ok(user_profile_response()))
             elif parsed.path == "/api/transport":
                 self._write_json(ok(transport_info()))
             elif parsed.path == "/api/pipe-hub":
@@ -8972,6 +9201,40 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError) as e:
             safe_print("client disconnected while writing static response: %s" % e)
 
+    def _serve_runtime_media(self, path):
+        path = posixpath.normpath(urllib.parse.unquote(path or ""))
+        if not path.startswith(AVATAR_UPLOAD_URL_PREFIX):
+            self._write_json(fail("not found", 404), status=404)
+            return
+        filename = posixpath.basename(path)
+        if not filename or filename != path[len(AVATAR_UPLOAD_URL_PREFIX):] or not re.match(r"^[A-Za-z0-9_.-]+$", filename):
+            self._write_json(fail("forbidden", 403), status=403)
+            return
+        if os.path.splitext(filename)[1].lower() not in AVATAR_UPLOAD_EXTENSIONS:
+            self._write_json(fail("forbidden", 403), status=403)
+            return
+        full_path = os.path.abspath(os.path.join(RUNTIME_AVATAR_DIR, filename))
+        avatar_root = os.path.abspath(RUNTIME_AVATAR_DIR)
+        if os.path.commonpath([avatar_root, full_path]) != avatar_root:
+            self._write_json(fail("forbidden", 403), status=403)
+            return
+        if not os.path.isfile(full_path):
+            self._write_json(fail("not found", 404), status=404)
+            return
+        content_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
+        with open(full_path, "rb") as f:
+            data = f.read()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError) as e:
+            safe_print("client disconnected while writing media response: %s" % e)
+
     def _write_json(self, payload, status=200, extra_headers=None):
         raw = json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         try:
@@ -9051,8 +9314,9 @@ def main(argv=None):
         configured_modes = configured_runtime_modes()
         if "lttx" in configured_modes:
             # 高级模式故障时需要立即回退到 ctypes，因此即使没有独立通用账号也要启动 PipeHub。
-            configured_modes.add("ctypes")
-        if "ctypes" in configured_modes:
+            if not any(is_ctypes_transport_mode(mode) for mode in configured_modes):
+                configured_modes.add("ctypes")
+        if any(is_ctypes_transport_mode(mode) for mode in configured_modes):
             try:
                 safe_print("cfquant ctypes 通用版模式已启用，正在启动 PipeHub")
                 PIPE_HUB.start()

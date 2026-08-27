@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260827_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260828_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -127,6 +127,10 @@
             <strong>通用模式（推荐）</strong>
             <span>一个 QMT 加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code> 即可，行情、查询、下单、撤单和回调都走 ctypes 单文件桥。</span>
           </div>
+          <div>
+            <strong>极致模式</strong>
+            <span>一个 QMT 只加载 <code>CFQUANT_LITE.py</code>，不依赖 <code>cfquant</code> 包导入，适合 QMT 白名单限制场景。</span>
+          </div>
           <div class="important">
             <strong>高级模式</strong>
             <span>必须开两个 QMT：普通 QMT 加载 <code>CFQUANT.py</code>，另一个极速交易端 QMT 加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。不要把高级模式两个文件放在同一个 QMT 里同时运行。</span>
@@ -192,9 +196,10 @@
           <span>运行模式</span>
           <select id="setupMode" name="mode">
             <option value="ctypes">通用模式（推荐，ctypes 单文件）</option>
+            <option value="lite">极致模式（纯 ctypes 自包含）</option>
             <option value="lttx">高级模式（两个 QMT）</option>
           </select>
-          <small>新用户建议先使用通用模式；熟悉部署后，再为指定账号切换高级模式。高级模式需要两个 QMT 终端，不能在一个 QMT 里同时运行高级模式的两个入口。</small>
+          <small>新用户建议先使用通用模式；QMT 限制导入外部包时使用极致模式；熟悉部署后，再为指定账号切换高级模式。</small>
         </label>
         <button class="primary wide" type="submit">保存并进入系统</button>
         <span id="setupStatus" class="metric-note"></span>
@@ -248,6 +253,10 @@
         <div class="status-pill" id="tradeStatus"><span></span><strong id="tradeStatusLabel">通用交易通道</strong></div>
         <div class="status-pill" id="transportStatus"><span></span><strong id="transportStatusLabel">通用模式</strong></div>
         <div id="versionAlert" class="topbar-alert hidden" title="">版本探测失败，不影响交易和行情功能</div>
+        <button id="topbarProfileBtn" class="topbar-profile" type="button" title="个人资料">
+          <img id="topbarAvatarImg" src="/avatars/market-blue.svg" alt="">
+          <span id="topbarProfileName">管理员</span>
+        </button>
         <button id="webAuthLogoutBtn" class="topbar-logout hidden" type="button">退出登录</button>
       </div>
       </header>
@@ -301,43 +310,6 @@
                 <div class="home-intro-actions">
                   <button class="primary" type="button" data-view-jump="tutorial" data-guide="web_console">查看网页端教程</button>
                   <button type="button" data-view-jump="tutorial" data-guide="project">查看架构说明</button>
-                </div>
-              </div>
-              <div class="home-route-visual" aria-label="cfquant 核心请求链路">
-                <div class="home-route-visual-head">
-                  <strong>核心链路</strong>
-                  <span>请求进入、桥接转发、QMT 执行、回调返回</span>
-                </div>
-                <div class="home-zoom-stage">
-                  <div class="home-route-node source">
-                    <strong>外部程序发起请求</strong>
-                    <span>HTTP、WebSocket、cfquant 库</span>
-                  </div>
-                  <div class="home-route-line"></div>
-                  <div class="home-route-node server">
-                    <strong>cfquant Web</strong>
-                    <span>鉴权、账号、模式路由</span>
-                  </div>
-                  <div class="home-route-line"></div>
-                  <div class="home-route-node runtime">
-                    <strong>本地桥接运行时</strong>
-                    <span>PipeHub 或 LTtx</span>
-                  </div>
-                  <div class="home-route-line"></div>
-                  <div class="home-route-node qmt">
-                    <strong>QMT 终端执行</strong>
-                    <span>查询、交易、行情回调</span>
-                  </div>
-                </div>
-                <div class="home-mode-summary">
-                  <div>
-                    <strong>通用模式</strong>
-                    <span>一个 QMT + ctypes 通用端，部署最少。</span>
-                  </div>
-                  <div>
-                    <strong>高级模式</strong>
-                    <span>普通 QMT + 极速交易端 QMT，适合进一步压低交易链路延迟。</span>
-                  </div>
                 </div>
               </div>
             </div>
@@ -581,64 +553,44 @@
             <pre id="statusDetail" class="json-box"></pre>
           </div>
 
-          <div class="panel span-12 view-panel view-bindings">
+          <div class="panel span-12 view-panel view-bindings binding-action-panel">
             <div class="panel-head">
-              <h2>账号配置</h2>
-              <button id="openOnboardingGuideBtn" type="button">新手引导</button>
+              <h2>绑定操作</h2>
             </div>
-            <div class="guide-callout">
-              <strong>按账号配置，不需要手动选择桥接端</strong>
-              <span>单账号默认使用默认通道；继续添加多账号时，服务端会根据账号配置自动分配内部通道并完成路由。QMT 核心目录通常填写 bin.x64，可以留空，但留空会导致自动更新、脚本定位和多 QMT 部署辅助不可用。</span>
+            <div class="binding-action-body">
+              <div class="panel-title-stack">
+                <strong>账号绑定</strong>
+                <span id="bindingCount" class="metric-note">--</span>
+              </div>
+              <div class="binding-action-buttons">
+                <button id="openBindingDialogBtn" class="primary" type="button">添加绑定</button>
+                <button id="openOnboardingGuideBtn" type="button">新手引导</button>
+              </div>
+              <div class="binding-guide">
+                <strong>列表维护账号绑定</strong>
+                <span>绑定信息、运行状态和验证入口集中显示。</span>
+              </div>
             </div>
-            <form id="bindingForm" class="form-grid">
-              <label class="field">
-                <span>账号</span>
-                <input name="account_id" placeholder="2220009880" autocomplete="off">
-              </label>
-              <label class="field">
-                <span>账户类型</span>
-                <select name="account_type">
-                  <option value="STOCK">普通证券账户</option>
-                  <option value="CREDIT">信用账户</option>
-                </select>
-              </label>
-              <label class="field wide">
-                <span>QMT 核心目录（可选）</span>
-                <input name="qmt_dir" placeholder="D:\国金证券QMT交易端\bin.x64" autocomplete="off">
-                <small>建议填写 QMT 的 bin.x64 目录。留空时该账号仍可运行，但自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
-              </label>
-              <label class="field">
-                <span>账号模式</span>
-                <select name="mode">
-                  <option value="ctypes">通用模式（ctypes）</option>
-                  <option value="lttx">高级模式（两个 QMT）</option>
-                </select>
-              </label>
-              <label class="toggle">
-                <input name="data_provider" type="checkbox">
-                <span>作为共享行情数据提供商</span>
-              </label>
-              <button id="reinitializeSetupBtn" type="button" class="wide">重新初始化默认配置</button>
-              <button class="primary wide" type="submit">保存账号配置</button>
-            </form>
-            <div id="bindingAccountConfigList" class="config-list"></div>
           </div>
 
-          <div class="panel span-12 view-panel view-bindings">
-            <div class="panel-head">
-              <h2>绑定状态</h2>
-              <button id="refreshBindingsBtn">刷新状态</button>
+          <div class="panel span-12 view-panel view-bindings bindings-panel">
+            <div class="panel-head bindings-head">
+              <h2>绑定列表</h2>
+              <span class="metric-note">账号 / 通道 / QMT 目录</span>
             </div>
-            <div class="table-wrap">
-              <table>
+            <div class="table-wrap binding-table-wrap">
+              <table class="binding-table">
                 <thead>
                   <tr>
-                    <th>账号</th>
+                    <th>账号名称</th>
+                    <th>资金账号</th>
+                    <th>连接状态</th>
                     <th>首选模式</th>
                     <th>实际模式</th>
+                    <th>内部通道</th>
                     <th>QMT 目录</th>
                     <th>数据源</th>
-                    <th>验证</th>
+                    <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="bindingStatusBody"></tbody>
@@ -646,7 +598,7 @@
             </div>
           </div>
 
-          <div class="panel span-12 view-panel view-bindings">
+          <div class="panel span-12 view-panel view-bindings binding-verify-panel">
             <div class="panel-head">
               <h2>绑定验证</h2>
               <span id="pairVerifyNote" class="metric-note"></span>
@@ -793,6 +745,10 @@
             </div>
             <div class="settings-layout">
               <aside class="settings-menu" aria-label="设置菜单">
+                <button class="settings-menu-item" type="button" data-settings-tab="profile">
+                  <strong>个人资料</strong>
+                  <span>头像、昵称和内置头像</span>
+                </button>
                 <button class="settings-menu-item active" type="button" data-settings-tab="api-key">
                   <strong>API Key</strong>
                   <span>生成、显示和保存访问密钥</span>
@@ -818,6 +774,42 @@
                   <span>Web 项目 / QMT 核心</span>
                 </button>
               </aside>
+              <section class="settings-section" data-settings-tab="profile">
+                <h3>个人资料</h3>
+                <div class="profile-settings">
+                  <div class="profile-preview">
+                    <img id="profileAvatarPreview" src="/avatars/market-blue.svg" alt="">
+                    <div>
+                      <strong id="profilePreviewName">管理员</strong>
+                      <span id="profileAvatarMeta">内置头像</span>
+                    </div>
+                  </div>
+                  <form id="userProfileForm" class="profile-form">
+                    <label class="field">
+                      <span>显示名称</span>
+                      <input id="profileDisplayNameInput" type="text" maxlength="40" autocomplete="off" placeholder="管理员">
+                    </label>
+                    <div class="profile-upload-row">
+                      <label class="field">
+                        <span>上传头像</span>
+                        <input id="profileAvatarFileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+                      </label>
+                      <button id="uploadUserAvatarBtn" type="button">上传头像</button>
+                    </div>
+                    <div class="profile-avatar-picker">
+                      <div class="profile-avatar-picker-head">
+                        <strong>内置头像</strong>
+                        <span>选择后点击保存资料生效</span>
+                      </div>
+                      <div id="builtinAvatarGrid" class="builtin-avatar-grid"></div>
+                    </div>
+                    <div class="profile-actions">
+                      <span id="userProfileStatus" class="metric-note"></span>
+                      <button id="saveUserProfileBtn" class="primary" type="submit">保存资料</button>
+                    </div>
+                  </form>
+                </div>
+              </section>
               <section class="settings-section active" data-settings-tab="api-key">
                 <h3>API Key</h3>
                 <form id="apiKeyForm" class="api-keybar">
@@ -861,12 +853,13 @@
                     <span>Web 通信模式</span>
                     <select id="transportModeSelect">
                       <option value="ctypes">通用模式（ctypes 单桥）</option>
+                      <option value="lite">极致模式（纯 ctypes 自包含）</option>
                       <option value="lttx">高级模式（两个 QMT）</option>
                     </select>
                   </label>
                   <div class="guide-callout wide">
                     <strong>模式说明</strong>
-                    <span>通用模式只需要加载一个 ctypes 单文件桥，行情、查询、下单、撤单和回调统一通过 named pipe 接入。高级模式需要两个 QMT：普通 QMT 跑查询桥，另一个极速交易端 QMT 跑交易桥，只有两端都在线时才允许启用。</span>
+                    <span>通用模式只需要加载一个 ctypes 单文件桥；极致模式加载 <code>CFQUANT_LITE.py</code>，不导入 <code>cfquant</code> 包；高级模式需要两个 QMT：普通 QMT 跑查询桥，另一个极速交易端 QMT 跑交易桥。</span>
                   </div>
                 </div>
               </div>
@@ -963,6 +956,7 @@
                     <span>当前模式</span>
                     <select id="transportModeSelect2">
                       <option value="ctypes">通用模式（ctypes 单桥）</option>
+                      <option value="lite">极致模式（纯 ctypes 自包含）</option>
                       <option value="lttx">高级模式（两个 QMT）</option>
                     </select>
                   </label>
@@ -1080,6 +1074,10 @@
                 <button class="tutorial-menu-item recommended" type="button" data-guide="deploy_guide">
                   <strong>通用模式图文部署 <em>推荐</em></strong>
                   <span>一个 QMT，按截图跑通</span>
+                </button>
+                <button class="tutorial-menu-item" type="button" data-guide="deploy_guide_lite">
+                  <strong>极致模式部署</strong>
+                  <span>白名单限制时只加载 CFQUANT_LITE.py</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="deploy_guide_advanced">
                   <strong>高级模式图文部署</strong>
@@ -1242,6 +1240,7 @@
                             <span>运行模式</span>
                             <select id="onboardingMode">
                               <option value="ctypes">通用模式（推荐）</option>
+                              <option value="lite">极致模式</option>
                               <option value="lttx">高级模式</option>
                             </select>
                             <small>高级模式需要两个 QMT 终端；此处目录用于该账号的通用端和普通 QMT。</small>
@@ -1430,6 +1429,10 @@
                           <tr>
                             <td><code>cfquant\qmt_scripts\CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
                             <td>通用模式单文件桥，同时注册查询通道、交易通道和回调通道。</td>
+                          </tr>
+                          <tr>
+                            <td><code>cfquant\qmt_scripts\CFQUANT_LITE.py</code></td>
+                            <td>极致模式自包含入口，不导入 <code>cfquant</code> 包，适合 QMT 白名单限制环境。</td>
                           </tr>
                           <tr>
                             <td><code>cfquant\qmt_scripts\CFQUANT.py</code></td>
@@ -1679,6 +1682,11 @@ positions = trader.query_stock_positions(account)</pre>
                             <td>单文件 ctypes 通用桥，同时注册查询、交易和回调通道；不需要 tx.py。</td>
                           </tr>
                           <tr>
+                            <td><code>cfquant\qmt_scripts\CFQUANT_LITE.py</code></td>
+                            <td>极致模式复制到 QMT 的 <code>python\</code> 根目录</td>
+                            <td>纯 ctypes 自包含入口，不需要在 QMT 中导入 <code>cfquant</code> 包。</td>
+                          </tr>
+                          <tr>
                             <td><code>cfquant\qmt_scripts\CFQUANT.py</code></td>
                             <td>复制到普通 QMT 的 <code>python\</code> 根目录</td>
                             <td>普通 QMT 桥入口，负责资金、持仓、委托、成交和状态查询。</td>
@@ -1775,6 +1783,46 @@ USER_BRIDGE_ID = "qmt2"</pre>
                       <img src="/image/通用模式部署指南/image-3.png" alt="通用模式部署成功示例">
                       <figcaption>通用模式策略启动成功后的状态示例。</figcaption>
                     </figure>
+                  </div>
+                </article>
+
+                <article class="tutorial-topic" data-guide-panel="deploy_guide_lite">
+                  <div class="guide-section">
+                    <h3>极致模式部署指南</h3>
+                    <div class="guide-recommend">
+                      <strong>只在 QMT 侧加载一个自包含脚本</strong>
+                      <span>极致模式使用 <code>CFQUANT_LITE.py</code>，脚本内部自带 PipeHub 协议、双通道桥和 ctypes 调用逻辑，不需要在 QMT 中导入 <code>cfquant</code> 包。</span>
+                    </div>
+                    <p>这个模式适合 QMT 有白名单限制、无法正常导入项目核心包的环境。本机仍然需要先运行 <code>start_cfquant.bat</code>，让 Web 服务和 PipeHub 保持在线。</p>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>一、网页端选择极致模式</h3>
+                    <p>进入“绑定”页面，点击添加或编辑绑定，将账号运行模式选择为“极致模式”，填写资金账号、账号类型和 QMT 核心目录后保存。保存后，网页端会按极致模式路由到 PipeHub。</p>
+                    <pre class="guide-code">运行模式：极致模式
+QMT 入口脚本：CFQUANT_LITE.py
+通信链路：Web / 外部 Python -> PipeHub -> 纯 ctypes 自包含桥 -> QMT</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>二、QMT 侧加载 CFQUANT_LITE.py</h3>
+                    <p>将项目里的 <code>qmt_scripts/CFQUANT_LITE.py</code> 复制到 QMT 可加载的 Python 脚本目录，在 QMT 中创建策略并导入这个文件。极致模式不需要复制 <code>cfquant\cfquant\</code> 核心包到 QMT 的 <code>bin.x64</code>。</p>
+                    <pre class="guide-code">需要复制：qmt_scripts/CFQUANT_LITE.py
+不需要复制：cfquant 核心包
+更新后操作：重新复制 CFQUANT_LITE.py 并重启 QMT 脚本</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>三、确认版本上报</h3>
+                    <p>启动 QMT 脚本后，日志应优先显示中文，并出现极致模式入口版本。回到网页左上角版本弹窗，确认 QMT 运行时显示核心版本、入口脚本和入口版本。</p>
+                    <pre class="guide-code">cfquant 极致模式入口版本：lite_20260828_01
+cfquant 极致模式运行版本已上报
+版本弹窗：QMT core_20260828_01 / 入口 CFQUANT_LITE.py lite_20260828_01</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>四、常见状态</h3>
+                    <p>如果版本弹窗暂时显示未上报，先确认 Web 服务已经启动，再重启 QMT 脚本。短暂的命名管道连接中断通常会自动重连；如果持续反复，检查是否有多个 QMT 脚本使用同一个 <code>bridge_id</code>。</p>
                   </div>
                 </article>
 
@@ -2236,7 +2284,7 @@ USER_BRIDGE_ID = "qmt2"</pre>
             </div>
           </div>
 
-          <div class="panel span-12 view-panel view-overview view-trade view-orders view-status view-bindings view-callbacks">
+          <div class="panel span-12 view-panel view-overview view-trade view-orders view-status view-callbacks">
             <div class="panel-head">
               <h2>日志</h2>
               <button id="clearLogBtn">清空</button>
@@ -2245,6 +2293,58 @@ USER_BRIDGE_ID = "qmt2"</pre>
           </div>
         </section>
       </main>
+    </div>
+  </div>
+
+  <div id="bindingDialogOverlay" class="binding-dialog-overlay hidden" aria-hidden="true">
+    <div class="binding-dialog" role="dialog" aria-modal="true" aria-labelledby="bindingDialogTitle">
+      <div class="binding-dialog-head">
+        <div>
+          <strong id="bindingDialogTitle">添加账号绑定</strong>
+          <span id="bindingDialogSubtitle">保存后系统会按账号自动路由到对应 QMT 通道。</span>
+        </div>
+        <button id="closeBindingDialogBtn" type="button" aria-label="关闭绑定编辑">关闭</button>
+      </div>
+      <form id="bindingForm" class="form-grid binding-dialog-form">
+        <label class="field">
+          <span>账号名称（可选）</span>
+          <input id="bindingDisplayName" name="display_name" placeholder="主账户 / 信用账户 / 家人账户" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>账号</span>
+          <input id="bindingAccountId" name="account_id" placeholder="2220009880" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>账户类型</span>
+          <select id="bindingAccountType" name="account_type">
+            <option value="STOCK">普通证券账户</option>
+            <option value="CREDIT">信用账户</option>
+          </select>
+        </label>
+        <label class="field wide">
+          <span>QMT 核心目录（可选）</span>
+          <input id="bindingQmtDir" name="qmt_dir" placeholder="D:\国金证券QMT交易端\bin.x64" autocomplete="off">
+          <small>建议填写 QMT 的 bin.x64 目录。留空时该账号仍可运行，但自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
+        </label>
+        <label class="field">
+          <span>账号模式</span>
+          <select id="bindingMode" name="mode">
+            <option value="ctypes">通用模式（ctypes）</option>
+            <option value="lite">极致模式（纯 ctypes 自包含）</option>
+            <option value="lttx">高级模式（两个 QMT）</option>
+          </select>
+        </label>
+        <label class="toggle binding-dialog-toggle">
+          <input id="bindingDataProvider" name="data_provider" type="checkbox">
+          <span>作为共享行情数据提供商</span>
+        </label>
+        <div class="binding-dialog-actions">
+          <button id="reinitializeSetupBtn" type="button">重新初始化默认配置</button>
+          <span id="bindingDialogHint" class="metric-note"></span>
+          <button id="cancelBindingDialogBtn" type="button">取消</button>
+          <button class="primary" type="submit">保存绑定</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -2295,6 +2395,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=web_20260827_01"></script>
+  <script src="/app.js?v=web_20260828_01"></script>
 </body>
 </html>
