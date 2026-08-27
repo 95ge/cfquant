@@ -5,6 +5,7 @@ import os
 import sys
 import importlib
 import datetime as dt
+import io
 import json
 
 
@@ -100,13 +101,17 @@ def _load_runtime_config():
     for path in _runtime_config_paths():
         if not os.path.isfile(path):
             continue
-        try:
-            with open(path, "r") as f:
-                data = json.loads(f.read())
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            pass
+        for opener in (
+            lambda: io.open(path, "r", encoding="utf-8"),
+            lambda: open(path, "r"),
+        ):
+            try:
+                with opener() as f:
+                    data = json.loads(f.read())
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                pass
     return {}
 
 
@@ -123,6 +128,15 @@ def _config_bool(value, default=True):
     return default
 
 
+def _env_allows_runtime_override(name, default_value=""):
+    value = str(os.environ.get(name) or "").strip()
+    if not value:
+        return True
+    if str(os.environ.get("%s_SOURCE" % name) or "").strip() == "cfquant_entry":
+        return True
+    return bool(default_value and value == default_value)
+
+
 def _apply_runtime_config():
     global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS
 
@@ -130,7 +144,7 @@ def _apply_runtime_config():
     RUNTIME_CONFIG = data
     if not data:
         return
-    if not os.environ.get("CFQUANT_BRIDGE_ID") and data.get("bridge_id"):
+    if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
     channels = data.get("channels") or {}
     if isinstance(channels, dict):

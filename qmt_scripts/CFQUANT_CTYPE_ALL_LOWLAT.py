@@ -5,6 +5,7 @@ import os
 import sys
 import importlib
 import datetime as dt
+import io
 import json
 import queue
 import threading
@@ -210,13 +211,18 @@ def _load_runtime_config():
     for path in _runtime_config_paths():
         if not os.path.isfile(path):
             continue
-        try:
-            with open(path, "r") as f:
-                data = json.loads(f.read())
-            if isinstance(data, dict):
-                return path, data
-        except Exception as e:
-            _write_runtime_log("cfquant ctypes runtime config read failed path=%s error=%s" % (path, e))
+        for index, opener in enumerate((
+            lambda: io.open(path, "r", encoding="utf-8"),
+            lambda: open(path, "r"),
+        )):
+            try:
+                with opener() as f:
+                    data = json.loads(f.read())
+                if isinstance(data, dict):
+                    return path, data
+            except Exception as e:
+                if index == 1:
+                    _write_runtime_log("cfquant ctypes runtime config read failed path=%s error=%s" % (path, e))
     return "", {}
 
 
@@ -233,6 +239,15 @@ def _config_bool(value, default=True):
     return default
 
 
+def _env_allows_runtime_override(name, default_value=""):
+    value = str(os.environ.get(name) or "").strip()
+    if not value:
+        return True
+    if str(os.environ.get("%s_SOURCE" % name) or "").strip() == "cfquant_entry":
+        return True
+    return bool(default_value and value == default_value)
+
+
 def _apply_runtime_config():
     global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS
 
@@ -242,9 +257,9 @@ def _apply_runtime_config():
     if not data:
         _write_runtime_log("cfquant ctypes runtime config not found")
         return
-    if not os.environ.get("CFQUANT_BRIDGE_ID") and data.get("bridge_id"):
+    if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
-    if not os.environ.get("CFQUANT_PIPE_NAME") and data.get("pipe_name"):
+    if data.get("pipe_name") and _env_allows_runtime_override("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub"):
         PIPE_NAME = data.get("pipe_name")
     channels = data.get("channels") or {}
     if isinstance(channels, dict):
@@ -307,8 +322,10 @@ from cfquant.channels import channels_for_bridge, normalize_bridge_id
 BRIDGE_ID = normalize_bridge_id(BRIDGE_ID)
 if not os.environ.get("CFQUANT_BRIDGE_ID"):
     os.environ["CFQUANT_BRIDGE_ID"] = BRIDGE_ID
+    os.environ["CFQUANT_BRIDGE_ID_SOURCE"] = "cfquant_entry"
 if PIPE_NAME and not os.environ.get("CFQUANT_PIPE_NAME"):
     os.environ["CFQUANT_PIPE_NAME"] = PIPE_NAME
+    os.environ["CFQUANT_PIPE_NAME_SOURCE"] = "cfquant_entry"
 BRIDGE_CHANNELS = channels_for_bridge(BRIDGE_ID)
 for _channel_key in ("normal", "trade", "callback"):
     _channel_value = RUNTIME_CHANNELS.get(_channel_key) or RUNTIME_CONFIG.get("%s_channel" % _channel_key)

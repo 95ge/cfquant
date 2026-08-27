@@ -29,6 +29,7 @@ ERROR_ACCESS_DENIED = 5
 ERROR_BROKEN_PIPE = 109
 ERROR_PIPE_BUSY = 231
 ERROR_NO_DATA = 232
+ERROR_PIPE_NOT_CONNECTED = 233
 ERROR_PIPE_CONNECTED = 535
 
 DEFAULT_BUFFER_SIZE = 65536
@@ -223,7 +224,7 @@ class NamedPipeConnection(object):
             ok = k32.dll.ReadFile(self.handle, buf, chunk_size, ctypes.byref(read), None)
             if not ok:
                 error = k32.last_error()
-                if error in (ERROR_BROKEN_PIPE, ERROR_NO_DATA):
+                if error in (ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_NOT_CONNECTED):
                     return None
                 raise OSError(error, "ReadFile failed with winerror=%s" % error)
             if read.value == 0:

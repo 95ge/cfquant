@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260827_01';
+const FRONTEND_VERSION = 'web_20260828_01';
 
 const state = {
   accountId: '',
@@ -53,6 +53,10 @@ const state = {
   serverAccess: null,
   webAuthToken: '',
   webAuthStatus: null,
+  userProfile: null,
+  builtinAvatars: [],
+  profileSelectedAvatarUrl: '',
+  profileUploadLimit: 2 * 1024 * 1024,
   appStarted: false,
   logCleanup: null,
   qmtLogLanguage: null,
@@ -101,8 +105,55 @@ const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups';
 const WEB_AUTH_TOKEN_KEY = 'cfquant.web_auth_token';
 const WEB_AUTH_SESSION_TOKEN_KEY = 'cfquant.web_auth_session_token';
 const WEB_AUTH_REMEMBER_KEY = 'cfquant.web_auth_remember';
+const DEFAULT_AVATAR_URL = '/avatars/market-blue.svg';
+const DEFAULT_BUILTIN_AVATARS = [
+  { id: 'market-blue', name: 'Market Blue', url: '/avatars/market-blue.svg' },
+  { id: 'signal-green', name: 'Signal Green', url: '/avatars/signal-green.svg' },
+  { id: 'copper-grid', name: 'Copper Grid', url: '/avatars/copper-grid.svg' },
+  { id: 'violet-node', name: 'Violet Node', url: '/avatars/violet-node.svg' },
+  { id: 'slate-wave', name: 'Slate Wave', url: '/avatars/slate-wave.svg' },
+  { id: 'amber-pulse', name: 'Amber Pulse', url: '/avatars/amber-pulse.svg' },
+  { id: 'teal-orbit', name: 'Teal Orbit', url: '/avatars/teal-orbit.svg' },
+  { id: 'rose-circuit', name: 'Rose Circuit', url: '/avatars/rose-circuit.svg' },
+];
 const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
 const DEFAULT_OFFICIAL_SITE_URL = 'https://cfquant.org';
+
+function normalizeTransportMode(mode) {
+  const value = String(mode || 'ctypes').trim().toLowerCase();
+  if (['lite', 'extreme', 'extreme_lite', 'lite_extreme', 'lite_extreme_pipe', 'extreme_pipe', 'cfquant_lite', 'ultimate'].includes(value)) return 'lite';
+  if (['lttx', 'socket', 'normal', 'default'].includes(value)) return 'lttx';
+  return 'ctypes';
+}
+
+function isCtypesTransportMode(mode) {
+  return normalizeTransportMode(mode) !== 'lttx';
+}
+
+function transportModeLabel(mode, short = false) {
+  const value = normalizeTransportMode(mode);
+  if (value === 'lite') return short ? '极致' : '极致模式';
+  if (value === 'lttx') return short ? '高级' : '高级模式';
+  return short ? '通用' : '通用模式';
+}
+
+function transportModeDetailLabel(mode) {
+  const value = normalizeTransportMode(mode);
+  if (value === 'lite') return '纯 ctypes 自包含版';
+  if (value === 'lttx') return 'LTtx 普通/极速双桥';
+  return 'ctypes 通用版';
+}
+
+function transportModeRequestScope(mode) {
+  const value = normalizeTransportMode(mode);
+  if (value === 'lite') return '纯 ctypes 单文件双通道';
+  if (value === 'lttx') return '普通桥 + 交易桥';
+  return '单文件双通道';
+}
+
+function qmtEntryScriptForMode(mode) {
+  return normalizeTransportMode(mode) === 'lite' ? 'CFQUANT_LITE.py' : 'CFQUANT_CTYPE_ALL_LOWLAT.py';
+}
 const DEFAULT_UPDATE_REF = 'main';
 const QUOTE_RENDER_INTERVAL_MS = 500;
 const QUOTE_RESPONSE_LOG_LIMIT = 20;
@@ -347,7 +398,7 @@ const API_ENDPOINTS = [
     title: '通信模式',
     method: 'GET',
     path: '/api/transport',
-    desc: '查看或切换当前网页通信模式：通用模式使用 ctypes 单桥，高级模式使用两个 QMT 终端的普通桥和极速交易桥。',
+    desc: '查看或切换当前网页通信模式：通用模式使用 ctypes 单桥，极致模式使用纯 ctypes 自包含脚本，高级模式使用两个 QMT 终端的普通桥和极速交易桥。',
     fields: [],
   },
   {
@@ -511,7 +562,7 @@ const API_PARAM_DOCS = {
   data_type: '导出数据类型，按 QMT export_data 支持值填写，例如 order、deal、position、account 等。',
   user_param: '导出附加参数 JSON 对象，不需要时填 {}。',
   user_param_json: '导出附加参数 JSON 对象，不需要时填 {}。页面会在发送前转换为 user_param。',
-  transport_mode: '通信模式，ctypes 表示通用模式单文件桥，lttx 表示高级模式两个 QMT 终端双桥。',
+  transport_mode: '通信模式，ctypes 表示通用模式单文件桥，lite 表示极致模式纯 ctypes 自包含脚本，lttx 表示高级模式两个 QMT 终端双桥。',
 };
 
 const API_RETURN_DOCS = {
@@ -647,7 +698,7 @@ const API_RETURN_DOCS = {
     ['checked_at_text', '检测时间'],
   ],
   transport_mode: [
-    ['transport.mode', '当前通信模式，lttx 或 ctypes'],
+    ['transport.mode', '当前通信模式，ctypes、lite 或 lttx'],
     ['transport.label', '展示名称'],
     ['client.mode', '请求客户端模式'],
     ['client.request_channel', '默认请求频道'],
@@ -1010,9 +1061,13 @@ function qmtRuntimeLabel(report = {}) {
 function qmtRuntimeDetail(report = {}) {
   if (report.reported && report.version) {
     const source = report.source || 'QMT 运行时';
-    const mode = report.mode ? ` / ${report.mode}` : '';
+    const modeName = report.runtime_mode || report.mode || '';
+    const mode = modeName ? ` / ${transportModeLabel(modeName) || modeName}` : '';
+    const entry = report.entry_version
+      ? ` / 入口 ${report.entry_script || 'QMT 脚本'} ${report.entry_version}`
+      : (report.entry_script ? ` / 入口 ${report.entry_script}` : '');
     const checked = report.reported_at_text ? ` / ${report.reported_at_text}` : '';
-    return `来源：${source}${mode}${checked}`;
+    return `来源：${source}${mode}${entry}${checked}`;
   }
   return report.message || '未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看。';
 }
@@ -1333,6 +1388,151 @@ function authQueryString() {
     params.set('apikey', state.apiKey);
   }
   return params.toString();
+}
+
+function safeAvatarUrl(url) {
+  const value = String(url || '').trim();
+  if (value.startsWith('/avatars/') || value.startsWith('/media/avatars/')) return value;
+  return DEFAULT_AVATAR_URL;
+}
+
+function userProfileLabel(profile = state.userProfile) {
+  const row = profile || {};
+  return row.display_name || row.display_label || row.username || '管理员';
+}
+
+function setUserProfileStatus(message, type = '') {
+  const node = $('userProfileStatus');
+  if (!node) return;
+  node.textContent = message || '';
+  node.classList.toggle('is-ok', type === 'ok');
+  node.classList.toggle('is-error', type === 'error');
+  node.classList.toggle('is-busy', type === 'busy');
+}
+
+function renderBuiltinAvatarGrid() {
+  const grid = $('builtinAvatarGrid');
+  if (!grid) return;
+  const avatars = state.builtinAvatars.length ? state.builtinAvatars : DEFAULT_BUILTIN_AVATARS;
+  const selected = safeAvatarUrl(state.profileSelectedAvatarUrl || (state.userProfile && state.userProfile.avatar_url));
+  grid.innerHTML = avatars.map((avatar) => {
+    const url = safeAvatarUrl(avatar.url);
+    const active = url === selected;
+    return `<button type="button" class="builtin-avatar-option${active ? ' active' : ''}" data-avatar-url="${esc(url)}" aria-pressed="${active ? 'true' : 'false'}" title="${esc(avatar.name || '内置头像')}">
+      <img src="${esc(url)}" alt="">
+    </button>`;
+  }).join('');
+}
+
+function renderUserProfile(payload = {}) {
+  const profile = payload.profile || payload.user_profile || payload || {};
+  const avatars = payload.avatars || payload.builtin_avatars || [];
+  if (avatars.length) state.builtinAvatars = avatars;
+  else if (!state.builtinAvatars.length) state.builtinAvatars = DEFAULT_BUILTIN_AVATARS;
+  if (payload.upload && payload.upload.max_bytes) state.profileUploadLimit = Number(payload.upload.max_bytes) || state.profileUploadLimit;
+  const normalized = {
+    display_name: String(profile.display_name || '').trim(),
+    username: String(profile.username || '').trim(),
+    display_label: String(profile.display_label || '').trim(),
+    avatar_url: safeAvatarUrl(profile.avatar_url),
+    avatar_kind: profile.avatar_kind || (String(profile.avatar_url || '').startsWith('/media/avatars/') ? 'upload' : 'builtin'),
+  };
+  normalized.display_label = userProfileLabel(normalized);
+  state.userProfile = normalized;
+  state.profileSelectedAvatarUrl = normalized.avatar_url;
+
+  const topbarImg = $('topbarAvatarImg');
+  const previewImg = $('profileAvatarPreview');
+  if (topbarImg) topbarImg.src = normalized.avatar_url;
+  if (previewImg) previewImg.src = normalized.avatar_url;
+  const topbarName = $('topbarProfileName');
+  const previewName = $('profilePreviewName');
+  if (topbarName) topbarName.textContent = normalized.display_label;
+  if (previewName) previewName.textContent = normalized.display_label;
+  const displayInput = $('profileDisplayNameInput');
+  if (displayInput && document.activeElement !== displayInput) displayInput.value = normalized.display_name;
+  const meta = $('profileAvatarMeta');
+  if (meta) meta.textContent = normalized.avatar_kind === 'upload' ? '自定义上传头像' : '内置头像';
+  renderBuiltinAvatarGrid();
+}
+
+function selectUserProfileAvatar(url) {
+  state.profileSelectedAvatarUrl = safeAvatarUrl(url);
+  if (state.userProfile) {
+    state.userProfile.avatar_url = state.profileSelectedAvatarUrl;
+    state.userProfile.avatar_kind = state.profileSelectedAvatarUrl.startsWith('/media/avatars/') ? 'upload' : 'builtin';
+  }
+  const previewImg = $('profileAvatarPreview');
+  if (previewImg) previewImg.src = state.profileSelectedAvatarUrl;
+  const meta = $('profileAvatarMeta');
+  if (meta) meta.textContent = state.profileSelectedAvatarUrl.startsWith('/media/avatars/') ? '自定义上传头像' : '内置头像';
+  renderBuiltinAvatarGrid();
+}
+
+async function saveUserProfileFromUi(event) {
+  if (event) event.preventDefault();
+  const displayName = $('profileDisplayNameInput') ? $('profileDisplayNameInput').value.trim() : '';
+  const avatarUrl = safeAvatarUrl(state.profileSelectedAvatarUrl || (state.userProfile && state.userProfile.avatar_url));
+  setUserProfileStatus('正在保存资料...', 'busy');
+  try {
+    const data = await api('/api/user-profile', {
+      method: 'POST',
+      body: JSON.stringify({ display_name: displayName, avatar_url: avatarUrl }),
+    });
+    renderUserProfile(data);
+    setUserProfileStatus('资料已保存。', 'ok');
+    log('用户资料已保存', { display_name: displayName, avatar_url: avatarUrl });
+  } catch (error) {
+    setUserProfileStatus(`保存失败：${error.message}`, 'error');
+    log('用户资料保存失败', { error: error.message });
+  }
+}
+
+async function uploadUserAvatarFromUi() {
+  const input = $('profileAvatarFileInput');
+  const file = input && input.files ? input.files[0] : null;
+  if (!file) {
+    setUserProfileStatus('请选择头像图片。', 'error');
+    return;
+  }
+  if (file.size > state.profileUploadLimit) {
+    setUserProfileStatus(`头像不能超过 ${Math.round(state.profileUploadLimit / 1024 / 1024)}MB。`, 'error');
+    return;
+  }
+  const allowedTypes = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+  if (file.type && !allowedTypes.has(file.type)) {
+    setUserProfileStatus('只支持 PNG、JPG、WEBP 或 GIF。', 'error');
+    return;
+  }
+  const formData = new FormData();
+  formData.append('file', file);
+  const displayName = $('profileDisplayNameInput') ? $('profileDisplayNameInput').value.trim() : '';
+  formData.append('display_name', displayName);
+  setUserProfileStatus('正在上传头像...', 'busy');
+  try {
+    const response = await fetch('/api/user-profile/avatar', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: formData,
+    });
+    const payload = await response.json();
+    if (response.status === 401 && webAuthEnabled()) {
+      clearWebAuthToken();
+      showWebAuthOverlay('请先登录');
+    }
+    if (!payload.ok) {
+      const error = new Error(payload.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    renderUserProfile(payload.data);
+    if (input) input.value = '';
+    setUserProfileStatus('头像已上传。', 'ok');
+    log('用户头像已上传', { avatar_url: payload.data && payload.data.profile && payload.data.profile.avatar_url });
+  } catch (error) {
+    setUserProfileStatus(`上传失败：${error.message}`, 'error');
+    log('用户头像上传失败', { error: error.message });
+  }
 }
 
 function savedWebAuthTokenInfo() {
@@ -1901,7 +2101,7 @@ function renderApiDocDetail(endpoint) {
     box.innerHTML = `
       <div class="api-doc-extra">
         <h3>模式说明</h3>
-        <p>通用模式只需要加载一个 ctypes QMT 文件，行情、查询、交易、撤单和回调都通过同一座桥接入，适合快速部署和功能验证。</p>
+        <p>通用模式加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>；极致模式加载 <code>CFQUANT_LITE.py</code>，不依赖 <code>cfquant</code> 包导入；高级模式使用两个 QMT 终端。</p>
         <p>高级模式需要两个 QMT 终端：普通 QMT 运行查询桥，极速交易端 QMT 运行交易桥。只有两者都在线时才允许启用，适合追求更低交易延迟和分别控制请求通道的场景。</p>
       </div>
       <div class="api-doc-extra">
@@ -2318,16 +2518,15 @@ function renderTransport(info) {
   const transport = (info && info.transport) || info || {};
   const nextMode = transport.mode || info && info.mode;
   if (nextMode) {
-    state.transportMode = nextMode;
+    state.transportMode = normalizeTransportMode(nextMode);
   }
   if (!state.transportMode) {
     state.transportMode = 'ctypes';
   }
+  const currentMode = normalizeTransportMode(state.transportMode);
   syncTopStatusDisplay();
-  const label = transport.label || (state.transportMode === 'ctypes' ? '通用模式' : '高级模式');
-  const detailLabel = transport.detail_label || (state.transportMode === 'ctypes'
-    ? 'ctypes 通用版'
-    : 'LTtx 普通/极速双桥');
+  const label = transport.label || transportModeLabel(currentMode);
+  const detailLabel = transport.detail_label || transportModeDetailLabel(currentMode);
   const summary = transport.summary || {};
   const transportStatus = $('transportStatus');
   if (transportStatus) {
@@ -2359,19 +2558,19 @@ function renderTransport(info) {
         && state.bridgeStatus.modes.ctypes.ready)
       || pipeReady
     );
-    const online = activeAccountMode() === 'ctypes' ? ctypesReady : advancedReady;
+    const online = isCtypesTransportMode(activeAccountMode()) ? ctypesReady : advancedReady;
     setStatus('transportStatus', online, `${label}：${detailLabel}\n${summary.request_scope || ''}`);
     const labelNode = $('transportStatusLabel');
-    if (labelNode) labelNode.textContent = state.transportMode === 'ctypes' ? '通用端' : '高级模式';
+    if (labelNode) labelNode.textContent = isCtypesTransportMode(currentMode) ? `${transportModeLabel(currentMode, true)}端` : '高级模式';
   }
   const select1 = $('transportModeSelect');
   const select2 = $('transportModeSelect2');
   [select1, select2].forEach((select) => {
-    if (select) select.value = state.transportMode;
+    if (select) select.value = currentMode;
   });
   const statusText = $('transportStatusText');
   if (statusText) {
-    const requestScope = summary.request_scope || (state.transportMode === 'ctypes' ? '单文件双通道' : '普通桥 + 交易桥');
+    const requestScope = summary.request_scope || transportModeRequestScope(currentMode);
     statusText.textContent = `${label}（${detailLabel}），${requestScope}`;
   }
   const startPipeHubBtn = $('startPipeHubBtn');
@@ -2384,12 +2583,12 @@ function renderTransport(info) {
   if (startLttxBtn) startLttxBtn.disabled = startLttxBtn.dataset.runtimeDisabled === 'true';
   if (stopLttxBtn) stopLttxBtn.disabled = stopLttxBtn.dataset.runtimeDisabled === 'true';
   const lttxLabel = $('lttxStatusLabel');
-  if (lttxLabel) lttxLabel.textContent = state.transportMode === 'ctypes' ? 'LTtx（高级模式）' : 'LTtx';
+  if (lttxLabel) lttxLabel.textContent = isCtypesTransportMode(currentMode) ? 'LTtx（高级模式）' : 'LTtx';
   syncTransportChannelControls();
 }
 
 function syncTopStatusDisplay() {
-  const universal = activeAccountMode() === 'ctypes';
+  const universal = isCtypesTransportMode(activeAccountMode());
   ['lttxStatus', 'normalStatus', 'tradeStatus'].forEach((id) => {
     const node = $(id);
     if (node) node.style.display = universal ? 'none' : '';
@@ -2397,13 +2596,15 @@ function syncTopStatusDisplay() {
 }
 
 function syncTransportChannelControls() {
-  const universal = activeAccountMode() === 'ctypes';
+  const mode = activeAccountMode();
+  const universal = isCtypesTransportMode(mode);
+  const modeLabel = transportModeLabel(mode);
   const query = $('queryChannel');
   const trade = $('tradeChannel');
   [query, trade].forEach((node) => {
     if (!node) return;
     node.disabled = universal;
-    node.title = universal ? '通用模式由 ctypes 单桥自动路由' : '高级模式可选择普通 QMT 或极速交易端';
+    node.title = universal ? `${modeLabel}由 ctypes 单桥自动路由` : '高级模式可选择普通 QMT 或极速交易端';
   });
   if (universal) {
     if (query) query.value = 'normal';
@@ -3851,7 +4052,7 @@ function apiFieldHtml(fieldName) {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="filled">填充数据</option><option value="raw">原始数据</option></select></label>`;
   }
   if (meta.type === 'transport_mode') {
-    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="ctypes">通用模式（ctypes 单桥）</option><option value="lttx">高级模式（两个 QMT）</option></select></label>`;
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="ctypes">通用模式（ctypes 单桥）</option><option value="lite">极致模式（纯 ctypes 自包含）</option><option value="lttx">高级模式（两个 QMT）</option></select></label>`;
   }
   if (meta.type === 'account_type') {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="STOCK">普通证券账户</option><option value="CREDIT">信用账户</option></select></label>`;
@@ -4402,6 +4603,8 @@ function setView(view) {
 
 function syncHomeToolbar() {
   const home = state.currentView === 'overview';
+  const toolbar = document.querySelector('.toolbar');
+  if (toolbar) toolbar.style.display = state.currentView === 'bindings' ? 'none' : '';
   const bridgeField = $('bridgeField');
   if (bridgeField) bridgeField.style.display = 'none';
   [
@@ -4453,6 +4656,79 @@ function makeAccountKey(accountId, accountType = 'STOCK', bridgeId = 'default') 
 function accountConfigKey(rawKey, config = {}) {
   return String((config && config.account_key) || rawKey || '').trim()
     || makeAccountKey(config.account_id, config.account_type, config.bridge_id || state.defaultBridgeId || 'default');
+}
+
+function accountPairDisplayName(accountKey, accountId = '', accountType = 'STOCK', bridgeId = '') {
+  accountKey = String(accountKey || '').trim();
+  accountId = String(accountId || '').trim();
+  accountType = normalizeAccountType(accountType || 'STOCK');
+  bridgeId = String(bridgeId || state.defaultBridgeId || 'default').trim();
+  const pairs = state.accountPairs || {};
+  const directKeys = [accountKey, makeAccountKey(accountId, accountType, bridgeId), accountId].filter(Boolean);
+  for (const key of directKeys) {
+    const pair = pairs[key];
+    if (pair && typeof pair === 'object') {
+      const name = String(pair.display_name || pair.account_name || '').trim();
+      if (name) return name;
+    }
+  }
+  for (const [rawKey, pair] of Object.entries(pairs)) {
+    if (!pair || typeof pair !== 'object') continue;
+    const pairAccountType = normalizeAccountType(pair.account_type || 'STOCK');
+    const pairBridgeId = String(pair.bridge_id || state.defaultBridgeId || 'default').trim();
+    const pairAccountId = String(pair.account_id || rawKey || '').trim();
+    const pairKey = accountConfigKey(rawKey, pair);
+    const sameKey = accountKey && pairKey === accountKey;
+    const sameAccount = accountId && pairAccountId === accountId && pairAccountType === accountType && (!bridgeId || pairBridgeId === bridgeId);
+    if (sameKey || sameAccount) {
+      const name = String(pair.display_name || pair.account_name || '').trim();
+      if (name) return name;
+    }
+  }
+  return '';
+}
+
+function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'STOCK', bridgeId = '', displayName = '', account = null, qmtDir = '', mode = 'ctypes', dataProvider = false }) {
+  accountId = String(accountId || (account && account.account_id) || '').trim();
+  accountType = normalizeAccountType(accountType || (account && account.account_type) || 'STOCK');
+  bridgeId = String(bridgeId || (account && account.bridge_id) || state.defaultBridgeId || 'default').trim();
+  accountKey = String(accountKey || (account && account.account_key) || makeAccountKey(accountId, accountType, bridgeId)).trim();
+  displayName = String(displayName == null ? ((account && (account.display_name || account.account_name)) || '') : displayName).trim();
+  if (!accountId || !accountKey) return;
+
+  const currentConfigs = state.accountConfigs || {};
+  const currentConfig = currentConfigs[accountKey] || {};
+  state.accountConfigs = {
+    ...currentConfigs,
+    [accountKey]: {
+      ...currentConfig,
+      ...(account && typeof account === 'object' ? account : {}),
+      account_key: accountKey,
+      account_id: accountId,
+      account_type: accountType,
+      bridge_id: bridgeId,
+      display_name: displayName,
+      qmt_dir: (account && account.qmt_dir) || currentConfig.qmt_dir || qmtDir || '',
+      mode: (account && account.mode) || currentConfig.mode || mode || 'ctypes',
+      data_provider: (account && Object.prototype.hasOwnProperty.call(account, 'data_provider'))
+        ? !!account.data_provider
+        : (Object.prototype.hasOwnProperty.call(currentConfig, 'data_provider') ? !!currentConfig.data_provider : !!dataProvider),
+    },
+  };
+
+  const currentPairs = state.accountPairs || {};
+  const currentPair = currentPairs[accountKey] && typeof currentPairs[accountKey] === 'object' ? currentPairs[accountKey] : {};
+  state.accountPairs = {
+    ...currentPairs,
+    [accountKey]: {
+      ...currentPair,
+      account_key: accountKey,
+      account_id: accountId,
+      account_type: accountType,
+      bridge_id: bridgeId,
+      display_name: displayName,
+    },
+  };
 }
 
 function findAccountConfigByKey(accountKey) {
@@ -4524,6 +4800,7 @@ function accountPairEntries() {
       const bridgeId = pair && typeof pair === 'object' ? pair.bridge_id : pair;
       const accountId = pair && typeof pair === 'object' ? pair.account_id : rawKey;
       const accountType = normalizeAccountType(pair && typeof pair === 'object' ? pair.account_type : 'STOCK');
+      const displayName = pair && typeof pair === 'object' ? String(pair.display_name || pair.account_name || '').trim() : '';
       const accountKey = pair && typeof pair === 'object'
         ? accountConfigKey(rawKey, pair)
         : makeAccountKey(accountId, accountType, bridgeId);
@@ -4532,6 +4809,7 @@ function accountPairEntries() {
         accountId: String(accountId || '').trim(),
         accountType,
         bridgeId: String(bridgeId || '').trim(),
+        displayName,
       };
     })
     .filter((item) => item.accountId && item.bridgeId);
@@ -4544,12 +4822,16 @@ function accountConfigEntries() {
       const accountType = normalizeAccountType(row.account_type || 'STOCK');
       const bridgeId = row.bridge_id || state.defaultBridgeId || 'default';
       const accountId = String(row.account_id || rawKey || '').trim();
+      const accountKey = accountConfigKey(rawKey, row);
+      const pairDisplayName = accountPairDisplayName(accountKey, accountId, accountType, bridgeId);
+      const displayName = String(row.display_name || row.account_name || pairDisplayName || '').trim();
       return {
-        accountKey: accountConfigKey(rawKey, row),
+        accountKey,
         accountId,
         accountType,
         bridgeId,
-        config: row,
+        displayName,
+        config: displayName && !row.display_name ? { ...row, display_name: displayName } : row,
       };
     })
     .filter((item) => item.accountId);
@@ -4605,6 +4887,7 @@ async function saveAccountConfigRequest(body) {
         account_type: body.account_type || 'STOCK',
         account_key: body.account_key || '',
         bridge_id: legacyBridgeId,
+        display_name: body.display_name || '',
       }),
     });
     log('当前 Web 后端未加载账号配置接口，已按旧账号绑定保存；重启 Web 后可保存 QMT 目录、模式和共享行情源', {
@@ -4618,6 +4901,7 @@ async function saveAccountConfigRequest(body) {
         account_type: body.account_type || 'STOCK',
         account_key: body.account_key || makeAccountKey(body.account_id, body.account_type || 'STOCK', legacyBridgeId),
         bridge_id: legacyBridgeId,
+        display_name: body.display_name || '',
         qmt_dir: body.qmt_dir || '',
         mode: body.mode || 'ctypes',
         data_provider: !!body.data_provider,
@@ -4678,15 +4962,16 @@ function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
       defaultAccount: true,
     });
   }
-  accountPairEntries().forEach(({ accountKey, accountId, accountType, bridgeId }) => {
+  accountPairEntries().forEach(({ accountKey, accountId, accountType, bridgeId, displayName }) => {
     accountMap.set(accountKey, {
       accountId,
       accountType,
       bridgeId,
       defaultAccount: accountKey === defaultKey || (!defaultKey && accountId === defaultId),
+      name: displayName,
     });
   });
-  accountConfigEntries().forEach(({ accountKey, accountId, accountType, config }) => {
+  accountConfigEntries().forEach(({ accountKey, accountId, accountType, displayName, config }) => {
     accountMap.set(accountKey, {
       accountId,
       accountType,
@@ -4694,11 +4979,11 @@ function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
       defaultAccount: accountKey === defaultKey || (!defaultKey && accountId === defaultId),
       mode: config.mode || 'ctypes',
       provider: !!config.data_provider,
-      name: config.display_name || '',
+      name: displayName,
     });
   });
   const options = Array.from(accountMap.entries()).map(([accountKey, info]) => {
-    const modeLabel = info.mode === 'lttx' ? '高级' : '通用';
+    const modeLabel = transportModeLabel(info.mode, true);
     const providerLabel = info.provider ? '，数据源' : '';
     const typeLabel = accountTypeLabel(info.accountType);
     const bridgeName = (state.bridges && state.bridges[info.bridgeId] && state.bridges[info.bridgeId].name) || info.bridgeId || 'default';
@@ -4769,7 +5054,7 @@ function renderAccountPairs() {
     const row = document.createElement('div');
     row.className = 'pair-row';
     const label = document.createElement('span');
-    const modeLabel = config.mode === 'lttx' ? '高级模式' : '通用模式';
+    const modeLabel = transportModeLabel(config.mode);
     const providerLabel = config.data_provider ? ' / 共享行情源' : '';
     const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
     label.textContent = `${accountId} / ${accountTypeLabel(accountType)} / ${bridgeName} / ${modeLabel}${providerLabel}`;
@@ -4925,11 +5210,74 @@ function syncBindingForm() {
   if (!form) return;
   const info = selectedAccountInfo();
   form.account_id.value = info.accountId || '';
+  form.dataset.accountKey = info.accountKey || '';
+  form.dataset.bridgeId = info.bridgeId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(info.accountType || 'STOCK');
   const config = info.config;
+  if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
   if (form.qmt_dir) form.qmt_dir.value = config && config.qmt_dir ? config.qmt_dir : '';
   if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
   if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
+}
+
+function closeBindingDialog() {
+  const overlay = $('bindingDialogOverlay');
+  if (!overlay) return;
+  overlay.classList.add('hidden');
+  overlay.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('binding-dialog-open');
+}
+
+function fillBindingForm(values = {}) {
+  const form = $('bindingForm');
+  if (!form) return;
+  form.dataset.accountKey = values.accountKey || '';
+  form.dataset.bridgeId = values.bridgeId || '';
+  if (form.display_name) form.display_name.value = values.displayName || '';
+  form.account_id.value = values.accountId || '';
+  if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
+  if (form.qmt_dir) form.qmt_dir.value = values.qmtDir || '';
+  if (form.mode) form.mode.value = values.mode || 'ctypes';
+  if (form.data_provider) form.data_provider.checked = !!values.dataProvider;
+}
+
+function openBindingDialog(options = {}) {
+  const overlay = $('bindingDialogOverlay');
+  const form = $('bindingForm');
+  if (!overlay || !form) return;
+  const accountKey = String(options.accountKey || '').trim();
+  const config = accountKey ? findAccountConfigByKey(accountKey) : null;
+  const accountId = String(options.accountId || (config && config.account_id) || '').trim();
+  const accountType = normalizeAccountType(options.accountType || (config && config.account_type) || 'STOCK');
+  const bridgeId = String(options.bridgeId || (config && config.bridge_id) || '').trim();
+  const displayName = String(options.displayName || (config && (config.display_name || config.account_name)) || '').trim();
+  fillBindingForm({
+    accountKey,
+    accountId,
+    accountType,
+    bridgeId,
+    displayName,
+    qmtDir: config && config.qmt_dir ? config.qmt_dir : '',
+    mode: config && config.mode ? config.mode : 'ctypes',
+    dataProvider: !!(config && config.data_provider),
+  });
+  const editing = !!accountId;
+  const title = $('bindingDialogTitle');
+  const subtitle = $('bindingDialogSubtitle');
+  const hint = $('bindingDialogHint');
+  if (title) title.textContent = editing ? '编辑账号绑定' : '添加账号绑定';
+  if (subtitle) {
+    subtitle.textContent = editing
+      ? `${displayName || accountId} / ${accountTypeLabel(accountType)}`
+      : '填写账号名称、资金账号、账户类型、运行模式和 QMT 核心目录。';
+  }
+  if (hint) {
+    hint.textContent = bridgeId ? `内部通道：${bridgeId}` : '保存后自动分配内部通道';
+  }
+  overlay.classList.remove('hidden');
+  overlay.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('binding-dialog-open');
+  window.setTimeout(() => form.account_id && form.account_id.focus(), 0);
 }
 
 function selectAccountPair(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
@@ -5036,10 +5384,12 @@ async function submitBindingForm(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const accountId = form.account_id.value.trim();
+  const displayName = form.display_name ? form.display_name.value.trim() : '';
   const accountType = normalizeAccountType(form.account_type ? form.account_type.value : 'STOCK');
   const qmtDir = form.qmt_dir ? form.qmt_dir.value.trim() : '';
   const mode = form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
+  const bridgeId = String(form.dataset.bridgeId || '').trim();
   if (!accountId) {
     log('账号为空，无法保存绑定');
     return;
@@ -5047,18 +5397,34 @@ async function submitBindingForm(event) {
   try {
     const data = await saveAccountConfigRequest({
       account_id: accountId,
+      display_name: displayName,
       account_type: accountType,
+      bridge_id: bridgeId || undefined,
       qmt_dir: qmtDir,
       mode,
       data_provider: dataProvider,
     });
+    const responseAccount = data.account && typeof data.account === 'object' ? data.account : {};
+    const savedBridgeId = responseAccount.bridge_id || bridgeId || state.defaultBridgeId || 'default';
+    const savedAccountKey = responseAccount.account_key || form.dataset.accountKey || makeAccountKey(accountId, accountType, savedBridgeId);
     state.accountPairs = data.account_pairs || {};
     state.accountConfigs = data.account_configs || {};
+    mergeSavedAccountDisplayName({
+      accountKey: savedAccountKey,
+      accountId,
+      accountType,
+      bridgeId: savedBridgeId,
+      displayName,
+      account: responseAccount,
+      qmtDir,
+      mode,
+      dataProvider,
+    });
     state.setup = data.setup || state.setup;
     state.bridges = data.bridges || state.bridges;
     state.accountId = accountId;
     state.accountType = accountType;
-    state.accountKey = (data.account && data.account.account_key) || makeAccountKey(accountId, accountType, (data.account && data.account.bridge_id) || state.defaultBridgeId || 'default');
+    state.accountKey = savedAccountKey;
     renderBridgeSelect(state.bridges);
     renderAccountSelect();
     selectedAccount();
@@ -5066,7 +5432,8 @@ async function submitBindingForm(event) {
     syncBindingForm();
     renderAccountPairs();
     await refreshBindingStatuses();
-    log('账号配置已保存', { account_id: accountId, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
+    closeBindingDialog();
+    log('账号配置已保存', { account_id: accountId, display_name: displayName, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
     if (data.qmt_bridge_identity) {
       log('ctypes 身份配置已处理', data.qmt_bridge_identity);
     }
@@ -5124,13 +5491,22 @@ async function refreshBindingStatuses() {
     .map((item) => ({
       ...item,
       kind: 'pair',
-      config: { account_id: item.accountId, account_type: item.accountType, account_key: item.accountKey, bridge_id: item.bridgeId },
+      config: { account_id: item.accountId, account_type: item.accountType, account_key: item.accountKey, bridge_id: item.bridgeId, display_name: item.displayName || '' },
     }));
   const entries = [...configEntries, ...pairEntries].filter((item) => item.accountId);
   if (!entries.length) {
-    if (body) body.innerHTML = '<tr><td colspan="6">暂无账号配置</td></tr>';
+    if (body) {
+      body.innerHTML = `<tr class="binding-empty-row"><td colspan="9">
+        <div class="binding-empty">
+          <strong>暂无账号绑定</strong>
+          <span>添加账号后，这里会显示绑定信息、运行状态和验证入口。</span>
+          <button class="primary" type="button" data-binding-action="add">添加绑定</button>
+        </div>
+      </td></tr>`;
+    }
     if (overviewBody) overviewBody.innerHTML = '<tr><td colspan="5">暂无账号配置</td></tr>';
-    $('overviewBindingCount').textContent = '0 组';
+    if ($('overviewBindingCount')) $('overviewBindingCount').textContent = '0 组';
+    if ($('bindingCount')) $('bindingCount').textContent = '0 个绑定';
     renderPairVerification(null);
     return;
   }
@@ -5149,20 +5525,21 @@ async function refreshBindingStatuses() {
   }));
   if (body) {
     body.innerHTML = rows.map(({ item, status, error }) => bindingStatusRowHtml(item, status, error, true)).join('');
+    if ($('bindingCount')) $('bindingCount').textContent = `${rows.length} 个绑定`;
   }
   if (overviewBody) {
     const overviewRows = rows.filter(({ item }) => item.kind === 'pair');
     overviewBody.innerHTML = overviewRows.length
       ? overviewRows.map(({ item, status, error }) => bindingStatusRowHtml(item, status, error, false)).join('')
       : '<tr><td colspan="5">暂无账号配置</td></tr>';
-    $('overviewBindingCount').textContent = `${overviewRows.length} 组`;
+    if ($('overviewBindingCount')) $('overviewBindingCount').textContent = `${overviewRows.length} 组`;
   }
 }
 
 function bindingStatusRowHtml(item, status, error, withVerify) {
   const selected = status && status.status ? status.status : status;
-  const normalOnline = selected && selected.normal && selected.normal.online;
-  const tradeOnline = selected && selected.trade && selected.trade.online;
+  const normalOnline = !!(selected && selected.normal && selected.normal.online);
+  const tradeOnline = !!(selected && selected.trade && selected.trade.online);
   const config = item.config || findAccountConfigByKey(item.accountKey) || {};
   const preferred = (status && status.preferred_mode) || (config && config.mode) || 'ctypes';
   const effective = (status && status.effective_mode) || preferred;
@@ -5171,18 +5548,54 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const title = error ? error.message : '';
   const accountText = item.accountId || item.account_id || '未绑定';
   const accountType = normalizeAccountType(item.accountType || item.account_type || (config && config.account_type) || 'STOCK');
+  const displayName = String(item.displayName || item.display_name || (config && (config.display_name || config.account_name)) || '').trim();
+  const accountTitle = displayName || accountText;
+  const accountSubtext = displayName ? `${accountText} / ${accountTypeLabel(accountType)}` : accountTypeLabel(accountType);
   const accountKey = item.accountKey || item.account_key || accountConfigKey('', config);
   const bridgeId = item.bridgeId || item.bridge_id || (config && config.bridge_id) || '';
-  const verifyCell = withVerify
-    ? `<td>${accountText ? `<button class="verify-pair-btn" data-account-id="${esc(accountText)}" data-account-type="${esc(accountType)}" data-account-key="${esc(accountKey)}" data-bridge-id="${esc(bridgeId)}">查资金/持仓</button>` : '--'}</td>`
-    : '';
-  return `<tr title="${esc(title)}">
-    <td>${esc(accountText)}<br><small>${esc(accountTypeLabel(accountType))}</small></td>
-    <td>${preferred === 'lttx' ? '高级' : '通用'}</td>
-    <td><span class="status-dot ${normalOnline && tradeOnline ? 'online' : 'offline'}">${effective === 'lttx' ? '高级' : '通用'}${status && status.fallback ? '（已回退）' : ''}</span></td>
-    <td>${esc(qmtDirText)}</td>
-    <td>${provider ? '共享行情源' : '--'}</td>
-    ${verifyCell}
+  const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
+  const preferredLabel = transportModeLabel(preferred, true);
+  const effectiveLabel = transportModeLabel(effective, true);
+  const statusClass = error ? 'offline' : (normalOnline && tradeOnline ? 'online' : (normalOnline || tradeOnline ? 'warn' : 'offline'));
+  const statusLabel = error ? '状态失败' : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线'));
+  const channelText = `普通${normalOnline ? '在线' : '离线'} / 极速${tradeOnline ? '在线' : '离线'}`;
+  const actionAttrs = `data-account-id="${esc(accountText)}" data-account-type="${esc(accountType)}" data-account-key="${esc(accountKey)}" data-bridge-id="${esc(bridgeId)}" data-display-name="${esc(displayName)}"`;
+  if (!withVerify) {
+    return `<tr title="${esc(title)}">
+      <td>${esc(accountTitle)}<br><small>${esc(accountSubtext)}</small></td>
+      <td>${esc(preferredLabel)}</td>
+      <td><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}${status && status.fallback ? '（已回退）' : ''}</span></td>
+      <td>${esc(qmtDirText)}</td>
+      <td>${provider ? '共享行情源' : '--'}</td>
+    </tr>`;
+  }
+  return `<tr class="binding-list-row" title="${esc(title)}">
+    <td class="binding-name-cell">
+      <strong>${esc(displayName || '--')}</strong>
+    </td>
+    <td class="binding-account-cell">
+      <strong>${esc(accountText)}</strong>
+      <small>${esc(accountTypeLabel(accountType))}</small>
+    </td>
+    <td>
+      <span class="status-dot ${esc(statusClass)}">${esc(statusLabel)}</span>
+      <small class="binding-cell-note">${esc(channelText)}</small>
+    </td>
+    <td>${esc(preferredLabel)}模式</td>
+    <td><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}模式${status && status.fallback ? '（已回退）' : ''}</span></td>
+    <td>
+      <strong class="binding-bridge-name">${esc(bridgeName)}</strong>
+      <small class="binding-cell-note">${esc(bridgeId || 'default')}</small>
+    </td>
+    <td class="binding-dir-cell" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
+    <td>${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
+    <td>
+      <div class="binding-row-actions">
+        <button type="button" class="verify-pair-btn" data-binding-action="verify" ${actionAttrs}>验证</button>
+        <button type="button" data-binding-action="edit" ${actionAttrs}>编辑</button>
+        <button type="button" class="binding-delete-btn" data-binding-action="delete" ${actionAttrs}>删除</button>
+      </div>
+    </td>
   </tr>`;
 }
 
@@ -5416,6 +5829,7 @@ async function loadConfigLegacy() {
     apiBaseInput.value = normalizeApiBaseUrl(savedBaseUrl);
   }
   renderServerAccess(data.server_access);
+  renderUserProfile(data.user_profile);
   renderLogCleanup(data.log_cleanup);
   renderQmtLogLanguage(data.qmt_log_language);
   renderProjectVersion(data.version);
@@ -5471,6 +5885,7 @@ async function loadConfig() {
     apiBaseInput.value = normalizeApiBaseUrl(savedBaseUrl);
   }
   renderServerAccess(data.server_access);
+  renderUserProfile(data.user_profile);
   renderPipeHub(data.pipe_hub);
   renderTransport(data.transport);
   renderLogCleanup(data.log_cleanup);
@@ -5522,12 +5937,14 @@ async function refreshStatus() {
     syncTopStatusDisplay();
     syncTransportChannelControls();
     const routeMode = state.accountRouteMode;
-    const normalLabel = routeMode === 'ctypes' ? '通用查询通道' : '高级模式·普通 QMT';
-    const tradeLabel = routeMode === 'ctypes' ? '通用交易通道' : '高级模式·极速交易端';
+    const routeIsPipe = isCtypesTransportMode(routeMode);
+    const pipeLabel = transportModeLabel(routeMode, true);
+    const normalLabel = routeIsPipe ? `${pipeLabel}查询通道` : '高级模式·普通 QMT';
+    const tradeLabel = routeIsPipe ? `${pipeLabel}交易通道` : '高级模式·极速交易端';
     const normalLabelNode = $('normalStatusLabel');
     const tradeLabelNode = $('tradeStatusLabel');
-    if (normalLabelNode) normalLabelNode.textContent = routeMode === 'ctypes' ? '通用查询通道' : '普通 QMT';
-    if (tradeLabelNode) tradeLabelNode.textContent = routeMode === 'ctypes' ? '通用交易通道' : '极速交易端';
+    if (normalLabelNode) normalLabelNode.textContent = routeIsPipe ? `${pipeLabel}查询通道` : '普通 QMT';
+    if (tradeLabelNode) tradeLabelNode.textContent = routeIsPipe ? `${pipeLabel}交易通道` : '极速交易端';
     const status = data.status || data;
     setStatus('normalStatus', !!(status.normal && status.normal.online), statusTooltipLines(normalLabel, status.normal || {}, data));
     setStatus('tradeStatus', !!(status.trade && status.trade.online), statusTooltipLines(tradeLabel, status.trade || {}, data));
@@ -5542,12 +5959,14 @@ async function refreshStatus() {
     syncTopStatusDisplay();
     syncTransportChannelControls();
     const routeMode = state.accountRouteMode;
-    const normalLabel = routeMode === 'ctypes' ? '通用查询通道' : '高级模式·普通 QMT';
-    const tradeLabel = routeMode === 'ctypes' ? '通用交易通道' : '高级模式·极速交易端';
+    const routeIsPipe = isCtypesTransportMode(routeMode);
+    const pipeLabel = transportModeLabel(routeMode, true);
+    const normalLabel = routeIsPipe ? `${pipeLabel}查询通道` : '高级模式·普通 QMT';
+    const tradeLabel = routeIsPipe ? `${pipeLabel}交易通道` : '高级模式·极速交易端';
     const normalLabelNode = $('normalStatusLabel');
     const tradeLabelNode = $('tradeStatusLabel');
-    if (normalLabelNode) normalLabelNode.textContent = routeMode === 'ctypes' ? '通用查询通道' : '普通 QMT';
-    if (tradeLabelNode) tradeLabelNode.textContent = routeMode === 'ctypes' ? '通用交易通道' : '极速交易端';
+    if (normalLabelNode) normalLabelNode.textContent = routeIsPipe ? `${pipeLabel}查询通道` : '普通 QMT';
+    if (tradeLabelNode) tradeLabelNode.textContent = routeIsPipe ? `${pipeLabel}交易通道` : '极速交易端';
     setStatus('normalStatus', false, [
       `${normalLabel}：状态检查失败`,
       `内部通道：${selectedBridge()}`,
@@ -5643,14 +6062,14 @@ function selectedBridge() {
 }
 
 function selectedChannel() {
-  state.queryChannel = activeAccountMode() === 'ctypes' ? 'normal' : $('queryChannel').value;
+  state.queryChannel = isCtypesTransportMode(activeAccountMode()) ? 'normal' : $('queryChannel').value;
   if ($('queryChannel')) $('queryChannel').value = state.queryChannel;
   localStorage.setItem('cfquant.query_channel', state.queryChannel);
   return state.queryChannel;
 }
 
 function selectedTradeChannel() {
-  const channel = activeAccountMode() === 'ctypes'
+  const channel = isCtypesTransportMode(activeAccountMode())
     ? 'trade'
     : (($('tradeChannel') && $('tradeChannel').value) || 'trade');
   if ($('tradeChannel')) $('tradeChannel').value = channel;
@@ -6865,18 +7284,20 @@ function onboardingValues() {
 }
 
 function onboardingDeployPlan(values = onboardingValues()) {
+  const mode = normalizeTransportMode(values.mode);
   const qmtDir = values.qmt_dir || '';
   const installDir = parentWinPath(qmtDir);
   const pythonDir = installDir ? joinWinPath(installDir, 'python') : '';
+  const entryScript = qmtEntryScriptForMode(mode);
   const baseRows = [
     ['账户类型', accountTypeLabel(values.account_type)],
     ['资金账号', values.account_id || '--'],
-    ['运行模式', values.mode === 'lttx' ? '高级模式' : '通用模式'],
+    ['运行模式', transportModeLabel(mode)],
     ['当前填写的 QMT 核心目录', qmtDir || '未填写'],
     ['核心包目录', qmtDir ? joinWinPath(qmtDir, 'cfquant') : '请先填写 QMT 核心目录'],
     ['身份配置', qmtDir ? joinWinPath(qmtDir, 'cfquant_bridge_config.json') : '请先填写 QMT 核心目录'],
   ];
-  if (values.mode === 'lttx') {
+  if (mode === 'lttx') {
     return [
       ...baseRows,
       ['普通 QMT 脚本目录', pythonDir || '请先填写普通 QMT 的 QMT 核心目录'],
@@ -6889,8 +7310,8 @@ function onboardingDeployPlan(values = onboardingValues()) {
   return [
     ...baseRows,
     ['QMT 脚本目录', pythonDir || '请先填写 QMT 核心目录'],
-    ['通用端加载', pythonDir ? joinWinPath(pythonDir, 'CFQUANT_CTYPE_ALL_LOWLAT.py') : '请先填写 QMT 核心目录'],
-    ['部署数量', '只需要一个 QMT，一个通用端脚本'],
+    [`${transportModeLabel(mode)}加载`, pythonDir ? joinWinPath(pythonDir, entryScript) : '请先填写 QMT 核心目录'],
+    ['部署数量', `只需要一个 QMT，一个${transportModeLabel(mode)}脚本`],
   ];
 }
 
@@ -6903,11 +7324,13 @@ function renderOnboardingDeployPlan() {
   )).join('');
   const notice = $('onboardingDeployNotice');
   if (notice) {
-    const advanced = values.mode === 'lttx';
+    const mode = normalizeTransportMode(values.mode);
+    const advanced = mode === 'lttx';
+    const entryScript = qmtEntryScriptForMode(mode);
     notice.classList.toggle('warning', advanced);
     notice.innerHTML = advanced
       ? '<strong>高级模式必须两个 QMT</strong><span>普通 QMT 可以和通用端部署在同一个 QMT 里；极速交易端必须单独打开另一个 QMT，并在那个 QMT 中加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>'
-      : '<strong>通用模式只加载一个脚本</strong><span>在 QMT 模型研究中加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。通用模式不需要加载 <code>CFQUANT.py</code> 或 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>';
+      : `<strong>${esc(transportModeLabel(mode))}只加载一个脚本</strong><span>在 QMT 模型研究中加载 <code>${esc(entryScript)}</code>。${esc(transportModeLabel(mode))}不需要加载 <code>CFQUANT.py</code> 或 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>`;
   }
 }
 
@@ -6961,7 +7384,7 @@ function showOnboardingSuccess(payload = null) {
   const modal = $('onboardingSuccess');
   if (!modal) return;
   const values = onboardingValues();
-  const modeText = values.mode === 'lttx' ? '高级模式' : '通用模式';
+  const modeText = transportModeLabel(values.mode);
   const positionsRows = onboardingSectionRows(payload && payload.positions).length;
   const assetOk = !!(payload && payload.asset && payload.asset.ok);
   const positionsOk = !!(payload && payload.positions && payload.positions.ok);
@@ -7389,6 +7812,29 @@ function wireSettingsNavigation() {
   setSettingsTab(localStorage.getItem(SETTINGS_TAB_KEY) || 'api-key');
 }
 
+function wireUserProfile() {
+  const profileBtn = $('topbarProfileBtn');
+  if (profileBtn) {
+    profileBtn.addEventListener('click', () => {
+      setView('settings');
+      setSettingsTab('profile');
+    });
+  }
+  const form = $('userProfileForm');
+  if (form) form.addEventListener('submit', saveUserProfileFromUi);
+  const uploadBtn = $('uploadUserAvatarBtn');
+  if (uploadBtn) uploadBtn.addEventListener('click', uploadUserAvatarFromUi);
+  const grid = $('builtinAvatarGrid');
+  if (grid) {
+    grid.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-avatar-url]');
+      if (!button) return;
+      selectUserProfileAvatar(button.dataset.avatarUrl);
+    });
+  }
+  renderUserProfile();
+}
+
 function closeImageLightbox() {
   const box = $('imageLightbox');
   const img = $('imageLightboxImg');
@@ -7489,6 +7935,7 @@ async function boot() {
   wireViewShortcuts();
   wireOnboardingGuide();
   wireSettingsNavigation();
+  wireUserProfile();
   wireImageLightbox();
   wireVersionBadge();
   wireUpdateRestartNotice();
@@ -7544,6 +7991,23 @@ async function boot() {
   if (openOnboardingGuideBtn) {
     openOnboardingGuideBtn.addEventListener('click', () => openOnboardingGuide({ manual: true }));
   }
+  const openBindingDialogBtn = $('openBindingDialogBtn');
+  if (openBindingDialogBtn) openBindingDialogBtn.addEventListener('click', () => openBindingDialog());
+  const closeBindingDialogBtn = $('closeBindingDialogBtn');
+  if (closeBindingDialogBtn) closeBindingDialogBtn.addEventListener('click', closeBindingDialog);
+  const cancelBindingDialogBtn = $('cancelBindingDialogBtn');
+  if (cancelBindingDialogBtn) cancelBindingDialogBtn.addEventListener('click', closeBindingDialog);
+  const bindingDialogOverlay = $('bindingDialogOverlay');
+  if (bindingDialogOverlay) {
+    bindingDialogOverlay.addEventListener('click', (event) => {
+      if (event.target === bindingDialogOverlay) closeBindingDialog();
+    });
+  }
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && bindingDialogOverlay && !bindingDialogOverlay.classList.contains('hidden')) {
+      closeBindingDialog();
+    }
+  });
   const bridgeConfigList = $('bridgeConfigList');
   if (bridgeConfigList) {
     bridgeConfigList.addEventListener('click', (event) => {
@@ -7553,11 +8017,39 @@ async function boot() {
       if (button.dataset.action === 'delete') deleteBridge(button.dataset.bridgeId);
     });
   }
-  $('refreshBindingsBtn').addEventListener('click', () => refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message })));
+  const refreshBindingsBtn = $('refreshBindingsBtn');
+  if (refreshBindingsBtn) {
+    refreshBindingsBtn.addEventListener('click', () => refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message })));
+  }
   $('bindingStatusBody').addEventListener('click', (event) => {
-    const button = event.target.closest('.verify-pair-btn');
+    const button = event.target.closest('button[data-binding-action]');
     if (!button) return;
-    verifyPair(button.dataset.accountId, button.dataset.bridgeId, button.dataset.accountType, button.dataset.accountKey);
+    const action = button.dataset.bindingAction;
+    if (action === 'add') {
+      openBindingDialog();
+      return;
+    }
+    if (action === 'edit') {
+      openBindingDialog({
+        accountId: button.dataset.accountId,
+        accountType: button.dataset.accountType,
+        accountKey: button.dataset.accountKey,
+        bridgeId: button.dataset.bridgeId,
+        displayName: button.dataset.displayName,
+      });
+      return;
+    }
+    if (action === 'delete') {
+      state.accountId = button.dataset.accountId || state.accountId;
+      state.accountType = normalizeAccountType(button.dataset.accountType || state.accountType);
+      state.accountKey = button.dataset.accountKey || state.accountKey;
+      renderAccountSelect();
+      removeCurrentAccountPair().catch((error) => log('账号配置删除失败', { error: error.message }));
+      return;
+    }
+    if (action === 'verify') {
+      verifyPair(button.dataset.accountId, button.dataset.bridgeId, button.dataset.accountType, button.dataset.accountKey);
+    }
   });
   $('apiEndpointList').addEventListener('click', (event) => {
     const groupButton = event.target.closest('button[data-api-group]');
