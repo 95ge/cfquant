@@ -5490,6 +5490,23 @@ def tcp_port_open(host, port, timeout=0.35):
             pass
 
 
+def _hidden_subprocess_kwargs():
+    if os.name != "nt":
+        return {}
+    kwargs = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    except Exception:
+        pass
+    return kwargs
+
+
 def run_powershell_json(script, timeout=3.0):
     if os.name != "nt":
         return []
@@ -5509,6 +5526,7 @@ def run_powershell_json(script, timeout=3.0):
         encoding="utf-8",
         errors="replace",
         timeout=float(timeout),
+        **_hidden_subprocess_kwargs()
     )
     if completed.returncode != 0:
         safe_print("powershell query failed: %s" % completed.stderr.strip())
