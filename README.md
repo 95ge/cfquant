@@ -23,7 +23,7 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 |---|---|
 | 第一次部署和验证 | 打开 Web 后按“新手初始化向导”操作 |
 | 单账号快速跑通 | 使用通用模式，QMT 加载 `CFQUANT_CTYPE_ALL_LOWLAT.py` |
-| QMT 白名单限制无法导入核心包 | 使用极致模式，QMT 只加载 `CFQUANT_LITE.py` |
+| 国泰君安君弘君智 QMT 等白名单限制无法导入核心包 | 使用极致模式，QMT 只加载 `CFQUANT_LITE.py` |
 | 普通/信用账户、多账号、多 QMT | 在 Web“绑定”页逐个配置账号类型、账号和 QMT 核心目录 |
 | 追求更低交易延迟 | 使用高级模式，需要普通 QMT + 极速交易端 QMT |
 | 从 miniQMT / `xtquant` 切换 | 看 [miniQMT 迁移到大 QMT 指南](docs/miniqmt_to_bigqmt_migration.md)、[外部 Python 接入](docs/README_外部Python接入.md) |
@@ -34,13 +34,13 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 | 模式 | QMT 侧部署 | 通信链路 | 适合场景 |
 |---|---|---|---|
 | 通用模式 | 一个 QMT 加载 `CFQUANT_CTYPE_ALL_LOWLAT.py` | Web / 外部 Python -> PipeHub -> ctypes 单文件桥 -> QMT | 快速部署、单账号验证、多数常规使用 |
-| 极致模式 | 一个 QMT 加载 `CFQUANT_LITE.py` | Web / 外部 Python -> PipeHub -> 纯 ctypes 自包含桥 -> QMT | QMT 白名单限制、无法导入 `cfquant` 核心包的环境 |
+| 极致模式 | 一个 QMT 加载 `CFQUANT_LITE.py` | Web / 外部 Python -> PipeHub -> 纯 ctypes 自包含桥 -> QMT | 特别适合国泰君安君弘君智 QMT，以及其他白名单限制、无法导入 `cfquant` 核心包的环境 |
 | 高级模式 | 两个 QMT：普通 QMT 加载 `CFQUANT.py`，极速交易端 QMT 加载 `CFQUANT_TRADE_LOWLAT.py` | Web / 外部 Python -> LTtx -> 普通桥 + 极速交易桥 -> QMT | 追求更低下单、撤单延迟 |
 
 关键规则：
 
 - 通用模式不经过 LTtx，请求走 PipeHub named pipe。
-- 极致模式同样走 PipeHub named pipe，但 QMT 入口脚本完全自包含，不需要导入 `cfquant` 包。
+- 极致模式同样走 PipeHub named pipe，但 QMT 入口脚本完全自包含，不需要导入 `cfquant` 包，特别适合国泰君安君弘君智 QMT 这类白名单限制较严格的环境。
 - 本地服务默认仍会启动 LTtx，方便高级模式、旧客户端和外部自动发现接入。
 - 高级模式必须打开两个 QMT。不要在同一个 QMT 里同时运行 `CFQUANT.py` 和 `CFQUANT_TRADE_LOWLAT.py`。
 - 通用模式和高级模式里的普通 QMT 可以部署在同一个 QMT；高级模式的极速交易端需要单独打开另一个 QMT。
@@ -160,7 +160,7 @@ cfquant/
 
 ### core_20260828_01
 
-- 新增 `CFQUANT_LITE.py` 极致模式入口，QMT 侧只依赖标准库和 `ctypes`，用于白名单限制导致无法导入 `cfquant` 核心包的环境。
+- 新增 `CFQUANT_LITE.py` 极致模式入口，QMT 侧只依赖标准库和 `ctypes`，特别适合国泰君安君弘君智 QMT，以及其他白名单限制导致无法导入 `cfquant` 核心包的环境。
 - 极致模式启动日志改为优先中文输出，并修复 QMT 以 `<string>` 执行时 `__file__` 不存在导致运行版本上报失败的问题。
 - QMT 启动后会向网页端上报核心版本、入口脚本、入口版本和运行模式，版本弹窗可直接看到当前 QMT 加载的是 `CFQUANT_LITE.py` 还是其他入口。
 - Web 控制台新增极致模式选项和网页端部署教程，静态资源版本参数同步更新为 `web_20260828_01`。
