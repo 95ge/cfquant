@@ -1083,6 +1083,10 @@
                   <strong>高级模式图文部署</strong>
                   <span>两个 QMT，普通桥和极速桥分开</span>
                 </button>
+                <button class="tutorial-menu-item" type="button" data-guide="same_account_market">
+                  <strong>同账号独立市场</strong>
+                  <span>同一账号按 SH/SZ 自动选择交易端</span>
+                </button>
                 <button class="tutorial-menu-item" type="button" data-guide="bridge">
                   <strong>多账号通道</strong>
                   <span>内部路由规则</span>
@@ -1914,6 +1918,137 @@ cfquant 极致模式运行版本已上报
                   </div>
                 </article>
 
+                <article class="tutorial-topic" data-guide-panel="same_account_market">
+                  <div class="guide-section">
+                    <h3>同账号独立市场部署说明</h3>
+                    <div class="guide-recommend">
+                      <strong>适用于同一资金账号拆成上海、深圳两个大 QMT 交易端的场景</strong>
+                      <span>网页端保存一份账号绑定，系统内部按标的代码后缀自动选择 SH 或 SZ 子交易桥。查询和默认账号配置仍保留在主账号绑定上，交易请求按市场分流。</span>
+                    </div>
+                    <p>例如 <code>000001.SZ</code> 会发送到深圳交易端，<code>601222.SH</code> 会发送到上海交易端。批量下单里同时包含 SH 和 SZ 标的时，系统会自动拆成两组请求分别发送，再合并返回结果。</p>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>一、网页端开启市场路由</h3>
+                    <ol class="guide-list detailed">
+                      <li><strong>进入绑定页面</strong><span>在账号绑定列表里点击“添加绑定”或对应账号的“编辑”。</span></li>
+                      <li><strong>开启选项</strong><span>在弹窗的“账号模式”下面勾选 <code>开启同账号独立市场路由</code>。如果没有看到，先重启 Web 服务并用 <code>Ctrl + F5</code> 强制刷新浏览器。</span></li>
+                      <li><strong>填写两个 QMT 目录</strong><span>上海交易端目录填写上海大 QMT 的 <code>bin.x64</code>，深圳交易端目录填写深圳大 QMT 的 <code>bin.x64</code>。</span></li>
+                      <li><strong>保存绑定</strong><span><code>bridge_id</code> 可以留空，系统会自动生成类似 <code>acct_xxx_sh</code> 和 <code>acct_xxx_sz</code> 的子桥接 ID。</span></li>
+                    </ol>
+                    <pre class="guide-code">保存后自动写入：
+上海交易端：cfquant_bridge_config_SH.json
+深圳交易端：cfquant_bridge_config_SZ.json</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>二、QMT 端选择对应脚本</h3>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>运行模式</th>
+                            <th>上海 QMT</th>
+                            <th>深圳 QMT</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>通用 ctypes / 单文件低延迟</td>
+                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_CTYPE_ALL_LOWLAT_SH.py</code></td>
+                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_CTYPE_ALL_LOWLAT_SZ.py</code></td>
+                          </tr>
+                          <tr>
+                            <td>高级模式 LTtx 交易端</td>
+                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_TRADE_LOWLAT_SH.py</code></td>
+                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_TRADE_LOWLAT_SZ.py</code></td>
+                          </tr>
+                          <tr>
+                            <td>极致模式</td>
+                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_LITE_SH.py</code></td>
+                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_LITE_SZ.py</code></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p>这些 <code>_SH</code> / <code>_SZ</code> 文件是市场入口包装脚本，会先声明市场，再执行原始入口脚本。手工复制时，需要确保对应原始入口脚本也能被找到。</p>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>三、手工复制文件要求</h3>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>市场入口</th>
+                            <th>必须能找到的原始入口</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT_SH.py</code> / <code>CFQUANT_CTYPE_ALL_LOWLAT_SZ.py</code></td>
+                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
+                          </tr>
+                          <tr>
+                            <td><code>CFQUANT_TRADE_LOWLAT_SH.py</code> / <code>CFQUANT_TRADE_LOWLAT_SZ.py</code></td>
+                            <td><code>CFQUANT_TRADE_LOWLAT.py</code></td>
+                          </tr>
+                          <tr>
+                            <td><code>CFQUANT_LITE_SH.py</code> / <code>CFQUANT_LITE_SZ.py</code></td>
+                            <td><code>CFQUANT_LITE.py</code></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="guide-callout">
+                      <strong>推荐方式</strong>
+                      <span>把 <code>qmt_scripts/同账号独立市场</code> 中的市场入口脚本和 <code>qmt_scripts</code> 根目录里的原始入口脚本一起放到 QMT 可访问的位置。</span>
+                    </div>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>四、路由规则</h3>
+                    <ul class="guide-list detailed">
+                      <li><strong>完整后缀优先</strong><span><code>.SH</code> 走上海交易端，<code>.SZ</code> 走深圳交易端。</span></li>
+                      <li><strong>无后缀时按代码推断</strong><span><code>5</code>、<code>6</code>、<code>9</code> 开头默认上海；<code>0</code>、<code>1</code>、<code>2</code>、<code>3</code> 开头默认深圳。</span></li>
+                      <li><strong>批量下单自动拆分</strong><span>同一批委托里同时有 SH 和 SZ 时，系统会拆成两组发送到对应交易端。</span></li>
+                    </ul>
+                    <pre class="guide-code">000001.SZ -> 深圳交易端 bridge_id=acct_xxx_sz
+601222.SH -> 上海交易端 bridge_id=acct_xxx_sh</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>五、常见排查</h3>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>现象</th>
+                            <th>检查项</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>QMT 日志仍显示 <code>bridge_id=default</code></td>
+                            <td>确认网页已保存市场路由，且对应 <code>bin.x64</code> 目录里生成了 <code>cfquant_bridge_config_SH.json</code> 或 <code>cfquant_bridge_config_SZ.json</code>。</td>
+                          </tr>
+                          <tr>
+                            <td>网页绑定弹窗里看不到开关</td>
+                            <td>确认运行的是新代码，重启 <code>cfquant.bat</code>，浏览器用 <code>Ctrl + F5</code> 强制刷新。</td>
+                          </tr>
+                          <tr>
+                            <td>SH/SZ 其中一个离线</td>
+                            <td>确认上海 QMT 运行 <code>_SH.py</code>，深圳 QMT 运行 <code>_SZ.py</code>，并且两个交易端目录没有填反。</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <pre class="guide-code">正常日志示例：
+cfquant ctypes market route market:SH bridge_id:acct_xxx_sh
+cfquant lowlat market route market:SZ bridge_id:acct_xxx_sz</pre>
+                  </div>
+                </article>
+
                 <article class="tutorial-topic" data-guide-panel="bridge">
                   <div class="guide-section">
                     <h3>多账号通道</h3>
@@ -2334,6 +2469,30 @@ USER_BRIDGE_ID = "qmt2"</pre>
             <option value="lttx">高级模式（两个 QMT）</option>
           </select>
         </label>
+        <div class="market-routing-panel wide">
+          <label class="toggle binding-dialog-toggle">
+            <input id="bindingMarketRoutingEnabled" name="market_routing_enabled" type="checkbox">
+            <span>开启同账号独立市场路由</span>
+          </label>
+          <div class="market-routing-grid">
+            <label class="field">
+              <span>上海交易端目录</span>
+              <input id="bindingMarketShQmtDir" name="market_sh_qmt_dir" placeholder="D:\上海QMT交易端\bin.x64" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>上海 bridge_id（可选）</span>
+              <input id="bindingMarketShBridgeId" name="market_sh_bridge_id" placeholder="自动生成" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>深圳交易端目录</span>
+              <input id="bindingMarketSzQmtDir" name="market_sz_qmt_dir" placeholder="D:\深圳QMT交易端\bin.x64" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>深圳 bridge_id（可选）</span>
+              <input id="bindingMarketSzBridgeId" name="market_sz_bridge_id" placeholder="自动生成" autocomplete="off">
+            </label>
+          </div>
+        </div>
         <label class="toggle binding-dialog-toggle">
           <input id="bindingDataProvider" name="data_provider" type="checkbox">
           <span>作为共享行情数据提供商</span>

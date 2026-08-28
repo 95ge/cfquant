@@ -4688,7 +4688,43 @@ function accountPairDisplayName(accountKey, accountId = '', accountType = 'STOCK
   return '';
 }
 
-function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'STOCK', bridgeId = '', displayName = '', account = null, qmtDir = '', mode = 'ctypes', dataProvider = false }) {
+function normalizeMarketRoutes(config = {}) {
+  const raw = config && typeof config === 'object'
+    ? (config.market_bridges || config.market_routes || {})
+    : {};
+  const routes = {};
+  ['SH', 'SZ'].forEach((market) => {
+    const row = (raw && (raw[market] || raw[market.toLowerCase()])) || {};
+    routes[market] = row && typeof row === 'object'
+      ? {
+        market,
+        bridge_id: String(row.bridge_id || row.id || '').trim(),
+        qmt_dir: String(row.qmt_dir || row.python_dir || '').trim(),
+        enabled: row.enabled !== false,
+      }
+      : { market, bridge_id: '', qmt_dir: '', enabled: true };
+  });
+  return routes;
+}
+
+function isMarketRoutingEnabled(config = {}) {
+  if (!config || typeof config !== 'object') return false;
+  if (config.market_routing_enabled === true) return true;
+  if (String(config.market_routing_enabled || '').toLowerCase() === 'true') return true;
+  const routes = normalizeMarketRoutes(config);
+  return Object.values(routes).some((route) => route.bridge_id || route.qmt_dir);
+}
+
+function marketRouteSummary(config = {}) {
+  if (!isMarketRoutingEnabled(config)) return '';
+  const routes = normalizeMarketRoutes(config);
+  return ['SH', 'SZ'].map((market) => {
+    const route = routes[market] || {};
+    return `${market}: ${route.bridge_id || '自动'}${route.qmt_dir ? ` / ${route.qmt_dir}` : ''}`;
+  }).join(' | ');
+}
+
+function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'STOCK', bridgeId = '', displayName = '', account = null, qmtDir = '', mode = 'ctypes', dataProvider = false, marketRoutingEnabled = false, marketBridges = null }) {
   accountId = String(accountId || (account && account.account_id) || '').trim();
   accountType = normalizeAccountType(accountType || (account && account.account_type) || 'STOCK');
   bridgeId = String(bridgeId || (account && account.bridge_id) || state.defaultBridgeId || 'default').trim();
@@ -4713,6 +4749,13 @@ function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'ST
       data_provider: (account && Object.prototype.hasOwnProperty.call(account, 'data_provider'))
         ? !!account.data_provider
         : (Object.prototype.hasOwnProperty.call(currentConfig, 'data_provider') ? !!currentConfig.data_provider : !!dataProvider),
+      market_routing_enabled: (account && Object.prototype.hasOwnProperty.call(account, 'market_routing_enabled'))
+        ? !!account.market_routing_enabled
+        : (Object.prototype.hasOwnProperty.call(currentConfig, 'market_routing_enabled') ? !!currentConfig.market_routing_enabled : !!marketRoutingEnabled),
+      market_bridges: (account && account.market_bridges)
+        || marketBridges
+        || currentConfig.market_bridges
+        || {},
     },
   };
 
@@ -4727,6 +4770,10 @@ function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'ST
       account_type: accountType,
       bridge_id: bridgeId,
       display_name: displayName,
+      market_routing_enabled: (account && Object.prototype.hasOwnProperty.call(account, 'market_routing_enabled'))
+        ? !!account.market_routing_enabled
+        : !!marketRoutingEnabled,
+      market_bridges: (account && account.market_bridges) || marketBridges || currentPair.market_bridges || {},
     },
   };
 }
@@ -4979,6 +5026,7 @@ function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
       defaultAccount: accountKey === defaultKey || (!defaultKey && accountId === defaultId),
       mode: config.mode || 'ctypes',
       provider: !!config.data_provider,
+      marketRouting: isMarketRoutingEnabled(config),
       name: displayName,
     });
   });
@@ -5086,6 +5134,12 @@ function renderAccountPairs() {
         : 'QMT 核心目录未填写，自动更新不可用';
       summary.appendChild(modeLine);
       summary.appendChild(dirLine);
+      const marketSummary = marketRouteSummary(config);
+      if (marketSummary) {
+        const marketLine = document.createElement('small');
+        marketLine.textContent = `市场路由：${marketSummary}`;
+        summary.appendChild(marketLine);
+      }
       info.appendChild(strong);
       info.appendChild(summary);
       const editBtn = document.createElement('button');
@@ -5119,6 +5173,17 @@ async function saveCurrentAccountPair() {
   const qmtDir = form && form.qmt_dir ? form.qmt_dir.value.trim() : '';
   const mode = form && form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form && form.data_provider && form.data_provider.checked);
+  const marketRoutingEnabled = !!(form && form.market_routing_enabled && form.market_routing_enabled.checked);
+  const marketBridges = {
+    SH: {
+      bridge_id: form && form.market_sh_bridge_id ? form.market_sh_bridge_id.value.trim() : '',
+      qmt_dir: form && form.market_sh_qmt_dir ? form.market_sh_qmt_dir.value.trim() : '',
+    },
+    SZ: {
+      bridge_id: form && form.market_sz_bridge_id ? form.market_sz_bridge_id.value.trim() : '',
+      qmt_dir: form && form.market_sz_qmt_dir ? form.market_sz_qmt_dir.value.trim() : '',
+    },
+  };
   if (!accountId) {
     log('账号为空，无法保存配对');
     return;
@@ -5130,6 +5195,8 @@ async function saveCurrentAccountPair() {
     qmt_dir: qmtDir,
     mode,
     data_provider: dataProvider,
+    market_routing_enabled: marketRoutingEnabled,
+    market_bridges: marketBridges,
   });
   state.accountPairs = data.account_pairs || {};
   state.accountConfigs = data.account_configs || state.accountConfigs;
@@ -5218,6 +5285,12 @@ function syncBindingForm() {
   if (form.qmt_dir) form.qmt_dir.value = config && config.qmt_dir ? config.qmt_dir : '';
   if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
   if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
+  const routes = normalizeMarketRoutes(config || {});
+  if (form.market_routing_enabled) form.market_routing_enabled.checked = isMarketRoutingEnabled(config || {});
+  if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
+  if (form.market_sh_bridge_id) form.market_sh_bridge_id.value = routes.SH.bridge_id || '';
+  if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = routes.SZ.qmt_dir || '';
+  if (form.market_sz_bridge_id) form.market_sz_bridge_id.value = routes.SZ.bridge_id || '';
 }
 
 function closeBindingDialog() {
@@ -5239,6 +5312,12 @@ function fillBindingForm(values = {}) {
   if (form.qmt_dir) form.qmt_dir.value = values.qmtDir || '';
   if (form.mode) form.mode.value = values.mode || 'ctypes';
   if (form.data_provider) form.data_provider.checked = !!values.dataProvider;
+  const routes = normalizeMarketRoutes({ market_bridges: values.marketBridges || {} });
+  if (form.market_routing_enabled) form.market_routing_enabled.checked = !!values.marketRoutingEnabled;
+  if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
+  if (form.market_sh_bridge_id) form.market_sh_bridge_id.value = routes.SH.bridge_id || '';
+  if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = routes.SZ.qmt_dir || '';
+  if (form.market_sz_bridge_id) form.market_sz_bridge_id.value = routes.SZ.bridge_id || '';
 }
 
 function openBindingDialog(options = {}) {
@@ -5260,6 +5339,8 @@ function openBindingDialog(options = {}) {
     qmtDir: config && config.qmt_dir ? config.qmt_dir : '',
     mode: config && config.mode ? config.mode : 'ctypes',
     dataProvider: !!(config && config.data_provider),
+    marketRoutingEnabled: isMarketRoutingEnabled(config || {}),
+    marketBridges: normalizeMarketRoutes(config || {}),
   });
   const editing = !!accountId;
   const title = $('bindingDialogTitle');
@@ -5390,6 +5471,17 @@ async function submitBindingForm(event) {
   const mode = form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
   const bridgeId = String(form.dataset.bridgeId || '').trim();
+  const marketRoutingEnabled = !!(form.market_routing_enabled && form.market_routing_enabled.checked);
+  const marketBridges = {
+    SH: {
+      bridge_id: form.market_sh_bridge_id ? form.market_sh_bridge_id.value.trim() : '',
+      qmt_dir: form.market_sh_qmt_dir ? form.market_sh_qmt_dir.value.trim() : '',
+    },
+    SZ: {
+      bridge_id: form.market_sz_bridge_id ? form.market_sz_bridge_id.value.trim() : '',
+      qmt_dir: form.market_sz_qmt_dir ? form.market_sz_qmt_dir.value.trim() : '',
+    },
+  };
   if (!accountId) {
     log('账号为空，无法保存绑定');
     return;
@@ -5403,6 +5495,8 @@ async function submitBindingForm(event) {
       qmt_dir: qmtDir,
       mode,
       data_provider: dataProvider,
+      market_routing_enabled: marketRoutingEnabled,
+      market_bridges: marketBridges,
     });
     const responseAccount = data.account && typeof data.account === 'object' ? data.account : {};
     const savedBridgeId = responseAccount.bridge_id || bridgeId || state.defaultBridgeId || 'default';
@@ -5419,6 +5513,8 @@ async function submitBindingForm(event) {
       qmtDir,
       mode,
       dataProvider,
+      marketRoutingEnabled,
+      marketBridges,
     });
     state.setup = data.setup || state.setup;
     state.bridges = data.bridges || state.bridges;
@@ -5544,6 +5640,26 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const preferred = (status && status.preferred_mode) || (config && config.mode) || 'ctypes';
   const effective = (status && status.effective_mode) || preferred;
   const provider = (status && status.data_provider) || (config && config.data_provider);
+  const marketEnabled = !!((status && status.market_routing_enabled) || isMarketRoutingEnabled(config));
+  const marketRoutes = normalizeMarketRoutes(config || {});
+  const marketRouteStatuses = (status && status.market_routes) || {};
+  const marketLines = ['SH', 'SZ'].map((market) => {
+    const routeStatus = marketRouteStatuses[market] || {};
+    const routeConfig = marketRoutes[market] || {};
+    const tradeStatus = routeStatus.status && routeStatus.status.trade ? routeStatus.status.trade : {};
+    const online = !!(routeStatus.ready || tradeStatus.online);
+    const routeBridgeId = routeStatus.bridge_id || routeConfig.bridge_id || '';
+    return {
+      market,
+      online,
+      bridgeId: routeBridgeId,
+      qmtDir: routeStatus.qmt_dir || routeConfig.qmt_dir || '',
+      text: `${market}${online ? '在线' : '离线'}${routeBridgeId ? `(${routeBridgeId})` : ''}`,
+    };
+  });
+  const configuredMarketLines = marketLines.filter((row) => row.bridgeId || row.qmtDir || marketEnabled);
+  const marketReadyCount = configuredMarketLines.filter((row) => row.online).length;
+  const marketStatusText = configuredMarketLines.map((row) => row.text).join(' / ');
   const qmtDirText = config && config.qmt_dir ? config.qmt_dir : '未填写（自动更新不可用）';
   const title = error ? error.message : '';
   const accountText = item.accountId || item.account_id || '未绑定';
@@ -5556,9 +5672,15 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
   const preferredLabel = transportModeLabel(preferred, true);
   const effectiveLabel = transportModeLabel(effective, true);
-  const statusClass = error ? 'offline' : (normalOnline && tradeOnline ? 'online' : (normalOnline || tradeOnline ? 'warn' : 'offline'));
-  const statusLabel = error ? '状态失败' : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线'));
-  const channelText = `普通${normalOnline ? '在线' : '离线'} / 极速${tradeOnline ? '在线' : '离线'}`;
+  const statusClass = error ? 'offline' : (marketEnabled
+    ? (marketReadyCount >= 2 ? 'online' : (marketReadyCount > 0 ? 'warn' : 'offline'))
+    : (normalOnline && tradeOnline ? 'online' : (normalOnline || tradeOnline ? 'warn' : 'offline')));
+  const statusLabel = error ? '状态失败' : (marketEnabled
+    ? (marketReadyCount >= 2 ? '市场路由在线' : (marketReadyCount > 0 ? '市场路由部分在线' : '市场路由离线'))
+    : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线')));
+  const channelText = marketEnabled && marketStatusText
+    ? `主桥 ${normalOnline || tradeOnline ? '在线' : '离线'} / ${marketStatusText}`
+    : `普通${normalOnline ? '在线' : '离线'} / 极速${tradeOnline ? '在线' : '离线'}`;
   const actionAttrs = `data-account-id="${esc(accountText)}" data-account-type="${esc(accountType)}" data-account-key="${esc(accountKey)}" data-bridge-id="${esc(bridgeId)}" data-display-name="${esc(displayName)}"`;
   if (!withVerify) {
     return `<tr title="${esc(title)}">
@@ -5586,6 +5708,7 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
     <td>
       <strong class="binding-bridge-name">${esc(bridgeName)}</strong>
       <small class="binding-cell-note">${esc(bridgeId || 'default')}</small>
+      ${marketEnabled && marketStatusText ? `<small class="binding-cell-note">${esc(marketStatusText)}</small>` : ''}
     </td>
     <td class="binding-dir-cell" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
     <td>${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
