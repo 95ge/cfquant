@@ -1,10 +1,25 @@
 # cfquant
 
+## README 导航
+
+- [官网与反馈](#官网与反馈)
+- [先看这里](#先看这里)
+- [模式区别](#模式区别)
+- [快速启动](#快速启动)
+- [文档导航](#文档导航)
+- [Web 控制台](#web-控制台)
+- [外部 Python](#外部-python)
+- [实测延迟](#实测延迟)
+- [目录结构](#目录结构)
+- [Star History](#star-history)
+- [版本日志](#版本日志)
+
+
 ## 官网与反馈
 
 官网地址：[https://cfquant.org](https://cfquant.org)
 
-友情提示：使用过程中如果遇到问题，或者有改进建议，欢迎在官网中向我们反馈。
+友情提示：使用过程中如果遇到问题，或者有改进建议，欢迎在官网中向我们反馈。这是一个AI开发的项目，我们在官网中内置了AI回复，可以在官网中快速响应您的问题，若遇到无法解决的，我们会人工介入。
 
 cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见接入方式，把大 QMT 已有的行情、查询、交易和回调能力转接给 Web 控制台与外部 Python 程序使用。
 
@@ -16,6 +31,7 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 - **低延迟链路**：通用模式使用 ctypes named pipe；高级模式可接入极速交易端，进一步压低下单和撤单耗时。
 
 新用户默认推荐使用**通用模式**：一个 QMT、一个入口脚本即可跑通。需要进一步压低下单、撤单延迟时，再切换到**高级模式**。
+
 
 ## 先看这里
 
@@ -156,7 +172,24 @@ cfquant/
   restart_cfquant.bat  一键重启
 ```
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=cfquant%2Fcfquant&type=date&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=cfquant/cfquant&type=date&theme=dark&logscale&legend=top-left&sealed_token=iFGQ63b-JL7rcQ3bv-UlXmsMAW95rAjE3bjA1LHsXyInKg-pmSpA7sAclt78HO3Su2ZjxRnkVtS-hSQ4_wj-1ZrD4gXBhzW3DraDo4vO8XyCbC9jIaanLw" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=cfquant/cfquant&type=date&logscale&legend=top-left&sealed_token=iFGQ63b-JL7rcQ3bv-UlXmsMAW95rAjE3bjA1LHsXyInKg-pmSpA7sAclt78HO3Su2ZjxRnkVtS-hSQ4_wj-1ZrD4gXBhzW3DraDo4vO8XyCbC9jIaanLw" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=cfquant/cfquant&type=date&logscale&legend=top-left&sealed_token=iFGQ63b-JL7rcQ3bv-UlXmsMAW95rAjE3bjA1LHsXyInKg-pmSpA7sAclt78HO3Su2ZjxRnkVtS-hSQ4_wj-1ZrD4gXBhzW3DraDo4vO8XyCbC9jIaanLw" />
+ </picture>
+</a>
 ## 版本日志
+
+### core_20260828_02
+
+- 新增同账号独立市场路由：同一资金账号可配置上海、深圳两个独立大 QMT 交易端，系统按 `stock_code` 后缀自动选择 SH/SZ 子交易桥。
+- 新增 `qmt_scripts/同账号独立市场/` 市场入口脚本和说明文档，支持 ctypes、LTtx 交易端和极致模式分别部署 `_SH` / `_SZ` 入口。
+- Web 绑定弹窗新增“开启同账号独立市场路由”配置项，绑定列表和教程中心同步展示 SH/SZ 子桥状态与部署说明。
+- README 新增目录导航和 Star History 区块，方便快速跳转和查看 GitHub stars 趋势。
+- Web 控制台版本同步为 `web_20260828_02`。
 
 ### core_20260828_01
 

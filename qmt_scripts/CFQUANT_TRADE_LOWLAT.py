@@ -14,6 +14,7 @@ USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
 RUNTIME_CONFIG = {}
 RUNTIME_CHANNELS = {}
+QMT_MARKET = os.environ.get("CFQUANT_MARKET", "").strip().upper()
 
 
 def _entry_file_path():
@@ -69,12 +70,24 @@ def _runtime_config_paths():
         env_path = os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE")
         if env_path:
             candidates.append(env_path)
+        market = str(os.environ.get("CFQUANT_MARKET") or QMT_MARKET or "").strip().upper()
+        market_filenames = []
+        if market in ("SH", "SZ"):
+            market_filenames.append("cfquant_bridge_config_%s.json" % market)
         if os.path.basename(base_dir).lower() == "python":
+            for filename in market_filenames:
+                candidates.append(os.path.join(parent_dir, "bin.x64", filename))
+                candidates.append(os.path.join(base_dir, filename))
             candidates.append(os.path.join(parent_dir, "bin.x64", "cfquant_bridge_config.json"))
             candidates.append(os.path.join(base_dir, "cfquant_bridge_config.json"))
         else:
+            for filename in market_filenames:
+                candidates.append(os.path.join(base_dir, filename))
+                candidates.append(os.path.join(base_dir, "bin.x64", filename))
             candidates.append(os.path.join(base_dir, "cfquant_bridge_config.json"))
             candidates.append(os.path.join(base_dir, "bin.x64", "cfquant_bridge_config.json"))
+        for filename in market_filenames:
+            candidates.append(os.path.join(parent_dir, filename))
         candidates.append(os.path.join(parent_dir, "cfquant_bridge_config.json"))
         result = []
         seen = set()
@@ -133,7 +146,7 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
-    global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS
+    global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET
 
     data = _load_runtime_config()
     RUNTIME_CONFIG = data
@@ -141,6 +154,13 @@ def _apply_runtime_config():
         return
     if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
+    if data.get("market"):
+        market = str(data.get("market") or "").strip().upper()
+        if market in ("SH", "SZ"):
+            QMT_MARKET = market
+            if not os.environ.get("CFQUANT_MARKET"):
+                os.environ["CFQUANT_MARKET"] = market
+                os.environ["CFQUANT_MARKET_SOURCE"] = "cfquant_entry"
     channels = data.get("channels") or {}
     if isinstance(channels, dict):
         RUNTIME_CHANNELS = channels
@@ -212,6 +232,15 @@ start_tx_trade_bridge = _load_bridge_starter()
 from cfquant.channels import channels_for_bridge, normalize_bridge_id
 
 BRIDGE_ID = normalize_bridge_id(BRIDGE_ID)
+QMT_MARKET = str(QMT_MARKET or os.environ.get("CFQUANT_MARKET") or RUNTIME_CONFIG.get("market") or "").strip().upper()
+if QMT_MARKET not in ("SH", "SZ"):
+    QMT_MARKET = ""
+if not os.environ.get("CFQUANT_BRIDGE_ID"):
+    os.environ["CFQUANT_BRIDGE_ID"] = BRIDGE_ID
+    os.environ["CFQUANT_BRIDGE_ID_SOURCE"] = "cfquant_entry"
+if QMT_MARKET and not os.environ.get("CFQUANT_MARKET"):
+    os.environ["CFQUANT_MARKET"] = QMT_MARKET
+    os.environ["CFQUANT_MARKET_SOURCE"] = "cfquant_entry"
 BRIDGE_CHANNELS = channels_for_bridge(BRIDGE_ID)
 _trade_channel_value = RUNTIME_CHANNELS.get("trade") or RUNTIME_CONFIG.get("trade_channel")
 if _trade_channel_value:
@@ -230,6 +259,28 @@ _trade_bridge = start_tx_trade_bridge(
 _print_log("cfquant lowlat trade bridge module loaded")
 _print_log("cfquant lowlat entry version:%s" % _ENTRY_VERSION)
 _print_log("cfquant bridge id:%s trade_channel:%s" % (BRIDGE_ID, BRIDGE_CHANNELS["trade"]))
+if QMT_MARKET:
+    _print_log("cfquant lowlat market route market:%s bridge_id:%s" % (QMT_MARKET, BRIDGE_ID))
+
+
+def _attach_trade_status_extra():
+    if not _trade_bridge:
+        return
+    original_status_extra = _trade_bridge._status_extra
+
+    def status_extra_with_market():
+        data = original_status_extra()
+        data.update({
+            "qmt_runtime_market": QMT_MARKET,
+            "qmt_runtime_market_role": RUNTIME_CONFIG.get("market_role") or ("trade" if QMT_MARKET else ""),
+            "qmt_runtime_market_parent_bridge_id": RUNTIME_CONFIG.get("market_route_parent_bridge_id") or "",
+        })
+        return data
+
+    _trade_bridge._status_extra = status_extra_with_market
+
+
+_attach_trade_status_extra()
 
 
 def init(ContextInfo):
