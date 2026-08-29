@@ -17,13 +17,47 @@ restart_cfquant.bat    重启本地服务
 
 通常日常运维只需要使用 `restart_cfquant.bat` 或 `重启cfquant.bat`。
 
+如果用户双击启动脚本后窗口闪退或网页打不开，优先查看：
+
+```text
+log/cfquant_startup.log
+log/cfquant_web_server.stderr.log
+```
+
+新版 `start_cfquant.bat` 会在启动后等待 Web 端口真正可连接。启动失败时窗口会停留，并输出最近的启动日志和错误日志，不再直接闪退。
+
+`启动cfquant.bat` 只是中文入口，会转发到 `start_cfquant.bat`，所以同样会使用上述检测和日志逻辑。`restart_cfquant.bat` / `重启cfquant.bat` 也会等待旧端口释放后再启动，避免旧进程未退出时重复拉起服务。`stop_cfquant.bat` / `停止cfquant.bat` 在停止失败时会保留窗口，方便查看失败原因。
+
+需要把错误完整留在当前窗口时，可以在命令行中运行：
+
+```bat
+start_cfquant.bat --foreground
+```
+
+或：
+
+```bat
+start_cfquant.bat --debug
+```
+
+自动化脚本中如果不希望失败时停在 `pause`，可以设置：
+
+```bat
+set CFQUANT_START_NO_PAUSE=1
+```
+
+也可以分别设置 `CFQUANT_RESTART_NO_PAUSE=1` 或 `CFQUANT_STOP_NO_PAUSE=1` 控制重启、停止脚本。
+
 ## 日志目录
 
 本地服务日志统一写入项目根目录 `log/`：
 
 ```text
 log/
+  cfquant_startup.log
   cfquant_web_server.runtime.log
+  cfquant_web_server.stdout.log
+  cfquant_web_server.stderr.log
   cfquant_pipe_hub.stdout.log
   cfquant_pipe_hub.stderr.log
   lttx_server.stdout.log
