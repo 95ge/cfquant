@@ -186,6 +186,13 @@ cfquant/
 
 ## 版本日志
 
+### web_20260829_01
+
+- 增强 `start_cfquant.bat` 启动检查：启动前校验 Python 和入口文件，启动后等待 Web 端口就绪，失败时保留窗口并输出最近日志，避免用户双击后一闪而过。
+- `启动cfquant.bat` 继续作为中文入口转发到新版启动脚本；`restart_cfquant.bat` / `重启cfquant.bat` 会等待旧端口释放后再启动，`stop_cfquant.bat` / `停止cfquant.bat` 停止失败时也会保留窗口。
+- 新增 `log/cfquant_startup.log`、`cfquant_web_server.stdout.log`、`cfquant_web_server.stderr.log` 说明，便于远程排查部署启动问题。
+- Web 控制台版本同步为 `web_20260829_01`。
+
 ### core_20260828_02
 
 - 新增同账号独立市场路由：同一资金账号可配置上海、深圳两个独立大 QMT 交易端，系统按 `stock_code` 后缀自动选择 SH/SZ 子交易桥。

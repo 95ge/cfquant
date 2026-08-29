@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260828_02"
+WEB_VERSION = "web_20260829_01"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")

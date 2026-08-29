@@ -20,6 +20,7 @@ if "%WEB_STOP_CODE%"=="0" if "%PIPE_STOP_CODE%"=="0" if "%LTTX_STOP_CODE%"=="0" 
 )
 
 echo cfquant stop completed with errors. Please check messages above.
+call :pause_on_error
 endlocal
 exit /b 1
 
@@ -30,3 +31,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$targetName=[System.IO.P
 set "CFQUANT_STOP_TARGET="
 set "CFQUANT_STOP_NAME="
 exit /b %errorlevel%
+
+:pause_on_error
+if "%CFQUANT_STOP_NO_PAUSE%"=="1" exit /b 0
+if "%CFQUANT_START_NO_PAUSE%"=="1" exit /b 0
+echo.
+echo This window stays open because stop failed.
+pause
+exit /b 0
