@@ -1,0 +1,11 @@
+[Unit]
+Description=cfquant official site auto reply worker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=cfquant-site
+Group=cfquant-site
+WorkingDirectory=/opt/cfquant-official-site
+ExecStart=/usr/bin/python3 /opt/cfquant-official-site/backend/auto_reply_worker.py --db /opt/cfquant-official-site/data/cfquant_site.sqlite3 --bot-user 95ge --limit 80

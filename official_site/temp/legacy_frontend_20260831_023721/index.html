@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cfquant.org | QMT 本地桥接与社区</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=site_20260826_04">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="cfquant 首页">
+      <span class="brand-mark">cf</span>
+      <span>
+        <strong>cfquant.org</strong>
+        <small>QMT Bridge Community</small>
+      </span>
+    </a>
+    <nav class="nav-tabs" aria-label="主导航">
+      <button class="nav-tab is-active" type="button" data-view="project">项目</button>
+      <button class="nav-tab" type="button" data-view="forum">论坛</button>
+      <button class="nav-tab" type="button" data-view="downloads">下载</button>
+      <button class="nav-tab" type="button" data-view="feedback">反馈</button>
+      <button class="nav-tab" type="button" data-view="center">用户中心</button>
+    </nav>
+    <div class="top-actions">
+      <button id="themeToggle" class="icon-button" type="button" title="切换明暗模式" aria-label="切换明暗模式">
+        <span class="theme-icon">D</span>
+      </button>
+      <button id="authButton" class="primary-button" type="button">注册 / 登录</button>
+      <button id="userButton" class="user-chip hidden" type="button"></button>
+    </div>
+  </header>
+
+  <main class="site-shell project-mode">
+    <aside class="left-rail">
+      <div class="rail-block rail-project">
+        <span class="rail-label">项目入口</span>
+        <strong>CFQuant for QMT</strong>
+        <p>把大 QMT 能力整理成 miniQMT 形态，供外部程序轻量调用。</p>
+        <div class="rail-actions">
+          <button class="primary-button full" type="button" data-jump-view="downloads">下载项目</button>
+          <button class="ghost-button full" type="button" data-jump-view="forum">进入讨论</button>
+        </div>
+      </div>
+      <div class="rail-block">
+        <span class="rail-label">社区数据</span>
+        <dl class="stat-grid">
+          <div><dt id="statUsers">0</dt><dd>用户</dd></div>
+          <div><dt id="statThreads">0</dt><dd>帖子</dd></div>
+          <div><dt id="statReplies">0</dt><dd>回复</dd></div>
+          <div><dt id="statDownloads">0</dt><dd>下载</dd></div>
+        </dl>
+      </div>
+      <div class="rail-block">
+        <span class="rail-label">热门讨论</span>
+        <div id="hotThreads" class="compact-list"></div>
+      </div>
+    </aside>
+
+    <section id="view-forum" class="view" aria-label="论坛讨论">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Forum</p>
+          <h1>cfquant 讨论区</h1>
+          <p>集中跟踪 QMT 部署、行情订阅、交易请求、Socket 桥接和更新安装问题。</p>
+        </div>
+        <button id="newThreadButton" class="primary-button" type="button">发布问题</button>
+      </div>
+
+      <div class="forum-layout forum-list-layout">
+        <div class="forum-main">
+          <div class="toolbar">
+            <div id="categoryTabs" class="segmented"></div>
+            <label class="search-box">
+              <span>搜索</span>
+              <input id="threadSearch" type="search" placeholder="关键词、错误信息、接口名">
+            </label>
+          </div>
+          <form id="threadForm" class="compose-panel hidden">
+            <div class="form-row two">
+              <label>
+                <span>分类</span>
+                <select id="threadCategory"></select>
+              </label>
+              <label>
+                <span>标签</span>
+                <input id="threadTags" type="text" placeholder="例如：部署,行情,交易">
+              </label>
+            </div>
+            <label>
+              <span>标题</span>
+              <input id="threadTitle" type="text" maxlength="120" required>
+            </label>
+            <label>
+              <span>问题描述</span>
+              <textarea id="threadBody" rows="6" required></textarea>
+            </label>
+            <div class="form-actions">
+              <button class="primary-button" type="submit">提交</button>
+              <button id="cancelThreadButton" class="ghost-button" type="button">取消</button>
+            </div>
+          </form>
+          <div id="threadList" class="thread-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-thread" class="view thread-page" aria-label="帖子详情">
+      <div class="back-row">
+        <button id="backToForumButton" class="ghost-button" type="button">返回论坛</button>
+      </div>
+      <div id="threadPageContent" class="thread-page-content"></div>
+    </section>
+
+    <section id="view-downloads" class="view" aria-label="下载更新">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Downloads</p>
+          <h1>项目下载与版本日志</h1>
+          <p>优先提供官网镜像包，GitHub 不可访问时仍可下载和更新。</p>
+        </div>
+      </div>
+      <div id="releasePanel" class="release-panel"></div>
+      <div id="downloadList" class="download-grid"></div>
+    </section>
+
+    <section id="view-project" class="view is-active project-view" aria-label="项目介绍">
+      <section class="project-hero" aria-label="cfquant 项目概览">
+        <div class="project-hero-copy">
+          <p class="eyebrow">Big QMT to miniQMT</p>
+          <h1>把大 QMT 转成 miniQMT 形态来使用</h1>
+          <p class="hero-lead">cfquant 的初心，是把依赖本地终端、接口分散的大 QMT 能力，整理成更轻、更稳定、外部程序更容易调用的 miniQMT 使用层。</p>
+          <div class="hero-actions">
+            <button class="primary-button" type="button" data-jump-view="downloads"><span class="button-icon" aria-hidden="true">↓</span>下载最新版本</button>
+            <button class="ghost-button" type="button" data-jump-view="forum"><span class="button-icon" aria-hidden="true">?</span>查看论坛问题</button>
+            <button class="ghost-button" type="button" data-jump-view="feedback"><span class="button-icon" aria-hidden="true">+</span>提交反馈</button>
+          </div>
+          <dl class="project-quick-facts" aria-label="项目关键信息">
+            <div>
+              <dt>核心目标</dt>
+              <dd>大 QMT 能力 miniQMT 化</dd>
+            </div>
+            <div>
+              <dt>使用方式</dt>
+              <dd>外部程序按轻量接口调用</dd>
+            </div>
+            <div>
+              <dt>官网职责</dt>
+              <dd>下载、更新、论坛与反馈</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="project-visual" aria-label="大 QMT 转 miniQMT 链路">
+          <div class="product-frame miniqmt-frame">
+            <div class="frame-toolbar">
+              <strong>cfquant conversion runtime</strong>
+              <span>Big QMT → miniQMT</span>
+            </div>
+            <div class="transform-flow">
+              <article class="transform-node big-qmt-node">
+                <span class="project-icon icon-terminal" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"></path><path d="m8 10 3 2-3 2"></path><path d="M13 15h4"></path></svg>
+                </span>
+                <small>输入端</small>
+                <strong>大 QMT</strong>
+                <p>行情源、交易柜台、委托成交、持仓与回调事件。</p>
+              </article>
+              <div class="transform-arrow" aria-hidden="true"><span></span></div>
+              <article class="transform-node converter-node">
+                <span class="project-icon icon-route" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M7 7h10v4H7z"></path><path d="M12 11v3"></path><path d="M6 17h5"></path><path d="M13 17h5"></path><circle cx="6" cy="17" r="2"></circle><circle cx="18" cy="17" r="2"></circle></svg>
+                </span>
+                <small>转换层</small>
+                <strong>cfquant</strong>
+                <p>统一协议、账号路由、通道封装、日志和异常反馈。</p>
+              </article>
+              <div class="transform-arrow" aria-hidden="true"><span></span></div>
+              <article class="transform-node miniqmt-node">
+                <span class="project-icon icon-mini" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M5 6h14v12H5z"></path><path d="M8 10h8"></path><path d="M8 14h4"></path><path d="M16 14h.01"></path></svg>
+                </span>
+                <small>输出端</small>
+                <strong>miniQMT</strong>
+                <p>轻量接口，给策略、研究、监控和自动化程序调用。</p>
+              </article>
+            </div>
+            <div class="component-strip" aria-label="核心组件">
+              <span><b class="project-icon mini-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 17 9 9l4 5 3-4 4 7"></path></svg></b>行情</span>
+              <span><b class="project-icon mini-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 7h10"></path><path d="m14 4 3 3-3 3"></path><path d="M17 17H7"></path><path d="m10 14-3 3 3 3"></path></svg></b>交易</span>
+              <span><b class="project-icon mini-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-5"></path><path d="M17 7V3h4"></path><path d="M19 12a7 7 0 0 1-12 5"></path><path d="M7 17v4H3"></path></svg></b>回调</span>
+              <span><b class="project-icon mini-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 4v10"></path><path d="m8 10 4 4 4-4"></path><path d="M5 20h14"></path></svg></b>更新</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="project-concept" aria-label="项目初心">
+        <article class="project-story">
+          <span class="project-icon icon-target" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle><path d="M12 2v4"></path><path d="M12 18v4"></path><path d="M2 12h4"></path><path d="M18 12h4"></path></svg>
+          </span>
+          <div>
+            <span class="eyebrow">Original Intent</span>
+            <h2>不是重做一个交易终端，而是把大 QMT 变轻</h2>
+            <p>大 QMT 承担行情源和柜台能力，cfquant 负责把这些能力拆成外部程序可理解、可调用、可观察的 miniQMT 接口层。</p>
+          </div>
+        </article>
+        <article class="project-story story-accent">
+          <span class="project-icon icon-compact" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5z"></path><path d="M9 9h6"></path><path d="M9 13h6"></path><path d="M9 17h3"></path></svg>
+          </span>
+          <div>
+            <span class="eyebrow">miniQMT Form</span>
+            <h2>外部程序面对的是更小的接口边界</h2>
+            <p>策略、研究脚本和监控工具不需要关心大 QMT 内部细节，只围绕行情、交易、回调和状态这几类稳定入口工作。</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="project-modules" aria-label="模块组件">
+        <div class="project-section-intro">
+          <p class="eyebrow">Modules</p>
+          <h2>把能力拆成可理解的组件</h2>
+          <p>每个组件都有清楚的边界，用户可以按问题类型快速定位到对应入口。</p>
+        </div>
+        <div class="module-grid">
+          <article>
+            <span class="project-icon icon-market" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 17 9 9l4 5 3-4 4 7"></path><path d="M4 20h16"></path></svg>
+            </span>
+            <h3>行情模块</h3>
+            <p>快照查询、实时订阅和历史数据请求，统一进入 miniQMT 行情接口。</p>
+          </article>
+          <article>
+            <span class="project-icon icon-trade" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M7 7h10"></path><path d="m14 4 3 3-3 3"></path><path d="M17 17H7"></path><path d="m10 14-3 3 3 3"></path></svg>
+            </span>
+            <h3>交易模块</h3>
+            <p>下单、撤单、委托、成交和持仓查询，按账号和通道做本地路由。</p>
+          </article>
+          <article>
+            <span class="project-icon icon-callback" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 12a7 7 0 0 1 12-5"></path><path d="M17 7V3h4"></path><path d="M19 12a7 7 0 0 1-12 5"></path><path d="M7 17v4H3"></path></svg>
+            </span>
+            <h3>回调模块</h3>
+            <p>把 QMT 侧事件同步给外部程序，帮助跟踪委托、成交和运行状态。</p>
+          </article>
+          <article>
+            <span class="project-icon icon-feedback" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 5h14v10H8l-3 4z"></path><path d="M9 9h6"></path><path d="M9 12h4"></path></svg>
+            </span>
+            <h3>官网支持</h3>
+            <p>下载、更新、论坛和反馈集中在官网处理，不把官网代码混进主项目仓库。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="project-workflow" aria-label="运行流程">
+        <div class="project-section-intro">
+          <p class="eyebrow">Runtime Flow</p>
+          <h2>从大 QMT 到 miniQMT 的使用路径</h2>
+          <p>用户只要理解这条路径，就能判断问题发生在输入、转换、调用还是反馈环节。</p>
+        </div>
+        <div class="workflow-track">
+          <article>
+            <span class="workflow-index">01</span>
+            <strong>大 QMT 提供底层能力</strong>
+            <p>行情源、交易柜台、委托成交和账户状态仍来自本地 QMT。</p>
+          </article>
+          <article>
+            <span class="workflow-index">02</span>
+            <strong>cfquant 统一封装</strong>
+            <p>把分散调用整理成稳定通道，并处理账号路由、协议和日志。</p>
+          </article>
+          <article>
+            <span class="workflow-index">03</span>
+            <strong>miniQMT 对外使用</strong>
+            <p>外部程序按轻量接口访问行情、交易和回调，不直接耦合大 QMT 细节。</p>
+          </article>
+          <article>
+            <span class="workflow-index">04</span>
+            <strong>官网承接更新和反馈</strong>
+            <p>版本下载、问题讨论、截图反馈和处理进度集中在官网闭环。</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="project-scenarios" aria-label="使用场景">
+        <article>
+          <span class="project-icon icon-code" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="m9 8-4 4 4 4"></path><path d="m15 8 4 4-4 4"></path><path d="m13 5-2 14"></path></svg>
+          </span>
+          <div>
+            <span>Strategy</span>
+            <h2>策略程序接入</h2>
+            <p>用 miniQMT 形态调用大 QMT 能力，减少策略代码和本地终端脚本的直接耦合。</p>
+          </div>
+        </article>
+        <article>
+          <span class="project-icon icon-monitor" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 5h16v11H4z"></path><path d="M8 20h8"></path><path d="M12 16v4"></path><path d="M8 12h2l2-4 2 6 2-3h2"></path></svg>
+          </span>
+          <div>
+            <span>Monitor</span>
+            <h2>运行监控排查</h2>
+            <p>围绕通道、账号、回调和日志定位问题，而不是在多个 QMT 脚本之间来回查。</p>
+          </div>
+        </article>
+        <article>
+          <span class="project-icon icon-update" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 4v10"></path><path d="m8 10 4 4 4-4"></path><path d="M5 20h14"></path></svg>
+          </span>
+          <div>
+            <span>Support</span>
+            <h2>下载与反馈闭环</h2>
+            <p>安装包、更新日志、公开反馈和管理员回复集中在官网，方便用户跟踪处理进度。</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="project-next-actions" aria-label="下一步">
+        <div>
+          <p class="eyebrow">Next Step</p>
+          <h2>按当前需要进入对应入口</h2>
+          <p>安装或升级走下载页，使用和排查走论坛，带截图的问题走反馈。</p>
+        </div>
+        <div class="next-action-buttons">
+          <button class="primary-button" type="button" data-jump-view="downloads"><span class="button-icon" aria-hidden="true">↓</span>下载项目</button>
+          <button class="ghost-button" type="button" data-jump-view="forum"><span class="button-icon" aria-hidden="true">?</span>进入论坛</button>
+          <button class="ghost-button" type="button" data-jump-view="feedback"><span class="button-icon" aria-hidden="true">+</span>反馈问题</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-feedback" class="view" aria-label="问题反馈">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Feedback</p>
+          <h1>问题反馈</h1>
+          <p>查看公开处理进度，或提交环境、账号、下载和运行问题。</p>
+        </div>
+      </div>
+      <div class="feedback-console">
+        <aside id="feedbackMenu" class="feedback-menu" aria-label="反馈菜单">
+          <button class="feedback-menu-button is-active" type="button" data-feedback-panel="public">
+            <strong>公开反馈</strong>
+            <span>查看处理进度</span>
+          </button>
+          <button class="feedback-menu-button" type="button" data-feedback-panel="submit">
+            <strong>提交反馈</strong>
+            <span>补充问题和截图</span>
+          </button>
+          <button class="feedback-menu-button" type="button" data-feedback-panel="mine">
+            <strong>我的反馈</strong>
+            <span>登录后跟踪</span>
+          </button>
+        </aside>
+        <div class="feedback-content">
+          <section id="feedbackPanelPublic" class="feedback-panel feedback-list-card is-active" data-feedback-panel-view="public">
+            <div class="panel-head">
+              <h2>公开反馈</h2>
+              <button id="refreshPublicFeedback" class="ghost-button" type="button">刷新</button>
+            </div>
+            <div id="publicFeedbackList" class="feedback-feed"></div>
+          </section>
+
+          <section id="feedbackPanelSubmit" class="feedback-panel" data-feedback-panel-view="submit">
+            <form id="feedbackForm" class="feedback-form-card">
+              <div class="form-card-head">
+                <span class="eyebrow">Submit</span>
+                <h2>提交一个可跟踪的问题</h2>
+                <p>反馈提交后默认公开展示。建议隐藏账号、手机号、路径等敏感信息，截图可以点击选择，也可以直接 Ctrl+V 粘贴。</p>
+              </div>
+              <label>
+                <span>标题</span>
+                <input id="feedbackTitle" type="text" maxlength="120" required>
+              </label>
+              <label>
+                <span>联系邮箱</span>
+                <input id="feedbackContact" type="email" autocomplete="email" placeholder="请输入邮箱，用于接收处理回复">
+              </label>
+              <label>
+                <span>问题描述</span>
+                <textarea id="feedbackBody" rows="8" required></textarea>
+              </label>
+              <label class="upload-field">
+                <span>截图附件</span>
+                <input id="feedbackScreenshots" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple>
+                <small>可选，最多 4 张，每张不超过 3MB。支持从剪贴板直接粘贴图片。</small>
+              </label>
+              <div id="feedbackDropHint" class="paste-hint">
+                <strong>Ctrl+V 粘贴截图</strong>
+                <span>复制截图后在当前页面直接粘贴，会自动生成缩略图。</span>
+              </div>
+              <div id="feedbackPreview" class="screenshot-preview"></div>
+              <div class="form-actions">
+                <button class="primary-button" type="submit">提交反馈</button>
+              </div>
+            </form>
+          </section>
+
+          <section id="feedbackPanelMine" class="feedback-panel feedback-list-card" data-feedback-panel-view="mine">
+            <div class="panel-head">
+              <h2>我的反馈</h2>
+              <button id="refreshMyFeedback" class="ghost-button" type="button">刷新</button>
+            </div>
+            <div id="myFeedbackList" class="feedback-feed"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-center" class="view" aria-label="用户中心">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">User Center</p>
+          <h1>用户中心</h1>
+          <p>查看账号信息、互动通知和站内通知，支持标记已读。</p>
+        </div>
+      </div>
+      <div id="centerContent" class="center-layout"></div>
+    </section>
+  </main>
+
+  <div id="authModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="modal-panel">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">Account</p>
+          <h2 id="authTitle">注册 / 登录</h2>
+        </div>
+        <button id="closeAuth" class="icon-button" type="button" aria-label="关闭">X</button>
+      </div>
+      <div class="auth-switch">
+        <button class="switch-tab is-active" type="button" data-auth-mode="register">注册</button>
+        <button class="switch-tab" type="button" data-auth-mode="login">登录</button>
+      </div>
+      <form id="registerForm" class="auth-form">
+        <label>
+          <span>用户名</span>
+          <input id="registerUsername" name="username" type="text" minlength="3" maxlength="32" autocomplete="username" placeholder="3-32 位字母、数字或符号" required>
+        </label>
+        <label>
+          <span>手机号</span>
+          <input id="registerPhone" name="phone" type="tel" inputmode="numeric" autocomplete="tel" maxlength="11" required>
+        </label>
+        <label>
+          <span>邮箱</span>
+          <input id="registerEmail" name="email" type="email" autocomplete="email" placeholder="可选，不验证">
+        </label>
+        <label>
+          <span>昵称</span>
+          <input id="registerName" name="display_name" type="text" autocomplete="nickname" maxlength="32" placeholder="可选">
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="registerPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" required>
+        </label>
+        <label>
+          <span>确认密码</span>
+          <input id="registerPasswordConfirm" type="password" minlength="6" maxlength="128" autocomplete="new-password" required>
+        </label>
+        <button class="primary-button full" type="submit">注册并登录</button>
+      </form>
+      <form id="loginForm" class="auth-form hidden">
+        <label>
+          <span>用户名 / 手机号 / 邮箱</span>
+          <input id="loginAccount" name="account" type="text" autocomplete="username" required>
+        </label>
+        <label>
+          <span>密码</span>
+          <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <div class="auth-options">
+          <label class="check-field">
+            <input id="loginRemember" type="checkbox">
+            <span>记住账号</span>
+          </label>
+          <label class="check-field">
+            <input id="loginAutoLogin" type="checkbox">
+            <span>保持登录状态</span>
+          </label>
+        </div>
+        <button class="primary-button full" type="submit">登录</button>
+      </form>
+      <p class="auth-note">用户名、手机号、邮箱均可作为登录账号。登录成功后会自动保持登录状态，无需重复输入密码；退出登录会清除当前设备的登录状态。</p>
+    </div>
+  </div>
+
+  <div id="imageModal" class="modal image-modal hidden" role="dialog" aria-modal="true" aria-labelledby="imageModalTitle">
+    <div class="modal-panel image-modal-panel">
+      <div class="modal-head image-modal-head">
+        <h2 id="imageModalTitle">图片预览</h2>
+        <button id="closeImageModal" class="icon-button" type="button" aria-label="关闭图片预览">X</button>
+      </div>
+      <div class="image-modal-body">
+        <img id="imageModalImage" alt="图片预览">
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/config.js"></script>
+  <script src="/app.js?v=site_20260826_04"></script>
+</body>
+</html>
