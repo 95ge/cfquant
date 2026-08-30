@@ -1,0 +1,1172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>cfquant.org 官网重设计原型</title>
+  <style>
+    :root {
+      --bg: oklch(98% 0.006 245);
+      --surface: oklch(100% 0 0);
+      --fg: oklch(21% 0.025 248);
+      --muted: oklch(49% 0.024 248);
+      --border: oklch(88% 0.018 248);
+      --accent: oklch(47% 0.13 232);
+      --success: oklch(47% 0.12 154);
+      --warning: oklch(63% 0.13 74);
+      --danger: oklch(53% 0.16 28);
+      --accent-soft: color-mix(in oklch, var(--accent) 12%, transparent);
+      --fg-soft: color-mix(in oklch, var(--fg) 6%, transparent);
+      --surface-raised: color-mix(in oklch, var(--surface) 92%, var(--bg));
+      --font-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+      --font-body: "Microsoft YaHei UI", "PingFang SC", "Noto Sans SC", "Segoe UI", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
+      --fs-h1: 54px;
+      --fs-h2: 36px;
+      --fs-h3: 20px;
+      --fs-lead: 18px;
+      --fs-body: 15px;
+      --fs-meta: 12px;
+      --gap-xs: 8px;
+      --gap-sm: 12px;
+      --gap-md: 20px;
+      --gap-lg: 32px;
+      --gap-xl: 56px;
+      --gap-2xl: 88px;
+      --container: 1240px;
+      --gutter: 32px;
+      --radius: 8px;
+      --radius-lg: 8px;
+      --shadow: 0 18px 48px color-mix(in oklch, var(--fg) 10%, transparent);
+    }
+    [data-theme="dark"] {
+      --bg: oklch(16% 0.018 248);
+      --surface: oklch(22% 0.02 248);
+      --fg: oklch(94% 0.006 248);
+      --muted: oklch(73% 0.018 248);
+      --border: oklch(34% 0.025 248);
+      --accent: oklch(68% 0.13 224);
+      --surface-raised: oklch(25% 0.022 248);
+      --shadow: 0 18px 48px color-mix(in oklch, black 34%, transparent);
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: var(--fs-body);
+      line-height: 1.58;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    img, svg { display: block; max-width: 100%; }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    a { color: inherit; text-decoration: none; }
+    p { margin: 0; text-wrap: pretty; }
+    h1, h2, h3, h4 { margin: 0; font-family: var(--font-display); font-weight: 650; line-height: 1.18; letter-spacing: 0; text-wrap: balance; }
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .section { padding-block: var(--gap-2xl); }
+    .section + .section { border-top: 1px solid var(--border); }
+    .stack { display: flex; flex-direction: column; gap: var(--gap-md); }
+    .row { display: flex; align-items: center; gap: var(--gap-md); }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap-lg); }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap-lg); }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap-md); }
+    .grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: var(--gap-xl); align-items: start; }
+    .grid-1-2 { display: grid; grid-template-columns: 1fr 2fr; gap: var(--gap-xl); align-items: start; }
+    .h1, h1 { font-size: var(--fs-h1); }
+    .h2, h2 { font-size: var(--fs-h2); }
+    .h3, h3 { font-size: var(--fs-h3); }
+    .lead { font-size: var(--fs-lead); color: var(--muted); max-width: 60ch; }
+    .eyebrow { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted); text-transform: uppercase; letter-spacing: 0; margin-bottom: var(--gap-md); }
+    .meta, .num, code { font-family: var(--font-mono); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
+    code { color: var(--fg); background: var(--fg-soft); border: 1px solid var(--border); border-radius: 5px; padding: 2px 5px; word-break: break-all; }
+    .screen { display: none; }
+    .screen.is-active { display: block; }
+    .topnav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: color-mix(in oklch, var(--bg) 92%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav-inner { min-height: 64px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: var(--gap-md); }
+    .logo { display: inline-flex; align-items: center; gap: 10px; font-family: var(--font-display); font-size: 20px; font-weight: 700; }
+    .logo-mark { width: 30px; height: 30px; border: 1px solid var(--fg); display: grid; place-items: center; border-radius: 6px; font-family: var(--font-mono); font-size: 12px; }
+    .site-links { justify-self: center; display: flex; align-items: center; gap: 4px; }
+    .nav-link, .icon-btn {
+      min-height: 44px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--muted);
+      border-radius: var(--radius);
+      padding: 9px 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+    }
+    .nav-link:hover, .icon-btn:hover { color: var(--fg); background: var(--fg-soft); }
+    .nav-link.is-active { color: var(--fg); border-color: var(--border); background: var(--surface); }
+    .nav-actions { justify-self: end; display: flex; align-items: center; gap: 8px; }
+    .mobile-toggle { display: none; }
+    .btn {
+      min-height: 44px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      padding: 11px 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--fg);
+      background: transparent;
+      font-weight: 650;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+    .btn-primary:hover { background: color-mix(in oklch, var(--accent) 86%, black); color: var(--surface); }
+    .btn-secondary { border-color: var(--border); background: var(--surface); color: var(--fg); }
+    .btn-secondary:hover { border-color: var(--fg); background: var(--surface-raised); color: var(--fg); }
+    .btn-ghost { border-color: transparent; padding-inline: 10px; color: var(--fg); }
+    .btn-ghost:hover { background: var(--fg-soft); color: var(--fg); }
+    .btn-danger { border-color: color-mix(in oklch, var(--danger) 35%, var(--border)); color: var(--danger); background: transparent; }
+    .btn-danger:hover { background: color-mix(in oklch, var(--danger) 10%, transparent); }
+    .btn[disabled] { cursor: not-allowed; opacity: 0.52; }
+    .btn-arrow::after { content: "->"; font-family: var(--font-mono); }
+    .btn:focus-visible, .nav-link:focus-visible, .icon-btn:focus-visible, .field-control:focus-visible, .tab:focus-visible, .card-action:focus-visible { outline: 3px solid var(--accent-soft); outline-offset: 2px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: 0 1px 0 color-mix(in oklch, var(--fg) 5%, transparent);
+    }
+    .card-flat { background: transparent; border: 0; padding: 0; }
+    .card-rule { border-top: 1px solid var(--fg); padding-top: 22px; }
+    .pill, .tag, .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      padding: 4px 10px;
+      font-size: var(--fs-meta);
+      font-family: var(--font-mono);
+      color: var(--fg);
+      background: var(--surface);
+      white-space: nowrap;
+    }
+    .status-success { color: var(--success); border-color: color-mix(in oklch, var(--success) 45%, var(--border)); background: color-mix(in oklch, var(--success) 10%, transparent); }
+    .status-warning { color: var(--warning); border-color: color-mix(in oklch, var(--warning) 45%, var(--border)); background: color-mix(in oklch, var(--warning) 11%, transparent); }
+    .status-danger { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 45%, var(--border)); background: color-mix(in oklch, var(--danger) 10%, transparent); }
+    .hero { padding-block: 72px; }
+    .hero-center { max-width: 740px; margin-inline: auto; text-align: center; }
+    .hero-split { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap-xl); align-items: center; }
+    .hero-cta { display: flex; gap: var(--gap-sm); flex-wrap: wrap; margin-top: 28px; }
+    .version-strip { margin-top: 30px; display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .version-strip div { padding: 12px 14px; border-right: 1px solid var(--border); min-width: 0; }
+    .version-strip div:last-child { border-right: 0; }
+    .version-strip span { display: block; color: var(--muted); font-size: 12px; }
+    .product-visual { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+    .product-bar { min-height: 42px; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--surface-raised); }
+    .dots { display: flex; gap: 6px; }
+    .dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
+    .product-body { display: grid; grid-template-columns: 0.9fr 1.1fr; min-height: 360px; }
+    .rail { border-right: 1px solid var(--border); padding: 18px; background: color-mix(in oklch, var(--bg) 62%, var(--surface)); }
+    .rail-item { padding: 11px 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .console { padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+    .flow { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
+    .node { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; background: var(--surface-raised); min-height: 74px; }
+    .arrow { color: var(--muted); font-family: var(--font-mono); }
+    .terminal { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; background: color-mix(in oklch, var(--fg) 4%, var(--surface)); color: var(--fg); font-family: var(--font-mono); font-size: 12px; overflow: hidden; }
+    .terminal div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .feature .feature-mark { width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 14px; color: var(--fg); }
+    .feature .feature-mark svg { width: 18px; height: 18px; }
+    .feature h3 { margin-bottom: 8px; }
+    .feature p { color: var(--muted); font-size: 14px; }
+    .stat .stat-num { font-family: var(--font-display); font-size: 64px; line-height: 1; color: var(--fg); font-weight: 650; }
+    .stat .stat-label { color: var(--muted); font-size: 14px; margin-top: 8px; max-width: 24ch; }
+    .stat .stat-unit { font-size: 0.55em; color: var(--muted); margin-left: 2px; }
+    .quote { font-family: var(--font-display); font-size: 28px; line-height: 1.36; max-width: 30ch; }
+    .quote-author { color: var(--muted); font-size: 14px; margin-top: var(--gap-md); }
+    .quote-mark { font-family: var(--font-display); font-size: 96px; line-height: 0.8; color: var(--fg); opacity: 0.14; margin-bottom: -18px; }
+    .ds-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .ds-table th, .ds-table td { padding: 13px 14px; text-align: left; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .ds-table th { color: var(--muted); font-family: var(--font-mono); font-size: 12px; font-weight: 600; text-transform: uppercase; }
+    .ds-table tbody tr:hover { background: var(--fg-soft); }
+    .num-col { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; }
+    .step-list { display: grid; gap: 12px; counter-reset: steps; }
+    .step { display: grid; grid-template-columns: 42px 1fr; gap: 14px; align-items: start; }
+    .step::before { counter-increment: steps; content: counter(steps); width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius); font-family: var(--font-mono); color: var(--fg); background: var(--surface); }
+    .log-row { display: grid; grid-template-columns: 130px 1fr 120px; gap: var(--gap-lg); padding: 20px 0; border-top: 1px solid var(--border); align-items: start; }
+    .log-row h3 { font-size: 19px; }
+    .pull { text-align: right; }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .tabs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .tab { min-height: 40px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); border-radius: var(--radius); padding: 8px 12px; }
+    .tab:hover { color: var(--fg); border-color: var(--fg); }
+    .tab.is-active { color: var(--surface); background: var(--fg); border-color: var(--fg); }
+    .field { display: flex; flex-direction: column; gap: 7px; }
+    .field label { color: var(--muted); font-size: 13px; }
+    .field-control {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      color: var(--fg);
+      padding: 10px 12px;
+    }
+    textarea.field-control { min-height: 112px; resize: vertical; }
+    .field-control:hover { border-color: color-mix(in oklch, var(--fg) 45%, var(--border)); }
+    .input, .textarea { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--fg); padding: 10px 12px; }
+    .textarea { min-height: 112px; resize: vertical; }
+    .ph-img { border: 1px solid var(--border); border-radius: var(--radius-lg); background: linear-gradient(135deg, var(--fg-soft), color-mix(in oklch, var(--accent) 8%, transparent)), var(--surface); aspect-ratio: 16 / 10; display: grid; place-items: center; color: var(--muted); font-family: var(--font-mono); font-size: 12px; }
+    .ph-img.square { aspect-ratio: 1 / 1; }
+    .ph-img.portrait { aspect-ratio: 3 / 4; }
+    .ph-img.wide { aspect-ratio: 16 / 9; }
+    .rule { border: 0; border-top: 1px solid var(--border); margin: 0; }
+    .rule-strong { border: 0; border-top: 1px solid var(--fg); margin: 0; }
+    .help { color: var(--muted); font-size: 13px; }
+    .sha { word-break: break-all; overflow-wrap: anywhere; line-height: 1.6; }
+    .download-card { display: grid; grid-template-columns: 1.3fr 0.7fr; gap: var(--gap-lg); align-items: start; }
+    .field-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .kv { border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; background: var(--surface-raised); min-width: 0; }
+    .kv span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 5px; }
+    .forum-shell, .thread-shell { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--gap-lg); align-items: start; }
+    .forum-board { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); overflow: hidden; }
+    .forum-board-head { padding: 18px 20px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+    .filter-bar { display: grid; grid-template-columns: minmax(240px, 1fr) 160px 160px auto; gap: 10px; align-items: end; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--surface-raised); }
+    .topic-card, .feedback-card, .notice { display: grid; gap: 12px; border-top: 1px solid var(--border); padding: 20px 0; }
+    .topic-card { grid-template-columns: 44px minmax(0, 1fr) 156px; padding: 18px 20px; }
+    .topic-card[hidden] { display: none; }
+    .topic-card:first-child { border-top: 0; }
+    .topic-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .topic-title-button { border: 0; background: transparent; color: var(--fg); padding: 0; text-align: left; }
+    .topic-title-button:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+    .topic-stats { display: grid; gap: 8px; align-content: start; color: var(--muted); }
+    .topic-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .forum-side-list { display: grid; gap: 12px; margin-top: 14px; }
+    .forum-side-list div { border-top: 1px solid var(--border); padding-top: 12px; }
+    .thread-meta-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 18px; }
+    .reply-tools { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .composer-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; margin-top: 14px; }
+    .avatar { width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border); display: grid; place-items: center; font-family: var(--font-mono); background: var(--surface-raised); flex: 0 0 auto; }
+    .reply { display: grid; grid-template-columns: 40px 1fr; gap: 14px; padding: 18px 0; border-top: 1px solid var(--border); }
+    .reply.child { margin-left: 54px; }
+    .thumb-grid { display: flex; gap: 10px; flex-wrap: wrap; }
+    .thumb { width: 112px; height: 76px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); color: var(--muted); display: grid; place-items: center; font-size: 12px; }
+    .upload-zone { border: 1px dashed var(--border); border-radius: var(--radius); padding: 20px; background: var(--surface-raised); color: var(--muted); }
+    .swatch-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+    .swatch { border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--surface); }
+    .swatch div { height: 56px; background: var(--value); border-bottom: 1px solid var(--border); }
+    .swatch p { padding: 10px; font-family: var(--font-mono); font-size: 12px; }
+    .state-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .skeleton { height: 12px; border-radius: 999px; background: linear-gradient(90deg, var(--fg-soft), color-mix(in oklch, var(--fg) 12%, transparent), var(--fg-soft)); background-size: 220% 100%; animation: pulse 1.6s ease infinite; }
+    .modal-backdrop { position: fixed; inset: 0; display: none; place-items: center; padding: 24px; background: color-mix(in oklch, var(--fg) 42%, transparent); z-index: 50; }
+    .modal-backdrop.is-open { display: grid; }
+    .modal { width: min(560px, 100%); max-height: min(760px, 92vh); overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow); }
+    .modal-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
+    .modal-body { padding: 20px; }
+    .toast { position: fixed; right: 24px; bottom: 24px; z-index: 60; display: none; max-width: 360px; padding: 14px 16px; border-radius: var(--radius); background: var(--fg); color: var(--surface); box-shadow: var(--shadow); }
+    .toast.is-open { display: block; }
+    .pagefoot { padding-block: var(--gap-xl); border-top: 1px solid var(--border); color: var(--muted); }
+    .device { width: 320px; max-width: 100%; margin-inline: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px; background: var(--surface); box-shadow: var(--shadow); }
+    .device-screen { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; background: var(--bg); display: grid; gap: 14px; }
+    @keyframes pulse { to { background-position: -220% 0; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+    @media (max-width: 920px) {
+      :root { --fs-h1: 38px; --fs-h2: 29px; --fs-h3: 18px; --fs-lead: 16px; --gutter: 20px; --gap-2xl: 60px; }
+      .grid-2, .grid-3, .grid-4, .grid-2-1, .grid-1-2, .hero-split, .download-card, .product-body, .field-grid, .state-row, .swatch-grid, .forum-shell, .thread-shell, .filter-bar, .thread-meta-grid, .composer-row { grid-template-columns: 1fr; }
+      .topnav-inner { grid-template-columns: auto auto; }
+      .site-links { grid-column: 1 / -1; justify-self: stretch; display: none; flex-direction: column; align-items: stretch; padding: 0 0 14px; }
+      .topnav.nav-open .site-links { display: flex; }
+      .nav-link { justify-content: flex-start; }
+      .mobile-toggle { display: inline-flex; }
+      .nav-actions .hide-mobile { display: none; }
+      .version-strip { grid-template-columns: 1fr 1fr; }
+      .version-strip div:nth-child(2n) { border-right: 0; }
+      .log-row, .topic-card, .forum-board-head { grid-template-columns: 1fr; }
+      .pull { text-align: left; }
+      .reply.child { margin-left: 22px; }
+      .ds-table { min-width: 720px; }
+      .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+      .table-wrap .ds-table th, .table-wrap .ds-table td { border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner">
+      <button class="logo nav-link" data-screen="project" data-od-id="brand-home">
+        <span class="logo-mark">CF</span><span>cfquant</span>
+      </button>
+      <nav class="site-links" id="siteLinks" data-od-id="main-navigation">
+        <button class="nav-link is-active" data-screen="project" data-od-id="nav-project">项目</button>
+        <button class="nav-link" data-screen="download" data-od-id="nav-download">下载</button>
+        <button class="nav-link" data-screen="docs" data-od-id="nav-docs">文档</button>
+        <button class="nav-link" data-screen="forum" data-od-id="nav-forum">论坛</button>
+        <button class="nav-link" data-screen="feedback" data-od-id="nav-feedback">反馈</button>
+        <button class="nav-link" data-screen="account" data-od-id="nav-account">用户中心</button>
+        <button class="nav-link" data-screen="components" data-od-id="nav-components">组件状态</button>
+      </nav>
+      <div class="nav-actions">
+        <button class="icon-btn mobile-toggle" id="mobileToggle" data-od-id="mobile-menu-toggle" aria-label="打开移动端菜单">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <button class="icon-btn hide-mobile" data-od-id="github-entry" aria-label="GitHub 备用入口">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        </button>
+        <button class="icon-btn" id="themeToggle" data-od-id="theme-toggle" aria-label="切换深色主题">浅色</button>
+        <button class="btn btn-secondary" data-open-auth data-od-id="login-button">登录 / 注册</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="screen is-active" id="screen-project" data-od-id="screen-project">
+      <section class="section hero" data-od-id="project-hero">
+        <div class="container hero-split">
+          <div>
+            <p class="eyebrow" data-od-id="hero-eyebrow">CFQUANT · 本地桥接层</p>
+            <h1 data-od-id="hero-title">把大 QMT 转成 miniQMT 形态来使用</h1>
+            <p class="lead" style="margin-top: 20px;" data-od-id="hero-lead">cfquant 把依赖本地终端、接口分散的大 QMT 能力整理为外部 Python 程序更容易调用的 miniQMT 使用层，统一封装行情、交易、回调、账号路由和更新反馈。</p>
+            <div class="hero-cta">
+              <button class="btn btn-primary" data-screen="download" data-od-id="hero-download-cta">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+                下载最新版本
+              </button>
+              <button class="btn btn-secondary" data-screen="docs" data-od-id="hero-docs-cta">查看部署文档</button>
+              <button class="btn btn-ghost" data-screen="forum" data-od-id="hero-forum-cta">进入论坛</button>
+            </div>
+            <div class="version-strip" data-od-id="latest-version-summary">
+              <div><span>核心版本</span><strong class="meta">接口返回后展示</strong></div>
+              <div><span>Web 版本</span><strong class="meta">接口返回后展示</strong></div>
+              <div><span>更新时间</span><strong class="meta">待同步</strong></div>
+              <div><span>下载次数</span><strong class="meta">待同步</strong></div>
+            </div>
+          </div>
+          <div class="product-visual" data-od-id="hero-product-visual" aria-label="cfquant 控制台与运行链路示意">
+            <div class="product-bar">
+              <div class="dots"><i></i><i></i><i></i></div>
+              <span class="meta">cfquant 控制台</span>
+            </div>
+            <div class="product-body">
+              <div class="rail">
+                <div class="rail-item"><span>QMT 路径</span><span class="status status-success">已配置</span></div>
+                <div class="rail-item"><span>账号路由</span><span class="status">多账号</span></div>
+                <div class="rail-item"><span>行情订阅</span><span class="status status-success">运行中</span></div>
+                <div class="rail-item"><span>回调队列</span><span class="status status-warning">需校验</span></div>
+              </div>
+              <div class="console">
+                <div class="flow">
+                  <div class="node"><strong>大 QMT</strong><p class="help">行情 · 查询 · 交易 · 回调</p></div>
+                  <span class="arrow">-></span>
+                  <div class="node"><strong>cfquant</strong><p class="help">PipeHub · ctypes · Web 控制台</p></div>
+                </div>
+                <div class="flow">
+                  <div class="node"><strong>miniQMT 形态</strong><p class="help">兼容迁移与轻量调用</p></div>
+                  <span class="arrow">-></span>
+                  <div class="node"><strong>外部 Python</strong><p class="help">策略接入 · 排查 · 自动化</p></div>
+                </div>
+                <div class="terminal" data-od-id="console-terminal">
+                  <div>&gt; load CFQUANT_CTYPE_ALL_LOWLAT.py</div>
+                  <div>&gt; pipehub status: waiting for local QMT</div>
+                  <div>&gt; sha256: 下载接口返回后展示完整校验值</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="section" data-od-id="project-features">
+        <div class="container stack" style="gap: 56px;">
+          <div style="max-width: 44ch;">
+            <p class="eyebrow">核心能力</p>
+            <h2 data-od-id="features-title">不是重做交易终端，而是把大 QMT 变轻。</h2>
+          </div>
+          <div class="grid-4">
+            <article class="feature card-flat" data-od-id="feature-miniqmt">
+              <div class="feature-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 7h16M4 12h10M4 17h16"/></svg></div>
+              <h3>miniQMT 形态迁移</h3>
+              <p>把大 QMT 的本地能力整理成外部程序更熟悉的调用层，降低迁移和部署理解成本。</p>
+            </article>
+            <article class="feature card-flat" data-od-id="feature-bridge">
+              <div class="feature-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 12h12"/><path d="m14 8 4 4-4 4"/><path d="M4 5h5v5H4zM15 14h5v5h-5z"/></svg></div>
+              <h3>大 QMT 功能转接</h3>
+              <p>围绕行情、查询、交易和回调做统一封装，让 Web 控制台与 Python 程序走同一条链路。</p>
+            </article>
+            <article class="feature card-flat" data-od-id="feature-accounts">
+              <div class="feature-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3"/><circle cx="16" cy="16" r="3"/><path d="M11 9.5 13 14.5"/></svg></div>
+              <h3>多账号运行</h3>
+              <p>把账号路径、入口脚本、运行状态和反馈入口放在同一套信息结构里，便于维护者排查。</p>
+            </article>
+            <article class="feature card-flat" data-od-id="feature-feedback-loop">
+              <div class="feature-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 5h16v10H7l-3 3z"/><path d="M8 9h8M8 12h5"/></svg></div>
+              <h3>下载与反馈闭环</h3>
+              <p>官网镜像、GitHub 备用入口、论坛讨论和公开反馈状态共存，减少问题在私聊中丢失。</p>
+            </article>
+          </div>
+        </div>
+      </section>
+      <section class="section" data-od-id="mode-comparison">
+        <div class="container">
+          <div class="row-between" style="align-items: end; margin-bottom: 32px;">
+            <div style="max-width: 46ch;">
+              <p class="eyebrow">模式对比</p>
+              <h2 data-od-id="mode-title">三种接入模式，按环境限制和延迟目标选择。</h2>
+            </div>
+            <button class="btn btn-secondary" data-screen="docs" data-od-id="mode-docs-link">查看脚本说明</button>
+          </div>
+          <div class="table-wrap">
+            <table class="ds-table" data-od-id="mode-table">
+              <thead><tr><th>模式</th><th>QMT 侧脚本</th><th>链路</th><th>适用场景</th></tr></thead>
+              <tbody>
+                <tr><td><strong>通用模式</strong></td><td><code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></td><td>Web / 外部 Python -> PipeHub -> ctypes 单文件桥 -> QMT</td><td>快速部署、单账号验证、多数常规使用。</td></tr>
+                <tr><td><strong>极致模式</strong></td><td><code>CFQUANT_LITE.py</code></td><td>QMT 侧入口自包含，不导入 <code>cfquant</code> 核心包。</td><td>白名单限制严格的 QMT 环境。</td></tr>
+                <tr><td><strong>高级模式</strong></td><td><code>CFQUANT.py</code> + <code>CFQUANT_TRADE_LOWLAT.py</code></td><td>普通 QMT 与极速交易端 QMT 分工。</td><td>需要更低下单、撤单延迟的实测环境。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="section" data-od-id="run-path">
+        <div class="container grid-2-1">
+          <div>
+            <p class="eyebrow">运行路径</p>
+            <h2 data-od-id="run-path-title">从下载包到外部 Python 调用，路径必须可扫描。</h2>
+            <div class="step-list" style="margin-top: 28px;">
+              <div class="step" data-od-id="run-step-download"><div><h3>安装项目包</h3><p class="help">下载页优先展示官网镜像包；没有镜像时清楚提示并保留 GitHub 备用入口。</p></div></div>
+              <div class="step" data-od-id="run-step-console"><div><h3>启动 Web 控制台</h3><p class="help">在本地完成 QMT 路径、账号和运行状态检查。</p></div></div>
+              <div class="step" data-od-id="run-step-script"><div><h3>加载 QMT 入口脚本</h3><p class="help">根据通用、极致或高级模式加载对应脚本。</p></div></div>
+              <div class="step" data-od-id="run-step-python"><div><h3>外部 Python 调用</h3><p class="help">策略程序通过统一桥接层读取行情、提交交易请求并处理回调。</p></div></div>
+            </div>
+          </div>
+          <aside class="card" data-od-id="support-routing">
+            <h3>问题怎么走</h3>
+            <p class="help" style="margin-top: 10px;">安装或升级走下载页，使用和排查走论坛，带截图的问题走反馈。</p>
+            <div class="stack" style="margin-top: 20px;">
+              <button class="btn btn-secondary" data-screen="download" data-od-id="route-download">下载与校验</button>
+              <button class="btn btn-secondary" data-screen="forum" data-od-id="route-forum">论坛排查</button>
+              <button class="btn btn-secondary" data-screen="feedback" data-od-id="route-feedback">提交截图反馈</button>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen" id="screen-download" data-od-id="screen-download">
+      <section class="section hero" data-od-id="download-hero">
+        <div class="container hero-center">
+          <p class="eyebrow">下载与版本日志</p>
+          <h1 data-od-id="download-title">最新版本优先，校验信息不折叠。</h1>
+          <p class="lead" style="margin: 18px auto 0;">下载页承担安装、升级、回滚和镜像异常说明，所有版本字段都按接口数据映射。</p>
+        </div>
+      </section>
+      <section class="section" data-od-id="latest-download-section">
+        <div class="container download-card">
+          <article class="card" data-od-id="latest-download-card">
+            <div class="row-between">
+              <div><span class="pill">stable</span><h2 style="margin-top: 16px;">最新项目包</h2></div>
+              <span class="status status-warning">接口待接入</span>
+            </div>
+            <div class="field-grid" style="margin-top: 24px;">
+              <div class="kv"><span>核心版本</span><strong class="meta">core_version</strong></div>
+              <div class="kv"><span>Web 版本</span><strong class="meta">web_version</strong></div>
+              <div class="kv"><span>文件大小</span><strong class="meta">file_size</strong></div>
+              <div class="kv"><span>更新时间</span><strong class="meta">updated_at</strong></div>
+              <div class="kv"><span>下载次数</span><strong class="meta">download_count</strong></div>
+              <div class="kv"><span>渠道</span><strong class="meta">project / stable / fallback</strong></div>
+            </div>
+            <div style="margin-top: 22px;">
+              <span class="meta">SHA256</span>
+              <p class="sha" data-od-id="sha-display"><code>下载接口返回后显示完整 SHA256；窄屏自动换行，复制时不截断。</code></p>
+            </div>
+            <div class="hero-cta">
+              <button class="btn btn-primary" data-od-id="download-primary">下载最新项目</button>
+              <button class="btn btn-secondary" data-od-id="download-github">GitHub 备用入口</button>
+              <button class="btn btn-ghost" data-copy="SHA256 字段说明已复制" data-od-id="copy-sha">复制 SHA256</button>
+            </div>
+          </article>
+          <aside class="card" data-od-id="download-changelog">
+            <h3>更新日志映射</h3>
+            <p class="help" style="margin-top: 10px;">接入 <code>changelog.items</code> 后按时间展示。没有内容时显示空状态，不用营销文案补位。</p>
+            <div class="stack" style="margin-top: 18px;">
+              <div class="notice"><strong>版本说明</strong><p class="help">来自下载接口的 notes 字段。</p></div>
+              <div class="notice"><strong>镜像状态</strong><p class="help">官网镜像包待登记时保留 GitHub 备用入口。</p></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <section class="section" data-od-id="download-history">
+        <div class="container">
+          <div class="row-between" style="margin-bottom: 24px;"><h2>历史下载列表</h2><button class="btn btn-secondary" data-od-id="refresh-downloads">刷新列表</button></div>
+          <div class="table-wrap">
+            <table class="ds-table">
+              <thead><tr><th>标题</th><th>渠道</th><th>版本</th><th>大小</th><th>SHA256</th><th class="num-col">操作</th></tr></thead>
+              <tbody>
+                <tr><td>官网镜像包待登记</td><td><span class="status status-warning">fallback</span></td><td><code>version</code></td><td>file_size</td><td><code>悬停或复制时查看完整值</code></td><td class="num-col"><button class="btn btn-secondary" data-od-id="history-github">外部链接</button></td></tr>
+                <tr><td>历史包字段占位</td><td><span class="status">project</span></td><td><code>core_version</code></td><td>file_size</td><td><code>接口返回后展示</code></td><td class="num-col"><button class="btn btn-secondary" disabled data-od-id="history-disabled">待登记</button></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="state-row" style="margin-top: 24px;">
+            <div class="card" data-od-id="loading-state"><span class="status">加载</span><div class="stack" style="margin-top: 16px;"><i class="skeleton"></i><i class="skeleton" style="width: 72%;"></i></div></div>
+            <div class="card" data-od-id="empty-state"><span class="status status-warning">空状态</span><p class="help" style="margin-top: 12px;">官网镜像包待登记，仍可使用 GitHub 备用入口。</p></div>
+            <div class="card" data-od-id="error-state"><span class="status status-danger">错误</span><p class="help" style="margin-top: 12px;">下载接口不可用，请稍后重试或切换备用入口。</p></div>
+            <div class="card" data-od-id="success-state"><span class="status status-success">成功</span><p class="help" style="margin-top: 12px;">已复制 SHA256，可用于校验文件完整性。</p></div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen" id="screen-docs" data-od-id="screen-docs">
+      <section class="section hero" data-od-id="docs-hero">
+        <div class="container hero-center">
+          <p class="eyebrow">部署文档入口</p>
+          <h1>把部署步骤拆成可执行路径。</h1>
+          <p class="lead" style="margin: 18px auto 0;">短期可连接 GitHub / README / docs，官网侧先把迁移、升级、接口兼容和运维更新入口固定下来。</p>
+        </div>
+      </section>
+      <section class="section" data-od-id="docs-index">
+        <div class="container grid-3">
+          <article class="card" data-od-id="doc-deploy"><h3>部署指南</h3><p class="help" style="margin-top: 10px;">下载项目包、启动控制台、配置 QMT 路径和账号。</p></article>
+          <article class="card" data-od-id="doc-python"><h3>外部 Python 接入</h3><p class="help" style="margin-top: 10px;">说明 PipeHub、ctypes 单文件桥和调用边界。</p></article>
+          <article class="card" data-od-id="doc-migration"><h3>miniQMT 迁移</h3><p class="help" style="margin-top: 10px;">从 miniQMT / xtquant 接入方式迁移到大 QMT 的注意项。</p></article>
+          <article class="card" data-od-id="doc-ops"><h3>运维更新</h3><p class="help" style="margin-top: 10px;">升级、回滚、版本日志和 SHA256 校验。</p></article>
+          <article class="card" data-od-id="doc-compat"><h3>接口兼容</h3><p class="help" style="margin-top: 10px;">行情、查询、交易、回调模块的兼容说明。</p></article>
+          <article class="card" data-od-id="doc-feedback"><h3>排障路径</h3><p class="help" style="margin-top: 10px;">错误信息走论坛，带截图的问题走反馈。</p></article>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen" id="screen-forum" data-od-id="screen-forum">
+      <section class="section hero" data-od-id="forum-hero">
+        <div class="container hero-center">
+          <p class="eyebrow">cfquant 讨论区</p>
+          <h1>把部署、行情、交易和更新问题集中处理。</h1>
+          <p class="lead" style="margin: 18px auto 0;">论坛不是公告墙，而是可筛选、可检索、能进入详情和回复线程的排障工作区。</p>
+        </div>
+      </section>
+      <section class="section" data-od-id="forum-list-section">
+        <div class="container forum-shell">
+          <div class="forum-board" data-od-id="forum-board">
+            <div class="forum-board-head">
+              <div>
+                <h2>问题讨论</h2>
+                <p class="help" id="forumResultCount" data-od-id="forum-result-count" style="margin-top: 6px;">当前筛选 0 条</p>
+              </div>
+              <button class="btn btn-primary" data-open-topic data-od-id="new-topic-button">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 5v14M5 12h14"/></svg>
+                发布问题
+              </button>
+            </div>
+            <div class="filter-bar" data-od-id="forum-filter-bar">
+              <div class="field">
+                <label for="forumSearch">搜索关键词、错误信息、接口名</label>
+                <input class="field-control" id="forumSearch" data-od-id="forum-search" placeholder="例如 PipeHub / 回调 / CFQUANT_LITE.py" />
+              </div>
+              <div class="field">
+                <label for="forumStatus">状态</label>
+                <select class="field-control" id="forumStatus" data-od-id="forum-status-filter">
+                  <option value="all">全部状态</option>
+                  <option value="open">开放</option>
+                  <option value="locked">已锁定</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="forumSort">排序</label>
+                <select class="field-control" id="forumSort" data-od-id="forum-sort">
+                  <option value="default">默认顺序</option>
+                  <option value="open-first">开放优先</option>
+                  <option value="locked-last">锁定靠后</option>
+                </select>
+              </div>
+              <button class="btn btn-secondary" id="clearForumFilters" data-od-id="clear-forum-filters">清空筛选</button>
+            </div>
+            <div class="tabs" role="tablist" aria-label="论坛分类" data-od-id="forum-category-tabs" style="padding: 14px 20px; border-bottom: 1px solid var(--border);">
+              <button class="tab is-active" data-forum-tab="all" data-od-id="forum-tab-all">全部</button>
+              <button class="tab" data-forum-tab="deploy" data-od-id="forum-tab-deploy">部署排障</button>
+              <button class="tab" data-forum-tab="market" data-od-id="forum-tab-market">行情订阅</button>
+              <button class="tab" data-forum-tab="trade" data-od-id="forum-tab-trade">交易请求</button>
+              <button class="tab" data-forum-tab="update" data-od-id="forum-tab-update">更新安装</button>
+            </div>
+            <div id="topicList" data-od-id="topic-list">
+              <article class="topic-card" data-category="deploy" data-status="open" data-priority="1" data-search="pipehub qmt 部署 socket 连接失败" data-od-id="topic-card-pipehub">
+                <div class="avatar">P</div>
+                <div>
+                  <div class="topic-meta"><span class="status status-success">开放</span><span class="tag">部署排障</span><span class="tag">PipeHub</span><span class="tag">Socket</span></div>
+                  <h3 style="margin-top: 10px;"><button class="topic-title-button" data-screen="thread" data-od-id="topic-open-pipehub">PipeHub 连接失败时的排查顺序</button></h3>
+                  <p class="help" style="margin-top: 6px;">记录 QMT 路径、入口脚本、本地权限和 Socket 桥接的检查项。</p>
+                  <div class="topic-actions"><button class="btn btn-secondary" data-screen="thread" data-od-id="topic-detail-pipehub">打开详情</button><button class="btn btn-ghost" data-copy="PipeHub 连接失败" data-od-id="copy-topic-pipehub">复制标题</button></div>
+                </div>
+                <div class="topic-stats meta"><span>作者：维护者</span><span>回复：reply_count</span><span>浏览：views</span><span>最后活跃：last_activity_at</span></div>
+              </article>
+              <article class="topic-card" data-category="market" data-status="open" data-priority="2" data-search="行情订阅 回调 on_tick 数据缺口" data-od-id="topic-card-market">
+                <div class="avatar">H</div>
+                <div>
+                  <div class="topic-meta"><span class="status status-success">开放</span><span class="tag">行情订阅</span><span class="tag">回调</span></div>
+                  <h3 style="margin-top: 10px;"><button class="topic-title-button" data-screen="thread" data-od-id="topic-open-market">行情订阅回调偶发缺口如何定位</button></h3>
+                  <p class="help" style="margin-top: 6px;">把订阅参数、QMT 日志、外部 Python 调用和回调队列状态放在同一条排查线上。</p>
+                  <div class="topic-actions"><button class="btn btn-secondary" data-screen="thread" data-od-id="topic-detail-market">打开详情</button><button class="btn btn-ghost" data-open-topic data-od-id="fork-topic-market">带模板提问</button></div>
+                </div>
+                <div class="topic-stats meta"><span>作者：用户昵称</span><span>回复：reply_count</span><span>浏览：views</span><span>最后活跃：last_activity_at</span></div>
+              </article>
+              <article class="topic-card" data-category="trade" data-status="open" data-priority="3" data-search="trade lowlat cfquant_trade 撤单 下单 高级模式" data-od-id="topic-card-trade">
+                <div class="avatar">T</div>
+                <div>
+                  <div class="topic-meta"><span class="status">开放</span><span class="tag">交易请求</span><span class="tag">低延迟</span></div>
+                  <h3 style="margin-top: 10px;"><button class="topic-title-button" data-screen="thread" data-od-id="topic-open-trade">高级模式下普通 QMT 与极速交易端如何分工</button></h3>
+                  <p class="help" style="margin-top: 6px;">围绕 <code>CFQUANT.py</code> 与 <code>CFQUANT_TRADE_LOWLAT.py</code> 的职责边界。</p>
+                  <div class="topic-actions"><button class="btn btn-secondary" data-screen="thread" data-od-id="topic-detail-trade">打开详情</button><button class="btn btn-ghost" data-screen="docs" data-od-id="topic-docs-trade">查文档</button></div>
+                </div>
+                <div class="topic-stats meta"><span>作者：维护者</span><span>回复：reply_count</span><span>浏览：views</span><span>最后活跃：last_activity_at</span></div>
+              </article>
+              <article class="topic-card" data-category="update" data-status="locked" data-priority="4" data-search="sha256 下载 更新 安装 校验不一致" data-od-id="topic-card-sha">
+                <div class="avatar">S</div>
+                <div>
+                  <div class="topic-meta"><span class="status status-warning">已锁定</span><span class="tag">更新安装</span><span class="tag">SHA256</span></div>
+                  <h3 style="margin-top: 10px;"><button class="topic-title-button" data-screen="thread" data-od-id="topic-open-sha">下载包 SHA256 校验不一致的处理方式</button></h3>
+                  <p class="help" style="margin-top: 6px;">说明官网镜像、GitHub 备用入口和完整性校验的反馈流程。</p>
+                  <div class="topic-actions"><button class="btn btn-secondary" data-screen="thread" data-od-id="topic-detail-sha">打开详情</button><button class="btn btn-ghost" data-screen="download" data-od-id="topic-download-sha">去下载页</button></div>
+                </div>
+                <div class="topic-stats meta"><span>作者：维护者</span><span>回复：reply_count</span><span>浏览：views</span><span>最后活跃：last_activity_at</span></div>
+              </article>
+            </div>
+            <div class="card" id="forumEmpty" hidden data-od-id="forum-empty" style="margin: 20px;"><h3>暂无匹配讨论</h3><p class="help" style="margin-top: 8px;">请更换关键词、清空筛选，或登录后发起新问题。</p><button class="btn btn-secondary" id="forumEmptyClear" data-od-id="forum-empty-clear" style="margin-top: 14px;">清空筛选</button></div>
+          </div>
+          <aside class="card" data-od-id="forum-assist-panel">
+            <h3>发布前检查</h3>
+            <div class="forum-side-list">
+              <div><strong>带上环境</strong><p class="help">QMT 版本、脚本名、运行模式和系统环境。</p></div>
+              <div><strong>保留错误信息</strong><p class="help">长错误、SHA256 和文件名自动换行，不截断关键内容。</p></div>
+              <div><strong>截图走反馈</strong><p class="help">含账号、路径或截图的问题可转到反馈页公开或私密处理。</p></div>
+            </div>
+            <button class="btn btn-secondary" data-screen="feedback" data-od-id="forum-feedback-link" style="margin-top: 18px;">提交带截图反馈</button>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen" id="screen-thread" data-od-id="screen-thread">
+      <section class="section" data-od-id="thread-detail-section">
+        <div class="container thread-shell">
+          <article class="card" data-od-id="thread-detail">
+            <button class="btn btn-ghost" data-screen="forum" data-od-id="back-forum">返回论坛</button>
+            <div class="topic-meta" style="margin-top: 18px;"><span class="status status-warning" id="threadStatusPill">已锁定</span><span class="tag">更新安装</span><span class="tag">SHA256</span></div>
+            <h1 style="margin-top: 14px;">下载包 SHA256 校验不一致的处理方式</h1>
+            <div class="thread-meta-grid" data-od-id="thread-meta-grid">
+              <div class="kv"><span>作者</span><strong class="meta">维护者</strong></div>
+              <div class="kv"><span>创建时间</span><strong class="meta">created_at</strong></div>
+              <div class="kv"><span>浏览</span><strong class="meta">views</strong></div>
+              <div class="kv"><span>回复</span><strong class="meta">reply_count</strong></div>
+            </div>
+            <div style="margin-top: 24px;" data-od-id="thread-body">
+              <h3>问题原文</h3>
+              <p style="margin-top: 10px;">请先确认下载入口来源。官网镜像包优先；若镜像包待登记或接口不可用，请切换 GitHub 备用入口。复制 SHA256 时应使用完整值，不要使用列表里的截断预览。</p>
+              <p class="sha" style="margin-top: 12px;"><code>sha256: 完整校验值由下载接口返回；详情页和复制动作都不能截断。</code></p>
+            </div>
+            <div class="thumb-grid" style="margin-top: 18px;" data-od-id="thread-attachments">
+              <button class="thumb" data-preview="下载页错误截图占位" data-od-id="thread-thumb-1">下载页截图</button>
+              <button class="thumb" data-preview="校验终端截图占位" data-od-id="thread-thumb-2">终端截图</button>
+            </div>
+            <div style="margin-top: 30px;" data-od-id="reply-thread">
+              <h3>回复线程</h3>
+              <div class="reply" data-od-id="thread-reply-1"><div class="avatar">M</div><div><strong>维护者</strong><p class="help">请把下载来源、文件大小和完整 SHA256 一起贴出，便于判断是镜像更新延迟还是传输失败。</p><div class="reply-tools"><button class="btn btn-ghost" data-copy="请提供下载来源、文件大小和完整 SHA256" data-od-id="copy-reply-template">复制排查模板</button></div></div></div>
+              <div class="reply child" data-od-id="thread-reply-child"><div class="avatar">U</div><div><strong>用户</strong><p class="help">已改用 GitHub 备用入口，校验通过。</p></div></div>
+            </div>
+            <form id="replyForm" style="margin-top: 28px;" data-od-id="reply-composer">
+              <h3>回复编辑器</h3>
+              <p class="help" id="replyStateNotice" style="margin-top: 8px;">帖子已锁定，暂不能继续回复。</p>
+              <div class="composer-row">
+                <textarea class="field-control" id="replyTextarea" placeholder="写下复现路径、日志片段或处理结果" disabled></textarea>
+                <button class="btn btn-primary" id="sendReply" type="submit" disabled data-od-id="send-reply">发送回复</button>
+              </div>
+              <p class="help" id="replyError" aria-live="polite" style="margin-top: 10px;"></p>
+            </form>
+          </article>
+          <aside class="card" data-od-id="thread-side-panel">
+            <h3>详情状态演示</h3>
+            <div class="field" style="margin-top: 14px;">
+              <label for="threadState">回复权限</label>
+              <select class="field-control" id="threadState" data-od-id="thread-state-select">
+                <option value="locked">已锁定</option>
+                <option value="guest">未登录</option>
+                <option value="open">开放回复</option>
+              </select>
+            </div>
+            <div class="forum-side-list">
+              <div><strong>锁定状态</strong><p class="help">显示原因，禁用输入框，保留阅读和复制模板。</p></div>
+              <div><strong>未登录状态</strong><p class="help">显示登录后回复，并把焦点带入注册 / 登录弹窗。</p></div>
+              <div><strong>开放状态</strong><p class="help">允许编辑回复，空内容提交时给出明确错误。</p></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen" id="screen-feedback" data-od-id="screen-feedback">
+      <section class="section hero" data-od-id="feedback-hero">
+        <div class="container hero-center">
+          <p class="eyebrow">问题反馈工作台</p>
+          <h1>公开进度、截图证据和我的反馈分开处理。</h1>
+          <p class="lead" style="margin: 18px auto 0;">反馈页默认展示公开反馈，提交完成后回到公开列表，不做营销式落地页。</p>
+        </div>
+      </section>
+      <section class="section" data-od-id="feedback-workbench">
+        <div class="container">
+          <div class="tabs" data-od-id="feedback-tabs">
+            <button class="tab is-active" data-feedback-tab="public" data-od-id="feedback-tab-public">公开反馈</button>
+            <button class="tab" data-feedback-tab="submit" data-od-id="feedback-tab-submit">提交反馈</button>
+            <button class="tab" data-feedback-tab="mine" data-od-id="feedback-tab-mine">我的反馈</button>
+          </div>
+          <div class="feedback-pane" id="feedback-public" style="margin-top: 28px;">
+            <article class="feedback-card" data-od-id="feedback-public-card-1">
+              <div class="row-between"><h3>QMT 路径配置后控制台仍显示未连接</h3><span class="status status-warning">处理中</span></div>
+              <p class="help">编号、创建时间、反馈人和更新时间由接口返回；摘要用于快速判断是否重复问题。</p>
+              <div class="thumb-grid"><button class="thumb" data-preview="控制台未连接截图占位" data-od-id="feedback-thumb-1">附件占位</button></div>
+              <div class="card" style="box-shadow: none;" data-od-id="admin-reply-card"><strong>处理回复</strong><p class="help">维护者回复后显示在这里，并通过邮件通知反馈人。</p></div>
+            </article>
+            <article class="feedback-card" data-od-id="feedback-public-card-2">
+              <div class="row-between"><h3>官网镜像包待登记时需要清楚提示</h3><span class="status status-success">已关闭</span></div>
+              <p class="help">已在下载页空状态中保留 GitHub 备用入口，避免用户误认为下载按钮无响应。</p>
+            </article>
+          </div>
+          <form class="feedback-pane" id="feedback-submit" hidden style="margin-top: 28px;" data-od-id="feedback-submit-form">
+            <div class="grid-2">
+              <div class="field"><label for="fbTitle">标题</label><input class="field-control" id="fbTitle" required placeholder="简短描述问题" /></div>
+              <div class="field"><label for="fbEmail">联系邮箱</label><input class="field-control" id="fbEmail" type="email" required placeholder="用于接收处理回复" /></div>
+            </div>
+            <div class="field" style="margin-top: 16px;"><label for="fbBody">问题描述</label><textarea class="field-control" id="fbBody" required placeholder="请写清 QMT 版本、脚本名、复现路径和错误信息"></textarea></div>
+            <div class="upload-zone" style="margin-top: 16px;" data-od-id="feedback-upload">支持 png / jpg / webp / gif，最多 4 张，每张不超过 3MB。可使用 Ctrl+V 粘贴截图。</div>
+            <p class="help" id="feedbackError" style="margin-top: 12px;" aria-live="polite"></p>
+            <div class="hero-cta"><button class="btn btn-primary" type="submit" data-od-id="submit-feedback">提交反馈</button><button class="btn btn-secondary" type="button" data-feedback-tab="public" data-od-id="cancel-feedback">取消</button></div>
+          </form>
+          <div class="feedback-pane grid-2" id="feedback-mine" hidden style="margin-top: 28px;">
+            <article class="card" data-od-id="my-feedback-guest"><h3>未登录状态</h3><p class="help" style="margin-top: 10px;">登录后可查看自己提交过的反馈、公开状态、处理状态和管理员回复。</p><button class="btn btn-secondary" data-open-auth data-od-id="my-feedback-login" style="margin-top: 18px;">登录 / 注册</button></article>
+            <article class="card" data-od-id="my-feedback-signed"><h3>已登录状态</h3><div class="notice"><span class="status status-warning">处理中</span><p class="help">我的反馈列表显示标题、公开状态、处理状态、最近回复和更新时间。</p></div></article>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen" id="screen-account" data-od-id="screen-account">
+      <section class="section" data-od-id="account-section">
+        <div class="container grid-1-2">
+          <aside class="card" data-od-id="account-summary">
+            <div class="avatar" style="width: 72px; height: 72px; font-size: 20px;">CF</div>
+            <h2 style="margin-top: 18px;">用户中心</h2>
+            <p class="help" style="margin-top: 10px;">设置页和通知中心，不承载大面积宣传文案。</p>
+            <div class="stack" style="margin-top: 22px;">
+              <span class="status status-success">已登录示例状态</span>
+              <span class="meta">用户名 / 手机号 / 邮箱 / 注册时间由接口返回</span>
+              <button class="btn btn-danger" data-od-id="logout-button">退出登录</button>
+            </div>
+          </aside>
+          <div class="stack">
+            <article class="card" data-od-id="profile-panel">
+              <h3>个人资料</h3>
+              <div class="grid-2" style="margin-top: 16px;">
+                <div class="field"><label for="displayName">昵称</label><input class="field-control" id="displayName" value="已登录用户" /></div>
+                <div class="field"><label for="avatarUpload">头像上传</label><input class="field-control" id="avatarUpload" type="file" accept="image/png,image/jpeg,image/webp,image/gif" /></div>
+              </div>
+              <p class="help" style="margin-top: 12px;">保留内置头像选择，也支持上传图片，最大 2MB。</p>
+            </article>
+            <article class="card" data-od-id="notification-preferences">
+              <h3>邮件通知偏好</h3>
+              <label class="row" style="margin-top: 14px;"><input type="checkbox" checked /> 反馈有处理回复时发邮件</label>
+              <label class="row" style="margin-top: 10px;"><input type="checkbox" checked /> 帖子或评论有回复时发邮件</label>
+            </article>
+            <article class="card" data-od-id="password-panel">
+              <h3>密码设置</h3>
+              <div class="grid-2" style="margin-top: 16px;">
+                <div class="field"><label for="oldPwd">当前密码</label><input class="field-control" id="oldPwd" type="password" /></div>
+                <div class="field"><label for="newPwd">新密码</label><input class="field-control" id="newPwd" type="password" /></div>
+              </div>
+            </article>
+            <article class="card" data-od-id="notifications-list">
+              <div class="row-between"><h3>通知列表</h3><button class="btn btn-secondary" data-od-id="mark-all-read">全部已读</button></div>
+              <div class="notice"><span class="status">未读</span><p class="help">反馈处理回复、帖子回复和系统通知按创建时间显示。</p></div>
+              <div class="notice"><span class="status status-success">已读</span><p class="help">支持单条标记已读和全部已读。</p></div>
+            </article>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section class="screen" id="screen-components" data-od-id="screen-components">
+      <section class="section hero" data-od-id="components-hero">
+        <div class="container hero-center">
+          <p class="eyebrow">设计 token 与组件状态</p>
+          <h1>交付给前端的命名、状态和响应式规则。</h1>
+          <p class="lead" style="margin: 18px auto 0;">组件用于官网、下载、论坛、反馈和用户中心；状态文本不只依赖颜色。</p>
+        </div>
+      </section>
+      <section class="section" data-od-id="tokens-section">
+        <div class="container stack" style="gap: 32px;">
+          <div class="swatch-grid" data-od-id="theme-swatches">
+            <article class="swatch" style="--value: var(--bg);"><div></div><p>--bg</p></article>
+            <article class="swatch" style="--value: var(--surface);"><div></div><p>--surface</p></article>
+            <article class="swatch" style="--value: var(--fg);"><div></div><p>--fg</p></article>
+            <article class="swatch" style="--value: var(--muted);"><div></div><p>--muted</p></article>
+            <article class="swatch" style="--value: var(--border);"><div></div><p>--border</p></article>
+            <article class="swatch" style="--value: var(--accent);"><div></div><p>--accent</p></article>
+          </div>
+          <div class="grid-3">
+            <article class="card" data-od-id="button-states"><h3>按钮状态</h3><div class="stack" style="margin-top: 16px;"><button class="btn btn-primary">主按钮</button><button class="btn btn-secondary">次按钮</button><button class="btn btn-danger">危险操作</button><button class="btn btn-secondary" disabled>禁用状态</button></div></article>
+            <article class="card" data-od-id="status-pills"><h3>状态标签</h3><div class="stack" style="margin-top: 16px;"><span class="status status-success">已处理</span><span class="status status-warning">处理中</span><span class="status status-danger">错误</span><span class="status">锁定</span></div></article>
+            <article class="card" data-od-id="mobile-navigation-spec"><h3>移动端导航</h3><p class="help" style="margin-top: 10px;">顶部保留品牌、主题和登录入口；菜单折叠后单列显示，下载、反馈、论坛优先。</p></article>
+          </div>
+          <div class="grid-2">
+            <article class="card" data-od-id="long-text-handling">
+              <h3>长文本处理</h3>
+              <p class="sha" style="margin-top: 12px;"><code>SHA256 / 版本号 / 错误信息使用等宽字体，word-break 与 overflow-wrap 同时启用，移动端不产生横向滚动。</code></p>
+            </article>
+            <article class="device" data-od-id="mobile-home-preview">
+              <div class="device-screen">
+                <div class="row-between"><strong>cfquant</strong><button class="btn btn-secondary">登录</button></div>
+                <h3>把大 QMT 转成 miniQMT 形态来使用</h3>
+                <p class="help">移动端首屏保留下载与文档两个高优先级动作。</p>
+                <button class="btn btn-primary">下载最新版本</button>
+              </div>
+            </article>
+          </div>
+          <article class="card" data-od-id="component-hierarchy">
+            <h3>组件命名与层级</h3>
+            <div class="table-wrap" style="margin-top: 16px;">
+              <table class="ds-table">
+                <thead><tr><th>层级</th><th>组件</th><th>用途</th></tr></thead>
+                <tbody>
+                  <tr><td>导航</td><td><code>SiteNav</code>、<code>MobileMenu</code>、<code>ThemeToggle</code></td><td>全站入口、主题切换和登录状态。</td></tr>
+                  <tr><td>下载</td><td><code>LatestDownloadCard</code>、<code>DownloadPackageRow</code>、<code>ChecksumField</code></td><td>版本字段、下载动作、SHA256 复制。</td></tr>
+                  <tr><td>社区</td><td><code>ForumToolbar</code>、<code>TopicCard</code>、<code>ReplyThread</code></td><td>分类、搜索、帖子和回复层级。</td></tr>
+                  <tr><td>反馈</td><td><code>FeedbackWorkbench</code>、<code>FeedbackForm</code>、<code>AttachmentPreview</code></td><td>公开反馈、提交反馈、图片预览。</td></tr>
+                  <tr><td>账户</td><td><code>UserProfilePanel</code>、<code>NotificationPreferences</code>、<code>NotificationList</code></td><td>资料、通知偏好、密码和消息。</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </article>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between">
+      <span>cfquant.org · 官网原型</span>
+      <span class="meta">项目 / 下载 / 文档 / 论坛 / 反馈 / 用户中心</span>
+    </div>
+  </footer>
+
+  <div class="modal-backdrop" id="authModal" role="dialog" aria-modal="true" aria-labelledby="authTitle" data-od-id="auth-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="authTitle">注册 / 登录</h2>
+        <button class="icon-btn" data-close-modal data-od-id="auth-close" aria-label="关闭弹窗">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="tabs" role="tablist" aria-label="注册登录切换">
+          <button class="tab is-active" data-auth-tab="register" data-od-id="auth-tab-register">注册</button>
+          <button class="tab" data-auth-tab="login" data-od-id="auth-tab-login">登录</button>
+        </div>
+        <form id="registerForm" class="stack" style="margin-top: 18px;" data-od-id="register-form">
+          <div class="grid-2"><div class="field"><label>用户名</label><input class="field-control" required minlength="3" maxlength="32" /></div><div class="field"><label>手机号</label><input class="field-control" required /></div></div>
+          <div class="grid-2"><div class="field"><label>邮箱</label><input class="field-control" type="email" /></div><div class="field"><label>昵称</label><input class="field-control" /></div></div>
+          <div class="grid-2"><div class="field"><label>密码</label><input class="field-control" id="regPwd" type="password" required /></div><div class="field"><label>确认密码</label><input class="field-control" id="regPwd2" type="password" required /></div></div>
+          <p class="help" id="authError" aria-live="polite"></p>
+          <button class="btn btn-primary" type="submit" data-od-id="register-submit">注册并登录</button>
+        </form>
+        <form id="loginForm" class="stack" hidden style="margin-top: 18px;" data-od-id="login-form">
+          <div class="field"><label>用户名 / 手机号 / 邮箱</label><input class="field-control" required /></div>
+          <div class="field"><label>密码</label><input class="field-control" type="password" required /></div>
+          <label class="row"><input type="checkbox" /> 记住账号</label>
+          <label class="row"><input type="checkbox" /> 保持登录状态</label>
+          <button class="btn btn-primary" type="submit" data-od-id="login-submit">登录</button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="topicModal" role="dialog" aria-modal="true" aria-labelledby="topicTitle" data-od-id="topic-modal">
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="topicTitle">发布问题</h2>
+        <button class="icon-btn" data-close-topic data-od-id="topic-close" aria-label="关闭发帖弹窗">关闭</button>
+      </div>
+      <form class="modal-body stack" id="topicForm" data-od-id="topic-form">
+        <div class="grid-2">
+          <div class="field"><label for="topicCategory">分类</label><select class="field-control" id="topicCategory"><option>部署排障</option><option>行情订阅</option><option>交易请求</option><option>更新安装</option></select></div>
+          <div class="field"><label for="topicTags">标签</label><input class="field-control" id="topicTags" placeholder="例如 PipeHub, CFQUANT_LITE.py" /></div>
+        </div>
+        <div class="field"><label for="topicName">标题</label><input class="field-control" id="topicName" required placeholder="一句话说明问题现象" /></div>
+        <div class="field"><label for="topicBody">问题描述</label><textarea class="field-control" id="topicBody" required placeholder="请写清 QMT 版本、脚本名、运行模式、复现步骤和错误信息"></textarea></div>
+        <div class="upload-zone" data-od-id="topic-upload">支持粘贴日志摘要；涉及截图或账号路径时建议转到反馈页上传附件。</div>
+        <p class="help" id="topicError" aria-live="polite"></p>
+        <div class="row-between">
+          <button class="btn btn-secondary" type="button" data-close-topic data-od-id="topic-cancel">取消</button>
+          <button class="btn btn-primary" type="submit" data-od-id="topic-submit">保存草稿并登录发布</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="imageModal" role="dialog" aria-modal="true" aria-labelledby="imageTitle" data-od-id="image-preview-modal">
+    <div class="modal">
+      <div class="modal-head"><h2 id="imageTitle">图片预览</h2><button class="icon-btn" data-close-image data-od-id="image-close" aria-label="关闭图片预览">关闭</button></div>
+      <div class="modal-body"><div class="thumb" id="imagePreviewBox" style="width: 100%; height: 320px;">图片占位</div><p class="help" style="margin-top: 12px;">图片加载失败时显示占位状态，不离开站内弹窗。</p></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" data-od-id="toast">操作已完成</div>
+
+  <script>
+    const root = document.documentElement;
+    const topnav = document.querySelector('.topnav');
+    const screenButtons = document.querySelectorAll('[data-screen]');
+    const navButtons = document.querySelectorAll('.site-links [data-screen]');
+    const screens = document.querySelectorAll('.screen');
+    const savedScreen = localStorage.getItem('cfquant-screen') || 'project';
+    const savedTheme = localStorage.getItem('cfquant-theme') || 'light';
+
+    function showScreen(name) {
+      screens.forEach(section => section.classList.toggle('is-active', section.id === `screen-${name}`));
+      navButtons.forEach(button => button.classList.toggle('is-active', button.dataset.screen === name));
+      localStorage.setItem('cfquant-screen', name);
+      topnav.classList.remove('nav-open');
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('is-open');
+      clearTimeout(window.cfquantToastTimer);
+      window.cfquantToastTimer = setTimeout(() => toast.classList.remove('is-open'), 2200);
+    }
+
+    screenButtons.forEach(button => button.addEventListener('click', event => {
+      const target = event.currentTarget.dataset.screen;
+      if (target) showScreen(target);
+    }));
+    if (document.getElementById(`screen-${savedScreen}`)) showScreen(savedScreen);
+
+    document.getElementById('mobileToggle').addEventListener('click', () => topnav.classList.toggle('nav-open'));
+
+    function applyTheme(theme) {
+      root.dataset.theme = theme === 'dark' ? 'dark' : 'light';
+      const themeToggle = document.getElementById('themeToggle');
+      themeToggle.textContent = theme === 'dark' ? '深色' : '浅色';
+      themeToggle.setAttribute('aria-label', theme === 'dark' ? '切换浅色主题' : '切换深色主题');
+      localStorage.setItem('cfquant-theme', theme);
+    }
+    applyTheme(savedTheme);
+    document.getElementById('themeToggle').addEventListener('click', () => applyTheme(root.dataset.theme === 'dark' ? 'light' : 'dark'));
+
+    const authModal = document.getElementById('authModal');
+    const topicModal = document.getElementById('topicModal');
+    const imageModal = document.getElementById('imageModal');
+    let lastFocus = null;
+    function openModal(modal) {
+      lastFocus = document.activeElement;
+      modal.classList.add('is-open');
+      const focusable = modal.querySelector('button, input, textarea, select');
+      if (focusable) focusable.focus();
+    }
+    function closeModal(modal) {
+      modal.classList.remove('is-open');
+      if (lastFocus) lastFocus.focus();
+    }
+    document.querySelectorAll('[data-open-auth]').forEach(button => button.addEventListener('click', () => openModal(authModal)));
+    document.querySelectorAll('[data-open-topic]').forEach(button => button.addEventListener('click', () => openModal(topicModal)));
+    document.querySelectorAll('[data-close-modal]').forEach(button => button.addEventListener('click', () => closeModal(authModal)));
+    document.querySelectorAll('[data-close-topic]').forEach(button => button.addEventListener('click', () => closeModal(topicModal)));
+    document.querySelectorAll('[data-close-image]').forEach(button => button.addEventListener('click', () => closeModal(imageModal)));
+    document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.addEventListener('click', event => {
+      if (event.target === backdrop) closeModal(backdrop);
+    }));
+    document.addEventListener('keydown', event => {
+      const open = document.querySelector('.modal-backdrop.is-open');
+      if (!open) return;
+      if (event.key === 'Escape') closeModal(open);
+      if (event.key === 'Tab') {
+        const items = Array.from(open.querySelectorAll('button, input, textarea, select')).filter(item => !item.disabled && item.offsetParent !== null);
+        if (!items.length) return;
+        const first = items[0];
+        const last = items[items.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+    });
+
+    document.querySelectorAll('[data-auth-tab]').forEach(tab => tab.addEventListener('click', event => {
+      const mode = event.currentTarget.dataset.authTab;
+      document.querySelectorAll('[data-auth-tab]').forEach(item => item.classList.toggle('is-active', item.dataset.authTab === mode));
+      document.getElementById('registerForm').hidden = mode !== 'register';
+      document.getElementById('loginForm').hidden = mode !== 'login';
+    }));
+    document.getElementById('registerForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const error = document.getElementById('authError');
+      if (document.getElementById('regPwd').value !== document.getElementById('regPwd2').value) {
+        error.textContent = '两次密码不一致，请重新输入。';
+        return;
+      }
+      error.textContent = '';
+      closeModal(authModal);
+      showToast('注册成功，右上角用户状态已刷新。');
+    });
+    document.getElementById('loginForm').addEventListener('submit', event => {
+      event.preventDefault();
+      closeModal(authModal);
+      showToast('登录成功，右上角用户状态已刷新。');
+    });
+
+    let forumCategory = 'all';
+    function filterTopics() {
+      const query = document.getElementById('forumSearch').value.trim().toLowerCase();
+      const status = document.getElementById('forumStatus').value;
+      const sortMode = document.getElementById('forumSort').value;
+      const topicList = document.getElementById('topicList');
+      const cards = Array.from(topicList.querySelectorAll('.topic-card'));
+      cards.sort((a, b) => {
+        if (sortMode === 'open-first') return Number(a.dataset.status !== 'open') - Number(b.dataset.status !== 'open') || Number(a.dataset.priority) - Number(b.dataset.priority);
+        if (sortMode === 'locked-last') return Number(a.dataset.status === 'locked') - Number(b.dataset.status === 'locked') || Number(a.dataset.priority) - Number(b.dataset.priority);
+        return Number(a.dataset.priority) - Number(b.dataset.priority);
+      }).forEach(card => topicList.appendChild(card));
+      let visible = 0;
+      cards.forEach(card => {
+        const categoryMatch = forumCategory === 'all' || card.dataset.category === forumCategory;
+        const statusMatch = status === 'all' || card.dataset.status === status;
+        const textMatch = !query || card.textContent.toLowerCase().includes(query) || card.dataset.search.includes(query);
+        const show = categoryMatch && statusMatch && textMatch;
+        card.hidden = !show;
+        if (show) visible += 1;
+      });
+      document.getElementById('forumResultCount').textContent = `当前筛选 ${visible} 条`;
+      document.getElementById('forumEmpty').hidden = visible !== 0;
+    }
+    function clearForumFilters() {
+      forumCategory = 'all';
+      document.getElementById('forumSearch').value = '';
+      document.getElementById('forumStatus').value = 'all';
+      document.getElementById('forumSort').value = 'default';
+      document.querySelectorAll('[data-forum-tab]').forEach(item => item.classList.toggle('is-active', item.dataset.forumTab === 'all'));
+      filterTopics();
+    }
+    document.querySelectorAll('[data-forum-tab]').forEach(tab => tab.addEventListener('click', event => {
+      forumCategory = event.currentTarget.dataset.forumTab;
+      document.querySelectorAll('[data-forum-tab]').forEach(item => item.classList.toggle('is-active', item === event.currentTarget));
+      filterTopics();
+    }));
+    document.getElementById('forumSearch').addEventListener('input', filterTopics);
+    document.getElementById('forumStatus').addEventListener('change', filterTopics);
+    document.getElementById('forumSort').addEventListener('change', filterTopics);
+    document.getElementById('clearForumFilters').addEventListener('click', clearForumFilters);
+    document.getElementById('forumEmptyClear').addEventListener('click', clearForumFilters);
+    filterTopics();
+
+    document.getElementById('topicForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const title = document.getElementById('topicName').value.trim();
+      const body = document.getElementById('topicBody').value.trim();
+      const error = document.getElementById('topicError');
+      if (title.length < 6) {
+        error.textContent = '标题过短，请至少说明问题现象。';
+        return;
+      }
+      if (body.length < 20) {
+        error.textContent = '问题描述需要包含复现路径、脚本名或错误信息。';
+        return;
+      }
+      error.textContent = '';
+      closeModal(topicModal);
+      openModal(authModal);
+      showToast('草稿已保留，请登录后发布。');
+    });
+
+    function applyThreadState() {
+      const state = document.getElementById('threadState').value;
+      const notice = document.getElementById('replyStateNotice');
+      const textarea = document.getElementById('replyTextarea');
+      const send = document.getElementById('sendReply');
+      const pill = document.getElementById('threadStatusPill');
+      if (state === 'open') {
+        notice.textContent = '当前为开放回复状态，可提交排查结果或补充日志。';
+        textarea.disabled = false;
+        send.disabled = false;
+        send.textContent = '发送回复';
+        pill.textContent = '开放';
+        pill.className = 'status status-success';
+      } else if (state === 'guest') {
+        notice.textContent = '未登录时不能直接回复，点击按钮会打开注册 / 登录弹窗。';
+        textarea.disabled = true;
+        send.disabled = false;
+        send.textContent = '登录后回复';
+        pill.textContent = '开放';
+        pill.className = 'status';
+      } else {
+        notice.textContent = '帖子已锁定，暂不能继续回复。';
+        textarea.disabled = true;
+        send.disabled = true;
+        send.textContent = '发送回复';
+        pill.textContent = '已锁定';
+        pill.className = 'status status-warning';
+      }
+      document.getElementById('replyError').textContent = '';
+    }
+    document.getElementById('threadState').addEventListener('change', applyThreadState);
+    document.getElementById('replyForm').addEventListener('submit', event => {
+      event.preventDefault();
+      const state = document.getElementById('threadState').value;
+      if (state === 'guest') {
+        openModal(authModal);
+        return;
+      }
+      const body = document.getElementById('replyTextarea').value.trim();
+      if (body.length < 10) {
+        document.getElementById('replyError').textContent = '请补充至少一句可执行的排查信息。';
+        return;
+      }
+      document.getElementById('replyError').textContent = '';
+      document.getElementById('replyTextarea').value = '';
+      showToast('回复已进入提交状态。');
+    });
+    applyThreadState();
+
+    function showFeedbackPane(name) {
+      document.querySelectorAll('[data-feedback-tab]').forEach(item => item.classList.toggle('is-active', item.dataset.feedbackTab === name));
+      document.querySelectorAll('.feedback-pane').forEach(pane => pane.hidden = pane.id !== `feedback-${name}`);
+    }
+    document.querySelectorAll('[data-feedback-tab]').forEach(tab => tab.addEventListener('click', event => showFeedbackPane(event.currentTarget.dataset.feedbackTab)));
+    document.getElementById('feedback-submit').addEventListener('submit', event => {
+      event.preventDefault();
+      const email = document.getElementById('fbEmail').value;
+      if (!email.includes('@')) {
+        document.getElementById('feedbackError').textContent = '请填写有效邮箱，用于接收处理回复。';
+        return;
+      }
+      document.getElementById('feedbackError').textContent = '';
+      showFeedbackPane('public');
+      showToast('反馈已提交，已返回公开反馈列表。');
+    });
+
+    document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async event => {
+      const text = event.currentTarget.dataset.copy;
+      try { await navigator.clipboard.writeText(text); showToast('已复制到剪贴板。'); }
+      catch (error) { showToast('复制失败，请手动选择文本。'); }
+    }));
+    document.querySelectorAll('[data-preview]').forEach(button => button.addEventListener('click', event => {
+      document.getElementById('imagePreviewBox').textContent = event.currentTarget.dataset.preview;
+      openModal(imageModal);
+    }));
+  </script>
+</body>
+</html>
