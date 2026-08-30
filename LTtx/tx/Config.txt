@@ -1,0 +1,8 @@
+#服务端信息配置
+
+port:2049   #支持1000到60000
+token:LTtx      #token认证码
+zmq_mode:False      #True表示启动，False表示不启动
+zmq_port1:5555     #zmq模式的第一个端口
+zmq_port2:5556     #zmq模式的第二个端口
+set_cpu:True  #是否绑定CPU，False表示不绑定,0表示绑定第一颗核心，1表示第二颗核心，以此类推

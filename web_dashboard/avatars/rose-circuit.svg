@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="Rose Circuit avatar">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="18" x2="142" y2="142" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#e11d48"/>
+      <stop offset="1" stop-color="#4c0519"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="160" rx="32" fill="url(#bg)"/>
+  <path d="M35 45h28v24h34V45h28M63 69v28H39m58 0h24" fill="none" stroke="#ffe4e6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity=".42"/>
+  <circle cx="80" cy="66" r="32" fill="#fff1f2"/>
+  <path d="M42 132c7-29 23-43 38-43s31 14 38 43" fill="#fecdd3"/>
+  <circle cx="66" cy="76" r="5" fill="#4c0519"/>
+  <circle cx="94" cy="76" r="5" fill="#4c0519"/>
+  <path d="M58 61c8-11 36-11 44 0" stroke="#e11d48" stroke-width="7" stroke-linecap="round" fill="none"/>
+</svg>

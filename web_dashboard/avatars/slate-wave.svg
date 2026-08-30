@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="Slate Wave avatar">
+  <defs>
+    <linearGradient id="bg" x1="16" y1="18" x2="146" y2="140" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#526173"/>
+      <stop offset="1" stop-color="#101820"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="160" rx="32" fill="url(#bg)"/>
+  <path d="M14 106c26-19 49-19 70 0s43 19 66 0v53H14z" fill="#8ca0b7" opacity=".42"/>
+  <circle cx="80" cy="66" r="32" fill="#f1f5f9"/>
+  <path d="M42 132c7-28 23-42 38-42s31 14 38 42" fill="#d8e0ea"/>
+  <path d="M54 63c17 7 35 7 52 0" fill="none" stroke="#526173" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="67" cy="78" r="5" fill="#17202a"/>
+  <circle cx="93" cy="78" r="5" fill="#17202a"/>
+</svg>

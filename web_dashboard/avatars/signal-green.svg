@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="Signal Green avatar">
+  <defs>
+    <linearGradient id="bg" x1="18" y1="18" x2="142" y2="142" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0f7b46"/>
+      <stop offset="1" stop-color="#0e2f28"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="160" rx="32" fill="url(#bg)"/>
+  <circle cx="80" cy="68" r="33" fill="#e8f7ef"/>
+  <path d="M42 134c7-29 23-44 38-44 16 0 32 15 38 44" fill="#b8d9c6"/>
+  <path d="M55 66c13-18 37-18 50 0" fill="none" stroke="#0f7b46" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="66" cy="80" r="5" fill="#0e2f28"/>
+  <circle cx="94" cy="80" r="5" fill="#0e2f28"/>
+  <path d="M69 94c7 5 15 5 22 0" fill="none" stroke="#0e2f28" stroke-width="5" stroke-linecap="round"/>
+</svg>
