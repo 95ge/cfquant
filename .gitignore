@@ -34,7 +34,6 @@ cfquant_web_config.json
 cfquant_hub_status.json
 cfquant_pipe_hub_status.json
 official-home-*.png
-official_site/
 LTtx/tx/data0.txt
 
 runtime/db/*
@@ -74,6 +73,18 @@ pip_library_dev/
 
 # Local video synthesis workspace and generated media.
 remotion_intro/
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wmv
+*.flv
+*.m4v
+*.mpg
+*.mpeg
+*.mts
+*.m2ts
 
 # Local article assets, not part of the deployable package.
 pic/
