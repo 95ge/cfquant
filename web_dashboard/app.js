@@ -2583,7 +2583,7 @@ function renderTransport(info) {
   if (startLttxBtn) startLttxBtn.disabled = startLttxBtn.dataset.runtimeDisabled === 'true';
   if (stopLttxBtn) stopLttxBtn.disabled = stopLttxBtn.dataset.runtimeDisabled === 'true';
   const lttxLabel = $('lttxStatusLabel');
-  if (lttxLabel) lttxLabel.textContent = isCtypesTransportMode(currentMode) ? 'LTtx（高级模式）' : 'LTtx';
+  if (lttxLabel) lttxLabel.textContent = 'LTtx（库通信）';
   syncTransportChannelControls();
 }
 
@@ -2591,7 +2591,7 @@ function syncTopStatusDisplay() {
   const universal = isCtypesTransportMode(activeAccountMode());
   ['lttxStatus', 'normalStatus', 'tradeStatus'].forEach((id) => {
     const node = $(id);
-    if (node) node.style.display = universal ? 'none' : '';
+    if (node) node.style.display = universal && id !== 'lttxStatus' ? 'none' : '';
   });
 }
 
@@ -5858,43 +5858,62 @@ function renderBridgeSelect(bridges) {
 function renderLttxStatus(data) {
   state.lttxStatus = data || null;
   const running = !!(data && data.running);
+  const managed = !!(data && data.managed);
   const active = shouldUseLttxStatus();
   const processes = data && Array.isArray(data.processes) ? data.processes : [];
   const processText = processes.map((item) => `${item.pid || ''} ${item.name || ''}`.trim()).filter(Boolean).join(', ');
-  const detail = data ? `${data.host}:${data.port} ${running ? '运行中' : '未运行'}${processText ? ` / ${processText}` : ''}` : '';
-  setStatus('lttxStatus', active && running, active ? detail : '通用模式未使用 LTtx，高级模式才需要 LTtx。');
+  const addressText = data ? `${data.host}:${data.port}` : '--';
+  const pidText = processes.map((item) => item.pid).filter(Boolean).join(', ')
+    || ((data && data.managed_pids || []).join(', '))
+    || (running ? '端口已监听' : '--');
+  const roleText = active ? '高级双桥 / 库入口' : '库入口 / 自动发现';
+  const policyText = '重启保留';
+  const detail = data ? [
+    `状态：${running ? '运行中' : '未运行'}`,
+    `地址：${addressText}`,
+    `PID：${pidText}`,
+    `本系统进程：${managed ? '是' : '未确认'}`,
+    `用途：cfquant Python 库自动发现与 Web 统一路由入口`,
+    `策略：Web 重启和定时重启保留 LTtx，完整退出时停止`,
+    processText ? `进程：${processText}` : '',
+  ] : ['LTtx 状态未知', '用途：cfquant Python 库自动发现与 Web 统一路由入口'];
+  setStatus('lttxStatus', running, detail);
+
+  const addressNode = $('lttxAddress');
+  const pidNode = $('lttxPid');
+  const libraryNode = $('lttxLibraryStatus');
+  const policyNode = $('lttxRestartPolicy');
+  if (addressNode) addressNode.textContent = addressText;
+  if (pidNode) pidNode.textContent = pidText;
+  if (libraryNode) libraryNode.textContent = running ? (managed ? roleText : '端口已监听') : '不可用';
+  if (policyNode) policyNode.textContent = running ? policyText : '启动补齐';
 
   const startBtn = $('lttxStartBtn');
   const stopBtn = $('lttxStopBtn');
   if (startBtn) {
-    startBtn.dataset.runtimeDisabled = (!active || (data && !data.can_start)) ? 'true' : 'false';
+    startBtn.dataset.runtimeDisabled = (data && !data.can_start) ? 'true' : 'false';
     startBtn.disabled = startBtn.dataset.runtimeDisabled === 'true';
   }
   if (stopBtn) {
-    stopBtn.dataset.runtimeDisabled = active && data && data.can_stop ? 'false' : 'true';
+    stopBtn.dataset.runtimeDisabled = 'true';
+    stopBtn.title = 'LTtx 在 Web 重启和定时重启时保持运行，完整退出 cfquant 时停止。';
     stopBtn.disabled = stopBtn.dataset.runtimeDisabled === 'true';
   }
 
   const runtime = $('lttxRuntime');
   if (!runtime) return;
-  if (!active) {
-    runtime.textContent = '当前为通用模式，LTtx 不参与请求路由。';
+  if (running && managed) {
+    runtime.textContent = `LTtx 运行中，cfquant Python 库可通过 ${addressText} 发现 Web 统一路由。Web 重启和定时重启会保留 LTtx。`;
+  } else if (running) {
+    runtime.textContent = `${addressText} 已监听，但无法确认是本系统启动的 LTtx；cfquant Python 库会尝试通过该端口发现 Web 统一路由。`;
   } else if (!data) {
     runtime.textContent = 'LTtx 状态未知';
-  } else if (!running) {
-    runtime.textContent = `LTtx 未运行，可通过网页或 cfquant\\start_cfquant.bat 启动。`;
-  } else if (data.can_stop) {
-    runtime.textContent = `LTtx 运行中，可管理 PID：${(data.managed_pids || []).join(', ') || '--'}。`;
   } else {
-    runtime.textContent = `2049 已监听，但无法确认是本系统启动的 LTtx，网页不会强制停止它。`;
+    runtime.textContent = `LTtx 未运行，cfquant Python 库自动发现不可用；可通过网页或 cfquant\\start_cfquant.bat 启动。`;
   }
 }
 
 async function refreshLttxStatus(options = {}) {
-  if (!shouldUseLttxStatus() && !options.force) {
-    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
-    return null;
-  }
   try {
     const data = await api('/api/lttx');
     renderLttxStatus(data);
@@ -6040,9 +6059,7 @@ async function startAuthenticatedApp() {
 }
 
 async function refreshStatus() {
-  const lttxPromise = shouldUseLttxStatus()
-    ? refreshLttxStatus({ log: false })
-    : Promise.resolve(null);
+  const lttxPromise = refreshLttxStatus({ log: false });
   const transportPromise = refreshTransport();
   try {
     const params = new URLSearchParams();
@@ -6108,11 +6125,6 @@ async function refreshStatus() {
 }
 
 async function startLttx() {
-  if (!shouldUseLttxStatus()) {
-    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
-    log('当前为通用模式，LTtx 不参与请求路由，不需要启动');
-    return;
-  }
   const startBtn = $('lttxStartBtn');
   const stopBtn = $('lttxStopBtn');
   if (startBtn) startBtn.disabled = true;
@@ -6129,26 +6141,8 @@ async function startLttx() {
 }
 
 async function stopLttx() {
-  if (!shouldUseLttxStatus()) {
-    renderLttxStatus({ running: false, can_start: false, can_stop: false, skipped: true });
-    log('当前为通用模式，LTtx 不参与请求路由，不需要停止');
-    return;
-  }
-  const confirmed = window.confirm('确认停止 LTtx 服务？停止后桥接通道会离线。');
-  if (!confirmed) return;
-  const startBtn = $('lttxStartBtn');
-  const stopBtn = $('lttxStopBtn');
-  if (startBtn) startBtn.disabled = true;
-  if (stopBtn) stopBtn.disabled = true;
-  try {
-    const data = await api('/api/lttx/stop', { method: 'POST', body: '{}' });
-    renderLttxStatus(data.status);
-    log(data.stopped ? 'LTtx 已停止' : 'LTtx 未运行', data);
-    await refreshStatus();
-  } catch (error) {
-    log('LTtx 停止失败', { error: error.message });
-    await refreshLttxStatus({ log: false });
-  }
+  await refreshLttxStatus({ log: false });
+  log('LTtx 会随 cfquant 完整退出停止，Web 重启和定时重启不会停止 LTtx');
 }
 
 function selectedAccount() {

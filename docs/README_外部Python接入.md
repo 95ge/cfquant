@@ -119,6 +119,6 @@ CFQUANT_LTTX_TOKEN=LTtx
 
 - 通用模式下，需要 `cfquant_pipe_hub.py` 和 QMT 里的 `CFQUANT_CTYPE_ALL_LOWLAT.py` 在线。
 - 高级模式下，需要普通 QMT 的 `CFQUANT.py` 和极速交易端 QMT 的 `CFQUANT_TRADE_LOWLAT.py` 在线。
-- 外部自动发现依赖 LTtx 变量，因此本地服务默认会启动 LTtx。
+- 外部自动发现依赖 LTtx 变量，因此本地服务默认会启动 LTtx；Web 重启和定时重启会保留 LTtx，避免外部 `cfquant` Python 库通信入口中断。
 - 不建议外部程序直接探测 `8765` HTTP 端口；端口可能被用户改掉，LTtx 注册信息更稳定。
 - 多账号时请先在 Web“绑定”页配置资金账号、QMT 核心目录、模式和共享行情数据源。

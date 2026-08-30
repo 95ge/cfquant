@@ -15,7 +15,7 @@ restart_cfquant.bat    重启本地服务
 重启cfquant.bat        中文重启脚本
 ```
 
-通常日常运维只需要使用 `restart_cfquant.bat` 或 `重启cfquant.bat`。
+通常日常运维只需要使用 `restart_cfquant.bat` 或 `重启cfquant.bat`。重启只会重启 Web 和 PipeHub，并保留 LTtx，避免外部 `cfquant` Python 库的自动发现和通信入口中断。
 
 如果用户双击启动脚本后窗口闪退或网页打不开，优先查看：
 
@@ -26,7 +26,7 @@ log/cfquant_web_server.stderr.log
 
 新版 `start_cfquant.bat` 会在启动后等待 Web 端口真正可连接。启动失败时窗口会停留，并输出最近的启动日志和错误日志，不再直接闪退。
 
-`启动cfquant.bat` 只是中文入口，会转发到 `start_cfquant.bat`，所以同样会使用上述检测和日志逻辑。`restart_cfquant.bat` / `重启cfquant.bat` 也会等待旧端口释放后再启动，避免旧进程未退出时重复拉起服务。`stop_cfquant.bat` / `停止cfquant.bat` 在停止失败时会保留窗口，方便查看失败原因。
+`启动cfquant.bat` 只是中文入口，会转发到 `start_cfquant.bat`，所以同样会使用上述检测和日志逻辑。`restart_cfquant.bat` / `重启cfquant.bat` 会保留 LTtx，只等待旧 Web 端口释放后再启动，避免旧进程未退出时重复拉起服务。`stop_cfquant.bat` / `停止cfquant.bat` 表示完整退出，会停止 Web、PipeHub 和 LTtx；停止失败时会保留窗口，方便查看失败原因。
 
 需要把错误完整留在当前窗口时，可以在命令行中运行：
 

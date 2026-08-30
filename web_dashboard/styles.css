@@ -2116,6 +2116,43 @@ th.num .sort-header {
   line-height: 1.5;
 }
 
+.runtime-status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.runtime-status-grid div {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f9fbfd;
+}
+
+.runtime-status-grid span,
+.runtime-status-grid strong {
+  display: block;
+}
+
+.runtime-status-grid span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.runtime-status-grid strong {
+  min-height: 18px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .remote-access-box {
   display: grid;
   gap: 8px;

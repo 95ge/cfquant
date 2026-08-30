@@ -4,17 +4,30 @@ cd /d "%~dp0"
 
 echo Stopping cfquant local services...
 
+set "CFQUANT_KEEP_LTTX=0"
+if /i "%~1"=="--keep-lttx" set "CFQUANT_KEEP_LTTX=1"
+if /i "%~1"=="/keep-lttx" set "CFQUANT_KEEP_LTTX=1"
+
 call :stop_python_script "%~dp0cfquant_web_server.py" "cfquant Web"
 set "WEB_STOP_CODE=%errorlevel%"
 
 call :stop_python_script "%~dp0cfquant_pipe_hub.py" "cfquant PipeHub"
 set "PIPE_STOP_CODE=%errorlevel%"
 
-call :stop_python_script "%~dp0LTtx\tx\LTtx_server.py" "cfquant LTtx"
-set "LTTX_STOP_CODE=%errorlevel%"
+if "%CFQUANT_KEEP_LTTX%"=="1" (
+    echo Keeping cfquant LTtx running.
+    set "LTTX_STOP_CODE=0"
+) else (
+    call :stop_python_script "%~dp0LTtx\tx\LTtx_server.py" "cfquant LTtx"
+    set "LTTX_STOP_CODE=%errorlevel%"
+)
 
 if "%WEB_STOP_CODE%"=="0" if "%PIPE_STOP_CODE%"=="0" if "%LTTX_STOP_CODE%"=="0" (
-    echo cfquant local services stopped.
+    if "%CFQUANT_KEEP_LTTX%"=="1" (
+        echo cfquant Web and PipeHub stopped. LTtx is still running.
+    ) else (
+        echo cfquant local services stopped.
+    )
     endlocal
     exit /b 0
 )
