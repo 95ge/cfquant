@@ -58,6 +58,55 @@ def _trade_request(action, params=None, timeout=None):
     return get_trade_client().request(action, params or {}, timeout=timeout)
 
 
+def _first_response_item(result):
+    if result is None:
+        return None
+    if isinstance(result, list):
+        return result[0] if result else None
+    return result
+
+
+def _account_type_value(account_type):
+    if account_type is None or account_type == "":
+        return xtconstant.SECURITY_ACCOUNT
+    if isinstance(account_type, str):
+        text = account_type.strip().upper()
+        if not text:
+            return xtconstant.SECURITY_ACCOUNT
+        if text.isdigit():
+            return int(text)
+        aliases = {
+            "SECURITY": xtconstant.SECURITY_ACCOUNT,
+            "SECURITY_ACCOUNT": xtconstant.SECURITY_ACCOUNT,
+            "STOCK_ACCOUNT": xtconstant.SECURITY_ACCOUNT,
+            "MARGIN": xtconstant.CREDIT_ACCOUNT,
+            "CREDIT_ACCOUNT": xtconstant.CREDIT_ACCOUNT,
+        }
+        if text in aliases:
+            return aliases[text]
+        for int_type, str_type in xtconstant.ACCOUNT_TYPE_DICT.items():
+            if text == str(str_type).upper():
+                return int_type
+    return account_type
+
+
+def _attach_account_fields(value, account):
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [_attach_account_fields(item, account) for item in value]
+    if not hasattr(value, "__dict__"):
+        return value
+    payload = _account_payload(account)
+    account_id = str(payload.get("account_id") or "").strip()
+    if account_id:
+        setattr(value, "account_id", account_id)
+    elif getattr(value, "account_id", None) in (None, ""):
+        setattr(value, "account_id", "")
+    setattr(value, "account_type", _account_type_value(payload.get("account_type", xtconstant.SECURITY_ACCOUNT)))
+    return value
+
+
 def _new_trade_client(client_id=None, bridge_id=None):
     cfg = get_config()
     bridge_id = normalize_bridge_id(bridge_id or cfg.get("bridge_id"))
@@ -325,7 +374,7 @@ class XtQuantTrader(object):
         result = self._trade_request("xttrader.query_stock_asset", {
             "account": _account_payload(account),
         })
-        return XtAsset.from_any(result)
+        return _attach_account_fields(XtAsset.from_any(_first_response_item(result)), account)
 
     def query_stock_asset_async(self, account, callback):
         result = self.query_stock_asset(account)
@@ -338,7 +387,7 @@ class XtQuantTrader(object):
             "account": _account_payload(account),
             "cancelable_only": cancelable_only,
         })
-        return to_objects(result, XtOrder)
+        return _attach_account_fields(to_objects(result, XtOrder), account)
 
     def query_stock_orders_async(self, account, callback, cancelable_only=False):
         seq = next(self._seq)
@@ -349,8 +398,13 @@ class XtQuantTrader(object):
 
     def query_stock_order(self, account, order_id):
         orders = self.query_stock_orders(account) or []
+        target_order_id = str(order_id)
         for order in orders:
-            if getattr(order, "order_id", None) == order_id or getattr(order, "m_strOrderSysID", None) == str(order_id):
+            if str(getattr(order, "order_id", "")) == target_order_id:
+                return order
+            if str(getattr(order, "m_strOrderSysID", "")) == target_order_id:
+                return order
+            if str(getattr(order, "order_sysid", "")) == target_order_id:
                 return order
         return None
 
@@ -358,7 +412,7 @@ class XtQuantTrader(object):
         result = self._trade_request("xttrader.query_stock_trades", {
             "account": _account_payload(account),
         })
-        return to_objects(result, XtTrade)
+        return _attach_account_fields(to_objects(result, XtTrade), account)
 
     def query_stock_trades_async(self, account, callback):
         seq = next(self._seq)
@@ -371,7 +425,7 @@ class XtQuantTrader(object):
         result = self._trade_request("xttrader.query_stock_positions", {
             "account": _account_payload(account),
         })
-        return to_objects(result, XtPosition)
+        return _attach_account_fields(to_objects(result, XtPosition), account)
 
     def query_stock_positions_async(self, account, callback):
         seq = next(self._seq)

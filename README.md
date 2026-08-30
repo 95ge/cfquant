@@ -186,6 +186,14 @@ cfquant/
 
 ## 版本日志
 
+### core_20260830_01
+
+- 修复 `cfquant.xttrader.query_stock_asset` 与原版 `xtquant` 不兼容的问题：服务端返回列表时，客户端会按原版行为取第一条并返回单个 `XtAsset` 对象，空列表返回 `None`。
+- `XtAsset` 新增 `account_id`、`account_type`、`cash`、`frozen_cash`、`market_value`、`total_asset`、`fetch_balance` 等 xtquant 常用字段映射，同时保留原始 `m_` 字段。
+- `XtOrder`、`XtTrade`、`XtPosition`、异步下单响应和异步撤单响应补充 xtquant 风格字段别名，查询列表接口仍保持列表返回。
+- `xtconstant` 补充信用、期货、期权、委托状态、方向和开平仓等常用常量；运行环境已安装原版 `xtquant` 时，会静默加载其余大写常量作为兼容兜底。
+- 已检查下单与撤单接口返回形态：同步下单仍返回 `order_id`，异步下单返回 `seq`，同步撤单返回 `cancel_result`；本次主要补齐异步回调对象字段别名。
+
 ### web_20260829_01
 
 - 增强 `start_cfquant.bat` 启动检查：启动前校验 Python 和入口文件，启动后等待 Web 端口就绪，失败时保留窗口并输出最近日志，避免用户双击后一闪而过。
