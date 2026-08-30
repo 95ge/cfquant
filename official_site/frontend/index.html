@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#f8fafc">
   <title>cfquant.org | 大 QMT 本地桥接层</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/styles.css?v=site_20260831_01">
+  <link rel="stylesheet" href="/styles.css?v=site_20260831_02">
 </head>
 <body>
   <a class="skip-link" href="#content">跳到主要内容</a>
@@ -248,31 +248,31 @@
         <div class="container hero-center">
           <p class="eyebrow">部署文档入口</p>
           <h1>把部署步骤拆成可执行路径。</h1>
-          <p class="lead">短期可连接 GitHub / README / docs，官网侧先把迁移、升级、接口兼容和运维更新入口固定下来。</p>
+          <p class="lead">官网侧沉淀部署、迁移、升级、接口兼容和运维更新路径，阅读与排障留在站内完成。</p>
         </div>
       </section>
       <section class="section">
         <div class="container docs-grid">
-          <a class="card card-link" href="https://github.com/95ge/cfquant#%E5%BF%AB%E9%80%9F%E5%90%AF%E5%8A%A8" target="_blank" rel="noreferrer">
+          <article class="card doc-card">
             <h3>部署指南</h3>
             <p class="help">下载项目包、启动控制台、配置 QMT 路径和账号。</p>
-          </a>
-          <a class="card card-link" href="https://github.com/95ge/cfquant/blob/main/docs/README_%E5%A4%96%E9%83%A8Python%E6%8E%A5%E5%85%A5.md" target="_blank" rel="noreferrer">
+          </article>
+          <article class="card doc-card">
             <h3>外部 Python 接入</h3>
             <p class="help">说明 PipeHub、ctypes 单文件桥和调用边界。</p>
-          </a>
-          <a class="card card-link" href="https://github.com/95ge/cfquant/blob/main/docs/miniqmt_to_bigqmt_migration.md" target="_blank" rel="noreferrer">
+          </article>
+          <article class="card doc-card">
             <h3>miniQMT 迁移</h3>
             <p class="help">从 miniQMT / xtquant 接入方式迁移到大 QMT 的注意项。</p>
-          </a>
-          <a class="card card-link" href="https://github.com/95ge/cfquant/blob/main/docs/README_%E8%BF%90%E7%BB%B4%E4%B8%8E%E6%9B%B4%E6%96%B0.md" target="_blank" rel="noreferrer">
+          </article>
+          <article class="card doc-card">
             <h3>运维更新</h3>
             <p class="help">升级、回滚、版本日志和 SHA256 校验。</p>
-          </a>
-          <a class="card card-link" href="https://github.com/95ge/cfquant/blob/main/docs/qmt_function_capability_matrix.md" target="_blank" rel="noreferrer">
+          </article>
+          <article class="card doc-card">
             <h3>接口兼容</h3>
             <p class="help">行情、查询、交易、回调模块的兼容说明。</p>
-          </a>
+          </article>
           <button class="card card-link align-left" type="button" data-jump-view="feedback">
             <h3>排障路径</h3>
             <p class="help">错误信息走论坛，带截图的问题走反馈。</p>
@@ -549,6 +549,6 @@
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   <script src="/config.js"></script>
-  <script src="/app.js?v=site_20260831_01"></script>
+  <script src="/app.js?v=site_20260831_02"></script>
 </body>
 </html>

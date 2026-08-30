@@ -747,11 +747,16 @@ a:focus-visible {
   background: var(--surface-raised);
 }
 
+.doc-card {
+  cursor: default;
+}
+
 button.card-link {
   width: 100%;
   color: var(--fg);
 }
 
+.doc-card h3 + .help,
 .card-link h3 + .help,
 .support-card .help {
   margin-top: 10px;
