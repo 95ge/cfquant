@@ -69,6 +69,9 @@ runtime/screenshots/*
 .pytest_cache/
 .mypy_cache/
 
+# Local Python package distribution workspace; do not upload to GitHub.
+pip_library_dev/
+
 # Local video synthesis workspace and generated media.
 remotion_intro/
 
