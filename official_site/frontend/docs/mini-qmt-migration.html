@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8fafc">
+  <title>miniQMT 迁移 | cfquant.org</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=site_20260831_03">
+</head>
+<body class="doc-shell">
+  <a class="skip-link" href="#content">跳到主要内容</a>
+  <header class="topnav">
+    <div class="container topnav-inner">
+      <a class="brand-button" href="/" aria-label="cfquant 首页"><span class="brand-mark">CF</span><span><strong translate="no">cfquant</strong><small>QMT Bridge Community</small></span></a>
+      <nav class="site-links" aria-label="主导航">
+        <a class="nav-tab" href="/#project">项目</a>
+        <a class="nav-tab" href="/#downloads">下载</a>
+        <a class="nav-tab is-active" href="/#docs">文档</a>
+        <a class="nav-tab" href="/#forum">论坛</a>
+        <a class="nav-tab" href="/#feedback">反馈</a>
+        <a class="nav-tab" href="/#center">用户中心</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="section hero-section compact-hero">
+      <div class="container hero-center">
+        <p class="eyebrow">站内文档</p>
+        <h1>miniQMT 迁移</h1>
+        <p class="lead">把原 miniQMT / xtquant 策略迁移到大 QMT 桥接链路时，先迁移实时交易、查询和行情能力，不把回测数据读取放入主链路。</p>
+        <div class="doc-meta">
+          <span class="doc-pill">xtquant 兼容</span>
+          <span class="doc-pill">大 QMT 桥接</span>
+          <span class="doc-pill">迁移评估</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container doc-layout">
+        <article class="doc-article">
+          <section id="scope" class="doc-panel">
+            <h2>适合迁移的能力</h2>
+            <ul>
+              <li>买入、卖出、撤单。</li>
+              <li>委托、成交、持仓、资金查询。</li>
+              <li>行情快照、K 线、订阅和全推行情。</li>
+              <li>外部 Python 多进程访问同一个资金账号。</li>
+              <li>多账号、多 QMT、普通账户和信用账户分开绑定。</li>
+            </ul>
+          </section>
+
+          <section id="avoid" class="doc-panel">
+            <h2>不建议直接迁移的能力</h2>
+            <p>cfquant 定位是把大 QMT 的实时交易、查询、行情和回调能力转接给外部系统，不替代本地数据库或回测数据引擎。</p>
+            <ul>
+              <li>大批量历史数据回测读取。</li>
+              <li>高频反复读取本地文件型行情数据。</li>
+              <li>miniQMT 客户端连接管理、行情服务器管理、本地数据目录控制。</li>
+            </ul>
+          </section>
+
+          <section id="flow" class="doc-panel">
+            <h2>迁移后的请求链路</h2>
+            <pre class="doc-code"><code>外部策略进程
+  -> cfquant Python SDK / HTTP API / Web 控制台
+  -> cfquant Web 统一路由
+  -> PipeHub 或 LTtx
+  -> QMT 入口脚本
+  -> 大 QMT 交易、查询、行情能力</code></pre>
+          </section>
+
+          <section id="mapping" class="doc-panel">
+            <h2>核心差异</h2>
+            <div class="table-wrap">
+              <table class="doc-table">
+                <thead><tr><th>项目</th><th>miniQMT 常见方式</th><th>cfquant 大 QMT 方式</th></tr></thead>
+                <tbody>
+                  <tr><td>运行位置</td><td>外部程序连接 miniQMT 客户端</td><td>大 QMT 内运行桥接脚本，外部程序请求本地 cfquant 服务</td></tr>
+                  <tr><td>账号识别</td><td>常用 session 区分连接</td><td>使用 Web 绑定生成的账号配置和桥接通道</td></tr>
+                  <tr><td>多进程访问</td><td>各自创建 trader/session</td><td>统一请求本机服务，再由 PipeHub/LTtx 路由</td></tr>
+                  <tr><td>低延迟交易</td><td>依赖 miniQMT 和券商环境</td><td>通用模式可用 ctypes，高级模式可接极速交易端</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="steps" class="doc-panel">
+            <h2>迁移步骤</h2>
+            <ol>
+              <li>列出当前策略真实用到的 xtquant 接口。</li>
+              <li>先部署通用模式，验证资金、持仓、委托、成交等只读能力。</li>
+              <li>再验证下单、撤单和交易回调。</li>
+              <li>需要更低交易延迟时，切到高级模式并部署双 QMT 入口。</li>
+              <li>把回测或批量历史数据读取从桥接链路中拆出去，改为本地数据库或文件处理。</li>
+            </ol>
+          </section>
+        </article>
+
+        <aside class="doc-toc" aria-label="本文目录">
+          <strong>本文目录</strong>
+          <a href="#scope">适合迁移</a>
+          <a href="#avoid">不建议迁移</a>
+          <a href="#flow">请求链路</a>
+          <a href="#mapping">核心差异</a>
+          <a href="#steps">迁移步骤</a>
+          <a href="/#docs">返回文档入口</a>
+        </aside>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

@@ -747,19 +747,157 @@ a:focus-visible {
   background: var(--surface-raised);
 }
 
-.doc-card {
-  cursor: default;
-}
-
 button.card-link {
   width: 100%;
   color: var(--fg);
 }
 
-.doc-card h3 + .help,
 .card-link h3 + .help,
 .support-card .help {
   margin-top: 10px;
+}
+
+.doc-shell {
+  min-height: 100vh;
+}
+
+.doc-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: var(--gap-xl);
+  align-items: start;
+}
+
+.doc-article {
+  min-width: 0;
+  max-width: 860px;
+}
+
+.doc-article h1 {
+  margin-bottom: 16px;
+}
+
+.doc-article h2 {
+  margin-top: 42px;
+  margin-bottom: 14px;
+  font-size: 28px;
+}
+
+.doc-article h3 {
+  margin-top: 26px;
+  margin-bottom: 10px;
+}
+
+.doc-article p,
+.doc-article li {
+  color: var(--muted);
+}
+
+.doc-article ul,
+.doc-article ol {
+  margin: 12px 0 0;
+  padding-left: 22px;
+}
+
+.doc-article li + li {
+  margin-top: 8px;
+}
+
+.doc-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 0;
+}
+
+.doc-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.doc-panel,
+.doc-toc {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.doc-panel {
+  padding: 22px;
+  margin-top: 20px;
+}
+
+.doc-toc {
+  position: sticky;
+  top: 88px;
+  padding: 18px;
+}
+
+.doc-toc strong {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.doc-toc a {
+  display: block;
+  padding: 8px 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.doc-toc a:hover {
+  color: var(--fg);
+}
+
+.doc-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.doc-code,
+.doc-article code {
+  font-family: var(--font-mono);
+}
+
+.doc-code {
+  overflow-x: auto;
+  margin: 14px 0 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: rgba(96, 112, 128, 0.08);
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.doc-table {
+  width: 100%;
+  margin-top: 14px;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.doc-table th,
+.doc-table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.doc-table th {
+  color: var(--fg);
 }
 
 .support-card .stack {
@@ -1648,6 +1786,7 @@ textarea:hover {
 
   .hero-grid,
   .grid-2-1,
+  .doc-layout,
   .forum-layout,
   .feedback-console,
   .center-layout,
@@ -1669,6 +1808,10 @@ textarea:hover {
 
   .release-actions {
     justify-content: flex-start;
+  }
+
+  .doc-toc {
+    position: static;
   }
 }
 
@@ -1797,6 +1940,19 @@ textarea:hover {
 
   .thread-article h2 {
     font-size: 28px;
+  }
+
+  .doc-article h2 {
+    font-size: 24px;
+  }
+
+  .doc-panel {
+    padding: 18px;
+  }
+
+  .doc-actions .btn,
+  .doc-actions a {
+    width: 100%;
   }
 
   .reply-child {
