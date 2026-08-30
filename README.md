@@ -55,9 +55,9 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 
 关键规则：
 
-- 通用模式不经过 LTtx，请求走 PipeHub named pipe。
+- 通用模式的 QMT 落地链路走 PipeHub named pipe；LTtx 只承担自动发现、统一 Web 路由入口和旧客户端兼容。
 - 极致模式同样走 PipeHub named pipe，但 QMT 入口脚本完全自包含，不需要导入 `cfquant` 包，特别适合国泰君安君弘君智 QMT 这类白名单限制较严格的环境。
-- 本地服务默认仍会启动 LTtx，方便高级模式、旧客户端和外部自动发现接入。
+- 本地服务启动时会检查并启动 LTtx，供 `cfquant` Python 库自动发现和进入 Web 统一路由；Web 重启或定时重启会保留 LTtx，完整退出才停止 LTtx。
 - 高级模式必须打开两个 QMT。不要在同一个 QMT 里同时运行 `CFQUANT.py` 和 `CFQUANT_TRADE_LOWLAT.py`。
 - 通用模式和高级模式里的普通 QMT 可以部署在同一个 QMT；高级模式的极速交易端需要单独打开另一个 QMT。
 - 账号配置为高级模式时，系统优先走高级通道；高级通道不可用时自动回退到该账号的 ctypes 通用桥。
@@ -70,21 +70,28 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
    D:\cfquant
    ```
 
-2. 双击运行：
+2. 首次运行前先安装依赖，避免缺少 Python 库导致启动脚本失败：
+
+   ```powershell
+   cd D:\cfquant
+   pip install -r requirements.txt
+   ```
+
+3. 双击运行：
 
    ```text
    start_cfquant.bat
    ```
 
-3. 打开 Web 控制台：
+4. 打开 Web 控制台：
 
    ```text
    http://127.0.0.1:8765/
    ```
 
-4. 首次打开网页后，按“新手初始化向导”完成账号、模式和 QMT 目录配置。
+5. 首次打开网页后，按“新手初始化向导”完成账号、模式和 QMT 目录配置。
 
-5. 在 QMT 中加载对应入口脚本，再回到网页验证资金、持仓、委托和行情。
+6. 在 QMT 中加载对应入口脚本，再回到网页验证资金、持仓、委托和行情。
 
 常用运维脚本：
 
@@ -185,6 +192,18 @@ cfquant/
 
 
 ## 版本日志
+
+### web_20260830_02
+
+- Web 重启、项目更新重载和定时重启流程保留 LTtx，不再随 Web/PipeHub 一起停止再拉起；`stop_cfquant.bat` 作为完整退出仍会停止 LTtx。
+- Web 控制台顶部常显 `LTtx（库通信）` 状态，首页操作区显示 LTtx 地址、PID、`cfquant` 库可用状态和重启保留策略。
+- Web 端不再提供常规停止 LTtx 操作，避免影响外部 `cfquant` Python 库的自动发现与通信入口。
+
+### web_20260830_01
+
+- Web 服务启动时先检查并预启动 LTtx；保存通用、极致或高级模式配置时也会补充检查，确保自动发现、旧 LTtx 客户端和高级模式切换可用。
+- 通用/极致模式仍不通过 LTtx 处理请求路由，行情、查询、交易和状态探测继续走 PipeHub。
+- Web 控制台在通用/极致模式下也展示 LTtx 状态，并允许手动补启 LTtx，避免旧文案造成误解。
 
 ### core_20260830_01
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260828_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260830_02">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -248,7 +248,7 @@
           <div class="subline" id="clock">--</div>
         </div>
       <div class="status-strip">
-        <div class="status-pill" id="lttxStatus"><span></span><strong id="lttxStatusLabel">LTtx（高级模式）</strong></div>
+        <div class="status-pill" id="lttxStatus"><span></span><strong id="lttxStatusLabel">LTtx（库通信）</strong></div>
         <div class="status-pill" id="normalStatus"><span></span><strong id="normalStatusLabel">通用查询通道</strong></div>
         <div class="status-pill" id="tradeStatus"><span></span><strong id="tradeStatusLabel">通用交易通道</strong></div>
         <div class="status-pill" id="transportStatus"><span></span><strong id="transportStatusLabel">通用模式</strong></div>
@@ -335,11 +335,17 @@
             </div>
             <div class="action-row">
               <button id="lttxStartBtn">启动 LTtx</button>
-              <button id="lttxStopBtn">停止 LTtx</button>
+              <button id="lttxStopBtn" disabled>完整退出停止</button>
               <button id="statusBtn">状态检查</button>
               <button id="ordersBtn">刷新委托</button>
             </div>
             <div id="lttxRuntime" class="runtime-note"></div>
+            <div class="runtime-status-grid" aria-label="LTtx 运行状态">
+              <div><span>LTtx 地址</span><strong id="lttxAddress">--</strong></div>
+              <div><span>LTtx PID</span><strong id="lttxPid">--</strong></div>
+              <div><span>cfquant 库</span><strong id="lttxLibraryStatus">--</strong></div>
+              <div><span>重启策略</span><strong id="lttxRestartPolicy">保留</strong></div>
+            </div>
             <div class="remote-access-box">
               <div id="serverAccessStatus" class="runtime-note"></div>
               <button id="openAccessSettingsBtn" type="button">访问设置</button>
@@ -2554,6 +2560,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=web_20260828_01"></script>
+  <script src="/app.js?v=web_20260830_02"></script>
 </body>
 </html>

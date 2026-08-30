@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260829_01"
+WEB_VERSION = "web_20260830_02"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -2723,7 +2723,7 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
             "ready": False,
             "missing": [],
             "skipped": True,
-            "reason": "当前账号为通用模式，LTtx 不参与状态探测",
+            "reason": "当前账号为通用/极致模式，请求路由不走 LTtx；LTtx 仅用于自动发现和兼容服务",
             "status": {},
         }
     advanced_status = advanced.get("status") or {}
@@ -6465,6 +6465,8 @@ def lttx_status():
         "managed_pids": managed_pids,
         "processes": processes,
         "entry": os.path.abspath(LTTX_ENTRY),
+        "purpose": "cfquant Python 库自动发现与 Web 统一路由入口",
+        "stop_policy": "Web 重启和定时重启保留 LTtx；完整退出 cfquant 时停止 LTtx",
         "checked_at": now,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
     }
@@ -6548,8 +6550,44 @@ def start_lttx_server():
     }
 
 
-def stop_lttx_server():
+def ensure_lttx_started(reason="默认预启动"):
+    status = lttx_status()
+    if status.get("running"):
+        safe_print("cfquant %s，LTtx 已在运行，跳过自动启动" % reason)
+        return {
+            "started": False,
+            "reason": "LTtx port %s is already listening" % LTTX_PORT,
+            "status": status,
+        }
+    try:
+        result = start_lttx_server()
+        safe_print("cfquant %s，LTtx 自动启动结果=%s" % (reason, bool(result.get("started"))))
+        return result
+    except Exception as e:
+        safe_print("cfquant %s，LTtx 自动启动失败: %s" % (reason, e))
+        return {
+            "started": False,
+            "ok": False,
+            "error": str(e),
+            "status": status,
+        }
+
+
+def stop_lttx_server(full_exit=False):
     before = lttx_status()
+    allow_manual_stop = str(os.environ.get("CFQUANT_ALLOW_LTTX_MANUAL_STOP") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if not full_exit and not allow_manual_stop:
+        return {
+            "stopped": False,
+            "blocked": True,
+            "reason": "LTtx 会在 Web 重启和定时重启期间保持运行；请使用 stop_cfquant.bat 完整退出时再停止 LTtx。",
+            "status": before,
+        }
     if not before["running"]:
         return {
             "stopped": False,
@@ -7438,22 +7476,12 @@ def save_account_pair(body):
 def ensure_account_runtime(mode):
     mode = normalize_transport_mode(mode)
     results = {"mode": mode, "ctypes": None, "lttx": None}
+    results["lttx"] = ensure_lttx_started("账号运行配置预启动")
     try:
         results["ctypes"] = start_pipe_hub()
     except Exception as error:
         results["ctypes"] = {"ok": False, "error": str(error)}
         safe_print("cfquant account config ctypes runtime start failed: %s" % error)
-    if mode == "lttx":
-        try:
-            status = lttx_status()
-            results["lttx"] = (
-                {"started": False, "status": status}
-                if status.get("running")
-                else start_lttx_server()
-            )
-        except Exception as error:
-            results["lttx"] = {"ok": False, "error": str(error)}
-            safe_print("cfquant account config LTtx runtime start failed: %s" % error)
     try:
         CLIENTS.start(mode)
     except Exception as error:
@@ -7904,11 +7932,8 @@ def save_transport(body):
     mode = body.get("mode") or body.get("transport") or body.get("transport_mode")
     bridge_id = body.get("bridge_id") or DEFAULT_BRIDGE_ID
     mode = normalize_transport_mode(mode)
+    lttx = ensure_lttx_started("运行模式切换预启动")
     if mode == "lttx":
-        lttx_started = False
-        if not lttx_status().get("running"):
-            start_lttx_server()
-            lttx_started = True
         readiness = _advanced_mode_readiness(bridge_id)
         if not readiness["ready"]:
             missing = "、".join(readiness["missing"]) or "普通通道、交易通道"
@@ -7925,6 +7950,7 @@ def save_transport(body):
         "client": transport_info()["client"],
         "readiness": _advanced_mode_readiness(bridge_id) if mode == "lttx" else {"ready": True, "mode": mode},
         "pipe_hub": hub,
+        "lttx": lttx,
     }
 
 
@@ -9212,7 +9238,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/lttx/start":
                 self._write_json(ok(start_lttx_server()))
             elif parsed.path == "/api/lttx/stop":
-                self._write_json(ok(stop_lttx_server()))
+                self._write_json(ok(stop_lttx_server(full_exit=parse_bool(body.get("full_exit")))))
             elif parsed.path == "/api/bridges":
                 self._write_json(ok(save_bridge_config(body)))
             elif parsed.path == "/api/bridges/delete":
@@ -9943,6 +9969,8 @@ def main(argv=None):
 
     if not os.path.isdir(STATIC_DIR):
         raise RuntimeError("static directory not found: %s" % STATIC_DIR)
+    configured_modes = configured_runtime_modes()
+    ensure_lttx_started("Web 启动预启动")
     global WEB_BOUND_HOST, WEB_BOUND_PORT
     WEB_BOUND_HOST = args.host
     WEB_BOUND_PORT = args.port
@@ -9951,7 +9979,6 @@ def main(argv=None):
         raise RuntimeError("cfquant web port %s is already listening, skip duplicate start" % args.port)
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
-        configured_modes = configured_runtime_modes()
         if "lttx" in configured_modes:
             # 高级模式故障时需要立即回退到 ctypes，因此即使没有独立通用账号也要启动 PipeHub。
             if not any(is_ctypes_transport_mode(mode) for mode in configured_modes):
@@ -9962,23 +9989,6 @@ def main(argv=None):
                 PIPE_HUB.start()
             except Exception as e:
                 safe_print("cfquant PipeHub 自动启动失败: %s" % e)
-        auto_start_lttx = str(os.environ.get("CFQUANT_AUTO_START_LTTX", "1")).strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "off",
-        )
-        if auto_start_lttx or "lttx" in configured_modes:
-            try:
-                lttx = lttx_status()
-                if not lttx.get("running"):
-                    started = start_lttx_server()
-                    reason = "高级模式已启用" if "lttx" in configured_modes else "默认预启动"
-                    safe_print("cfquant %s，LTtx 自动启动结果=%s" % (reason, bool(started.get("started"))))
-                else:
-                    safe_print("cfquant LTtx 已在运行，跳过自动启动")
-            except Exception as e:
-                safe_print("cfquant LTtx 自动启动失败: %s" % e)
         for client_mode in configured_modes:
             try:
                 CLIENTS.start(client_mode)

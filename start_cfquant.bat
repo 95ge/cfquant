@@ -51,7 +51,7 @@ echo Starting cfquant web dashboard on port %WEB_PORT%...
 echo Logs:
 echo   %WEB_STDOUT%
 echo   %WEB_STDERR%
-echo The web server will start PipeHub or LTtx according to the saved mode.
+echo The web server will start LTtx first, then start PipeHub when the saved mode needs it.
 call :log "starting web dashboard port=%WEB_PORT%"
 
 call :is_port_open %WEB_PORT%

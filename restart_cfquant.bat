@@ -15,9 +15,9 @@ if not defined WEB_PORT set "WEB_PORT=8765"
 if defined CFQUANT_WEB_PORT set "WEB_PORT=%CFQUANT_WEB_PORT%"
 if defined CFQUANT_START_WEB_PORT set "WEB_PORT=%CFQUANT_START_WEB_PORT%"
 
-echo Restarting cfquant local services...
+echo Restarting cfquant local services, keeping LTtx running...
 set "CFQUANT_STOP_NO_PAUSE=1"
-call "%~dp0stop_cfquant.bat"
+call "%~dp0stop_cfquant.bat" --keep-lttx
 set "STOP_CODE=%errorlevel%"
 if not "%STOP_CODE%"=="0" (
     echo cfquant stop returned %STOP_CODE%. Will continue only if web port %WEB_PORT% is released.
