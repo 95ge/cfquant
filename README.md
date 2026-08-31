@@ -1,9 +1,12 @@
 # cfquant
 
+![Python](https://img.shields.io/badge/Python-3.8--3.11%20recommended-blue)
+
 ## README 导航
 
 - [官网与反馈](#官网与反馈)
 - [先看这里](#先看这里)
+- [Python 版本支持](#python-版本支持)
 - [模式区别](#模式区别)
 - [快速启动](#快速启动)
 - [文档导航](#文档导航)
@@ -45,6 +48,12 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 | 从 miniQMT / `xtquant` 切换 | 看 [miniQMT 迁移到大 QMT 指南](docs/miniqmt_to_bigqmt_migration.md)、[外部 Python 接入](docs/README_外部Python接入.md) |
 | 日志、重启、更新、回滚 | 看 [运维与更新](docs/README_运维与更新.md) |
 
+## Python 版本支持
+
+当前建议使用 Python `3.8` - `3.11`，生产环境优先选择 Python `3.10` 或 `3.11`。Python `3.12` 及以上版本可能受券商 QMT 内置环境、第三方依赖或旧版接口行为影响，暂不作为推荐部署版本。
+
+如果只是外部 Python 调用 `cfquant`，也建议保持在 Python `3.12` 以下，便于和 QMT 侧脚本、`pandas` 依赖以及已有部署文档保持一致。
+
 ## 模式区别
 
 | 模式 | QMT 侧部署 | 通信链路 | 适合场景 |
@@ -70,7 +79,7 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
    D:\cfquant
    ```
 
-2. 首次运行前先安装依赖，避免缺少 Python 库导致启动脚本失败：
+2. 首次运行前先安装依赖，建议使用 Python `3.10` 或 `3.11`，避免缺少 Python 库导致启动脚本失败：
 
    ```powershell
    cd D:\cfquant
@@ -194,6 +203,12 @@ cfquant/
 
 
 ## 版本日志
+
+### core_20260831_01
+
+- `cfquant/tests/` 手工测试示例补充更多行情、数据下载、数据读取、交易只读查询和 async 查询调用，并在示例代码中增加中文注释。
+- 删除根目录 `tests/`，避免和 `cfquant/tests/` 手工示例目录混淆。
+- README 新增 Python 版本支持显示，明确建议使用 Python `3.12` 以下版本。
 
 ### web_20260831_01
 

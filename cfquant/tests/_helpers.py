@@ -123,26 +123,47 @@ def summarize(value, sample_size=2):
     }
 
 
-def emit_call(name, func):
+def emit_call(name, func, example=None):
+    # 每个调用示例都独立计时并捕获异常，便于一次运行看到多项接口的可用情况。
     started = time.perf_counter()
     try:
         result = func()
-        print_json({
+        payload = {
             "case": name,
             "ok": True,
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
             "summary": summarize(result),
-        })
+        }
+        if example:
+            payload["example"] = example
+        print_json(payload)
         return result
     except Exception as error:
-        print_json({
+        payload = {
             "case": name,
             "ok": False,
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
             "error_type": type(error).__name__,
             "error": str(error),
-        })
+        }
+        if example:
+            payload["example"] = example
+        print_json(payload)
         return None
+
+
+def emit_skip(name, reason, example=None):
+    # 需要依赖用户输入或现场数据的示例，条件不足时用 skipped 标记说明原因。
+    payload = {
+        "case": name,
+        "ok": False,
+        "skipped": True,
+        "reason": reason,
+    }
+    if example:
+        payload["example"] = example
+    print_json(payload)
+    return None
 
 
 def add_runtime_args(parser):
