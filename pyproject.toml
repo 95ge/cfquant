@@ -14,3 +14,6 @@ dependencies = [
 
 [tool.setuptools]
 packages = ["cfquant", "LTtx", "LTtx.tx"]
+
+[tool.pytest.ini_options]
+norecursedirs = ["pip_library_dev", ".cfquant_project_updates", ".cfquant_updates", ".updates", "runtime"]

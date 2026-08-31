@@ -46,15 +46,18 @@ def loads_message(raw):
     return data
 
 
-def pack_request(action, params=None, reply_channel=None, client_id=None, request_id=None):
-    return dumps_message({
+def pack_request(action, params=None, reply_channel=None, client_id=None, request_id=None, timeout=None):
+    payload = {
         "type": "request",
         "id": request_id or new_id("req"),
         "action": action,
         "params": params or {},
         "reply_channel": reply_channel,
         "client_id": client_id,
-    })
+    }
+    if timeout is not None:
+        payload["timeout"] = float(timeout)
+    return dumps_message(payload)
 
 
 def pack_response(request_id, ok=True, result=None, error=None, meta=None):

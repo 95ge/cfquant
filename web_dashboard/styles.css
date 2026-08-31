@@ -887,14 +887,14 @@ body.binding-dialog-open {
 
 .side-brand {
   position: relative;
-  height: 82px;
+  height: 106px;
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: center;
   align-content: center;
   column-gap: 12px;
-  row-gap: 4px;
+  row-gap: 9px;
   padding: 0 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
@@ -922,7 +922,7 @@ body.binding-dialog-open {
 
 .version-widget {
   position: relative;
-  grid-column: 2;
+  grid-column: 1 / -1;
   margin-left: 0;
   min-width: 0;
 }
@@ -939,25 +939,45 @@ body.binding-dialog-open {
 }
 
 .version-badge {
-  width: auto;
+  width: 100%;
   max-width: 100%;
-  height: 24px;
+  min-height: 34px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 7px;
+  gap: 8px;
+  justify-content: flex-start;
+  padding: 6px 9px;
   border-color: rgba(255, 255, 255, 0.18);
   background: rgba(255, 255, 255, 0.06);
   color: #d7dee7;
-  font-size: 11px;
-  line-height: 1;
+  text-align: left;
 }
 
-#versionBadgeLabel {
+.version-badge-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.version-badge-copy strong,
+.version-badge-copy small {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.version-badge-copy strong {
+  color: #f4f7fa;
+  font-size: 12px;
+  line-height: 1.15;
+}
+
+.version-badge-copy small {
+  color: #9aa9bb;
+  font-size: 11px;
+  line-height: 1.2;
 }
 
 .version-badge:hover,
@@ -1011,12 +1031,12 @@ body.binding-dialog-open {
   top: calc(100% + 10px);
   z-index: 120;
   display: none;
-  width: min(440px, calc(100vw - 28px));
-  max-height: min(680px, calc(100vh - 92px));
+  width: min(500px, calc(100vw - 28px));
+  max-height: min(680px, calc(100vh - 118px));
   overflow: hidden;
   border: 1px solid rgba(93, 118, 150, 0.62);
   border-radius: 8px;
-  background: #0f1720;
+  background: #101923;
   color: #f4f7fa;
   box-shadow: 0 22px 58px rgba(0, 0, 0, 0.38);
 }
@@ -1030,19 +1050,15 @@ body.binding-dialog-open {
   height: 12px;
   border-top: 1px solid rgba(93, 118, 150, 0.62);
   border-left: 1px solid rgba(93, 118, 150, 0.62);
-  background: #111c28;
+  background: #13202d;
   transform: rotate(45deg);
 }
 
-.version-widget:hover .version-popover,
-.version-widget.open .version-popover,
-.version-widget:focus-within .version-popover {
+.version-widget.open .version-popover {
   display: block;
 }
 
-.version-widget:hover::after,
-.version-widget.open::after,
-.version-widget:focus-within::after {
+.version-widget.open::after {
   display: block;
 }
 
@@ -1055,7 +1071,7 @@ body.binding-dialog-open {
   gap: 10px;
   padding: 13px 14px 12px;
   border-bottom: 1px solid rgba(125, 147, 170, 0.22);
-  background: linear-gradient(180deg, #111c28, #0f1720);
+  background: #13202d;
 }
 
 .version-popover-head strong,
@@ -1114,7 +1130,7 @@ body.binding-dialog-open {
 
 .version-quick-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1289,7 +1305,7 @@ body.binding-dialog-open {
 
 @media (max-width: 560px) {
   .version-popover {
-    left: -48px;
+    left: 0;
     width: min(420px, calc(100vw - 20px));
   }
 
@@ -3077,11 +3093,94 @@ th.num .sort-header {
   border-top: 1px solid var(--line);
 }
 
+.settings-section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.settings-section-head div {
+  min-width: 0;
+}
+
+.settings-section-head h3 {
+  margin-bottom: 5px;
+}
+
+.update-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.update-lane {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.update-lane > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.update-lane-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.update-lane-head div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.update-lane-head span,
+.update-lane-head strong,
+.update-lane-head small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.update-lane-head span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.update-lane-head strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.update-lane-head small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.update-lane-head button {
+  flex: 0 0 auto;
+}
+
 .update-status-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
+  margin-bottom: 0;
+  padding: 9px 10px;
+  border: 1px solid #e6edf5;
+  border-radius: 6px;
+  background: #fff;
 }
 
 .update-status-row .metric-note {
@@ -3091,15 +3190,20 @@ th.num .sort-header {
 
 .update-version-info {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(145px, 100%), 1fr));
   gap: 10px;
-  margin-bottom: 10px;
+}
+
+.qmt-version-info {
+  grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr));
 }
 
 .update-version-item {
   min-width: 0;
-  padding: 10px 0;
-  border-top: 1px solid var(--line);
+  padding: 10px;
+  border: 1px solid #e6edf5;
+  border-radius: 6px;
+  background: #fff;
 }
 
 .update-version-item span,
@@ -3118,6 +3222,7 @@ th.num .sort-header {
 .update-version-item strong {
   margin-top: 4px;
   font-size: 13px;
+  line-height: 1.35;
 }
 
 .update-version-item small {
@@ -3137,6 +3242,29 @@ th.num .sort-header {
 
 .update-version-compare.unknown strong {
   color: var(--muted);
+}
+
+.update-action-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+  align-items: end;
+  gap: 10px;
+}
+
+.update-action-grid + .update-action-grid {
+  padding-top: 2px;
+}
+
+.update-action-grid button {
+  width: 100%;
+  height: auto;
+  min-height: 34px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.update-action-grid .field.compact {
+  width: auto;
 }
 
 .update-notice {
@@ -5471,7 +5599,23 @@ tr.order-row-updated td {
   }
 
   .side-brand {
-    height: 62px;
+    height: auto;
+    min-height: 98px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .version-popover {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    top: 78px;
+    width: auto;
+    max-height: calc(100vh - 92px);
+  }
+
+  .version-popover::before {
+    display: none;
   }
 
   .side-nav {
@@ -5655,6 +5799,8 @@ tr.order-row-updated td {
   .server-url-row,
   .update-bar,
   .update-version-info,
+  .qmt-version-info,
+  .update-action-grid,
   .api-doc-detail,
   .api-form,
   .onboarding-grid,

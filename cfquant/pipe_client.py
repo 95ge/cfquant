@@ -67,6 +67,7 @@ class PipeRpcClient(object):
 
     def request(self, action, params=None, timeout=None, request_channel=None):
         self.start()
+        effective_timeout = float(timeout or self.timeout)
         request_id = new_id("req")
         q = queue.Queue(maxsize=1)
         with self._pending_lock:
@@ -77,6 +78,7 @@ class PipeRpcClient(object):
             reply_channel=self.reply_channel,
             client_id=self.client_id,
             request_id=request_id,
+            timeout=effective_timeout,
         )
         try:
             self._send_request(raw, request_channel or self.request_channel)
@@ -86,7 +88,7 @@ class PipeRpcClient(object):
             self.close()
             raise
         try:
-            msg = q.get(timeout=float(timeout or self.timeout))
+            msg = q.get(timeout=effective_timeout)
         except queue.Empty:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
