@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260830_02">
+  <link rel="stylesheet" href="/styles.css?v=web_20260831_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -215,9 +215,12 @@
           <span>QMT Bridge</span>
         </div>
         <div id="versionWidget" class="version-widget" tabindex="0" aria-label="版本信息">
-          <button id="versionBadge" class="version-badge" type="button" aria-describedby="versionPopover">
+          <button id="versionBadge" class="version-badge" type="button" aria-describedby="versionPopover" aria-expanded="false">
             <span id="versionBadgeDot" class="version-dot"></span>
-            <span id="versionBadgeLabel">v --</span>
+            <span class="version-badge-copy">
+              <strong id="versionBadgeLabel">QMT --</strong>
+              <small id="versionBadgeMeta">版本状态</small>
+            </span>
           </button>
           <div id="versionPopover" class="version-popover" role="tooltip">
             <div class="version-popover-head">
@@ -977,71 +980,93 @@
                 </div>
               </section>
               <section class="settings-section" data-settings-tab="update">
-                <h3>Web 项目更新</h3>
-                <p class="settings-note">更新当前 Web 项目目录，配置、数据库、日志、运行缓存和 LTtx 本地配置会保留。更新成功后 Web 服务会自动重启。</p>
-                <div class="update-status-row">
-                  <span id="projectUpdateStatus" class="metric-note">未加载项目更新状态</span>
-                  <button id="refreshProjectUpdateStatusBtn" type="button">刷新状态</button>
+                <div class="settings-section-head">
+                  <div>
+                    <h3>系统更新</h3>
+                    <p class="settings-note">Web 项目和 QMT 核心分开更新。配置、数据库、日志、运行缓存和 LTtx 本地配置会保留。</p>
+                  </div>
                 </div>
-                <div id="projectUpdateVersionInfo" class="update-version-info"></div>
-                <div class="api-serverbar update-bar">
-                  <label class="field">
-                    <span>GitHub 回退仓库</span>
-                    <input id="projectUpdateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
-                  </label>
-                  <label class="field compact">
-                    <span>分支 / 标签</span>
-                    <input id="projectUpdateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
-                  </label>
-                  <button id="runProjectGithubUpdateBtn" class="primary" type="button">官网优先更新 Web</button>
-                </div>
-                <div class="api-serverbar update-bar">
-                  <label class="field">
-                    <span>项目源码 zip</span>
-                    <input id="projectUpdateZipInput" type="file" accept=".zip,application/zip">
-                  </label>
-                  <button id="uploadProjectZipUpdateBtn" class="primary" type="button">上传 zip 更新 Web</button>
-                  <label class="field">
-                    <span>可回滚项目备份</span>
-                    <select id="projectRollbackBackupSelect"></select>
-                  </label>
-                  <button id="rollbackProjectUpdateBtn" class="danger" type="button">回滚 Web 并重启</button>
-                </div>
-                <div id="projectUpdateNoticeBox" class="update-notice hidden"></div>
-                <pre id="projectUpdateResultBox" class="json-box small-json update-result"></pre>
+                <div class="update-workspace">
+                  <section class="update-lane">
+                    <div class="update-lane-head">
+                      <div>
+                        <span>Web 项目</span>
+                        <strong>控制台与本地服务</strong>
+                        <small>更新成功后 Web 自动重启，LTtx 保持运行。</small>
+                      </div>
+                      <button id="refreshProjectUpdateStatusBtn" type="button">刷新状态</button>
+                    </div>
+                    <div class="update-status-row">
+                      <span id="projectUpdateStatus" class="metric-note">未加载项目更新状态</span>
+                    </div>
+                    <div id="projectUpdateVersionInfo" class="update-version-info"></div>
+                    <div class="update-action-grid">
+                      <label class="field">
+                        <span>GitHub 回退仓库</span>
+                        <input id="projectUpdateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
+                      </label>
+                      <label class="field compact">
+                        <span>分支 / 标签</span>
+                        <input id="projectUpdateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
+                      </label>
+                      <button id="runProjectGithubUpdateBtn" class="primary" type="button">官网优先更新 Web</button>
+                    </div>
+                    <div class="update-action-grid">
+                      <label class="field">
+                        <span>项目源码 zip</span>
+                        <input id="projectUpdateZipInput" type="file" accept=".zip,application/zip">
+                      </label>
+                      <button id="uploadProjectZipUpdateBtn" class="primary" type="button">上传 zip 更新 Web</button>
+                      <label class="field">
+                        <span>可回滚项目备份</span>
+                        <select id="projectRollbackBackupSelect"></select>
+                      </label>
+                      <button id="rollbackProjectUpdateBtn" class="danger" type="button">回滚 Web 并重启</button>
+                    </div>
+                    <div id="projectUpdateNoticeBox" class="update-notice hidden"></div>
+                    <pre id="projectUpdateResultBox" class="json-box small-json update-result"></pre>
+                  </section>
 
-                <h3 class="settings-subtitle">QMT 核心更新</h3>
-                <p class="settings-note">更新当前账号绑定 QMT 目录内的 <code>cfquant</code> 核心包。更新完成后需要重启对应 QMT 桥接脚本；如果本次涉及入口文件变更，QMT 加密入口文件需要手动更新后再启动。</p>
-                <div class="update-status-row">
-                  <span id="updateStatus" class="metric-note">未加载更新状态</span>
-                  <button id="refreshUpdateStatusBtn" type="button">刷新状态</button>
+                  <section class="update-lane qmt-update-lane">
+                    <div class="update-lane-head">
+                      <div>
+                        <span>QMT 核心</span>
+                        <strong>当前账号绑定目录</strong>
+                        <small>更新完成后需要重启对应 QMT 桥接脚本；入口文件变更时需手动替换加密入口。</small>
+                      </div>
+                      <button id="refreshUpdateStatusBtn" type="button">刷新状态</button>
+                    </div>
+                    <div class="update-status-row">
+                      <span id="updateStatus" class="metric-note">未加载更新状态</span>
+                    </div>
+                    <div id="updateVersionInfo" class="update-version-info qmt-version-info"></div>
+                    <div class="update-action-grid">
+                      <label class="field">
+                        <span>GitHub 回退仓库</span>
+                        <input id="updateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
+                      </label>
+                      <label class="field compact">
+                        <span>分支 / 标签</span>
+                        <input id="updateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
+                      </label>
+                      <button id="runGithubUpdateBtn" class="primary" type="button">官网优先更新 QMT</button>
+                    </div>
+                    <div class="update-action-grid">
+                      <label class="field">
+                        <span>源码 zip</span>
+                        <input id="updateZipInput" type="file" accept=".zip,application/zip">
+                      </label>
+                      <button id="uploadZipUpdateBtn" class="primary" type="button">上传 zip 更新 QMT</button>
+                      <label class="field">
+                        <span>可回滚备份</span>
+                        <select id="rollbackBackupSelect"></select>
+                      </label>
+                      <button id="rollbackUpdateBtn" class="danger" type="button">回滚 QMT</button>
+                    </div>
+                    <div id="updateNoticeBox" class="update-notice hidden"></div>
+                    <pre id="updateResultBox" class="json-box small-json update-result"></pre>
+                  </section>
                 </div>
-                <div id="updateVersionInfo" class="update-version-info"></div>
-                <div class="api-serverbar update-bar">
-                  <label class="field">
-                    <span>GitHub 回退仓库</span>
-                    <input id="updateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
-                  </label>
-                  <label class="field compact">
-                    <span>分支 / 标签</span>
-                    <input id="updateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
-                  </label>
-                  <button id="runGithubUpdateBtn" class="primary" type="button">官网优先更新</button>
-                </div>
-                <div class="api-serverbar update-bar">
-                  <label class="field">
-                    <span>源码 zip</span>
-                    <input id="updateZipInput" type="file" accept=".zip,application/zip">
-                  </label>
-                  <button id="uploadZipUpdateBtn" class="primary" type="button">上传 zip 更新</button>
-                  <label class="field">
-                    <span>可回滚备份</span>
-                    <select id="rollbackBackupSelect"></select>
-                  </label>
-                  <button id="rollbackUpdateBtn" class="danger" type="button">回滚</button>
-                </div>
-                <div id="updateNoticeBox" class="update-notice hidden"></div>
-                <pre id="updateResultBox" class="json-box small-json update-result"></pre>
               </section>
             </div>
           </div>
@@ -2560,6 +2585,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=web_20260830_02"></script>
+  <script src="/app.js?v=web_20260831_01"></script>
 </body>
 </html>

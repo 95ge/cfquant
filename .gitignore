@@ -68,6 +68,10 @@ runtime/screenshots/*
 .pytest_cache/
 .mypy_cache/
 
+# Official website source and release packages are published separately, not to GitHub.
+official_site/
+offcial_site/
+
 # Local Python package distribution workspace; do not upload to GitHub.
 pip_library_dev/
 

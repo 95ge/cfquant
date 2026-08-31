@@ -195,6 +195,12 @@ cfquant/
 
 ## 版本日志
 
+### web_20260831_01
+
+- 优化 Web 控制台“设置 - 系统更新”页面：Web 项目更新和 QMT 核心更新分区展示，版本状态改为卡片化信息，操作区更适合扫读和回滚。
+- 优化左上角版本小组件：显示最近已知 QMT 内置核心版本，并区分“运行中”“历史上报”和“等待上报”。
+- Web 服务会把 QMT 最近一次运行时版本上报持久化到 `runtime/status/cfquant_qmt_runtime_versions.json`，重启后仍可用于识别和对比 QMT 内置版本。
+
 ### web_20260830_02
 
 - Web 重启、项目更新重载和定时重启流程保留 LTtx，不再随 Web/PipeHub 一起停止再拉起；`stop_cfquant.bat` 作为完整退出仍会停止 LTtx。
