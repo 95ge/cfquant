@@ -33,6 +33,23 @@ need_packge = {'psutil':{'pip_name':'psutil','version':'1.0.0'},
                }
 
 
+def _hidden_subprocess_kwargs():
+    if os.name != "nt":
+        return {}
+    kwargs = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    except Exception:
+        pass
+    return kwargs
+
+
 def ensure_modules_with_version(modules: dict):
     """
     - 确保指定模块及版本已安装或自动升级（使用清华源）。
@@ -75,7 +92,7 @@ def ensure_modules_with_version(modules: dict):
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", install_target,
                     "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
-                ])
+                ], **_hidden_subprocess_kwargs())
                 print(f"[AutoInstall] 成功安装 {pip_name} {required_version}")
             except Exception as e:
                 print(f"[AutoInstall] 安装 {pip_name} 失败: {e}")

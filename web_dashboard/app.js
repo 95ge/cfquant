@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260902_04';
+const FRONTEND_VERSION = 'web_20260902_05';
 
 const state = {
   accountId: '',
@@ -84,6 +84,7 @@ const state = {
   quoteRenderTimer: null,
   quoteSocketLogCount: 0,
   quoteSocketMessageCount: 0,
+  apiDebugBusy: false,
   onboardingStep: 'intro',
   onboardingDoneSteps: new Set(),
   lastLogKey: '',
@@ -93,6 +94,7 @@ const state = {
   statusRefreshInFlight: false,
   callbackRefreshInFlight: false,
   bindingStatusRefreshInFlight: false,
+  bindingVerifyBusyKey: '',
   bindingNoticeTimer: null,
 };
 
@@ -119,7 +121,10 @@ const DEFAULT_BUILTIN_AVATARS = [
 ];
 const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
 const DEFAULT_OFFICIAL_SITE_URL = 'https://cfquant.org';
+const API_DEBUG_TIMEOUT_MS = 18000;
+const API_DEBUG_QMT_TIMEOUT_SECONDS = 12;
 let mermaidRendererReady = false;
+let forceCloseVersionPopover = () => {};
 
 function normalizeTransportMode(mode) {
   const value = String(mode || 'ctypes').trim().toLowerCase();
@@ -184,8 +189,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/quotes/whole/subscribe',
     desc: '通过当前模式订阅全推行情。同一时间只允许一个全推订阅，成功后可通过 WebSocket 实时接收行情事件；通用模式由 ctypes 单桥统一转发。',
-    defaults: { channel: 'normal', markets: 'SH,SZ' },
-    fields: ['bridge_id', 'whole_quote_channel', 'markets'],
+    defaults: { channel: 'normal', markets: 'SH,SZ', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'whole_quote_channel', 'markets', 'timeout'],
   },
   {
     id: 'quote_latest',
@@ -204,8 +209,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/full-tick',
     desc: '查询指定证券的实时全推快照。通用模式走 ctypes 单桥， 高级模式按所选通道请求。',
-    defaults: { channel: 'trade', code_list: '000001.SZ,600000.SH' },
-    fields: ['bridge_id', 'channel', 'code_list'],
+    defaults: { channel: 'trade', code_list: '000001.SZ,600000.SH', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'code_list', 'timeout'],
   },
   {
     id: 'market_data',
@@ -214,8 +219,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/market',
     desc: '查询行情数据，字段、证券列表、周期和区间可配置。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1' },
-    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data'],
+    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data', 'timeout'],
   },
   {
     id: 'market_data_ex',
@@ -224,8 +229,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/market-ex',
     desc: '调用 QMT get_market_data_ex，适合读取本地缓存行情数据。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1' },
-    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data'],
+    defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data', 'timeout'],
   },
   {
     id: 'quote_subscribe_single',
@@ -234,8 +239,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/quotes/subscribe',
     desc: '通过当前模式订阅单只证券行情，订阅事件同样通过 WebSocket 行情接收。',
-    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', count: '0' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'count', 'dividend_type'],
+    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', count: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'timeout'],
   },
   {
     id: 'ws_quotes',
@@ -253,8 +258,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/instrument',
     desc: '查询证券合约详情。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', stock_code: '000001.SZ', iscomplete: '0' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'iscomplete'],
+    defaults: { channel: 'trade', stock_code: '000001.SZ', iscomplete: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'iscomplete', 'timeout'],
   },
   {
     id: 'sector_stocks',
@@ -263,8 +268,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/sector',
     desc: '查询指定板块的证券列表。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', sector_name: '沪深A股' },
-    fields: ['bridge_id', 'channel', 'sector_name'],
+    defaults: { channel: 'trade', sector_name: '沪深A股', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'sector_name', 'timeout'],
   },
   {
     id: 'history_download',
@@ -273,8 +278,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/history/download',
     desc: '触发 QMT 下载指定证券历史行情数据。下载请求固定通过普通 QMT 发送，便于接收下载进度回调。',
-    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', incrementally: '' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'incrementally'],
+    defaults: { channel: 'normal', stock_code: '000001.SZ', period: '1d', incrementally: '', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'period', 'start_time', 'end_time', 'incrementally', 'timeout'],
   },
   {
     id: 'financial_data',
@@ -283,8 +288,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/financial',
     desc: '读取财务数据，支持填充数据和原始数据两种模式。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
-    defaults: { channel: 'trade', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'filled', report_type: 'announce_time' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type'],
+    defaults: { channel: 'trade', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'filled', report_type: 'announce_time', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type', 'timeout'],
   },
   {
     id: 'financial_download',
@@ -293,8 +298,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/data/financial/download',
     desc: '按大 QMT 官方能力读取并校验本地财务数据。财务数据需要先在 QMT 客户端“数据管理 - 财务数据下载”中下载，脚本侧不提供真正下载函数。',
-    defaults: { channel: 'normal', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'raw', report_type: 'report_time' },
-    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type'],
+    defaults: { channel: 'normal', stock_code: '000001.SZ', table: 'ASHAREBALANCESHEET', fields: 'fix_assets', mode: 'raw', report_type: 'report_time', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'financial_table', 'financial_fields', 'financial_mode', 'start_time', 'end_time', 'report_type', 'timeout'],
   },
   {
     id: 'data_export',
@@ -303,8 +308,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/trade/export-data',
     desc: '调用 QMT xttrader.export_data 导出指定账号的数据。导出耗时较长时会显示任务进度，避免误判为失败。',
-    defaults: { channel: 'trade', result_path: 'D:\\cfquant_export', data_type: 'order', user_param_json: '{}' },
-    fields: ['bridge_id', 'trade_channel', 'account_id', 'account_type', 'export_result_path', 'export_data_type', 'start_time', 'end_time', 'export_user_param_json'],
+    defaults: { channel: 'trade', result_path: 'D:\\cfquant_export', data_type: 'order', user_param_json: '{}', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'trade_channel', 'account_id', 'account_type', 'export_result_path', 'export_data_type', 'start_time', 'end_time', 'export_user_param_json', 'timeout'],
   },
   {
     id: 'quote_unsubscribe',
@@ -313,8 +318,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/quotes/unsubscribe',
     desc: '取消指定的行情订阅。',
-    defaults: { channel: 'normal' },
-    fields: ['bridge_id', 'channel', 'quote_subscribe_id'],
+    defaults: { channel: 'normal', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'quote_subscribe_id', 'timeout'],
   },
   {
     id: 'quote_status',
@@ -332,8 +337,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的资金信息。',
-    defaults: { sections: 'asset', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'asset', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'positions',
@@ -342,8 +347,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的持仓列表。',
-    defaults: { sections: 'positions', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'positions', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'orders',
@@ -352,8 +357,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的委托列表。',
-    defaults: { sections: 'orders', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'orders', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'trades',
@@ -362,8 +367,8 @@ const API_ENDPOINTS = [
     method: 'GET',
     path: '/api/account',
     desc: '查询指定账号的成交列表。',
-    defaults: { sections: 'trades', force: '0' },
-    fields: ['account_id', 'account_type'],
+    defaults: { sections: 'trades', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'credit_query',
@@ -372,8 +377,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/credit/query',
     desc: '查询信用账户专用信息，包括融资融券明细、可融券标的、担保品和合约负债。需要选择或填写信用账户。',
-    defaults: { account_type: 'CREDIT', credit_query_action: 'detail' },
-    fields: ['account_id', 'account_type', 'credit_query_action'],
+    defaults: { account_type: 'CREDIT', credit_query_action: 'detail', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'credit_query_action', 'timeout'],
   },
   {
     id: 'credit_probe',
@@ -382,8 +387,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/credit/probe',
     desc: '只读探测信用账户在当前 QMT 下可用的资产、持仓、委托、成交和信用专项查询能力。',
-    defaults: { account_type: 'CREDIT' },
-    fields: ['account_id', 'account_type'],
+    defaults: { account_type: 'CREDIT', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'timeout'],
   },
   {
     id: 'xttrader_compat',
@@ -447,7 +452,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/order',
     desc: '按账号配置对应的内部通道提交买入或卖出委托。后端要求确认文本完全匹配。',
-    fields: ['account_id', 'account_type', 'side', 'stock_code', 'price', 'volume', 'confirm_text'],
+    defaults: { timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'side', 'stock_code', 'price', 'volume', 'confirm_text', 'timeout'],
   },
   {
     id: 'batch_order',
@@ -459,8 +465,9 @@ const API_ENDPOINTS = [
     defaults: {
       orders_json: '[{"stock_code":"000001.SZ","price":10.0,"volume":100},{"stock_code":"600000.SH","price":8.5,"volume":200}]',
       confirm_text: 'BATCH 2',
+      timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS),
     },
-    fields: ['account_id', 'account_type', 'batch_orders_json', 'batch_confirm_text'],
+    fields: ['account_id', 'account_type', 'batch_orders_json', 'batch_confirm_text', 'timeout'],
   },
   {
     id: 'cancel',
@@ -469,7 +476,8 @@ const API_ENDPOINTS = [
     method: 'POST',
     path: '/api/cancel',
     desc: '按账号配置对应的内部通道撤销指定委托。后端要求确认文本完全匹配。',
-    fields: ['account_id', 'account_type', 'order_id', 'cancel_confirm_text'],
+    defaults: { timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'order_id', 'cancel_confirm_text', 'timeout'],
   },
   {
     id: 'lttx',
@@ -488,6 +496,7 @@ const API_FIELD_META = {
   account_type: { label: '账户类型', type: 'account_type' },
   credit_query_action: { label: '信用查询', type: 'credit_query_action', param: 'action' },
   channel: { label: '查询通道', type: 'channel' },
+  timeout: { label: '超时秒数', type: 'number', placeholder: '12' },
   whole_quote_channel: { label: '订阅通道', type: 'fixed_channel', param: 'channel' },
   trade_channel: { label: '交易通道', type: 'trade_channel', param: 'channel' },
   side: { label: '方向', type: 'side' },
@@ -531,6 +540,7 @@ const API_PARAM_DOCS = {
   account_type: '账户类型。普通证券账户填 STOCK，信用账户填 CREDIT。',
   action: '信用查询动作，detail/subjects/slo_code/assure/compacts。',
   channel: '高级模式下 normal 为普通 QMT，trade 为极速交易端；通用模式由后端按操作类型自动路由到 ctypes 单桥。',
+  timeout: '本次调试等待 QMT 响应的秒数。网络或桥接异常时建议保持 12 秒，避免页面长时间请求中。',
   sections: '账号数据段，asset/positions/orders/trades。',
   force: '是否强制刷新缓存，1 表示立即查询。',
   since: '回调起始序号。',
@@ -1440,6 +1450,10 @@ function wireVersionBadge() {
       widget.classList.remove('open');
       if (badge) badge.setAttribute('aria-expanded', 'false');
     };
+    forceCloseVersionPopover = () => {
+      popoverPinned = false;
+      closePopover(true);
+    };
     const pointerInsideVersionArea = () => (
       widget.matches(':hover')
       || (popover && popover.matches(':hover'))
@@ -1819,7 +1833,8 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   if (endpoint.method !== 'DOC') {
     const actions = document.createElement('div');
     actions.className = 'api-form-actions field wide';
-    actions.innerHTML = `<button class="primary" type="submit">${endpoint.method === 'WS' ? '连接 WebSocket' : '发送请求'}</button><button id="apiResetBtn" type="button">重置参数</button>`;
+    const submitLabel = endpoint.method === 'WS' ? '连接 WebSocket' : '发送请求';
+    actions.innerHTML = `<button class="primary api-submit-btn" type="submit" data-default-label="${esc(submitLabel)}"><span class="button-spinner" aria-hidden="true"></span><span class="api-submit-label">${esc(submitLabel)}</span></button><button id="apiResetBtn" type="button">重置参数</button>`;
     form.appendChild(actions);
     setApiDefaults(endpoint);
   }
@@ -3367,6 +3382,7 @@ function renderQmtUpdateProgress() {
 
 function openQmtUpdateProgress(kind, title, detail) {
   clearQmtUpdateProgressTimer();
+  forceCloseVersionPopover();
   const steps = qmtUpdateProgressSteps(kind);
   state.qmtUpdateProgress = {
     kind,
@@ -4434,7 +4450,7 @@ function currentApiRequest() {
       params[name] = params[name].split(',').map((item) => item.trim()).filter(Boolean);
     }
   });
-  ['count'].forEach((name) => {
+  ['count', 'timeout'].forEach((name) => {
     if (params[name] !== undefined && params[name] !== '') params[name] = Number(params[name]);
   });
   ['fill_data', 'iscomplete'].forEach((name) => {
@@ -4495,8 +4511,59 @@ function updateApiRequestPreview() {
   $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
 }
 
+function apiDebugTimeoutMs(request) {
+  let seconds = 0;
+  if (request && request.body && request.body.timeout !== undefined && request.body.timeout !== '') {
+    seconds = Number(request.body.timeout);
+  }
+  if (!seconds && request && request.url) {
+    try {
+      const parsed = new URL(request.url);
+      seconds = Number(parsed.searchParams.get('timeout') || 0);
+    } catch (error) {
+      seconds = 0;
+    }
+  }
+  if (!Number.isFinite(seconds) || seconds <= 0) return API_DEBUG_TIMEOUT_MS;
+  return Math.max(8000, Math.min(120000, Math.round((seconds + 6) * 1000)));
+}
+
+function setApiDebugBusy(busy, label = '') {
+  state.apiDebugBusy = !!busy;
+  const form = $('apiForm');
+  if (!form) return;
+  const submit = form.querySelector('button[type="submit"]');
+  const reset = $('apiResetBtn');
+  if (submit) {
+    const defaultLabel = submit.dataset.defaultLabel || submit.textContent || '发送请求';
+    submit.disabled = !!busy;
+    submit.classList.toggle('is-loading', !!busy);
+    const labelNode = submit.querySelector('.api-submit-label');
+    if (labelNode) labelNode.textContent = busy ? (label || '请求中') : defaultLabel;
+  }
+  if (reset) reset.disabled = !!busy;
+}
+
+function apiDebugElapsedMs(startedAt) {
+  return Math.round(Math.max(0, performance.now() - startedAt));
+}
+
+function apiDebugOutput(payload, request, startedAt, extra = {}) {
+  const debug = {
+    endpoint: request.endpointId || state.apiEndpointId,
+    method: request.method,
+    elapsed_ms: apiDebugElapsedMs(startedAt),
+    ...extra,
+  };
+  if (typeof payload === 'string') {
+    return `${payload}\n\n调试信息：${JSON.stringify(debug)}`;
+  }
+  return JSON.stringify({ ...payload, debug }, null, 2);
+}
+
 async function sendApiDebugRequest(event) {
   event.preventDefault();
+  if (state.apiDebugBusy) return;
   const request = currentApiRequest();
   const endpoint = apiEndpointById(state.apiEndpointId);
   if (request.method === 'DOC') {
@@ -4523,20 +4590,25 @@ async function sendApiDebugRequest(event) {
     $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: request.body.orders_json_error || request.body.user_param_json_error }, null, 2);
     return;
   }
+  const startedAt = performance.now();
+  const timeoutMs = apiDebugTimeoutMs(request);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  setApiDebugBusy(true, request.method === 'WS' ? '连接中' : '请求中');
   if (isDownloadEndpoint(endpoint)) {
     request.body = request.body || {};
     request.body.job_id = request.body.job_id || newDownloadJobId(endpoint.id);
     beginDownloadProgress(request.body.job_id, request.body, endpoint);
     $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
-    $('apiResponseBox').textContent = `请求中...\n已开始监听下载进度 job_id=${request.body.job_id}`;
+    $('apiResponseBox').textContent = `请求中...\n已开始监听下载进度 job_id=${request.body.job_id}\n前端调试超时 ${Math.round(timeoutMs / 1000)} 秒`;
   } else if (isExportEndpoint(endpoint)) {
     request.body = request.body || {};
     request.body.job_id = request.body.job_id || newDownloadJobId(endpoint.id);
     beginExportProgress(request.body.job_id, request.body, endpoint);
     $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
-    $('apiResponseBox').textContent = `导出中...\n任务 ID=${request.body.job_id}\n结果会写入 QMT 侧 result_path 指定目录。`;
+    $('apiResponseBox').textContent = `导出中...\n任务 ID=${request.body.job_id}\n结果会写入 QMT 侧 result_path 指定目录。\n前端调试超时 ${Math.round(timeoutMs / 1000)} 秒`;
   } else {
-    $('apiResponseBox').textContent = '请求中...';
+    $('apiResponseBox').textContent = `请求中...\n前端调试超时 ${Math.round(timeoutMs / 1000)} 秒`;
   }
   try {
     const response = await fetch(request.url, {
@@ -4546,6 +4618,7 @@ async function sendApiDebugRequest(event) {
         ...authHeaders(),
       },
       body: request.body ? JSON.stringify(request.body) : undefined,
+      signal: controller.signal,
     });
     const text = await response.text();
     let payload;
@@ -4554,7 +4627,7 @@ async function sendApiDebugRequest(event) {
     } catch (error) {
       payload = text;
     }
-    $('apiResponseBox').textContent = typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2);
+    $('apiResponseBox').textContent = apiDebugOutput(payload, request, startedAt, { http_status: response.status });
     handleApiDebugPayload(payload);
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(payload);
@@ -4562,12 +4635,19 @@ async function sendApiDebugRequest(event) {
       finishExportProgress(payload, payload && payload.ok === false ? new Error(payload.error || '导出失败') : null);
     }
   } catch (error) {
-    $('apiResponseBox').textContent = JSON.stringify({ ok: false, error: error.message }, null, 2);
+    const aborted = error && error.name === 'AbortError';
+    const message = aborted
+      ? `前端调试超时 ${Math.round(timeoutMs / 1000)} 秒，后端或 QMT 可能仍在处理。请先检查绑定状态里的 SH/SZ 子桥是否在线，再缩小调试接口范围或调大 timeout。`
+      : error.message;
+    $('apiResponseBox').textContent = apiDebugOutput({ ok: false, error: message }, request, startedAt, { aborted });
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(null, error);
     } else if (isExportEndpoint(endpoint)) {
       finishExportProgress(null, error);
     }
+  } finally {
+    window.clearTimeout(timeoutId);
+    setApiDebugBusy(false);
   }
 }
 
@@ -5961,6 +6041,43 @@ async function refreshBindingStatuses() {
   }
 }
 
+function bindingVerifyKey(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
+  return [
+    String(accountKey || '').trim(),
+    String(bridgeId || '').trim(),
+    normalizeAccountType(accountType),
+    String(accountId || '').trim(),
+  ].join('|');
+}
+
+function updateBindingVerifyButtons() {
+  const busyKey = state.bindingVerifyBusyKey;
+  document.querySelectorAll('.verify-pair-btn').forEach((button) => {
+    const buttonKey = bindingVerifyKey(
+      button.dataset.accountId,
+      button.dataset.bridgeId,
+      button.dataset.accountType,
+      button.dataset.accountKey,
+    );
+    const loading = !!busyKey && busyKey === buttonKey;
+    button.disabled = !!busyKey;
+    button.classList.toggle('is-loading', loading);
+    if (loading) {
+      button.setAttribute('aria-busy', 'true');
+    } else {
+      button.removeAttribute('aria-busy');
+    }
+    const label = button.querySelector('.binding-verify-label');
+    if (label) label.textContent = loading ? '验证中' : '验证';
+  });
+}
+
+function setBindingVerifyBusy(accountId, bridgeId, accountType = 'STOCK', accountKey = '', busy = true) {
+  const key = bindingVerifyKey(accountId, bridgeId, accountType, accountKey);
+  state.bindingVerifyBusyKey = busy ? key : '';
+  updateBindingVerifyButtons();
+}
+
 function bindingStatusRowHtml(item, status, error, withVerify) {
   const selected = status && status.status ? status.status : status;
   const normalOnline = !!(selected && selected.normal && selected.normal.online);
@@ -5999,6 +6116,12 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const accountKey = item.accountKey || item.account_key || accountConfigKey('', config);
   const bridgeId = item.bridgeId || item.bridge_id || (config && config.bridge_id) || '';
   const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
+  const verifyKey = bindingVerifyKey(accountText, bridgeId, accountType, accountKey);
+  const verifying = !!state.bindingVerifyBusyKey && state.bindingVerifyBusyKey === verifyKey;
+  const verifyDisabled = state.bindingVerifyBusyKey ? ' disabled' : '';
+  const verifyBusy = verifying ? ' aria-busy="true"' : '';
+  const verifyClass = verifying ? ' verify-pair-btn is-loading' : ' verify-pair-btn';
+  const verifyLabel = verifying ? '验证中' : '验证';
   const preferredLabel = transportModeLabel(preferred, true);
   const effectiveLabel = transportModeLabel(effective, true);
   const statusClass = error ? 'offline' : (marketEnabled
@@ -6007,8 +6130,9 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const statusLabel = error ? '状态失败' : (marketEnabled
     ? (marketReadyCount >= 2 ? '市场路由在线' : (marketReadyCount > 0 ? '市场路由部分在线' : '市场路由离线'))
     : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线')));
+  const mainBridgeLabel = normalOnline || tradeOnline ? '在线' : (marketEnabled && marketReadyCount > 0 ? '未启用' : '离线');
   const connectionLines = marketEnabled && configuredMarketLines.length
-    ? [`主桥 ${normalOnline || tradeOnline ? '在线' : '离线'}`, ...configuredMarketLines.map((row) => row.text)]
+    ? [`主桥 ${mainBridgeLabel}`, ...configuredMarketLines.map((row) => row.text)]
     : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`];
   const connectionHtml = connectionLines
     .map((line) => `<small class="binding-cell-note binding-status-line">${esc(line)}</small>`)
@@ -6024,6 +6148,15 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
     </tr>`;
   }
   return `<tr class="binding-list-row" title="${esc(title)}">
+    <td data-label="操作">
+      <div class="binding-row-actions">
+        <button type="button" class="${verifyClass.trim()}" data-binding-action="verify" ${actionAttrs}${verifyDisabled}${verifyBusy}>
+          <span class="button-spinner" aria-hidden="true"></span><span class="binding-verify-label">${esc(verifyLabel)}</span>
+        </button>
+        <button type="button" data-binding-action="edit" ${actionAttrs}>编辑</button>
+        <button type="button" class="binding-delete-btn" data-binding-action="delete" ${actionAttrs}>删除</button>
+      </div>
+    </td>
     <td class="binding-name-cell" data-label="账号名称">
       <strong>${esc(displayName || '--')}</strong>
     </td>
@@ -6044,19 +6177,15 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
     </td>
     <td class="binding-dir-cell" data-label="QMT 目录" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
     <td data-label="数据源">${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
-    <td data-label="操作">
-      <div class="binding-row-actions">
-        <button type="button" class="verify-pair-btn" data-binding-action="verify" ${actionAttrs}>验证</button>
-        <button type="button" data-binding-action="edit" ${actionAttrs}>编辑</button>
-        <button type="button" class="binding-delete-btn" data-binding-action="delete" ${actionAttrs}>删除</button>
-      </div>
-    </td>
   </tr>`;
 }
 
 async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
   accountType = normalizeAccountType(accountType);
-  $('pairVerifyNote').textContent = `${accountId}`;
+  if (state.bindingVerifyBusyKey) return;
+  setBindingVerifyBusy(accountId, bridgeId, accountType, accountKey, true);
+  const note = $('pairVerifyNote');
+  if (note) note.textContent = `正在验证 ${accountId}...`;
   try {
     const data = await api('/api/account-pairs/verify', {
       method: 'POST',
@@ -6070,11 +6199,14 @@ async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey
       }),
     });
     renderPairVerification(data);
+    if (note) note.textContent = `验证完成：${accountId}`;
     log('账号验证完成', { account_id: accountId, account_type: accountType });
   } catch (error) {
     renderPairVerification(null);
-    $('pairVerifyNote').textContent = `验证失败：${error.message}`;
+    if (note) note.textContent = `验证失败：${error.message}`;
     log('账号验证失败', { account_id: accountId, account_type: accountType, error: error.message });
+  } finally {
+    setBindingVerifyBusy(accountId, bridgeId, accountType, accountKey, false);
   }
 }
 
@@ -8236,7 +8368,19 @@ function renderActiveTutorialMermaid() {
   window.requestAnimationFrame(() => renderMermaidDiagrams(panel));
 }
 
+function ensureOnboardingModalRoot() {
+  const backdrop = $('onboardingBackdrop');
+  const wizard = $('onboardingWizard');
+  if (backdrop && backdrop.parentElement !== document.body) {
+    document.body.appendChild(backdrop);
+  }
+  if (wizard && wizard.parentElement !== document.body) {
+    document.body.appendChild(wizard);
+  }
+}
+
 function showOnboardingModal(options = {}) {
+  ensureOnboardingModalRoot();
   syncOnboardingWizard({ force: !!options.force });
   const wizard = $('onboardingWizard');
   const backdrop = $('onboardingBackdrop');
