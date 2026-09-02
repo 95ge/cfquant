@@ -1,3 +1,4 @@
+/* finesse: register=product; surface=cfquant-runtime-architecture; density=7 */
 :root {
   --bg: #f4f6f8;
   --panel: #ffffff;
@@ -1802,6 +1803,278 @@ h2 {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.runtime-architecture-map {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  overflow-x: visible;
+  padding: 16px;
+  background:
+    linear-gradient(180deg, #fbfcfd 0%, #f5f8fb 100%);
+}
+
+.runtime-spine {
+  display: grid;
+  grid-template-columns: minmax(132px, 0.92fr) 36px minmax(158px, 1.08fr) 36px minmax(160px, 1.08fr) 36px minmax(158px, 1fr);
+  gap: 10px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.runtime-node,
+.runtime-mini-node {
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  min-width: 0;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.runtime-node {
+  min-height: 104px;
+  padding: 13px;
+}
+
+.runtime-mini-node {
+  min-height: 82px;
+  padding: 12px;
+}
+
+.runtime-node strong,
+.runtime-node span,
+.runtime-node code,
+.runtime-mini-node strong,
+.runtime-mini-node span,
+.runtime-landing-head strong,
+.runtime-landing-head span,
+.runtime-direct-note strong,
+.runtime-direct-note span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-node strong,
+.runtime-mini-node strong,
+.runtime-landing-head strong,
+.runtime-direct-note strong {
+  color: #17202a;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.runtime-node span,
+.runtime-mini-node span,
+.runtime-landing-head span,
+.runtime-direct-note span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.runtime-node code,
+.runtime-direct-note code {
+  width: fit-content;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid #dce3ea;
+  border-radius: 6px;
+  background: #f7f9fb;
+  color: #334155;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.runtime-node.client {
+  border-color: #c8d3df;
+  background: #f8fafc;
+}
+
+.runtime-node.registry,
+.runtime-mini-node.lttx-core {
+  border-color: #b9d3fb;
+  background: #eef5ff;
+}
+
+.runtime-node.web,
+.runtime-mini-node.hub {
+  border-color: #b8d9c6;
+  background: #f1f8f4;
+}
+
+.runtime-node.router {
+  border-color: #efc48e;
+  background: #fff8ec;
+}
+
+.runtime-mini-node.bridge,
+.runtime-mini-node.normal {
+  border-color: #d8e2ec;
+  background: #f8fafc;
+}
+
+.runtime-mini-node.qmt,
+.runtime-mini-node.trade-fast {
+  border-color: #e1d392;
+  background: #fffbea;
+}
+
+.runtime-arrow,
+.runtime-mini-arrow {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.runtime-arrow::before,
+.runtime-mini-arrow::before {
+  position: absolute;
+  right: 7px;
+  left: 7px;
+  top: 50%;
+  height: 1px;
+  background: #9aa8b7;
+  content: "";
+}
+
+.runtime-arrow::after,
+.runtime-mini-arrow::after {
+  position: absolute;
+  right: 2px;
+  top: calc(50% - 4px);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid #9aa8b7;
+  content: "";
+}
+
+.runtime-arrow span {
+  position: relative;
+  z-index: 1;
+  max-width: 58px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #f8fbfe;
+}
+
+.runtime-landing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.runtime-landing {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.runtime-landing.pipe {
+  border-color: #c8ddcf;
+}
+
+.runtime-landing.lttx {
+  border-color: #c5d7f4;
+}
+
+.runtime-landing-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.runtime-landing-head span {
+  max-width: 54%;
+  text-align: right;
+}
+
+.runtime-mini-flow {
+  display: grid;
+  grid-template-columns: minmax(94px, 0.8fr) 24px minmax(148px, 1.2fr) 24px minmax(86px, 0.8fr);
+  gap: 8px;
+  align-items: stretch;
+}
+
+.runtime-split-flow {
+  display: grid;
+  grid-template-columns: minmax(82px, 0.65fr) 24px minmax(94px, 0.9fr) minmax(122px, 1.2fr);
+  gap: 8px;
+  align-items: stretch;
+}
+
+.runtime-split-lines {
+  position: relative;
+  min-width: 0;
+  min-height: 82px;
+}
+
+.runtime-split-lines::before {
+  position: absolute;
+  left: 7px;
+  right: 2px;
+  top: 50%;
+  height: 1px;
+  background: #9aa8b7;
+  content: "";
+}
+
+.runtime-split-lines::after {
+  position: absolute;
+  right: 2px;
+  top: calc(50% - 4px);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid #9aa8b7;
+  content: "";
+}
+
+.runtime-split-lines span {
+  position: absolute;
+  top: calc(50% - 12px);
+  bottom: calc(50% - 12px);
+  width: 1px;
+  background: #9aa8b7;
+}
+
+.runtime-split-lines span:first-child {
+  right: 18px;
+  transform: translateY(-24px);
+}
+
+.runtime-split-lines span:last-child {
+  right: 18px;
+  transform: translateY(24px);
+}
+
+.runtime-direct-note {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+  padding: 12px 13px;
+  border: 1px solid #dce3ea;
+  border-left: 4px solid #f2c94c;
+  border-radius: 8px;
+  background: #fffdf4;
 }
 
 @keyframes homeZoomBreath {
@@ -4181,6 +4454,13 @@ tr.order-row-updated td {
   font-weight: 650;
 }
 
+.guide-section h4 {
+  margin: 18px 0 8px;
+  color: #17202a;
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .guide-section p {
   max-width: 980px;
   margin: 8px 0;
@@ -5360,6 +5640,88 @@ tr.order-row-updated td {
   grid-row: 1 / span 2;
 }
 
+.guide-mermaid-card {
+  min-width: 0;
+  margin-top: 10px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #dce3ea;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.guide-mermaid-card + .guide-mermaid-card {
+  margin-top: 12px;
+}
+
+.guide-mermaid-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.guide-mermaid-grid .guide-mermaid-card {
+  margin-top: 0;
+}
+
+.guide-mermaid-card.wide .mermaid {
+  min-width: 0;
+}
+
+.guide-mermaid-card.doc-wide .mermaid {
+  min-width: 2200px;
+}
+
+.guide-mermaid-card.mode-map .mermaid {
+  min-width: 2100px;
+}
+
+.guide-mermaid-card.sequence .mermaid {
+  min-width: 1600px;
+}
+
+.guide-mermaid-card.compact .mermaid {
+  min-width: 920px;
+}
+
+.guide-mermaid-card.mini .mermaid {
+  min-width: 560px;
+}
+
+.guide-mermaid-card .mermaid {
+  margin: 0;
+  color: var(--text);
+  font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.guide-mermaid-card svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  height: auto;
+  margin: 0;
+}
+
+.guide-mermaid-card.mermaid-fallback .mermaid {
+  padding: 10px 12px;
+  border: 1px solid #dce3ea;
+  border-radius: 6px;
+  background: #f8fafc;
+  font-family: Consolas, "Courier New", monospace;
+  white-space: pre;
+}
+
+.mermaid-fallback-note {
+  margin-bottom: 10px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .guide-callout {
   display: grid;
   gap: 6px;
@@ -5514,6 +5876,14 @@ tr.order-row-updated td {
 
 .guide-table-wrap table {
   min-width: 620px;
+}
+
+.guide-table-wrap.architecture-table table {
+  min-width: 1180px;
+}
+
+.guide-table-wrap.runtime-table table {
+  min-width: 920px;
 }
 
 .guide-table-wrap td {
@@ -5785,6 +6155,7 @@ tr.order-row-updated td {
   .tutorial-layout,
   .home-intro,
   .core-link-layout,
+  .guide-mermaid-grid,
   .web-tutorial-grid,
   .guide-grid,
   .api-layout,
@@ -5849,6 +6220,88 @@ tr.order-row-updated td {
 
   .home-mode-summary {
     grid-template-columns: 1fr;
+  }
+
+  .runtime-architecture-map {
+    overflow-x: visible;
+  }
+
+  .runtime-spine,
+  .runtime-landing-grid,
+  .runtime-direct-note {
+    min-width: 0;
+  }
+
+  .runtime-spine,
+  .runtime-landing-grid,
+  .runtime-mini-flow,
+  .runtime-split-flow,
+  .runtime-direct-note {
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-arrow,
+  .runtime-mini-arrow {
+    min-height: 28px;
+  }
+
+  .runtime-arrow::before,
+  .runtime-mini-arrow::before {
+    right: 50%;
+    left: 50%;
+    top: 2px;
+    width: 1px;
+    height: 22px;
+  }
+
+  .runtime-arrow::after,
+  .runtime-mini-arrow::after {
+    right: calc(50% - 4px);
+    top: 22px;
+    border-top: 7px solid #9aa8b7;
+    border-right: 4px solid transparent;
+    border-left: 4px solid transparent;
+    border-bottom: 0;
+  }
+
+  .runtime-arrow span {
+    max-width: none;
+    background: #f5f8fb;
+  }
+
+  .runtime-landing-head {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .runtime-landing-head span {
+    max-width: none;
+    text-align: left;
+  }
+
+  .runtime-split-lines {
+    min-height: 30px;
+  }
+
+  .runtime-split-lines::before {
+    left: 50%;
+    right: auto;
+    top: 2px;
+    width: 1px;
+    height: 24px;
+  }
+
+  .runtime-split-lines::after {
+    right: calc(50% - 4px);
+    top: 24px;
+    border-top: 7px solid #9aa8b7;
+    border-right: 4px solid transparent;
+    border-left: 4px solid transparent;
+    border-bottom: 0;
+  }
+
+  .runtime-split-lines span {
+    display: none;
   }
 
   .settings-layout {

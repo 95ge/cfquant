@@ -22,6 +22,7 @@ from .xttype import (
     XtPosition,
     XtSmtAppointmentResponse,
     XtTrade,
+    filter_cancelable_orders,
     to_objects,
 )
 
@@ -64,6 +65,12 @@ def _first_response_item(result):
     if isinstance(result, list):
         return result[0] if result else None
     return result
+
+
+def _truthy_param(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "y", "on")
+    return bool(value)
 
 
 def _account_type_value(account_type):
@@ -383,11 +390,15 @@ class XtQuantTrader(object):
         return None
 
     def query_stock_orders(self, account, cancelable_only=False):
+        cancelable_only = _truthy_param(cancelable_only)
         result = self._trade_request("xttrader.query_stock_orders", {
             "account": _account_payload(account),
             "cancelable_only": cancelable_only,
         })
-        return _attach_account_fields(to_objects(result, XtOrder), account)
+        orders = to_objects(result, XtOrder)
+        if cancelable_only:
+            orders = filter_cancelable_orders(orders)
+        return _attach_account_fields(orders, account)
 
     def query_stock_orders_async(self, account, callback, cancelable_only=False):
         seq = next(self._seq)
