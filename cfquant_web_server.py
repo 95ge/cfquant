@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260902_01"
+WEB_VERSION = "web_20260902_03"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -3813,13 +3813,32 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
     hub = PIPE_HUB.status()
     hub_status = hub.get("status") or {}
     connected_channels = set(hub_status.get("qmt_channels") or [])
+    rx_raw = hub_status.get("qmt_rx_channels")
+    tx_raw = hub_status.get("qmt_tx_channels")
+    ready_raw = hub_status.get("qmt_ready_channels")
+    has_directional_channels = isinstance(rx_raw, list) or isinstance(tx_raw, list) or isinstance(ready_raw, list)
+    rx_channels = set(rx_raw or [])
+    tx_channels = set(tx_raw or [])
+    ready_channels = set(ready_raw or [])
+    hub_running = bool(hub.get("running"))
+
+    def pipe_channel_ready(channel):
+        if has_directional_channels:
+            return channel in ready_channels or (channel in rx_channels and channel in tx_channels)
+        return channel in connected_channels
+
+    def pipe_channel_online(channel):
+        return bool(hub_running and pipe_channel_ready(channel))
+
     now = time.time()
+    normal_online = pipe_channel_online(channels["normal"])
+    trade_online = pipe_channel_online(channels["trade"])
     result = {
         "bridge_id": bridge_id,
         "bridge_name": bridge_config(bridge_id)["name"],
         "runtime_report": RUNTIME_VERSIONS.latest(bridge_id),
         "normal": {
-            "online": bool(hub.get("running") and channels["normal"] in connected_channels),
+            "online": normal_online,
             "channel": channels["normal"],
             "probe_action": "pipe_hub.status",
             "status": {
@@ -3827,11 +3846,14 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
                 "transport": "pipe",
                 "pipe_name": hub.get("pipe_name"),
                 "request_channel": channels["normal"],
-                "pipe_connected": channels["normal"] in connected_channels,
+                "pipe_connected": normal_online,
+                "pipe_ready_channel": pipe_channel_ready(channels["normal"]),
+                "pipe_rx_connected": channels["normal"] in rx_channels,
+                "pipe_tx_connected": channels["normal"] in tx_channels,
             },
         },
         "trade": {
-            "online": bool(hub.get("running") and channels["trade"] in connected_channels),
+            "online": trade_online,
             "channel": channels["trade"],
             "probe_action": "pipe_hub.status",
             "status": {
@@ -3839,7 +3861,10 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
                 "transport": "pipe",
                 "pipe_name": hub.get("pipe_name"),
                 "request_channel": channels["trade"],
-                "pipe_connected": channels["trade"] in connected_channels,
+                "pipe_connected": trade_online,
+                "pipe_ready_channel": pipe_channel_ready(channels["trade"]),
+                "pipe_rx_connected": channels["trade"] in rx_channels,
+                "pipe_tx_connected": channels["trade"] in tx_channels,
             },
         },
         "checked_at": now,

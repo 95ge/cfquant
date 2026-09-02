@@ -13,6 +13,7 @@ from .pipe_transport import (
     wait_for_pipe_client,
 )
 from .protocol import loads_message, pack_event, pack_response
+from .version import __version__ as CORE_VERSION
 
 
 def default_status_file(filename):
@@ -161,7 +162,15 @@ class CfquantPipeHub(object):
                 with self.state_lock:
                     if conn not in self.client_ids_by_conn:
                         break
-            time.sleep(1.0)
+            try:
+                raw = conn.read_frame()
+            except Exception as e:
+                if self.running:
+                    self._log("pipe passive rx closed role=%s error=%s" % (role, e))
+                break
+            if raw is None:
+                break
+            self._log("pipe ignored passive frame role=%s len=%s" % (role, len(raw or "")))
 
     def _handle_hello(self, conn, envelope, current_role):
         role = envelope.get("role") or current_role
@@ -473,17 +482,25 @@ class CfquantPipeHub(object):
     def _write_status(self):
         try:
             with self.qmt_lock:
-                qmt_channels = sorted(set(self.qmt_rx_by_channel.keys()) | set(self.qmt_tx_by_channel.keys()))
+                qmt_rx_channels = sorted(set(self.qmt_rx_by_channel.keys()))
+                qmt_tx_channels = sorted(set(self.qmt_tx_by_channel.keys()))
+                qmt_channels = sorted(set(qmt_rx_channels) | set(qmt_tx_channels))
+                qmt_ready_channels = sorted(set(qmt_rx_channels) & set(qmt_tx_channels))
             with self.state_lock:
                 pending_ids = list(self.pending.keys())[-20:]
                 client_count = len(set(self.client_by_id.values()))
             data = {
                 "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "pipe_name": self.pipe_name,
+                "core_version": CORE_VERSION,
+                "hub_status_schema": 2,
                 "running": self.running,
                 "pid": os.getpid(),
                 "qmt_channels": qmt_channels,
-                "qmt_connected": bool(qmt_channels),
+                "qmt_rx_channels": qmt_rx_channels,
+                "qmt_tx_channels": qmt_tx_channels,
+                "qmt_ready_channels": qmt_ready_channels,
+                "qmt_connected": bool(qmt_ready_channels or qmt_channels),
                 "pending_count": len(self.pending),
                 "pending_ids": pending_ids,
                 "api_client_count": client_count,

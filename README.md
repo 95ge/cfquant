@@ -204,6 +204,21 @@ cfquant/
 
 ## 版本日志
 
+### web_20260902_03
+
+- PipeHub 状态判断改为优先使用 `qmt_rx_channels`、`qmt_tx_channels` 和 `qmt_ready_channels`，只有 SH/SZ 子桥双向管道都在线时才显示市场路由在线，避免旧单边连接残留误判。
+
+### core_20260902_02
+
+- PipeHub 持续监听被动 RX 管道，QMT 端断开后立即清理对应 SH/SZ 通道，修复停止 SZ 后网页仍显示 SZ 在线、启动 SH 后仍识别不到 SH 的问题。
+- 同账号独立市场 SH/SZ 入口会覆盖由上一市场入口留下的 `CFQUANT_BRIDGE_CONFIG_FILE`，并优先读取各自的 `cfquant_bridge_config_SH.json` / `cfquant_bridge_config_SZ.json`。
+- 极致模式 Lite 运行时上报增加市场标识和父桥 ID，便于 Web 端确认当前 QMT 脚本实际注册的是 SH 还是 SZ。
+
+### web_20260902_02
+
+- 绑定保存增加页面内状态提示，保存中、保存成功、目录缺失和保存失败都会在绑定页直接显示。
+- 绑定列表在小分辨率下改为逐账号卡片布局，连接状态、内部通道和 QMT 目录完整换行显示，便于排查 SH/SZ 市场路由在线状态。
+
 ### core_20260902_01
 
 - `qmt_scripts/同账号独立市场/` 下的 SH/SZ 入口改为完整自包含文件，不再读取上一层目录入口，避免受限 QMT 环境触发 `PermissionError: Foribdden FileIO`。

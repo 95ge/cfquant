@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260901_arch_03';
+const FRONTEND_VERSION = 'web_20260902_03';
 
 const state = {
   accountId: '',
@@ -93,6 +93,7 @@ const state = {
   statusRefreshInFlight: false,
   callbackRefreshInFlight: false,
   bindingStatusRefreshInFlight: false,
+  bindingNoticeTimer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1000,6 +1001,74 @@ function log(message, data) {
   while (box.children.length > LOG_ENTRY_LIMIT) {
     box.removeChild(box.lastElementChild);
   }
+}
+
+function setBindingNotice(message = '', level = 'info', options = {}) {
+  const nodes = [$('bindingPageNotice'), $('bindingSaveStatus')].filter(Boolean);
+  if (!nodes.length) return;
+  if (state.bindingNoticeTimer) {
+    window.clearTimeout(state.bindingNoticeTimer);
+    state.bindingNoticeTimer = null;
+  }
+  const safeLevel = ['info', 'success', 'warn', 'error', 'busy'].includes(level) ? level : 'info';
+  nodes.forEach((node) => {
+    node.textContent = message || '';
+    node.classList.toggle('hidden', !message);
+    ['is-info', 'is-success', 'is-warn', 'is-error', 'is-busy'].forEach((name) => node.classList.remove(name));
+    if (message) node.classList.add(`is-${safeLevel}`);
+  });
+  if (message && options.autoHide !== false) {
+    state.bindingNoticeTimer = window.setTimeout(() => setBindingNotice(''), options.duration || 6500);
+  }
+}
+
+function setBindingSaveBusy(isBusy, text = '保存中...') {
+  const form = $('bindingForm');
+  const submitBtn = form ? form.querySelector('button[type="submit"]') : null;
+  if (submitBtn) {
+    if (!submitBtn.dataset.defaultText) submitBtn.dataset.defaultText = submitBtn.textContent || '保存绑定';
+    submitBtn.disabled = !!isBusy;
+    submitBtn.textContent = isBusy ? text : submitBtn.dataset.defaultText;
+  }
+  const savePairBtn = $('savePairBtn');
+  if (savePairBtn) {
+    if (!savePairBtn.dataset.defaultText) savePairBtn.dataset.defaultText = savePairBtn.textContent || '保存当前账号';
+    savePairBtn.disabled = !!isBusy;
+    savePairBtn.textContent = isBusy ? text : savePairBtn.dataset.defaultText;
+  }
+}
+
+function bindingMarketRouteHasMissingDir(enabled, routes = {}) {
+  if (!enabled) return false;
+  return ['SH', 'SZ'].some((market) => !String(routes[market] && routes[market].qmt_dir || '').trim());
+}
+
+function bindingSaveSummary({
+  accountId,
+  accountType,
+  displayName,
+  mode,
+  qmtDir,
+  dataProvider,
+  marketRoutingEnabled,
+  marketBridges,
+  legacyFallback,
+} = {}) {
+  const name = displayName ? `${displayName} / ${accountId}` : accountId;
+  const parts = [
+    `绑定已保存：${name || '未命名账号'}`,
+    accountTypeLabel(accountType || 'STOCK'),
+    `${transportModeLabel(mode || 'ctypes', true)}模式`,
+  ];
+  if (marketRoutingEnabled) {
+    const missing = ['SH', 'SZ'].filter((market) => !String(marketBridges && marketBridges[market] && marketBridges[market].qmt_dir || '').trim());
+    parts.push(missing.length ? `市场路由已启用，${missing.join('/')}目录未填写` : '市场路由已启用，SH/SZ目录已记录');
+  } else {
+    parts.push(qmtDir ? 'QMT目录已记录' : 'QMT目录未填写');
+  }
+  if (dataProvider) parts.push('共享行情源');
+  if (legacyFallback) parts.push('后端使用兼容保存，重启 Web 后可保存完整运行配置');
+  return parts.join('，');
 }
 
 async function api(path, options = {}) {
@@ -5287,38 +5356,66 @@ async function saveCurrentAccountPair() {
     },
   };
   if (!accountId) {
+    setBindingNotice('请先选择或填写资金账号，再保存绑定。', 'error', { autoHide: false });
     log('账号为空，无法保存配对');
     return;
   }
-  const data = await saveAccountConfigRequest({
-    account_id: accountId,
-    account_type: accountType,
-    account_key: accountKey,
-    qmt_dir: qmtDir,
-    mode,
-    data_provider: dataProvider,
-    market_routing_enabled: marketRoutingEnabled,
-    market_bridges: marketBridges,
-  });
-  state.accountPairs = data.account_pairs || {};
-  state.accountConfigs = data.account_configs || state.accountConfigs;
-  state.setup = data.setup || state.setup;
-  state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
-  state.bridges = data.bridges || state.bridges;
-  state.accountId = accountId;
-  state.accountType = accountType;
-  state.accountKey = (data.account && data.account.account_key) || accountKey;
-  renderBridgeSelect(state.bridges);
-  renderAccountSelect();
-  applyAccountPair(state.accountKey || accountId);
-  syncBindingForm();
-  renderAccountPairs();
-  await refreshBindingStatuses();
-  log('账号配置已保存', { account_id: accountId, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
-  if (data.qmt_bridge_identity) {
-    log('ctypes 身份配置已处理', data.qmt_bridge_identity);
+  setBindingSaveBusy(true);
+  setBindingNotice('正在保存账号绑定并刷新连接状态...', 'busy', { autoHide: false });
+  try {
+    const data = await saveAccountConfigRequest({
+      account_id: accountId,
+      account_type: accountType,
+      account_key: accountKey,
+      qmt_dir: qmtDir,
+      mode,
+      data_provider: dataProvider,
+      market_routing_enabled: marketRoutingEnabled,
+      market_bridges: marketBridges,
+    });
+    state.accountPairs = data.account_pairs || {};
+    state.accountConfigs = data.account_configs || state.accountConfigs;
+    state.setup = data.setup || state.setup;
+    state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
+    state.bridges = data.bridges || state.bridges;
+    state.accountId = accountId;
+    state.accountType = accountType;
+    state.accountKey = (data.account && data.account.account_key) || accountKey;
+    renderBridgeSelect(state.bridges);
+    renderAccountSelect();
+    applyAccountPair(state.accountKey || accountId);
+    syncBindingForm();
+    renderAccountPairs();
+    let refreshError = null;
+    try {
+      await refreshBindingStatuses();
+    } catch (error) {
+      refreshError = error;
+      log('绑定状态刷新失败', { error: error.message });
+    }
+    const noticeLevel = refreshError || data.legacy_fallback || bindingMarketRouteHasMissingDir(marketRoutingEnabled, marketBridges) ? 'warn' : 'success';
+    const noticeMessage = bindingSaveSummary({
+      accountId,
+      accountType,
+      mode,
+      qmtDir,
+      dataProvider,
+      marketRoutingEnabled,
+      marketBridges,
+      legacyFallback: !!data.legacy_fallback,
+    });
+    setBindingNotice(refreshError ? `${noticeMessage}，连接状态刷新失败：${refreshError.message}` : noticeMessage, noticeLevel);
+    log('账号配置已保存', { account_id: accountId, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
+    if (data.qmt_bridge_identity) {
+      log('ctypes 身份配置已处理', data.qmt_bridge_identity);
+    }
+    if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
+  } catch (error) {
+    setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
+    log('账号配置保存失败', { error: error.message });
+  } finally {
+    setBindingSaveBusy(false);
   }
-  if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
 }
 
 async function removeCurrentAccountPair() {
@@ -5585,9 +5682,13 @@ async function submitBindingForm(event) {
     },
   };
   if (!accountId) {
+    setBindingNotice('请填写资金账号后再保存绑定。', 'error', { autoHide: false });
+    if (form.account_id) form.account_id.focus();
     log('账号为空，无法保存绑定');
     return;
   }
+  setBindingSaveBusy(true);
+  setBindingNotice('正在保存绑定并刷新连接状态...', 'busy', { autoHide: false });
   try {
     const data = await saveAccountConfigRequest({
       account_id: accountId,
@@ -5629,15 +5730,37 @@ async function submitBindingForm(event) {
     applyAccountPair(state.accountKey);
     syncBindingForm();
     renderAccountPairs();
-    await refreshBindingStatuses();
+    let refreshError = null;
+    try {
+      await refreshBindingStatuses();
+    } catch (error) {
+      refreshError = error;
+      log('绑定状态刷新失败', { error: error.message });
+    }
     closeBindingDialog();
+    const noticeLevel = refreshError || data.legacy_fallback || bindingMarketRouteHasMissingDir(marketRoutingEnabled, marketBridges) ? 'warn' : 'success';
+    const noticeMessage = bindingSaveSummary({
+      accountId,
+      accountType,
+      displayName,
+      mode,
+      qmtDir,
+      dataProvider,
+      marketRoutingEnabled,
+      marketBridges,
+      legacyFallback: !!data.legacy_fallback,
+    });
+    setBindingNotice(refreshError ? `${noticeMessage}，连接状态刷新失败：${refreshError.message}` : noticeMessage, noticeLevel);
     log('账号配置已保存', { account_id: accountId, display_name: displayName, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
     if (data.qmt_bridge_identity) {
       log('ctypes 身份配置已处理', data.qmt_bridge_identity);
     }
     if (!qmtDir) log('QMT 核心目录未填写，该账号自动更新不可用', { account_id: accountId, account_type: accountType });
   } catch (error) {
+    setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
     log('账号配置保存失败', { error: error.message });
+  } finally {
+    setBindingSaveBusy(false);
   }
 }
 
@@ -5780,9 +5903,12 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const statusLabel = error ? '状态失败' : (marketEnabled
     ? (marketReadyCount >= 2 ? '市场路由在线' : (marketReadyCount > 0 ? '市场路由部分在线' : '市场路由离线'))
     : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线')));
-  const channelText = marketEnabled && marketStatusText
-    ? `主桥 ${normalOnline || tradeOnline ? '在线' : '离线'} / ${marketStatusText}`
-    : `普通${normalOnline ? '在线' : '离线'} / 极速${tradeOnline ? '在线' : '离线'}`;
+  const connectionLines = marketEnabled && configuredMarketLines.length
+    ? [`主桥 ${normalOnline || tradeOnline ? '在线' : '离线'}`, ...configuredMarketLines.map((row) => row.text)]
+    : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`];
+  const connectionHtml = connectionLines
+    .map((line) => `<small class="binding-cell-note binding-status-line">${esc(line)}</small>`)
+    .join('');
   const actionAttrs = `data-account-id="${esc(accountText)}" data-account-type="${esc(accountType)}" data-account-key="${esc(accountKey)}" data-bridge-id="${esc(bridgeId)}" data-display-name="${esc(displayName)}"`;
   if (!withVerify) {
     return `<tr title="${esc(title)}">
@@ -5794,27 +5920,27 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
     </tr>`;
   }
   return `<tr class="binding-list-row" title="${esc(title)}">
-    <td class="binding-name-cell">
+    <td class="binding-name-cell" data-label="账号名称">
       <strong>${esc(displayName || '--')}</strong>
     </td>
-    <td class="binding-account-cell">
+    <td class="binding-account-cell" data-label="资金账号">
       <strong>${esc(accountText)}</strong>
       <small>${esc(accountTypeLabel(accountType))}</small>
     </td>
-    <td>
+    <td class="binding-status-cell" data-label="连接状态">
       <span class="status-dot ${esc(statusClass)}">${esc(statusLabel)}</span>
-      <small class="binding-cell-note">${esc(channelText)}</small>
+      ${connectionHtml}
     </td>
-    <td>${esc(preferredLabel)}模式</td>
-    <td><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}模式${status && status.fallback ? '（已回退）' : ''}</span></td>
-    <td>
+    <td data-label="首选模式">${esc(preferredLabel)}模式</td>
+    <td data-label="实际模式"><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}模式${status && status.fallback ? '（已回退）' : ''}</span></td>
+    <td class="binding-channel-cell" data-label="内部通道">
       <strong class="binding-bridge-name">${esc(bridgeName)}</strong>
       <small class="binding-cell-note">${esc(bridgeId || 'default')}</small>
       ${marketEnabled && marketStatusText ? `<small class="binding-cell-note">${esc(marketStatusText)}</small>` : ''}
     </td>
-    <td class="binding-dir-cell" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
-    <td>${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
-    <td>
+    <td class="binding-dir-cell" data-label="QMT 目录" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
+    <td data-label="数据源">${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
+    <td data-label="操作">
       <div class="binding-row-actions">
         <button type="button" class="verify-pair-btn" data-binding-action="verify" ${actionAttrs}>验证</button>
         <button type="button" data-binding-action="edit" ${actionAttrs}>编辑</button>

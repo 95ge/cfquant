@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260902_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260902_03">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -581,6 +581,7 @@
                 <strong>列表维护账号绑定</strong>
                 <span>绑定信息、运行状态和验证入口集中显示。</span>
               </div>
+              <div id="bindingPageNotice" class="binding-page-notice hidden" role="status" aria-live="polite"></div>
             </div>
           </div>
 
@@ -2927,6 +2928,7 @@ USER_BRIDGE_ID = "qmt2"</pre>
           <input id="bindingDataProvider" name="data_provider" type="checkbox">
           <span>作为共享行情数据提供商</span>
         </label>
+        <div id="bindingSaveStatus" class="binding-save-status hidden" role="status" aria-live="polite"></div>
         <div class="binding-dialog-actions">
           <button id="reinitializeSetupBtn" type="button">重新初始化默认配置</button>
           <span id="bindingDialogHint" class="metric-note"></span>
@@ -2985,6 +2987,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260902_01"></script>
+  <script src="/app.js?v=web_20260902_03"></script>
 </body>
 </html>
