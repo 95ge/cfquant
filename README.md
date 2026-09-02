@@ -204,6 +204,11 @@ cfquant/
 
 ## 版本日志
 
+### web_20260902_04
+
+- 市场路由账号作为共享行情源时，`xtdata.*` 请求优先走 SH/SZ 子桥 `normal` 通道，避免主桥离线时报 `cfquant.normal.request` 未连接。
+- 同账号独立市场的持仓聚合增加子桥 `normal` 通道补查，并按实际市场过滤合并行，修复 SZ 持仓可能被漏显示的问题。
+
 ### web_20260902_03
 
 - PipeHub 状态判断改为优先使用 `qmt_rx_channels`、`qmt_tx_channels` 和 `qmt_ready_channels`，只有 SH/SZ 子桥双向管道都在线时才显示市场路由在线，避免旧单边连接残留误判。

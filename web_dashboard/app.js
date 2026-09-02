@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260902_03';
+const FRONTEND_VERSION = 'web_20260902_04';
 
 const state = {
   accountId: '',
@@ -3264,6 +3264,35 @@ function setProjectUpdateControlsBusy(busy = state.projectUpdateBusy) {
 }
 
 function qmtUpdateProgressSteps(kind) {
+  if (kind === 'project-upload') {
+    return [
+      { key: 'prepare', label: '确认 Web 更新目标', percent: 8 },
+      { key: 'upload', label: '上传项目源码 zip', percent: 42 },
+      { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
+      { key: 'install', label: '替换 Web 项目文件', percent: 82 },
+      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'done', label: '更新完成', percent: 100 },
+    ];
+  }
+  if (kind === 'project-rollback') {
+    return [
+      { key: 'prepare', label: '确认 Web 回滚目标', percent: 12 },
+      { key: 'backup', label: '备份当前 Web 项目', percent: 36 },
+      { key: 'restore', label: '恢复选中备份', percent: 76 },
+      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'done', label: '回滚完成', percent: 100 },
+    ];
+  }
+  if (kind === 'project-official') {
+    return [
+      { key: 'prepare', label: '确认 Web 更新目标', percent: 8 },
+      { key: 'download', label: '连接官网并下载发布包', percent: 38 },
+      { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
+      { key: 'install', label: '替换 Web 项目文件', percent: 82 },
+      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'done', label: '更新完成', percent: 100 },
+    ];
+  }
   if (kind === 'upload') {
     return [
       { key: 'prepare', label: '确认更新目标', percent: 8 },
@@ -3315,7 +3344,7 @@ function renderQmtUpdateProgress() {
   const closeBtn = $('qmtUpdateProgressCloseBtn');
   const closeBottomBtn = $('qmtUpdateProgressCloseBottomBtn');
   const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
-  if (title) title.textContent = progress.title || 'QMT 核心更新进度';
+  if (title) title.textContent = progress.title || '系统更新进度';
   if (percentText) percentText.textContent = `${Math.round(percent)}%`;
   if (bar) {
     bar.style.width = `${percent}%`;
@@ -3341,7 +3370,7 @@ function openQmtUpdateProgress(kind, title, detail) {
   const steps = qmtUpdateProgressSteps(kind);
   state.qmtUpdateProgress = {
     kind,
-    title: title || 'QMT 核心更新进度',
+    title: title || '系统更新进度',
     detail: detail || '',
     status: 'running',
     stepIndex: 0,
@@ -3834,9 +3863,52 @@ function handleProjectReload(reloadInfo, message) {
   if (!reloadInfo) return;
   const nextUrl = reloadInfo.next_url || window.location.href;
   log(message || 'Web 正在重启', { next_url: nextUrl });
+  const delayMs = state.qmtUpdateProgress && state.qmtUpdateProgress.status === 'done' ? 4200 : 2600;
   window.setTimeout(() => {
     window.location.href = nextUrl || window.location.href;
-  }, 2600);
+  }, delayMs);
+}
+
+function projectReloadProgressText(data, actionText) {
+  const reloadInfo = data && data.reload;
+  const version = data && data.current_version ? `，当前版本 ${data.current_version}` : '';
+  if (reloadInfo) return `${actionText}${version}。Web 服务即将重启，页面会自动跳转。`;
+  return `${actionText}${version}。`;
+}
+
+function uploadProjectUpdateZip(formData, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/project-updates/upload');
+    Object.entries(authHeaders()).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== '') xhr.setRequestHeader(key, value);
+    });
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || typeof onProgress !== 'function') return;
+      onProgress(event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      let payload = null;
+      try {
+        payload = JSON.parse(xhr.responseText || '{}');
+      } catch (error) {
+        reject(new Error(`项目更新接口返回无法解析：${error.message}`));
+        return;
+      }
+      if (xhr.status === 401 && webAuthEnabled()) {
+        clearWebAuthToken();
+        showWebAuthOverlay('请先登录');
+      }
+      if (!payload.ok) {
+        reject(new Error((payload && payload.error) || `HTTP ${xhr.status}`));
+        return;
+      }
+      resolve(payload.data);
+    };
+    xhr.onerror = () => reject(new Error('上传项目 zip 更新请求失败'));
+    xhr.onabort = () => reject(new Error('上传项目 zip 更新请求已中断'));
+    xhr.send(formData);
+  });
 }
 
 async function refreshProjectUpdateStatus(options = {}) {
@@ -3884,22 +3956,33 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   }
   const confirmed = window.confirm(confirmText);
   if (!confirmed) return;
+  openQmtUpdateProgress(
+    'project-official',
+    'Web 项目更新',
+    '正在准备从官网优先源更新 Web 项目...'
+  );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
+    setQmtUpdateProgressStep('download', '正在连接官网并下载 Web 项目发布包...');
     const data = await api('/api/project-updates/official', {
       method: 'POST',
       body: JSON.stringify({ site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, reload: true }),
     });
+    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已替换，正在准备重启 Web 服务...' : 'Web 项目已替换，正在刷新页面状态...');
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: false });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目更新完成'));
     log('Web 项目已从官网优先更新', {
       version: data.current_version || '',
       copied_files: data.copied_files || 0,
       source: options.source || 'settings',
     });
     handleProjectReload(data.reload, 'Web 项目已更新，正在重启');
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     state.versionUpdateBusy = false;
     setProjectUpdateControlsBusy(false);
@@ -3919,22 +4002,32 @@ async function uploadProjectZipUpdateFromUi() {
   const formData = new FormData();
   formData.append('reload', '1');
   formData.append('file', file, file.name);
+  openQmtUpdateProgress(
+    'project-upload',
+    'Web 项目 zip 更新',
+    `正在上传项目源码 zip：${file.name}`
+  );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
-    const response = await fetch('/api/project-updates/upload', { method: 'POST', headers: authHeaders(), body: formData });
-    const payload = await response.json();
-    if (!payload.ok) {
-      throw new Error(payload.error || `HTTP ${response.status}`);
-    }
-    renderProjectUpdateResult(payload.data);
-    alertUpdateNotice(payload.data, { forceQmtRestart: false });
-    log('Web 项目已通过 zip 更新', {
-      version: payload.data.current_version || '',
-      copied_files: payload.data.copied_files || 0,
+    const data = await uploadProjectUpdateZip(formData, (loaded, total) => {
+      const uploadPercent = total > 0 ? Math.round((loaded / total) * 100) : 0;
+      const mapped = 8 + Math.min(34, Math.round(uploadPercent * 0.34));
+      setQmtUpdateProgressStep('upload', `正在上传项目源码 zip：${uploadPercent}%`, mapped);
     });
-    handleProjectReload(payload.data.reload, 'Web 项目 zip 更新完成，正在重启');
+    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已替换，正在准备重启 Web 服务...' : 'Web 项目已替换，正在刷新页面状态...');
+    renderProjectUpdateResult(data);
+    alertUpdateNotice(data, { forceQmtRestart: false });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目 zip 更新完成'));
+    log('Web 项目已通过 zip 更新', {
+      version: data.current_version || '',
+      copied_files: data.copied_files || 0,
+    });
+    handleProjectReload(data.reload, 'Web 项目 zip 更新完成，正在重启');
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     state.versionUpdateBusy = false;
     setProjectUpdateControlsBusy(false);
@@ -3951,18 +4044,29 @@ async function rollbackProjectUpdateFromUi() {
   }
   const confirmed = window.confirm(`确认回滚 Web 项目到备份 ${backup} 并自动重启？`);
   if (!confirmed) return;
+  openQmtUpdateProgress(
+    'project-rollback',
+    'Web 项目回滚',
+    `正在回滚 Web 项目到备份 ${backup}`
+  );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
+    setQmtUpdateProgressStep('restore', '正在备份当前 Web 项目并恢复选中备份...');
     const data = await api('/api/project-updates/rollback', {
       method: 'POST',
       body: JSON.stringify({ backup, reload: true }),
     });
+    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已回滚，正在准备重启 Web 服务...' : 'Web 项目已回滚，正在刷新页面状态...');
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: false });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目回滚完成'));
     log('Web 项目已回滚', { version: data.current_version || '', backup });
     handleProjectReload(data.reload, 'Web 项目已回滚，正在重启');
+  } catch (error) {
+    failQmtUpdateProgress(error);
+    throw error;
   } finally {
     state.versionUpdateBusy = false;
     setProjectUpdateControlsBusy(false);
@@ -6510,7 +6614,14 @@ function renderAsset(section) {
 
 function renderPositions(section) {
   const rows = (section && Array.isArray(section.data)) ? section.data : [];
-  $('positionCount').textContent = `${rows.length} 条`;
+  const counts = section && section.market_counts ? section.market_counts : null;
+  const countParts = counts
+    ? ['SH', 'SZ'].filter((market) => Object.prototype.hasOwnProperty.call(counts, market)).map((market) => `${market} ${counts[market]}`)
+    : [];
+  const routeText = countParts.length ? `（${countParts.join(' / ')}）` : '';
+  const countNode = $('positionCount');
+  countNode.textContent = `${rows.length} 条${routeText}`;
+  countNode.title = section && Array.isArray(section.partial_errors) ? section.partial_errors.join('\n') : '';
   const html = positionRowsHtml(rows);
   $('positionsBody').innerHTML = html || '<tr><td colspan="7">无持仓数据</td></tr>';
   const tradeBody = $('tradePositionsBody');
