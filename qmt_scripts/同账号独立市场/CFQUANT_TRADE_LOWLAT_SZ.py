@@ -33,7 +33,21 @@ def _cfquant_market_config_path():
 
 _cfquant_market_os.environ["CFQUANT_MARKET"] = _CFQUANT_MARKET
 _cfquant_market_os.environ["CFQUANT_MARKET_SOURCE"] = "cfquant_market_entry"
-if not _cfquant_market_os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE"):
+
+
+def _cfquant_market_should_set_config_path():
+    current = str(_cfquant_market_os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE") or "").strip()
+    if not current:
+        return True
+    source = str(_cfquant_market_os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE_SOURCE") or "").strip()
+    if source in ("cfquant_market_entry", "cfquant_entry"):
+        return True
+    current_name = _cfquant_market_os.path.basename(current).lower()
+    market_names = ("cfquant_bridge_config_sh.json", "cfquant_bridge_config_sz.json")
+    return current_name in market_names and current_name != _CFQUANT_CONFIG_FILENAME.lower()
+
+
+if _cfquant_market_should_set_config_path():
     _cfquant_market_os.environ["CFQUANT_BRIDGE_CONFIG_FILE"] = _cfquant_market_config_path()
     _cfquant_market_os.environ["CFQUANT_BRIDGE_CONFIG_FILE_SOURCE"] = "cfquant_market_entry"
 

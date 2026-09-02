@@ -2672,13 +2672,66 @@ th.num .sort-header {
   font-size: 13px;
 }
 
+.binding-page-notice,
+.binding-save-status {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #c9d3dd;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #344150;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.binding-page-notice.hidden,
+.binding-save-status.hidden {
+  display: none;
+}
+
+.binding-save-status {
+  grid-column: 1 / -1;
+}
+
+.binding-page-notice.is-success,
+.binding-save-status.is-success {
+  border-color: #b7dfc8;
+  background: #edf8f1;
+  color: #0f6b43;
+}
+
+.binding-page-notice.is-warn,
+.binding-save-status.is-warn {
+  border-color: #efd18a;
+  background: #fff8df;
+  color: #7a5300;
+}
+
+.binding-page-notice.is-error,
+.binding-save-status.is-error {
+  border-color: #ebb4ad;
+  background: #fff4f2;
+  color: #a33a31;
+}
+
+.binding-page-notice.is-busy,
+.binding-save-status.is-busy,
+.binding-page-notice.is-info,
+.binding-save-status.is-info {
+  border-color: #b9d3fb;
+  background: #eef5ff;
+  color: #1f5fa8;
+}
+
 .binding-table-wrap {
   max-height: 520px;
 }
 
 .binding-table {
   table-layout: fixed;
-  min-width: 940px;
+  min-width: 1120px;
 }
 
 .binding-table th:nth-child(1) {
@@ -2690,7 +2743,7 @@ th.num .sort-header {
 }
 
 .binding-table th:nth-child(3) {
-  width: 112px;
+  width: 178px;
 }
 
 .binding-table th:nth-child(4) {
@@ -2702,11 +2755,11 @@ th.num .sort-header {
 }
 
 .binding-table th:nth-child(6) {
-  width: 92px;
+  width: 136px;
 }
 
 .binding-table th:nth-child(7) {
-  width: 158px;
+  width: 190px;
 }
 
 .binding-table th:nth-child(8) {
@@ -2732,6 +2785,10 @@ th.num .sort-header {
   min-width: 0;
 }
 
+.binding-table td:first-child {
+  width: auto;
+}
+
 .binding-name-cell strong,
 .binding-account-cell strong,
 .binding-bridge-name {
@@ -2751,6 +2808,17 @@ th.num .sort-header {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.binding-status-cell .status-dot {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.binding-status-line {
+  color: #526173;
 }
 
 .binding-dir-cell {
@@ -6582,6 +6650,11 @@ tr.order-row-updated td {
     justify-content: stretch;
   }
 
+  body[data-view="bindings"] .binding-row-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .panel-actions button,
   .binding-row-actions button,
   .binding-dialog-actions button {
@@ -6596,6 +6669,75 @@ tr.order-row-updated td {
     grid-template-columns: 1fr;
   }
 
+  body[data-view="bindings"] .binding-table-wrap {
+    max-height: none;
+    overflow: visible;
+  }
+
+  body[data-view="bindings"] .binding-table {
+    min-width: 0;
+    table-layout: auto;
+  }
+
+  body[data-view="bindings"] .binding-table thead {
+    display: none;
+  }
+
+  body[data-view="bindings"] .binding-table,
+  body[data-view="bindings"] .binding-table tbody,
+  body[data-view="bindings"] .binding-table tr,
+  body[data-view="bindings"] .binding-table td {
+    display: block;
+    width: 100%;
+  }
+
+  body[data-view="bindings"] .binding-list-row {
+    margin: 0 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+  }
+
+  body[data-view="bindings"] .binding-list-row td {
+    display: grid;
+    grid-template-columns: minmax(92px, 30%) minmax(0, 1fr);
+    gap: 8px;
+    align-items: start;
+    min-height: 0;
+    padding: 10px 12px;
+    border-bottom: 1px solid #edf1f5;
+    white-space: normal;
+  }
+
+  body[data-view="bindings"] .binding-list-row td:last-child {
+    border-bottom: 0;
+  }
+
+  body[data-view="bindings"] .binding-list-row td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1.45;
+  }
+
+  body[data-view="bindings"] .binding-status-cell,
+  body[data-view="bindings"] .binding-channel-cell,
+  body[data-view="bindings"] .binding-dir-cell {
+    background: #fbfcfd;
+  }
+
+  body[data-view="bindings"] .binding-name-cell strong,
+  body[data-view="bindings"] .binding-account-cell strong,
+  body[data-view="bindings"] .binding-bridge-name,
+  body[data-view="bindings"] .binding-cell-note,
+  body[data-view="bindings"] .binding-dir-cell {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
   .download-progress-head,
   .download-progress-actions {
     display: grid;
@@ -6608,6 +6750,18 @@ tr.order-row-updated td {
   }
 
   .download-progress-events div {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 420px) {
+  body[data-view="bindings"] .binding-list-row td {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  body[data-view="bindings"] .binding-row-actions {
+    display: grid;
     grid-template-columns: 1fr;
   }
 }

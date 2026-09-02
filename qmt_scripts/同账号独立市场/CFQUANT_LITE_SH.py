@@ -33,7 +33,21 @@ def _cfquant_market_config_path():
 
 _cfquant_market_os.environ["CFQUANT_MARKET"] = _CFQUANT_MARKET
 _cfquant_market_os.environ["CFQUANT_MARKET_SOURCE"] = "cfquant_market_entry"
-if not _cfquant_market_os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE"):
+
+
+def _cfquant_market_should_set_config_path():
+    current = str(_cfquant_market_os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE") or "").strip()
+    if not current:
+        return True
+    source = str(_cfquant_market_os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE_SOURCE") or "").strip()
+    if source in ("cfquant_market_entry", "cfquant_entry"):
+        return True
+    current_name = _cfquant_market_os.path.basename(current).lower()
+    market_names = ("cfquant_bridge_config_sh.json", "cfquant_bridge_config_sz.json")
+    return current_name in market_names and current_name != _CFQUANT_CONFIG_FILENAME.lower()
+
+
+if _cfquant_market_should_set_config_path():
     _cfquant_market_os.environ["CFQUANT_BRIDGE_CONFIG_FILE"] = _cfquant_market_config_path()
     _cfquant_market_os.environ["CFQUANT_BRIDGE_CONFIG_FILE_SOURCE"] = "cfquant_market_entry"
 
@@ -61,7 +75,7 @@ import uuid
 import ctypes
 from ctypes import wintypes
 
-CORE_VERSION = "core_20260902_01"
+CORE_VERSION = "core_20260902_02"
 LITE_ENTRY_VERSION = "lite_20260828_01"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -1181,6 +1195,20 @@ class TxTradeBridge(object):
             core_dir = ""
         if not core_dir:
             core_dir = os.path.dirname(os.path.abspath(entry_file)) if entry_file else os.getcwd()
+        try:
+            market = str(globals().get("QMT_MARKET") or os.environ.get("CFQUANT_MARKET") or RUNTIME_CONFIG.get("market") or "").strip().upper()
+        except Exception:
+            market = ""
+        if market not in ("SH", "SZ"):
+            market = ""
+        try:
+            market_role = str(RUNTIME_CONFIG.get("market_role") or ("trade" if market else "")).strip()
+        except Exception:
+            market_role = "trade" if market else ""
+        try:
+            market_parent_bridge_id = str(RUNTIME_CONFIG.get("market_route_parent_bridge_id") or "").strip()
+        except Exception:
+            market_parent_bridge_id = ""
         return {
             "schema": "cfquant.qmt.runtime",
             "version": CORE_VERSION,
@@ -1198,6 +1226,12 @@ class TxTradeBridge(object):
             "bridge_id": self.bridge_id,
             "account_id": self.account_id,
             "request_channel": self.request_channel,
+            "market": market,
+            "market_role": market_role,
+            "market_route_parent_bridge_id": market_parent_bridge_id,
+            "qmt_runtime_market": market,
+            "qmt_runtime_market_role": market_role,
+            "qmt_runtime_market_parent_bridge_id": market_parent_bridge_id,
             "pid": os.getpid(),
             "python": sys.executable,
             "core_dir": core_dir,
@@ -4090,6 +4124,7 @@ PIPE_NAME = os.environ.get("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub")
 RUNTIME_CONFIG_PATH = ""
 RUNTIME_CONFIG = {}
 RUNTIME_CHANNELS = {}
+QMT_MARKET = os.environ.get("CFQUANT_MARKET", "").strip().upper()
 PIPE_CONNECT_TIMEOUT_MS = int(os.environ.get("CFQUANT_PIPE_CONNECT_TIMEOUT_MS", "3000"))
 TRADE_LOOP_IN_THREAD = os.environ.get("CFQUANT_CTYPE_TRADE_THREAD", "1").strip().lower() in ("1", "true", "yes", "on")
 NORMAL_PUMP_MAX_COUNT = int(os.environ.get("CFQUANT_CTYPE_NORMAL_PUMP_MAX_COUNT", "100"))
@@ -4241,12 +4276,24 @@ def _runtime_config_paths():
         env_path = os.environ.get("CFQUANT_BRIDGE_CONFIG_FILE")
         if env_path:
             candidates.append(env_path)
+        market = str(os.environ.get("CFQUANT_MARKET") or QMT_MARKET or "").strip().upper()
+        market_filenames = []
+        if market in ("SH", "SZ"):
+            market_filenames.append("cfquant_bridge_config_%s.json" % market)
         if os.path.basename(base_dir).lower() == "python":
+            for filename in market_filenames:
+                candidates.append(os.path.join(parent_dir, "bin.x64", filename))
+                candidates.append(os.path.join(base_dir, filename))
             candidates.append(os.path.join(parent_dir, "bin.x64", "cfquant_bridge_config.json"))
             candidates.append(os.path.join(base_dir, "cfquant_bridge_config.json"))
         else:
+            for filename in market_filenames:
+                candidates.append(os.path.join(base_dir, filename))
+                candidates.append(os.path.join(base_dir, "bin.x64", filename))
             candidates.append(os.path.join(base_dir, "cfquant_bridge_config.json"))
             candidates.append(os.path.join(base_dir, "bin.x64", "cfquant_bridge_config.json"))
+        for filename in market_filenames:
+            candidates.append(os.path.join(parent_dir, filename))
         candidates.append(os.path.join(parent_dir, "cfquant_bridge_config.json"))
         result = []
         seen = set()
@@ -4306,7 +4353,7 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
-    global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS
+    global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET, DEFAULT_ACCOUNT_ID
 
     path, data = _load_runtime_config()
     RUNTIME_CONFIG_PATH = path
@@ -4314,8 +4361,18 @@ def _apply_runtime_config():
     if not data:
         _write_runtime_log("cfquant lite runtime config not found")
         return
+    if data.get("account_id") and not DEFAULT_ACCOUNT_ID:
+        DEFAULT_ACCOUNT_ID = str(data.get("account_id") or "").strip()
     if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
+    if data.get("market"):
+        market = str(data.get("market") or "").strip().upper()
+        if market in ("SH", "SZ"):
+            QMT_MARKET = market
+            source = str(os.environ.get("CFQUANT_MARKET_SOURCE") or "").strip()
+            if not os.environ.get("CFQUANT_MARKET") or source in ("cfquant_market_entry", "cfquant_entry"):
+                os.environ["CFQUANT_MARKET"] = market
+                os.environ["CFQUANT_MARKET_SOURCE"] = "cfquant_entry"
     if data.get("pipe_name") and _env_allows_runtime_override("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub"):
         PIPE_NAME = data.get("pipe_name")
     channels = data.get("channels") or {}
@@ -4390,6 +4447,8 @@ _print_log("cfquant lite bridge id:%s pipe:%s normal_channel:%s trade_channel:%s
     BRIDGE_CHANNELS["trade"],
     BRIDGE_CHANNELS["callback"],
 ))
+if QMT_MARKET:
+    _print_log("cfquant lite market route market:%s bridge_id:%s" % (QMT_MARKET, BRIDGE_ID))
 _print_log("cfquant lite trade loop in thread:%s sleep_seconds:%s" % (TRADE_LOOP_IN_THREAD, TRADE_SLEEP_SECONDS))
 
 
@@ -4461,6 +4520,9 @@ def _attach_normal_status_extra():
             "qmt_runtime_report_last_error": _runtime_report_last_error,
             "qmt_runtime_module_file": _entry_file_path() or "<string>",
             "qmt_runtime_entry_file": _entry_file_path() or "<string>",
+            "qmt_runtime_market": QMT_MARKET,
+            "qmt_runtime_market_role": RUNTIME_CONFIG.get("market_role") or ("trade" if QMT_MARKET else ""),
+            "qmt_runtime_market_parent_bridge_id": RUNTIME_CONFIG.get("market_route_parent_bridge_id") or "",
             "ctype_trade_bridge_running": bool(_trade_bridge and _trade_bridge.running),
             "ctype_trade_thread_alive": bool(_trade_thread and _trade_thread.is_alive()),
             "ctype_trade_queue_size": _trade_request_queue.qsize(),
