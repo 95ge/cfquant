@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260902_03"
+WEB_VERSION = "web_20260902_04"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -286,6 +286,7 @@ ACCOUNT_ACTIONS = {
     "orders": "xttrader.query_stock_orders",
     "trades": "xttrader.query_stock_trades",
 }
+MARKET_ACCOUNT_ROW_SECTIONS = {"positions", "orders", "trades"}
 CREDIT_ACTIONS = {
     "detail": "xttrader.query_credit_detail",
     "credit_detail": "xttrader.query_credit_detail",
@@ -519,6 +520,56 @@ def split_orders_by_market(orders):
             return {}
         groups.setdefault(market, []).append((index, row))
     return groups
+
+
+def data_request_markets(params):
+    result = []
+
+    def add(value):
+        market = normalize_market_code(value) or stock_code_market(value)
+        if market and market not in result:
+            result.append(market)
+
+    if not isinstance(params, dict):
+        return result
+    explicit = request_params_market(params)
+    if explicit:
+        add(explicit)
+    for key in ("stock_code", "code", "security_code", "instrument_id"):
+        if params.get(key) not in (None, ""):
+            add(params.get(key))
+    for key in ("code_list", "stock_list", "stock_codes", "stocks"):
+        value = params.get(key)
+        if isinstance(value, str):
+            items = [item.strip() for item in value.replace("，", ",").split(",") if item.strip()]
+        elif isinstance(value, (list, tuple, set)):
+            items = [item for item in value if str(item).strip()]
+        else:
+            items = []
+        for item in items:
+            add(item)
+    return result
+
+
+def market_account_row_market(row):
+    if isinstance(row, dict):
+        for key in ("market", "exchange", "exchange_id", "market_id", "m_strExchangeID"):
+            market = normalize_market_code(row.get(key))
+            if market:
+                return market
+        for key in ("stock_code", "code", "security_code"):
+            market = stock_code_market(row.get(key))
+            if market:
+                return market
+        instrument = str(row.get("m_strInstrumentID") or row.get("instrument_id") or "").strip()
+        exchange = normalize_market_code(row.get("m_strExchangeID") or row.get("exchange_id"))
+        if instrument and exchange:
+            return exchange
+        if instrument:
+            market = stock_code_market(instrument)
+            if market:
+                return market
+    return stock_code_market(row)
 
 
 def default_market_bridge_id(account_id, account_type="STOCK", parent_bridge_id=None, market=""):
@@ -2820,6 +2871,153 @@ def data_provider_candidates():
     return result
 
 
+def data_account_route_candidates(account_id, account_type, account_key, bridge_id=None, params=None):
+    account_id = str(account_id or "").strip()
+    account_type = normalize_account_type(account_type or "STOCK")
+    account_key = str(account_key or "").strip()
+    target_bridge_id = resolve_bridge_id(
+        account_id=account_id,
+        bridge_id=bridge_id,
+        account_type=account_type,
+        account_key=account_key,
+    )
+    if not account_key and WEB_CONFIG is not None:
+        direct_config = WEB_CONFIG.account_config(
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=target_bridge_id,
+        ) or {}
+        account_key = str(direct_config.get("account_key") or "").strip()
+        if not account_key:
+            for row in WEB_CONFIG.account_configs().values():
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("account_id") or "").strip() != account_id:
+                    continue
+                if normalize_account_type(row.get("account_type") or "STOCK") != account_type:
+                    continue
+                if account_config_has_market_bridge(
+                    row,
+                    target_bridge_id,
+                    account_id=account_id,
+                    account_type=account_type,
+                    parent_bridge_id=row.get("bridge_id") or DEFAULT_BRIDGE_ID,
+                ):
+                    account_key = str(row.get("account_key") or "").strip()
+                    break
+    config, entries = account_market_route_entries(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=target_bridge_id,
+        account_key=account_key,
+    )
+    account_key = account_key or (config or {}).get("account_key") or account_key_for(account_id, account_type, target_bridge_id)
+    requested_markets = data_request_markets(params)
+    candidates = []
+    seen = set()
+
+    def add(candidate_bridge_id, market="", market_routing=False):
+        candidate_bridge_id = normalize_bridge_id(candidate_bridge_id or "")
+        if not candidate_bridge_id or candidate_bridge_id in seen:
+            return
+        seen.add(candidate_bridge_id)
+        candidates.append({
+            "bridge_id": candidate_bridge_id,
+            "market": normalize_market_code(market),
+            "market_routing": bool(market_routing),
+            "base_bridge_id": normalize_bridge_id((config or {}).get("bridge_id") or target_bridge_id),
+            "account_key": account_key,
+        })
+
+    if entries:
+        by_market = {entry.get("market"): entry for entry in entries}
+        for market in requested_markets:
+            entry = by_market.get(market)
+            if entry:
+                add(entry.get("bridge_id"), market=market, market_routing=True)
+        for entry in entries:
+            add(entry.get("bridge_id"), market=entry.get("market"), market_routing=True)
+        add((config or {}).get("bridge_id") or target_bridge_id, market="", market_routing=False)
+    else:
+        add(target_bridge_id, market="", market_routing=False)
+    return candidates
+
+
+def routed_xtdata_account_request(
+    account_id,
+    bridge_id,
+    requested_channel,
+    action,
+    params=None,
+    default_channel="normal",
+    timeout=12.0,
+    mark_offline_on_timeout=True,
+    ignore_cooldown=False,
+    account_type=None,
+    account_key=None,
+):
+    account_id = str(account_id or "").strip()
+    account_type = normalize_account_type(account_type or "STOCK")
+    account_key = str(account_key or "").strip()
+    attempts = []
+    last_error = None
+    candidates = data_account_route_candidates(
+        account_id,
+        account_type,
+        account_key,
+        bridge_id=bridge_id,
+        params=params,
+    )
+    for candidate in candidates:
+        candidate_bridge_id = candidate.get("bridge_id")
+        candidate_account_key = str(candidate.get("account_key") or account_key or "").strip()
+        started = time.perf_counter()
+        try:
+            route = account_request(
+                account_id,
+                candidate_bridge_id,
+                requested_channel,
+                action,
+                params,
+                default_channel=default_channel,
+                timeout=timeout,
+                mark_offline_on_timeout=mark_offline_on_timeout,
+                ignore_cooldown=ignore_cooldown,
+                account_type=account_type,
+                account_key=candidate_account_key,
+                route_market=candidate.get("market") or None,
+            )
+            if attempts:
+                route["fallback"] = True
+                route["fallback_reason"] = str(last_error or "")
+                route["attempts"] = attempts + list(route.get("attempts") or [])
+            route["data_route"] = candidate
+            route["data_route_market"] = candidate.get("market") or ""
+            route["data_route_market_routing"] = bool(candidate.get("market_routing"))
+            return route
+        except Exception as error:
+            last_error = error
+            attempts.append({
+                "bridge_id": candidate_bridge_id,
+                "market": candidate.get("market") or "",
+                "market_routing": bool(candidate.get("market_routing")),
+                "ok": False,
+                "error": str(error),
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            })
+    detail = "; ".join(
+        "%s%s: %s" % (
+            row.get("bridge_id") or "-",
+            ("/%s" % row.get("market")) if row.get("market") else "",
+            row.get("error") or "",
+        )
+        for row in attempts
+    )
+    raise RuntimeError(
+        "%s failed for account %s: %s" % (action, account_id or "--", detail or str(last_error or "no route attempted"))
+    )
+
+
 def data_provider_request(
     action,
     params,
@@ -2834,9 +3032,9 @@ def data_provider_request(
         account_id = str(account.get("account_id") or "").strip()
         account_type = normalize_account_type(account.get("account_type") or "STOCK")
         account_key = str(account.get("account_key") or "").strip()
-        target_bridge_id = resolve_bridge_id(account_id=account_id, bridge_id=bridge_id or account.get("bridge_id"), account_type=account_type, account_key=account_key)
+        target_bridge_id = bridge_id or account.get("bridge_id")
         try:
-            route = account_request(
+            route = routed_xtdata_account_request(
                 account_id,
                 target_bridge_id,
                 requested_channel,
@@ -2851,12 +3049,15 @@ def data_provider_request(
             )
             route["data_provider"] = account_id
             route["data_provider_account_type"] = account_type
-            route["data_provider_account_key"] = account_key
+            route["data_provider_account_key"] = route.get("account_key") or account_key
             route["provider_fallback"] = bool(attempts)
             route["provider_attempts"] = attempts + [{
                 "account_id": account_id,
                 "account_type": account_type,
-                "account_key": account_key,
+                "account_key": route.get("account_key") or account_key,
+                "bridge_id": route.get("bridge_id"),
+                "market": route.get("data_route_market") or "",
+                "market_routing": bool(route.get("data_route_market_routing")),
                 "ok": True,
                 "mode": route["mode"],
                 "channel": route["channel"],
@@ -2868,11 +3069,17 @@ def data_provider_request(
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_key": account_key,
+                "bridge_id": normalize_bridge_id(target_bridge_id or DEFAULT_BRIDGE_ID),
                 "ok": False,
                 "error": str(error),
             })
     detail = "; ".join(
-        "%s/%s: %s" % (row["account_id"], row.get("account_type") or "STOCK", row.get("error") or "")
+        "%s/%s/%s: %s" % (
+            row["account_id"],
+            row.get("account_type") or "STOCK",
+            row.get("bridge_id") or "-",
+            row.get("error") or "",
+        )
         for row in attempts
     )
     raise RuntimeError(
@@ -3340,7 +3547,7 @@ def route_external_lttx_request(msg):
         return route["result"], meta
     if action.startswith("xtdata."):
         if account_id:
-            route = account_request(
+            route = routed_xtdata_account_request(
                 account_id,
                 params.get("bridge_id"),
                 requested_channel,
@@ -3349,6 +3556,8 @@ def route_external_lttx_request(msg):
                 default_channel=default_channel,
                 timeout=timeout,
                 mark_offline_on_timeout=True,
+                account_type=account_type,
+                account_key=account_key,
             )
         else:
             route = data_provider_request(
@@ -7500,12 +7709,21 @@ def market_row_with_source(row, market, bridge_id):
     return result
 
 
-def market_section_rows(data, market, bridge_id):
+def market_section_rows(data, market, bridge_id, filter_market=False):
     if data is None:
         return []
     if isinstance(data, list):
-        return [market_row_with_source(row, market, bridge_id) for row in data]
-    return [market_row_with_source(data, market, bridge_id)]
+        rows = data
+    else:
+        rows = [data]
+    result = []
+    for row in rows:
+        if filter_market:
+            row_market = market_account_row_market(row)
+            if row_market and market and row_market != market:
+                continue
+        result.append(market_row_with_source(row, market, bridge_id))
+    return result
 
 
 def market_section_error(section):
@@ -7541,9 +7759,14 @@ def merge_market_account_section(section, child_results, started_at):
             row = {"ok": False, "error": "missing section", "market": market, "bridge_id": bridge_id}
         market_results[market] = row
         if account_section_ok(row):
-            successes.append((market, bridge_id, row))
             data = account_section_data(row)
-            market_counts[market] = len(data) if isinstance(data, list) else (1 if account_data_has_value(data) else 0)
+            rows = None
+            if section in MARKET_ACCOUNT_ROW_SECTIONS:
+                rows = market_section_rows(data, market, bridge_id, filter_market=True)
+                market_counts[market] = len(rows)
+            else:
+                market_counts[market] = len(data) if isinstance(data, list) else (1 if account_data_has_value(data) else 0)
+            successes.append((market, bridge_id, row, rows))
         else:
             errors.append("%s/%s: %s" % (market or "-", bridge_id or "-", market_section_error(row)))
             market_counts[market] = 0
@@ -7570,7 +7793,7 @@ def merge_market_account_section(section, child_results, started_at):
                 "warming_up": warming_up,
             })
             return base
-        market, bridge_id, row = chosen
+        market, bridge_id, row, _rows = chosen
         result = dict(row)
         result.update(base)
         result["ok"] = True
@@ -7581,8 +7804,10 @@ def merge_market_account_section(section, child_results, started_at):
         return result
 
     merged = []
-    for market, bridge_id, row in successes:
-        merged.extend(market_section_rows(account_section_data(row), market, bridge_id))
+    for market, bridge_id, row, rows in successes:
+        if rows is None:
+            rows = market_section_rows(account_section_data(row), market, bridge_id)
+        merged.extend(rows)
     if not successes:
         base.update({
             "ok": False,
@@ -7595,8 +7820,8 @@ def merge_market_account_section(section, child_results, started_at):
     base.update({
         "ok": True,
         "data": merged,
-        "source_markets": [market for market, _bridge_id, _row in successes],
-        "cached": all(isinstance(row, dict) and row.get("cached") for _market, _bridge_id, row in successes),
+        "source_markets": [market for market, _bridge_id, _row, _rows in successes],
+        "cached": all(isinstance(row, dict) and row.get("cached") for _market, _bridge_id, row, _rows in successes),
     })
     if errors:
         base["partial_errors"] = errors
@@ -7653,6 +7878,80 @@ def merge_market_account_results(base_bridge_id, channel, account_id, sections, 
         result["cache"]["max_age_ms"] = round(max_age, 2)
     for section in sections:
         result[section] = merge_market_account_section(section, child_results, started_at)
+    return result
+
+
+def market_child_section_count(child, section, market):
+    if not isinstance(child, dict):
+        return 0
+    row = child.get(section)
+    if not account_section_ok(row):
+        return 0
+    data = account_section_data(row)
+    if section in MARKET_ACCOUNT_ROW_SECTIONS:
+        return len(market_section_rows(data, market, child.get("bridge_id"), filter_market=True))
+    return len(data) if isinstance(data, list) else (1 if account_data_has_value(data) else 0)
+
+
+def market_child_needs_normal_probe(child, sections, market):
+    if not isinstance(child, dict) or child.get("error"):
+        return True
+    for section in sections:
+        row = child.get(section)
+        if not account_section_ok(row):
+            return True
+        if section == "positions" and market_child_section_count(child, section, market) <= 0:
+            return True
+    return False
+
+
+def merge_market_child_channel_results(primary, fallback, market, sections):
+    if not isinstance(primary, dict):
+        return fallback if isinstance(fallback, dict) else primary
+    if not isinstance(fallback, dict):
+        return primary
+    result = dict(primary)
+    primary_error = str(primary.get("error") or "")
+    fallback_error = str(fallback.get("error") or "")
+    primary_channel = primary.get("channel") or "trade"
+    fallback_channel = fallback.get("channel") or "normal"
+    result["channel_attempts"] = [
+        {
+            "channel": primary_channel,
+            "ok": not bool(primary_error),
+            "error": primary_error,
+        },
+        {
+            "channel": fallback_channel,
+            "ok": not bool(fallback_error),
+            "error": fallback_error,
+        },
+    ]
+    result["normal_probe"] = True
+    used_fallback = False
+    if primary_error and not fallback_error:
+        result.update(fallback)
+        used_fallback = True
+    for section in sections:
+        primary_row = primary.get(section)
+        fallback_row = fallback.get(section)
+        if not isinstance(fallback_row, dict):
+            continue
+        use_fallback = False
+        if not account_section_ok(primary_row) and account_section_ok(fallback_row):
+            use_fallback = True
+        elif section == "positions" and account_section_ok(primary_row) and account_section_ok(fallback_row):
+            primary_count = market_child_section_count(primary, section, market)
+            fallback_count = market_child_section_count(fallback, section, market)
+            use_fallback = fallback_count > primary_count
+        if use_fallback:
+            result[section] = fallback_row
+            result.setdefault("section_channels", {})[section] = fallback_channel
+            used_fallback = True
+        elif not account_section_ok(fallback_row):
+            result.setdefault("fallback_channel_errors", {})[section] = market_section_error(fallback_row)
+    if used_fallback and primary_channel != fallback_channel:
+        result["channel"] = "%s/%s" % (primary_channel, fallback_channel)
     return result
 
 
@@ -7760,6 +8059,23 @@ class AccountDataCache(object):
                     account_type=account_type,
                     account_key=account_key,
                 )
+                if child_channel != "normal" and market_child_needs_normal_probe(child, sections, market):
+                    try:
+                        normal_probe = self.get(
+                            child_bridge_id,
+                            "normal",
+                            account_id,
+                            sections,
+                            force=force,
+                            subscribe=subscribe,
+                            account_type=account_type,
+                            account_key=account_key,
+                        )
+                        child = merge_market_child_channel_results(child, normal_probe, market, sections)
+                    except Exception as normal_error:
+                        if isinstance(child, dict):
+                            child = dict(child)
+                            child.setdefault("fallback_channel_errors", {})["normal"] = str(normal_error)
                 if isinstance(child, dict):
                     child = dict(child)
                     child["market"] = market
@@ -9279,7 +9595,7 @@ def data_channel_request(body, action, params, default_channel="trade", force_ch
     started = time.perf_counter()
     requested_default = force_channel or preferred_channel or default_channel
     if account_id:
-        route = account_request(
+        route = routed_xtdata_account_request(
             account_id,
             body.get("bridge_id"),
             preferred_channel,
@@ -9294,8 +9610,8 @@ def data_channel_request(body, action, params, default_channel="trade", force_ch
         provider_account_id = account_id
         provider_account_type = account_type
         provider_account_key = account_key or account_key_for(account_id, account_type, route["bridge_id"])
-        provider_fallback = False
-        provider_attempts = []
+        provider_fallback = bool(route.get("fallback"))
+        provider_attempts = route.get("attempts") or []
     else:
         route = data_provider_request(
             action,
@@ -9464,7 +9780,7 @@ def subscribe_single_quote(body):
         "dividend_type": str(body.get("dividend_type") or "none"),
     }
     if account_id:
-        route = account_request(
+        route = routed_xtdata_account_request(
             account_id,
             body.get("bridge_id"),
             body.get("channel"),
