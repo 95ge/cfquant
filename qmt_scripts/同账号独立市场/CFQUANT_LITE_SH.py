@@ -75,7 +75,7 @@ import uuid
 import ctypes
 from ctypes import wintypes
 
-CORE_VERSION = "core_20260902_02"
+CORE_VERSION = "core_20260902_03"
 LITE_ENTRY_VERSION = "lite_20260828_01"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])

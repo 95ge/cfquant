@@ -59,7 +59,7 @@ from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260902_04"
+WEB_VERSION = "web_20260902_05"
 BASE_DIR = _PROJECT_DIR
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
@@ -2485,6 +2485,20 @@ def callback_channels():
     return channels
 
 
+def is_pipe_client_closed_error(error):
+    text = str(error or "").strip().lower()
+    if not text:
+        return False
+    closed_markers = (
+        "cfquant pipe client closed",
+        "cfquant pipe connection closed",
+        "cfquant pipe receive connection closed",
+        "cfquant pipe receive connection missing",
+        "cfquant pipe client not started",
+    )
+    return any(marker in text for marker in closed_markers)
+
+
 class GlobalTxClient(object):
     def __init__(self):
         self._lock = threading.RLock()
@@ -2515,28 +2529,37 @@ class GlobalTxClient(object):
         cooldown_key = (mode, normalize_bridge_id(bridge_id), channel_key)
         if not ignore_cooldown:
             self._check_cooldown(cooldown_key)
-        client = self._get_client(mode)
-        try:
-            result = client.request(
-                action,
-                params or {},
-                timeout=timeout,
-                request_channel=channels[channel_key],
-            )
-            self._cooldown_until.pop(cooldown_key, None)
-            self._last_error.pop(cooldown_key, None)
-            return result
-        except CfquantError:
-            raise
-        except CfquantTimeout as e:
-            if mark_offline_on_timeout:
+        last_error = None
+        for attempt in range(2):
+            client = self._get_client(mode)
+            try:
+                result = client.request(
+                    action,
+                    params or {},
+                    timeout=timeout,
+                    request_channel=channels[channel_key],
+                )
+                self._cooldown_until.pop(cooldown_key, None)
+                self._last_error.pop(cooldown_key, None)
+                return result
+            except CfquantError as e:
+                last_error = e
+                if attempt == 0 and is_pipe_client_closed_error(e):
+                    self._drop_client(mode, client)
+                    continue
+                raise
+            except CfquantTimeout as e:
+                if mark_offline_on_timeout:
+                    self._mark_failed(cooldown_key, e)
+                self._drop_client(mode, client)
+                raise
+            except Exception as e:
+                last_error = e
                 self._mark_failed(cooldown_key, e)
-            self.close(mode)
-            raise
-        except Exception as e:
-            self._mark_failed(cooldown_key, e)
-            self.close(mode)
-            raise
+                self._drop_client(mode, client)
+                raise
+        if last_error is not None:
+            raise last_error
 
     def close(self, mode=None):
         modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lite", "lttx"]
@@ -2549,6 +2572,21 @@ class GlobalTxClient(object):
                 client.close()
             except Exception:
                 pass
+
+    def _drop_client(self, mode, client=None):
+        mode = normalize_transport_mode(mode)
+        with self._lock:
+            current = self._clients.get(mode)
+            if client is not None and current is not client:
+                return False
+            current = self._clients.pop(mode, None)
+        if current is None:
+            return False
+        try:
+            current.close()
+        except Exception:
+            pass
+        return True
 
     def _check_cooldown(self, cooldown_key):
         now = time.time()
@@ -3298,6 +3336,11 @@ class PipeHubManager(object):
             if os.name == "nt":
                 creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+            popen_kwargs = {"creationflags": creationflags, "close_fds": False if os.name == "nt" else True}
+            if os.name == "nt":
+                hidden_kwargs = _hidden_subprocess_kwargs()
+                popen_kwargs.update(hidden_kwargs)
+                popen_kwargs["creationflags"] = creationflags | int(hidden_kwargs.get("creationflags") or 0)
             env = os.environ.copy()
             env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
             env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
@@ -3313,8 +3356,7 @@ class PipeHubManager(object):
                     stdout=stdout,
                     stderr=stderr,
                     env=env,
-                    creationflags=creationflags,
-                    close_fds=False if os.name == "nt" else True,
+                    **popen_kwargs
                 )
             finally:
                 try:
@@ -3352,6 +3394,7 @@ class PipeHubManager(object):
                     encoding="utf-8",
                     errors="replace",
                     timeout=6.0,
+                    **_hidden_subprocess_kwargs()
                 )
                 if completed.returncode != 0:
                     self._last_error = (completed.stderr or completed.stdout or "").strip()
@@ -4288,6 +4331,7 @@ class QuoteSubscriptionStore(object):
         body = body or {}
         markets = self._normalize_markets(body.get("markets") or body.get("code_list") or ["SH", "SZ"])
         requested_channel = body.get("channel")
+        timeout = request_timeout_value(body.get("timeout"), default=12.0)
         started = time.perf_counter()
         self.start()
         with self._lock:
@@ -4325,7 +4369,7 @@ class QuoteSubscriptionStore(object):
             {"code_list": markets},
             requested_channel=requested_channel,
             default_channel="normal",
-            timeout=12.0,
+            timeout=timeout,
             bridge_id=body.get("bridge_id"),
         )
         result = route["result"]
@@ -4387,7 +4431,7 @@ class QuoteSubscriptionStore(object):
             account_id=account_id,
             account_type=account_type,
             account_key=account_key,
-            timeout=8.0,
+            timeout=request_timeout_value((body or {}).get("timeout"), default=8.0, maximum=60.0),
         )
         with self._lock:
             self._remove_subscription_locked(subscribe_id)
@@ -5695,6 +5739,7 @@ class CfquantUpdater(object):
                     encoding="utf-8",
                     errors="replace",
                     timeout=UPDATE_REMOTE_TIMEOUT_SECONDS,
+                    **_hidden_subprocess_kwargs()
                 )
                 output = (completed.stdout or "").strip()
                 if completed.returncode == 0 and output:
@@ -5746,6 +5791,7 @@ class CfquantUpdater(object):
                         encoding="utf-8",
                         errors="replace",
                         timeout=10,
+                        **_hidden_subprocess_kwargs()
                     )
                     if completed.returncode == 0:
                         return (completed.stdout or "").strip()
@@ -5776,6 +5822,7 @@ class CfquantUpdater(object):
                 encoding="utf-8",
                 errors="replace",
                 timeout=120,
+                **_hidden_subprocess_kwargs()
             )
             if completed.returncode == 0:
                 return {
@@ -5873,6 +5920,7 @@ class CfquantUpdater(object):
                 encoding="utf-8",
                 errors="replace",
                 timeout=10,
+                **_hidden_subprocess_kwargs()
             )
             if completed.returncode == 0:
                 return (completed.stdout or "").strip()
@@ -6969,6 +7017,7 @@ def netstat_port_processes(port):
             encoding="utf-8",
             errors="replace",
             timeout=2.5,
+            **_hidden_subprocess_kwargs()
         )
     except Exception as e:
         safe_print("netstat query failed: %s" % e)
@@ -7123,6 +7172,11 @@ def start_lttx_server():
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    popen_kwargs = {"creationflags": creationflags, "close_fds": False if os.name == "nt" else True}
+    if os.name == "nt":
+        hidden_kwargs = _hidden_subprocess_kwargs()
+        popen_kwargs.update(hidden_kwargs)
+        popen_kwargs["creationflags"] = creationflags | int(hidden_kwargs.get("creationflags") or 0)
     env = os.environ.copy()
     env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
@@ -7139,8 +7193,7 @@ def start_lttx_server():
             stdout=stdout,
             stderr=stderr,
             env=env,
-            creationflags=creationflags,
-            close_fds=False if os.name == "nt" else True,
+            **popen_kwargs
         )
     except Exception:
         try:
@@ -7226,6 +7279,8 @@ def stop_lttx_server(full_exit=False):
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=6.0,
+            **_hidden_subprocess_kwargs()
         )
         results.append({
             "pid": pid,
@@ -7297,6 +7352,14 @@ def parse_sections(value):
 
 def parse_bool(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def request_timeout_value(value, default=12.0, minimum=0.5, maximum=180.0):
+    try:
+        timeout = float(value)
+    except Exception:
+        timeout = float(default)
+    return max(float(minimum), min(float(maximum), timeout))
 
 
 def probe_bridge_status(bridge_id=DEFAULT_BRIDGE_ID, timeout=STATUS_PROBE_TIMEOUT_SECONDS, client=None, mode=None):
@@ -7979,7 +8042,7 @@ class AccountDataCache(object):
         self._running = False
         self._stop_event.set()
 
-    def get(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None):
+    def get(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS):
         bridge_id = normalize_bridge_id(bridge_id)
         account_type = normalize_account_type(account_type)
         account_key = account_key or account_key_for(account_id, account_type, bridge_id)
@@ -7987,7 +8050,7 @@ class AccountDataCache(object):
         if not sections:
             return {"bridge_id": bridge_id, "account_id": account_id, "account_type": account_type, "account_key": account_key, "channel": channel}
         if not subscribe:
-            live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
+            live = query_account_live(bridge_id, channel, account_id, sections, timeout=timeout, account_type=account_type, account_key=account_key)
             live["cache"] = {
                 "enabled": False,
                 "force": bool(force),
@@ -7996,7 +8059,7 @@ class AccountDataCache(object):
             return live
         self._subscribe(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
         if force:
-            live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
+            live = query_account_live(bridge_id, channel, account_id, sections, timeout=timeout, account_type=account_type, account_key=account_key)
             self._store_result(bridge_id, channel, account_id, live, sections, account_type=account_type, account_key=account_key)
             return self._build_result(bridge_id, channel, account_id, sections, force=True, account_type=account_type, account_key=account_key)
 
@@ -8017,7 +8080,7 @@ class AccountDataCache(object):
             self._wake()
         return self._build_result(bridge_id, channel, account_id, sections, force=False, account_type=account_type, account_key=account_key)
 
-    def get_market_routed(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None):
+    def get_market_routed(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS):
         base_bridge_id = normalize_bridge_id(bridge_id)
         account_type = normalize_account_type(account_type)
         base_config, entries = account_market_route_entries(
@@ -8038,6 +8101,7 @@ class AccountDataCache(object):
                 subscribe=subscribe,
                 account_type=account_type,
                 account_key=account_key,
+                timeout=timeout,
             )
         child_results = []
         refresh_queued = False
@@ -8058,6 +8122,7 @@ class AccountDataCache(object):
                     subscribe=subscribe,
                     account_type=account_type,
                     account_key=account_key,
+                    timeout=timeout,
                 )
                 if child_channel != "normal" and market_child_needs_normal_probe(child, sections, market):
                     try:
@@ -8070,6 +8135,7 @@ class AccountDataCache(object):
                             subscribe=subscribe,
                             account_type=account_type,
                             account_key=account_key,
+                            timeout=timeout,
                         )
                         child = merge_market_child_channel_results(child, normal_probe, market, sections)
                     except Exception as normal_error:
@@ -8101,6 +8167,7 @@ class AccountDataCache(object):
                 subscribe=subscribe,
                 account_type=account_type,
                 account_key=account_key,
+                timeout=timeout,
             )
         return merge_market_account_results(
             base_bridge_id,
@@ -8156,12 +8223,18 @@ class AccountDataCache(object):
                 row = result.get(section)
                 if row is None:
                     continue
+                cache_key = self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)
+                if isinstance(row, dict) and not row.get("ok") and is_pipe_client_closed_error(row.get("error")):
+                    previous = self._entries.get(cache_key)
+                    if isinstance(previous, dict) and is_pipe_client_closed_error(previous.get("error")):
+                        self._entries.pop(cache_key, None)
+                    continue
                 stored = dict(row)
                 stored["checked_at"] = now
                 stored["checked_at_text"] = checked_at_text
                 stored["account_type"] = account_type
                 stored["account_key"] = account_key
-                self._entries[self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)] = stored
+                self._entries[cache_key] = stored
 
     def _build_result(self, bridge_id, channel, account_id, sections, force=False, refresh_queued=False, account_type="STOCK", account_key=None):
         now = time.time()
@@ -8284,6 +8357,7 @@ def submit_order(body):
         "order_remark": remark,
     }
     started = time.perf_counter()
+    timeout = request_timeout_value(body.get("timeout"), default=12.0, maximum=60.0)
     route = account_request(
         account_id,
         bridge_id,
@@ -8291,7 +8365,7 @@ def submit_order(body):
         "xttrader.order_stock",
         params,
         default_channel="trade",
-        timeout=12.0,
+        timeout=timeout,
         account_type=account_type,
         account_key=account_key,
     )
@@ -8355,13 +8429,18 @@ def submit_batch_orders(body):
         "order_remark": body.get("order_remark") or "cfquant_batch_%s" % int(time.time() * 1000),
     }
     started = time.perf_counter()
+    timeout = request_timeout_value(
+        body.get("timeout"),
+        default=max(12.0, len(orders) * 3.0),
+        maximum=120.0,
+    )
     route = account_batch_order_request(
         account_id,
         bridge_id,
         body.get("channel"),
         params,
         default_channel="trade",
-        timeout=max(12.0, len(orders) * 3.0),
+        timeout=timeout,
         account_type=account_type,
         account_key=account_key,
     )
@@ -8398,6 +8477,7 @@ def cancel_order(body):
         "order_id": order_id,
     }
     started = time.perf_counter()
+    timeout = request_timeout_value(body.get("timeout"), default=12.0, maximum=60.0)
     route = account_request(
         account_id,
         bridge_id,
@@ -8405,7 +8485,7 @@ def cancel_order(body):
         "xttrader.cancel_order_stock",
         params,
         default_channel="trade",
-        timeout=12.0,
+        timeout=timeout,
         account_type=account_type,
         account_key=account_key,
     )
@@ -9591,7 +9671,7 @@ def data_channel_request(body, action, params, default_channel="trade", force_ch
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     account_key = str(body.get("account_key") or "").strip()
     preferred_channel = force_channel or body.get("channel")
-    timeout = float(body.get("timeout") or 12.0)
+    timeout = request_timeout_value(body.get("timeout"), default=12.0)
     started = time.perf_counter()
     requested_default = force_channel or preferred_channel or default_channel
     if account_id:
@@ -9769,6 +9849,7 @@ def subscribe_single_quote(body):
     account_id = str(body.get("account_id") or "").strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     account_key = str(body.get("account_key") or "").strip()
+    timeout = request_timeout_value(body.get("timeout"), default=12.0)
     started = time.perf_counter()
     QUOTES.start()
     params = {
@@ -9787,7 +9868,7 @@ def subscribe_single_quote(body):
             "xtdata.subscribe_quote",
             params,
             default_channel="normal",
-            timeout=12.0,
+            timeout=timeout,
             mark_offline_on_timeout=True,
             ignore_cooldown=True,
             account_type=account_type,
@@ -9802,7 +9883,7 @@ def subscribe_single_quote(body):
             params,
             requested_channel=body.get("channel"),
             default_channel="normal",
-            timeout=12.0,
+            timeout=timeout,
             bridge_id=body.get("bridge_id"),
         )
         provider_account_id = route.get("data_provider") or configured_default_account_id()
@@ -10656,6 +10737,11 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 sections = parse_sections((query.get("sections") or [""])[0])
                 force = parse_bool((query.get("force") or ["0"])[0])
                 subscribe = parse_bool((query.get("subscribe") or ["1"])[0])
+                timeout = request_timeout_value(
+                    (query.get("timeout") or [""])[0],
+                    default=ACCOUNT_QUERY_TIMEOUT_SECONDS,
+                    maximum=max(ACCOUNT_QUERY_TIMEOUT_SECONDS, 180.0),
+                )
                 self._write_json(ok(ACCOUNT_CACHE.get_market_routed(
                     bridge_id,
                     channel,
@@ -10665,6 +10751,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     subscribe=subscribe,
                     account_type=account_type,
                     account_key=account_key,
+                    timeout=timeout,
                 )))
             else:
                 self._write_json(fail("not found", 404), status=404)
@@ -10974,6 +11061,11 @@ def spawn_reloaded_web_server(reload_request):
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+    popen_kwargs = {"creationflags": creationflags, "close_fds": False if os.name == "nt" else True}
+    if os.name == "nt":
+        hidden_kwargs = _hidden_subprocess_kwargs()
+        popen_kwargs.update(hidden_kwargs)
+        popen_kwargs["creationflags"] = creationflags | int(hidden_kwargs.get("creationflags") or 0)
     safe_print("cfquant web reload spawning next process url=%s" % (reload_request.get("next_url") or ""))
     try:
         process = subprocess.Popen(
@@ -10982,8 +11074,7 @@ def spawn_reloaded_web_server(reload_request):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=False if os.name == "nt" else True,
+            **popen_kwargs
         )
         safe_print("cfquant web reload spawned pid=%s" % process.pid)
         return {"pid": process.pid, "command": command}

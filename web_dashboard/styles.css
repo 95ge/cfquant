@@ -2735,39 +2735,39 @@ th.num .sort-header {
 }
 
 .binding-table th:nth-child(1) {
-  width: 112px;
+  width: 120px;
 }
 
 .binding-table th:nth-child(2) {
-  width: 108px;
+  width: 112px;
 }
 
 .binding-table th:nth-child(3) {
-  width: 178px;
+  width: 108px;
 }
 
 .binding-table th:nth-child(4) {
-  width: 68px;
+  width: 178px;
 }
 
 .binding-table th:nth-child(5) {
-  width: 84px;
+  width: 68px;
 }
 
 .binding-table th:nth-child(6) {
-  width: 136px;
+  width: 84px;
 }
 
 .binding-table th:nth-child(7) {
-  width: 190px;
+  width: 136px;
 }
 
 .binding-table th:nth-child(8) {
-  width: 82px;
+  width: 190px;
 }
 
 .binding-table th:nth-child(9) {
-  width: 120px;
+  width: 82px;
 }
 
 .binding-list-row td {
@@ -2840,9 +2840,49 @@ th.num .sort-header {
 }
 
 .binding-row-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
   height: 28px;
   padding: 0 9px;
   font-size: 12px;
+}
+
+.binding-row-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+
+.verify-pair-btn.is-loading:disabled {
+  cursor: wait;
+  opacity: 0.86;
+}
+
+.button-spinner {
+  display: none;
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(31, 111, 235, 0.24);
+  border-top-color: #1f6feb;
+  border-radius: 50%;
+  animation: loginSpin 780ms linear infinite;
+}
+
+.verify-pair-btn.is-loading .button-spinner,
+.api-submit-btn.is-loading .button-spinner {
+  display: inline-block;
+}
+
+.api-submit-btn.is-loading:disabled {
+  cursor: wait;
+  opacity: 0.88;
+}
+
+.api-submit-btn.primary .button-spinner {
+  border-color: rgba(255, 255, 255, 0.38);
+  border-top-color: #fff;
 }
 
 .binding-delete-btn {
@@ -4040,6 +4080,13 @@ input[type="file"] {
   display: flex;
   align-items: end;
   gap: 8px;
+}
+
+.api-form-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .api-doc-detail {

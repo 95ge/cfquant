@@ -20,6 +20,23 @@ import importlib
 import pandas as pd
 
 
+def _hidden_subprocess_kwargs():
+    if os.name != "nt":
+        return {}
+    kwargs = {}
+    create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if create_no_window:
+        kwargs["creationflags"] = create_no_window
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    except Exception:
+        pass
+    return kwargs
+
+
 
 class txl:
     def __init__(self,ip,port,tocken,show=True,check_version=False,loss_callback=None):
@@ -97,7 +114,7 @@ class txl:
         except ImportError:
             self.sys_price(f"[TxLink自动安装] 缺少依赖 {package_name}，正在安装...请不要退出，安装完成后程序将正常运行")
             try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", package_name], **_hidden_subprocess_kwargs())
                 self.orjson_on = True
                 return importlib.import_module(import_name)            
             except:
