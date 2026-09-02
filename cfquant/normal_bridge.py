@@ -92,6 +92,9 @@ class NormalQmtBridge(TxTradeBridge):
 
     def set_context(self, context):
         self.context = context
+        if self.account_id:
+            self._set_context_account(self.account_id, self.account_type)
+        self._enable_auto_trade_callback()
         self._subscribe_internal_whole_quote()
         self._start_worker_thread(context)
         if self.schedule_timer:

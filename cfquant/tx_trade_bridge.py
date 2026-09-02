@@ -9,6 +9,7 @@ from .protocol import loads_message, pack_event, pack_response
 from .version import __version__ as CORE_VERSION
 from . import account_routing
 from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, set_log_language, translate_log
+from .xttype import filter_cancelable_orders
 
 
 XTTRADER_COMPAT_CANDIDATES = {
@@ -124,9 +125,14 @@ class TxTradeBridge(object):
         self.client_accounts = {}
         self.subscriber_lock = threading.RLock()
         self.started_at = 0.0
+        self.account_type = ""
+        self.auto_trade_callback_enabled = False
 
     def set_context(self, context):
         self.context = context
+        if self.account_id:
+            self._set_context_account(self.account_id, self.account_type)
+        self._enable_auto_trade_callback()
         self._log("tx trade bridge context ready")
         self._publish_runtime_report("context_ready")
 
@@ -505,6 +511,8 @@ class TxTradeBridge(object):
                     "format_error": str(e),
                     "raw_type": type(row).__name__,
                 })
+        if detail_type.lower() == "order" and self._truthy_param(params.get("cancelable_only")):
+            result = filter_cancelable_orders(result)
         self._log(
             "query_trade_detail done detail_type=%s count=%s"
             % (detail_type, len(result))
@@ -523,7 +531,11 @@ class TxTradeBridge(object):
         if isinstance(order_type, str):
             order_type = 23 if order_type.lower() == "buy" else 24
         price_type = params.get("price_type", 11)
-        order_remark = params.get("order_remark", msg.get("id", "tx_order"))
+        order_remark = self._first_param(
+            params,
+            ("order_remark", "remark", "strategy_name"),
+            msg.get("id", "tx_order"),
+        )
         result = passorder(
             order_type,
             params.get("qmt_order_type", 1101),
@@ -564,7 +576,7 @@ class TxTradeBridge(object):
             row.update(order or {})
             if common_account and not row.get("account"):
                 row["account"] = common_account
-            if not row.get("order_remark"):
+            if self._first_param(row, ("order_remark", "remark", "strategy_name")) is None:
                 row["order_remark"] = "%s_%s" % (params.get("order_remark") or msg.get("id", "batch_order"), index + 1)
             try:
                 result = self._order_stock(row, msg)
@@ -1336,6 +1348,7 @@ class TxTradeBridge(object):
         account_id = str(account_id).strip()
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
         self.account_id = account_id
+        self.account_type = account_type
         subscriber_key = (account_type.upper(), account_id)
         client_id = ""
         if msg:
@@ -1345,11 +1358,8 @@ class TxTradeBridge(object):
                 self.account_subscribers.setdefault(subscriber_key, set()).add(client_id)
                 self.client_accounts.setdefault(client_id, set()).add(subscriber_key)
             account_routing.subscribe(self.bridge_id, account_id, client_id, account_type=account_type)
-        if self.context is not None:
-            try:
-                self.context.set_account(account_id, account_type.upper())
-            except Exception:
-                self.context.set_account(account_id)
+        self._set_context_account(account_id, account_type)
+        self._enable_auto_trade_callback()
         self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
         return 0
 
@@ -1388,6 +1398,7 @@ class TxTradeBridge(object):
         account_routing.unsubscribe(self.bridge_id, account_id=account_id, client_id=client_id, account_type=account_type if account_id else None)
         if account_id and account_id == self.account_id:
             self.account_id = ""
+            self.account_type = ""
         self._log("account unsubscribed account=%s client_id=%s" % (account_id or "-", client_id or "-"))
         return 0
 
@@ -1613,6 +1624,11 @@ class TxTradeBridge(object):
                 return value
         return default
 
+    def _truthy_param(self, value):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "y", "on")
+        return bool(value)
+
     def _list_param(self, value):
         if value is None:
             return []
@@ -1636,6 +1652,57 @@ class TxTradeBridge(object):
         if isinstance(account_type, str):
             return account_type
         return mapping.get(account_type, "stock")
+
+    def _set_context_account(self, account_id, account_type=None):
+        if self.context is None or not account_id:
+            return
+        account_id = str(account_id).strip()
+        account_type_text = str(account_type or "").strip().upper()
+        try:
+            if account_type_text:
+                self.context.set_account(account_id, account_type_text)
+                self._log("context account set account=%s account_type=%s mode=with_type" % (account_id, account_type_text))
+            else:
+                self.context.set_account(account_id)
+                self._log("context account set account=%s account_type=%s mode=account_only" % (account_id, account_type_text or "-"))
+        except Exception as e:
+            try:
+                self.context.set_account(account_id)
+                self._log("context account set account=%s account_type=%s mode=fallback error=%s" % (account_id, account_type_text or "-", e))
+            except Exception as fallback_error:
+                self._log("context account set failed account=%s account_type=%s error=%s fallback_error=%s" % (account_id, account_type_text or "-", e, fallback_error))
+                raise
+
+    def _enable_auto_trade_callback(self):
+        if self.context is None or self.auto_trade_callback_enabled:
+            return
+        func = getattr(self.context, "set_auto_trade_callback", None)
+        if callable(func):
+            try:
+                result = func(True)
+                self.auto_trade_callback_enabled = True
+                self._log("auto trade callback enabled result=%s" % result)
+                return
+            except Exception as e:
+                self._log("auto trade callback enable failed:%s" % e)
+                return
+        func = self._get_callable("set_auto_trade_callback")
+        if not callable(func):
+            self._log("auto trade callback enable skipped: set_auto_trade_callback not found")
+            return
+        try:
+            result = func(self.context, True)
+            self.auto_trade_callback_enabled = True
+            self._log("auto trade callback enabled result=%s" % result)
+        except TypeError:
+            try:
+                result = func(True)
+                self.auto_trade_callback_enabled = True
+                self._log("auto trade callback enabled result=%s" % result)
+            except Exception as e:
+                self._log("auto trade callback enable failed:%s" % e)
+        except Exception as e:
+            self._log("auto trade callback enable failed:%s" % e)
 
     def _send_trader_event(self, client_id, name, data):
         if client_id:

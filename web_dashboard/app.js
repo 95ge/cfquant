@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260831_01';
+const FRONTEND_VERSION = 'web_20260901_arch_03';
 
 const state = {
   accountId: '',
@@ -118,6 +118,7 @@ const DEFAULT_BUILTIN_AVATARS = [
 ];
 const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
 const DEFAULT_OFFICIAL_SITE_URL = 'https://cfquant.org';
+let mermaidRendererReady = false;
 
 function normalizeTransportMode(mode) {
   const value = String(mode || 'ctypes').trim().toLowerCase();
@@ -4697,6 +4698,9 @@ function setView(view) {
   if (state.appStarted && view === 'callbacks') {
     refreshCallbacks().catch((error) => log('回调刷新失败', { error: error.message }));
   }
+  if (view === 'tutorial') {
+    renderActiveTutorialMermaid();
+  }
 }
 
 function syncHomeToolbar() {
@@ -7919,6 +7923,80 @@ function setTutorialTopic(name) {
     panel.classList.toggle('active', panel.dataset.guidePanel === name);
   });
   if (name === 'onboarding') syncOnboardingWizard();
+  if (state.currentView === 'tutorial') renderActiveTutorialMermaid();
+}
+
+function initializeMermaidRenderer() {
+  if (!window.mermaid) return false;
+  if (mermaidRendererReady) return true;
+  window.mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: 'loose',
+    theme: 'base',
+    themeVariables: {
+      fontFamily: '"Segoe UI", "Microsoft YaHei", Arial, sans-serif',
+      primaryColor: '#eef5ff',
+      primaryTextColor: '#17202a',
+      primaryBorderColor: '#b9d3fb',
+      lineColor: '#7d8b9a',
+      secondaryColor: '#f1f8f4',
+      tertiaryColor: '#fff8ec',
+      noteBkgColor: '#fff8ec',
+      noteBorderColor: '#efc48e',
+      actorBkg: '#eef5ff',
+      actorBorder: '#b9d3fb',
+      actorTextColor: '#17202a',
+      labelBoxBkgColor: '#fbfcfd',
+      labelBoxBorderColor: '#dce3ea',
+      labelTextColor: '#17202a',
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+    },
+    sequence: {
+      useMaxWidth: true,
+      mirrorActors: false,
+      showSequenceNumbers: false,
+    },
+  });
+  mermaidRendererReady = true;
+  return true;
+}
+
+function markMermaidFallback(node, error) {
+  const card = node && node.closest ? node.closest('.guide-mermaid-card') : null;
+  if (!card) return;
+  card.classList.add('mermaid-fallback');
+  if (!card.querySelector('.mermaid-fallback-note')) {
+    const note = document.createElement('div');
+    note.className = 'mermaid-fallback-note';
+    note.textContent = error ? `Mermaid 架构图渲染失败：${error}` : 'Mermaid 渲染脚本未加载，暂时显示图表源码。';
+    card.insertBefore(note, card.firstChild);
+  }
+}
+
+function renderMermaidDiagrams(scope) {
+  const root = scope || document;
+  const nodes = Array.from(root.querySelectorAll('.mermaid')).filter((node) => !node.dataset.processed);
+  if (!nodes.length) return;
+  if (!initializeMermaidRenderer()) {
+    nodes.forEach((node) => markMermaidFallback(node));
+    return;
+  }
+  window.setTimeout(() => {
+    window.mermaid.run({ nodes }).catch((error) => {
+      nodes.forEach((node) => markMermaidFallback(node, error.message || String(error)));
+      log('Mermaid 架构图渲染失败', { error: error.message || String(error) });
+    });
+  }, 0);
+}
+
+function renderActiveTutorialMermaid() {
+  const panel = document.querySelector('.tutorial-topic.active');
+  if (!panel || !panel.querySelector('.mermaid')) return;
+  window.requestAnimationFrame(() => renderMermaidDiagrams(panel));
 }
 
 function showOnboardingModal(options = {}) {

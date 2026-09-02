@@ -46,13 +46,22 @@
 
 ## 手工复制时的注意事项
 
-这些 `_SH` / `_SZ` 文件是市场入口包装脚本，会先声明市场，再执行原始入口脚本。因此手工复制时，需要确保对应的原始入口脚本也能被找到：
+这些 `_SH` / `_SZ` 文件现在是完整市场入口，已经内置对应主入口代码，不会在 QMT 运行时读取上层目录里的原始入口脚本。手工复制时只需要复制当前模式对应的市场文件：
 
-- `CFQUANT_CTYPE_ALL_LOWLAT_SH.py` / `_SZ.py` 需要能找到 `CFQUANT_CTYPE_ALL_LOWLAT.py`
-- `CFQUANT_TRADE_LOWLAT_SH.py` / `_SZ.py` 需要能找到 `CFQUANT_TRADE_LOWLAT.py`
-- `CFQUANT_LITE_SH.py` / `_SZ.py` 需要能找到 `CFQUANT_LITE.py`
+- 通用 ctypes：`CFQUANT_CTYPE_ALL_LOWLAT_SH.py` / `CFQUANT_CTYPE_ALL_LOWLAT_SZ.py`
+- 高级模式交易端：`CFQUANT_TRADE_LOWLAT_SH.py` / `CFQUANT_TRADE_LOWLAT_SZ.py`
+- 极致模式：`CFQUANT_LITE_SH.py` / `CFQUANT_LITE_SZ.py`
 
-推荐把本目录中的市场脚本和 `qmt_scripts` 目录里的原始入口脚本一起放到 QMT 可访问的位置。
+通用 ctypes 和高级模式交易端仍按原模式要求部署 `cfquant` 核心包；极致模式市场入口不需要复制 `cfquant` 核心包。
+
+## 账号数据和回调
+
+同账号独立市场开启后，主桥可以只作为账号配置和路由身份存在，上海、深圳两个市场入口分别在线即可。
+
+- 下单、撤单按证券代码市场发送到对应 SH/SZ 子桥。
+- 持仓、委托、成交会分别查询 SH/SZ 子桥，并在 Web 端合并展示。
+- 资金属于同一个资金账号，Web 端不会把 SH/SZ 两边的资金简单相加；会取第一个成功子桥的资金结果，并保留分市场查询明细用于排查。
+- 交易回调按 SH/SZ 子桥分别上报，Web 端按主账号订阅时会同时接收两个子桥的回调。
 
 ## 路由规则
 
@@ -76,7 +85,7 @@
 - SH/SZ 两个 QMT 的 `bin.x64` 目录是否填写正确。
 - 对应目录里是否生成了 `cfquant_bridge_config_SH.json` 或 `cfquant_bridge_config_SZ.json`。
 - 上海 QMT 是否运行 `_SH.py`，深圳 QMT 是否运行 `_SZ.py`。
-- 原始入口脚本是否能被市场入口包装脚本找到。
+- 是否复制的是最新完整市场入口文件，而不是旧包装脚本。
 
 正常启动后，日志中会出现类似信息：
 

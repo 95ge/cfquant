@@ -26,7 +26,8 @@ _trade_reroute_count = 0
 _trade_queue_full_count = 0
 _trade_last_recv_at = 0
 _trade_last_dispatch_at = 0
-DEFAULT_ACCOUNT_ID = ""
+DEFAULT_ACCOUNT_ID = str(os.environ.get("CFQUANT_ACCOUNT_ID") or "").strip()
+DEFAULT_ACCOUNT_TYPE = str(os.environ.get("CFQUANT_ACCOUNT_TYPE") or "STOCK").strip().upper()
 USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
 PIPE_NAME = os.environ.get("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub")
@@ -262,7 +263,7 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
-    global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET
+    global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET, DEFAULT_ACCOUNT_ID, DEFAULT_ACCOUNT_TYPE
 
     path, data = _load_runtime_config()
     RUNTIME_CONFIG_PATH = path
@@ -270,6 +271,10 @@ def _apply_runtime_config():
     if not data:
         _write_runtime_log("cfquant ctypes runtime config not found")
         return
+    if data.get("account_id") and not DEFAULT_ACCOUNT_ID:
+        DEFAULT_ACCOUNT_ID = str(data.get("account_id") or "").strip()
+    if data.get("account_type"):
+        DEFAULT_ACCOUNT_TYPE = str(data.get("account_type") or DEFAULT_ACCOUNT_TYPE or "STOCK").strip().upper()
     if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
     if data.get("market"):
@@ -372,6 +377,8 @@ _normal_bridge = start_pipe_normal_bridge(
     pump_max_ms=NORMAL_PUMP_MAX_MS,
     connect_timeout_ms=PIPE_CONNECT_TIMEOUT_MS,
 )
+if DEFAULT_ACCOUNT_TYPE and _normal_bridge:
+    _normal_bridge.account_type = DEFAULT_ACCOUNT_TYPE
 
 _trade_bridge = start_pipe_trade_bridge(
     None,
@@ -382,11 +389,15 @@ _trade_bridge = start_pipe_trade_bridge(
     show=True,
     connect_timeout_ms=PIPE_CONNECT_TIMEOUT_MS,
 )
+if DEFAULT_ACCOUNT_TYPE and _trade_bridge:
+    _trade_bridge.account_type = DEFAULT_ACCOUNT_TYPE
 
 _print_log("cfquant ctypes all-in-one lowlat bridge module loaded")
 _print_log("cfquant ctypes all-in-one lowlat entry version:%s" % _ENTRY_VERSION)
-_print_log("cfquant ctypes bridge id:%s pipe:%s normal_channel:%s trade_channel:%s callback_channel:%s" % (
+_print_log("cfquant ctypes bridge id:%s account:%s/%s pipe:%s normal_channel:%s trade_channel:%s callback_channel:%s" % (
     BRIDGE_ID,
+    DEFAULT_ACCOUNT_ID or "-",
+    DEFAULT_ACCOUNT_TYPE or "-",
     PIPE_NAME,
     BRIDGE_CHANNELS["normal"],
     BRIDGE_CHANNELS["trade"],
@@ -568,7 +579,62 @@ if TRADE_LOOP_IN_THREAD:
     _start_trade_loop()
 
 
+_QMT_TRADE_CALLBACK_REGISTERED = False
+
+
+def _register_qmt_trade_callback(ContextInfo, stage):
+    global _QMT_TRADE_CALLBACK_REGISTERED
+
+    if ContextInfo is None or _QMT_TRADE_CALLBACK_REGISTERED:
+        return
+    func = getattr(ContextInfo, "register_callback", None)
+    if not callable(func):
+        _print_log("cfquant ctypes qmt trade callback register skipped stage=%s reason=missing register_callback" % stage)
+        return
+    try:
+        func(0)
+        _QMT_TRADE_CALLBACK_REGISTERED = True
+        _print_log("cfquant ctypes qmt trade callback registered stage=%s" % stage)
+    except Exception as e:
+        _print_log("cfquant ctypes qmt trade callback register failed stage=%s error=%s" % (stage, e))
+
+
+def _refresh_auto_trade_callback(stage):
+    for bridge_name, bridge in (("normal", _normal_bridge), ("trade", _trade_bridge)):
+        if bridge is None or not hasattr(bridge, "_enable_auto_trade_callback"):
+            continue
+        try:
+            bridge.auto_trade_callback_enabled = False
+            bridge._enable_auto_trade_callback()
+            _print_log("cfquant ctypes auto trade callback refreshed stage=%s bridge=%s" % (stage, bridge_name))
+        except Exception as e:
+            _print_log("cfquant ctypes auto trade callback refresh failed stage=%s bridge=%s error=%s" % (stage, bridge_name, e))
+
+
+def _callback_brief(obj):
+    try:
+        parts = []
+        for name in ("account_id", "m_strAccountID", "m_strInstrumentID", "m_strExchangeID", "m_strOrderSysID", "m_nOrderID", "m_strRemark"):
+            value = getattr(obj, name, None)
+            if value is None and hasattr(obj, "get"):
+                value = obj.get(name)
+            if value not in (None, ""):
+                parts.append("%s=%s" % (name, value))
+        return " ".join(parts) or type(obj).__name__
+    except Exception:
+        return type(obj).__name__
+
+
+def _object_to_callback_dict(obj):
+    if hasattr(obj, "items"):
+        return dict(obj)
+    if hasattr(obj, "__dict__"):
+        return dict(vars(obj))
+    return {"value": str(obj)}
+
+
 def init(ContextInfo):
+    _register_qmt_trade_callback(ContextInfo, "init")
     if _normal_bridge:
         _normal_bridge.set_context(ContextInfo)
         _print_log("cfquant ctypes normal context ready version:%s" % _ENTRY_VERSION)
@@ -577,6 +643,11 @@ def init(ContextInfo):
         _print_log("cfquant ctypes lowlat trade context ready version:%s" % _ENTRY_VERSION)
     _start_trade_loop()
     _schedule_trade_timer(ContextInfo)
+
+
+def after_init(ContextInfo):
+    _register_qmt_trade_callback(ContextInfo, "after_init")
+    _refresh_auto_trade_callback("after_init")
 
 
 def handlebar(ContextInfo):
@@ -609,6 +680,7 @@ def stop(ContextInfo):
 
 def _publish_callback(event_name, obj):
     try:
+        _print_log("cfquant ctypes raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
         if _normal_bridge:
             _normal_bridge.publish_callback_event(event_name, obj)
     except Exception as e:
@@ -639,7 +711,17 @@ def order_error_callback(ContextInfo, orderError):
     _publish_callback("trader:on_order_error", orderError)
 
 
+def orderError_callback(ContextInfo, passOrderInfo, msg):
+    data = _object_to_callback_dict(passOrderInfo)
+    data["error_msg"] = msg
+    _publish_callback("trader:on_order_error", data)
+
+
 def cancel_error_callback(ContextInfo, cancelError):
+    _publish_callback("trader:on_cancel_error", cancelError)
+
+
+def cancelError_callback(ContextInfo, cancelError):
     _publish_callback("trader:on_cancel_error", cancelError)
 
 

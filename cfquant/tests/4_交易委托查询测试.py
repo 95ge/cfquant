@@ -13,6 +13,7 @@ from _helpers import (
 )
 
 from cfquant.xttrader import XtQuantTrader, close_trade_client
+from cfquant.xtconstant import FIX_PRICE, STOCK_BUY, STOCK_SELL
 from cfquant.xttype import StockAccount
 
 
@@ -38,10 +39,39 @@ def make_async_printer(case):
     return callback
 
 
+def build_order_confirmation(side, stock_code, volume, price):
+    return "ORDER %s %s %s @ %.3f" % (str(side or "").upper(), stock_code, volume, price)
+
+
+def order_id_from_result(result):
+    if result not in (None, "", -1, "-1") and not isinstance(result, dict):
+        return str(result)
+    if isinstance(result, dict):
+        for key in ("order_id", "m_strOrderSysID", "m_strOrderID", "m_nOrderID"):
+            value = result.get(key)
+            if value not in (None, "", -1, "-1"):
+                return str(value)
+        nested = result.get("result") or result.get("request_result")
+        if nested is not result:
+            return order_id_from_result(nested)
+    return ""
+
+
 def main():
     configure_stdout()
-    parser = argparse.ArgumentParser(description="cfquant 交易和委托只读查询测试，不会下单。")
+    parser = argparse.ArgumentParser(description="cfquant 交易和委托查询测试；默认只读，传 --submit-order 且确认文本匹配时才会真实下单。")
     add_runtime_args(parser)
+    parser.add_argument("--order-account-id", default="", help="真实委托资金账号；留空时使用 --account-id。")
+    parser.add_argument("--order-account-type", default="", help="真实委托账号类型；留空时使用 --account-type。")
+    parser.add_argument("--order-side", default="buy", choices=("buy", "sell"), help="真实委托方向，buy 或 sell。")
+    parser.add_argument("--order-stock-code", default="", help="真实委托标的，例如 000001.SZ。")
+    parser.add_argument("--order-volume", type=int, default=0, help="真实委托数量，必须为正数，股票通常为 100 的整数倍。")
+    parser.add_argument("--order-price", type=float, default=0.0, help="真实委托价格，必须为正数。")
+    parser.add_argument("--order-price-type", type=int, default=FIX_PRICE, help="真实委托报价类型，默认 FIX_PRICE=11。")
+    parser.add_argument("--strategy-name", default="cfquant_test_4", help="真实委托策略名称；未指定 order-remark 时也会进入 QMT remark。")
+    parser.add_argument("--order-remark", default="", help="真实委托备注，优先写入 QMT remark；留空则使用 strategy-name。")
+    parser.add_argument("--submit-order", action="store_true", help="显式开启真实委托；默认只打印下单参数预览，不下单。")
+    parser.add_argument("--order-confirm-text", default="", help="真实委托确认文本，必须等于脚本打印的 required_confirm_text。")
     parser.add_argument("--account-id", default=default_account_id(), help="资金账号。默认读取 CFQUANT_ACCOUNT_ID 或 runtime/config/cfquant_web_config.json。")
     parser.add_argument("--account-type", default="STOCK", help="账号类型，默认 STOCK，可填 CREDIT。")
     parser.add_argument("--cancelable-only", action="store_true", help="委托查询只返回可撤单委托。")
@@ -62,6 +92,20 @@ def main():
 
     account_type = str(args.account_type or "STOCK").strip().upper()
     account = StockAccount(account_id, account_type, args.bridge_id)
+    order_account_id = str(args.order_account_id or account_id).strip()
+    order_account_type = str(args.order_account_type or account_type).strip().upper()
+    order_account = StockAccount(order_account_id, order_account_type, args.bridge_id)
+    order_stock_code = str(args.order_stock_code or "").strip().upper()
+    order_side = str(args.order_side or "buy").strip().lower()
+    order_volume = int(args.order_volume or 0)
+    order_price = float(args.order_price or 0)
+    order_strategy_name = str(args.strategy_name or "").strip() or "cfquant_test_4"
+    order_remark = str(args.order_remark or "").strip()
+    order_required_confirm = (
+        build_order_confirmation(order_side, order_stock_code, order_volume, order_price)
+        if order_stock_code and order_volume > 0 and order_price > 0
+        else ""
+    )
     trader = XtQuantTrader(account=account)
 
     print_json({
@@ -72,7 +116,20 @@ def main():
         "account_type": account_type,
         "stock_code": args.stock_code,
         "order_id": args.order_id,
-        "safe_mode": "只查询资金、持仓、委托、成交，不会提交委托或撤单。",
+        "order_config": {
+            "submit_order": bool(args.submit_order),
+            "account_id": order_account_id,
+            "account_type": order_account_type,
+            "side": order_side,
+            "stock_code": order_stock_code,
+            "volume": order_volume,
+            "price": order_price,
+            "price_type": args.order_price_type,
+            "strategy_name": order_strategy_name,
+            "order_remark": order_remark or order_strategy_name,
+            "required_confirm_text": order_required_confirm,
+        },
+        "safe_mode": "默认只查询资金、持仓、委托、成交；只有传 --submit-order 且确认文本匹配时才会提交真实委托，不会自动撤单。",
     })
     try:
         # connect 会注册交易回调并向桥接端 ping 一次，返回 0 表示链路可用。
@@ -81,7 +138,7 @@ def main():
         if connect_result != 0:
             return 1
 
-        # 1. 最常用的股票账户只读查询，返回值会尽量映射成 xtquant 风格对象。
+        # 1. 最常用的股票账户查询，返回值会尽量映射成 xtquant 风格对象。
         emit_call(
             "query_stock_asset",
             lambda: trader.query_stock_asset(account),
@@ -92,14 +149,65 @@ def main():
             lambda: trader.query_stock_positions(account),
             example="trader.query_stock_positions(account)",
         )
+        submitted_order_id = ""
+        order_preview = {
+            "account_id": order_account_id,
+            "account_type": order_account_type,
+            "side": order_side,
+            "stock_code": order_stock_code,
+            "volume": order_volume,
+            "price_type": args.order_price_type,
+            "price": order_price,
+            "strategy_name": order_strategy_name,
+            "order_remark": order_remark or order_strategy_name,
+            "required_confirm_text": order_required_confirm,
+        }
+        print_json({
+            "case": "order_stock_preview",
+            "ok": bool(order_required_confirm),
+            "skipped": not bool(args.submit_order),
+            "summary": order_preview,
+            "example": "trader.order_stock(order_account, order_stock_code, order_type, order_volume, price_type, price, strategy_name, order_remark)",
+        })
+        if args.submit_order:
+            if not order_account_id:
+                print_json({"case": "order_stock", "ok": False, "error": "order account_id is required"})
+                return 2
+            if not order_required_confirm:
+                print_json({"case": "order_stock", "ok": False, "error": "order stock_code, volume and price are required"})
+                return 2
+            if str(args.order_confirm_text or "").strip() != order_required_confirm:
+                print_json({
+                    "case": "order_stock",
+                    "ok": False,
+                    "error": "confirmation mismatch",
+                    "required_confirm_text": order_required_confirm,
+                })
+                return 2
+            order_type = STOCK_BUY if order_side == "buy" else STOCK_SELL
+            order_result = emit_call(
+                "order_stock",
+                lambda: trader.order_stock(
+                    order_account,
+                    order_stock_code,
+                    order_type,
+                    order_volume,
+                    args.order_price_type,
+                    order_price,
+                    order_strategy_name,
+                    order_remark or order_strategy_name,
+                ),
+                example="trader.order_stock(order_account, order_stock_code, order_type, order_volume, price_type, price, strategy_name, order_remark)",
+            )
+            submitted_order_id = order_id_from_result(order_result)
         orders = emit_call(
             "query_stock_orders",
-            lambda: trader.query_stock_orders(account, cancelable_only=args.cancelable_only),
+            lambda: trader.query_stock_orders(order_account if args.submit_order else account, cancelable_only=args.cancelable_only),
             example="trader.query_stock_orders(account, cancelable_only=False)",
         )
         emit_call(
             "query_stock_trades",
-            lambda: trader.query_stock_trades(account),
+            lambda: trader.query_stock_trades(order_account if args.submit_order else account),
             example="trader.query_stock_trades(account)",
         )
 
@@ -114,11 +222,11 @@ def main():
         else:
             emit_skip("query_stock_position", "未传 --stock-code 且当前持仓列表为空，无法构造单持仓查询示例。")
 
-        order_id = str(args.order_id or "").strip() or first_attr(orders, "order_id", "order_sysid", "m_strOrderSysID")
+        order_id = str(args.order_id or "").strip() or submitted_order_id or first_attr(orders, "order_id", "order_sysid", "m_strOrderSysID")
         if order_id:
             emit_call(
                 "query_stock_order",
-                lambda: trader.query_stock_order(account, order_id),
+                lambda: trader.query_stock_order(order_account if args.submit_order else account, order_id),
                 example="trader.query_stock_order(account, order_id)",
             )
         else:

@@ -8,6 +8,7 @@ import time
 from .config import get_config
 from .logging_i18n import get_log_language, set_log_language, translate_log
 from .protocol import loads_message, pack_event, pack_response
+from .xttype import filter_cancelable_orders
 
 
 class CfquantQmtBridge(object):
@@ -48,12 +49,14 @@ class CfquantQmtBridge(object):
         self.main_thread_queue = queue.Queue(maxsize=10000)
         self.subscriptions = {}
         self.client_subscriptions = {}
+        self.auto_trade_callback_enabled = False
 
     def start(self):
         if self.running:
             return self
         self.running = True
         self._start_log_thread()
+        self._enable_auto_trade_callback()
         self.connect_thread = threading.Thread(target=self._connect_loop)
         self.connect_thread.daemon = True
         self.connect_thread.start()
@@ -66,6 +69,7 @@ class CfquantQmtBridge(object):
 
     def set_context(self, context):
         self.context = context
+        self._enable_auto_trade_callback()
         self._log("cfquant context poll loop started")
         while self.running:
             self.poll(max_messages=100)
@@ -531,7 +535,11 @@ class CfquantQmtBridge(object):
     def _order_stock(self, params):
         account = params.get("account") or {}
         account_id = account.get("account_id", "")
-        user_order_id = params.get("order_remark") or "cfquant_%s" % int(time.time() * 1000)
+        user_order_id = self._first_param(
+            params,
+            ("order_remark", "remark", "strategy_name"),
+            "cfquant_%s" % int(time.time() * 1000),
+        )
         args = (
             params.get("optype", params.get("order_type")),
             params.get("qmt_order_type", 1101),
@@ -622,7 +630,10 @@ class CfquantQmtBridge(object):
             self._account_type_name(account.get("account_type")).lower(),
             str(datatype).lower(),
         )
-        return self._format_trade_detail_rows(result, datatype)
+        rows = self._format_trade_detail_rows(result, datatype)
+        if str(datatype).upper() == "ORDER" and self._truthy_param(params.get("cancelable_only")):
+            rows = filter_cancelable_orders(rows)
+        return rows
 
     def _format_trade_detail_rows(self, rows, datatype):
         datatype = str(datatype).upper()
@@ -855,6 +866,37 @@ class CfquantQmtBridge(object):
                 return func
         return None
 
+    def _enable_auto_trade_callback(self):
+        if self.context is None or self.auto_trade_callback_enabled:
+            return
+        func = getattr(self.context, "set_auto_trade_callback", None)
+        if callable(func):
+            try:
+                result = func(True)
+                self.auto_trade_callback_enabled = True
+                self._log("auto trade callback enabled result=%s" % result)
+                return
+            except Exception as e:
+                self._log("auto trade callback enable failed:%s" % e)
+                return
+        func = self._get_callable("set_auto_trade_callback")
+        if not callable(func):
+            self._log("auto trade callback enable skipped: set_auto_trade_callback not found")
+            return
+        try:
+            result = func(self.context, True)
+            self.auto_trade_callback_enabled = True
+            self._log("auto trade callback enabled result=%s" % result)
+        except TypeError:
+            try:
+                result = func(True)
+                self.auto_trade_callback_enabled = True
+                self._log("auto trade callback enabled result=%s" % result)
+            except Exception as e:
+                self._log("auto trade callback enable failed:%s" % e)
+        except Exception as e:
+            self._log("auto trade callback enable failed:%s" % e)
+
     def _get_global_func(self, name):
         func = self.globals_dict.get(name)
         if callable(func):
@@ -867,6 +909,18 @@ class CfquantQmtBridge(object):
         if hasattr(obj, "get"):
             return obj.get(name)
         return None
+
+    def _first_param(self, params, names, default=None):
+        for name in names:
+            value = params.get(name)
+            if value is not None and value != "":
+                return value
+        return default
+
+    def _truthy_param(self, value):
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "y", "on")
+        return bool(value)
 
     def _account_type_name(self, account_type):
         mapping = {

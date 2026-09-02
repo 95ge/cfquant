@@ -64,6 +64,78 @@ def _set_first(data, target, names, default=_MISSING):
         data[target] = value
 
 
+_CANCELABLE_ORDER_STATUS_VALUES = frozenset((
+    getattr(xtconstant, "ORDER_UNREPORTED", 48),
+    getattr(xtconstant, "ORDER_WAIT_REPORTING", 49),
+    getattr(xtconstant, "ORDER_REPORTED", 50),
+    getattr(xtconstant, "ORDER_PART_SUCC", 55),
+))
+
+_ORDER_STATUS_FIELD_NAMES = (
+    "order_status",
+    "m_nOrderStatus",
+    "m_nOrderState",
+    "m_strOrderStatus",
+    "m_strStatus",
+)
+
+
+def _normalize_order_status(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except Exception:
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    try:
+        number = float(text)
+        if number.is_integer():
+            return int(number)
+    except Exception:
+        pass
+    aliases = {
+        "ORDER_UNREPORTED": getattr(xtconstant, "ORDER_UNREPORTED", 48),
+        "ORDER_WAIT_REPORTING": getattr(xtconstant, "ORDER_WAIT_REPORTING", 49),
+        "ORDER_REPORTED": getattr(xtconstant, "ORDER_REPORTED", 50),
+        "ORDER_PART_SUCC": getattr(xtconstant, "ORDER_PART_SUCC", 55),
+    }
+    return aliases.get(text.upper())
+
+
+def order_status_from_any(value):
+    data = _dict_from_any(value)
+    if data is None:
+        return None
+    status = _first_value(data, _ORDER_STATUS_FIELD_NAMES, default=None)
+    return _normalize_order_status(status)
+
+
+def is_cancelable_order_status(value):
+    return _normalize_order_status(value) in _CANCELABLE_ORDER_STATUS_VALUES
+
+
+def is_cancelable_order(value):
+    return order_status_from_any(value) in _CANCELABLE_ORDER_STATUS_VALUES
+
+
+def filter_cancelable_orders(values):
+    if values is None:
+        return None
+    if isinstance(values, list):
+        return [value for value in values if is_cancelable_order(value)]
+    return values if is_cancelable_order(values) else None
+
+
 def _normalize_account_type(value):
     if _is_empty(value):
         return xtconstant.SECURITY_ACCOUNT

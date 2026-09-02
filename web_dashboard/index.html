@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260831_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260902_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -303,10 +303,12 @@
               <div class="home-intro-copy">
                 <span class="home-kicker">QMT 能力转接控制台</span>
                 <h2>用 cfquant 替代 miniqmt，把大 QMT 的交易、行情和多账号能力统一接出来。</h2>
-                <p>项目在本机启动 Web 服务，外部 Python 程序和网页都先请求 cfquant，再由账号配置自动路由到通用端或高级端。新用户优先使用通用模式，一个 QMT 加载一个 ctypes 文件即可完成资金、持仓、委托、下单、撤单和回调验证。</p>
+                <p>项目在本机启动 Web 服务，外部 Python 默认先通过 LTtx 发现 Web 路由，网页请求直接进入 Web；两者最终都由账号配置自动路由到通用端或高级端。新用户优先使用通用模式，一个 QMT 加载一个 ctypes 文件即可完成资金、持仓、委托、下单、撤单和回调验证。</p>
                 <div class="home-intro-tags" aria-label="核心能力">
                   <span>通用模式单文件部署</span>
                   <span>高级模式低延迟交易</span>
+                  <span>LTtx 自动发现</span>
+                  <span>PipeHub 通用后端</span>
                   <span>多账号自动路由</span>
                   <span>WebSocket 回调</span>
                 </div>
@@ -1083,8 +1085,8 @@
                   <span>单账号通用模式，最快跑通</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="project">
-                  <strong>项目介绍</strong>
-                  <span>系统目标、角色和架构</span>
+                  <strong>项目架构</strong>
+                  <span>组件、链路和回调</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="quickstart">
                   <strong>快速开始</strong>
@@ -1181,7 +1183,7 @@
                         <div class="onboarding-intro-brief" aria-label="初始化向导说明">
                           <div>
                             <strong>推荐新用户从通用模式开始</strong>
-                            <span>一个 QMT 加载一个 ctypes 通用端文件，外部程序和网页都通过本机 PipeHub 转发请求，部署步骤少，适合先把资金、持仓、行情和下单链路跑通。</span>
+                            <span>一个 QMT 加载一个 ctypes 通用端文件。网页请求由 Web Server 路由到 PipeHub；外部 Python 默认通过 LTtx 发现 Web 路由，最终按账号配置落到 PipeHub，适合先把资金、持仓、行情和下单链路跑通。</span>
                           </div>
                           <div>
                             <strong>高级模式用于追求交易端极限延迟</strong>
@@ -1207,7 +1209,7 @@
                             </div>
                             <div class="mode-flow-notes">
                               <span>只部署一个 QMT 桥接文件</span>
-                              <span>不依赖 LTtx 通信</span>
+                              <span>QMT 落地不依赖 LTtx</span>
                               <span>多账号可按账号配置区分 QMT 目录</span>
                             </div>
                           </div>
@@ -1237,7 +1239,7 @@
                         <div class="onboarding-mode-rules detailed">
                           <div>
                             <strong>通用模式怎么通信</strong>
-                            <span>外部 Python 的 <code>cfquant</code> 默认连本机 <code>PipeHub</code>，PipeHub 再把请求转发到 QMT 里的 ctypes 通用桥。只要 Web 服务或独立 PipeHub 在线，通常不需要 LTtx。</span>
+                            <span>网页端请求先到 Web Server，再由 Web Server 路由到 <code>PipeHub</code>；外部 Python 的 <code>cfquant</code> 默认 <code>transport=auto</code>，会先通过 LTtx 读取 Web 路由，最终按账号通用模式落到 PipeHub。</span>
                           </div>
                           <div class="important">
                             <strong>高级模式怎么通信</strong>
@@ -1385,7 +1387,7 @@
                       <strong>首次启动必须完成初始化</strong>
                       <span>网页首次打开会要求输入默认账号和运行模式。QMT 核心目录建议填写，通常是 QMT 安装目录下的 bin.x64；留空不影响连接，但会导致自动更新和多 QMT 部署辅助不可用。默认是单账号；增加第二个账号时，继续在“绑定”页面添加账号配置即可。</span>
                     </div>
-                  <div class="guide-callout">
+                    <div class="guide-callout">
                       <strong>先选择通信模式</strong>
                       <span>通用模式只需要加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code> 一个 QMT 文件，行情、查询、下单、撤单和回调统一通过 ctypes 单文件桥接入。高级模式需要两个 QMT 终端：普通 QMT 加载 <code>CFQUANT.py</code>，极速交易端 QMT 加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。不要在同一个 QMT 里同时运行高级模式两个入口。</span>
                     </div>
@@ -1393,97 +1395,487 @@
                   </div>
 
                   <div class="guide-section">
-                    <h3>核心链路说明</h3>
-                    <div class="core-link-layout" aria-label="cfquant 核心链路说明">
-                      <div class="core-link-copy">
-                        <strong>一个入口，两类运行模式</strong>
-                        <p>外部程序和网页端都先请求 cfquant Web Server。服务端根据账号绑定关系判断当前账号应该走通用模式还是高级模式，并把请求转发到对应的本地桥接运行时。</p>
-                        <div class="core-mode-columns">
-                          <div>
-                            <span>通用模式</span>
-                            <strong>Web Server -> PipeHub -> ctypes 通用端 -> QMT</strong>
-                          </div>
-                          <div>
-                            <span>高级模式</span>
-                            <strong>Web Server -> LTtx -> 普通桥 / 极速交易桥 -> QMT</strong>
-                          </div>
-                        </div>
-                      </div>
-                      <div class="core-link-steps">
-                        <div class="core-link-card source">
-                          <span class="core-link-index">1</span>
-                          <div>
-                            <strong>外部程序发起请求</strong>
-                            <span>网页按钮、HTTP API、WebSocket 客户端或外部 Python 的 cfquant 包都属于入口层。</span>
-                          </div>
-                        </div>
-                        <div class="core-link-card server">
-                          <span class="core-link-index">2</span>
-                          <div>
-                            <strong>cfquant Web Server 编排</strong>
-                            <span>负责 API Key、账号选择、通用/高级模式判断、数据源账号选择和错误返回。</span>
-                          </div>
-                        </div>
-                        <div class="core-link-card runtime">
-                          <span class="core-link-index">3</span>
-                          <div>
-                            <strong>本地桥接运行时转发</strong>
-                            <span>通用模式使用 named pipe 和 PipeHub；高级模式使用 LTtx 普通桥与极速交易桥。</span>
-                          </div>
-                        </div>
-                        <div class="core-link-card qmt">
-                          <span class="core-link-index">4</span>
-                          <div>
-                            <strong>QMT 终端执行并回调</strong>
-                            <span>QMT 侧脚本调用原生接口，返回资金、持仓、委托、成交、行情和错误回调。</span>
-                          </div>
-                        </div>
-                      </div>
+                    <h3>总体架构</h3>
+                    <p>本文用于快速理解 cfquant 的整体架构、不同部署模式下的请求链路、回调链路，以及各代码模块的职责。更细的交易链路和回调机制说明见 <code>docs/cfquant_qmt_architecture_and_callbacks.md</code>。</p>
+                    <div class="guide-mermaid-card doc-wide" aria-label="cfquant 总体架构图">
+                      <pre class="mermaid">flowchart LR
+    User["外部 Python 调用者&lt;br/&gt;策略、测试脚本、业务程序"]
+
+    subgraph Api["cfquant 外部 API 层"]
+        XtTrader["xttrader.py&lt;br/&gt;交易、委托、成交、资金、持仓"]
+        XtData["xtdata.py&lt;br/&gt;行情查询、行情订阅、数据下载"]
+        XtType["xttype.py / xtconstant.py&lt;br/&gt;账号、对象模型、常量兼容"]
+    end
+
+    subgraph Client["RPC 客户端与协议层"]
+        Config["config.py&lt;br/&gt;运行配置"]
+        Channels["channels.py&lt;br/&gt;bridge_id 与频道命名"]
+        Protocol["protocol.py&lt;br/&gt;request / response / event 编解码"]
+        RpcClient["client.py&lt;br/&gt;auto 选择 WebLttx / Pipe / LTtx"]
+        PipeClient["pipe_client.py&lt;br/&gt;外部 named pipe 客户端"]
+        LttxClient["LTtxRpcClient / WebLttxRpcClient&lt;br/&gt;LTtx 客户端"]
+    end
+
+    subgraph LocalService["本地服务进程"]
+        Web["cfquant_web_server.py&lt;br/&gt;Web 控制台、统一路由、账号配置、回调转发"]
+        PipeHub["cfquant_pipe_hub.py&lt;br/&gt;named pipe 中转站"]
+        LttxServer["LTtx/tx/LTtx_server.py&lt;br/&gt;LTtx socket 发布订阅服务"]
+        Runtime["runtime/config&lt;br/&gt;账号、模式、bridge、市场路由配置"]
+    end
+
+    subgraph QmtEntry["大 QMT 内部入口脚本"]
+        CtypeEntry["CFQUANT_CTYPE_ALL_LOWLAT.py&lt;br/&gt;通用模式单文件双通道"]
+        NormalEntry["CFQUANT.py&lt;br/&gt;高级模式普通桥"]
+        TradeEntry["CFQUANT_TRADE_LOWLAT.py&lt;br/&gt;高级模式纯交易低延迟桥"]
+        LiteEntry["CFQUANT_LITE.py&lt;br/&gt;极致模式自包含入口"]
+        MarketEntry["同账号独立市场/*.py&lt;br/&gt;沪深完整市场入口"]
+    end
+
+    subgraph QmtBridge["大 QMT 内部桥"]
+        NormalBridge["NormalQmtBridge&lt;br/&gt;普通请求、行情订阅、回调发布"]
+        TradeBridge["TxTradeBridge&lt;br/&gt;下单、撤单、交易查询"]
+        PipeBridge["PipeNormalQmtBridge / PipeTradeBridge&lt;br/&gt;把 QMT 桥接到 PipeHub"]
+    end
+
+    QmtApi["大 QMT 原生能力&lt;br/&gt;ContextInfo、passorder、cancel、get_trade_detail_data、行情函数"]
+
+    User --> XtTrader
+    User --> XtData
+    XtTrader --> RpcClient
+    XtData --> RpcClient
+    XtType --> XtTrader
+    Config --> RpcClient
+    Channels --> RpcClient
+    Protocol --> RpcClient
+    RpcClient --> LttxClient
+    RpcClient --> PipeClient
+    LttxClient --> LttxServer
+    LttxClient --> Web
+    PipeClient --> PipeHub
+    Web --> Runtime
+    Web --> LttxServer
+    Web --> PipeHub
+    PipeHub --> PipeBridge
+    LttxServer --> NormalBridge
+    LttxServer --> TradeBridge
+    CtypeEntry --> PipeBridge
+    LiteEntry --> PipeBridge
+    NormalEntry --> NormalBridge
+    TradeEntry --> TradeBridge
+    MarketEntry --> CtypeEntry
+    MarketEntry --> TradeEntry
+    PipeBridge --> NormalBridge
+    PipeBridge --> TradeBridge
+    NormalBridge --> QmtApi
+    TradeBridge --> QmtApi</pre>
                     </div>
                   </div>
 
                   <div class="guide-section">
-                    <h3>核心文件</h3>
-                    <div class="guide-table-wrap">
+                    <h3>请求链路</h3>
+                    <h4>默认 auto 链路</h4>
+                    <p>默认 <code>CFQUANT_TRANSPORT=auto</code>。如果 Web 服务在线并通过 LTtx 发布了 <code>cfquant.runtime</code>，外部 Python 会先连 LTtx，再进入 Web 统一路由。</p>
+                    <div class="guide-mermaid-card sequence" aria-label="默认 auto 请求链路">
+                      <pre class="mermaid">sequenceDiagram
+    participant User as 外部 Python
+    participant API as cfquant API
+    participant LTtx as LTtx
+    participant Web as Web 统一路由
+    participant PipeHub as PipeHub
+    participant QMT as 大 QMT 桥
+    participant Native as QMT 原生函数
+
+    User->>API: order_stock / query / xtdata
+    API->>LTtx: WebLttxRpcClient 发送 request
+    LTtx->>Web: cfquant.web.request
+    Web->>Web: 按 account_id、account_type、bridge_id 选择模式
+    alt 账号是通用或极致模式
+        Web->>PipeHub: PipeRpcClient 转发到 normal/trade
+        PipeHub->>QMT: 投递到 PipeNormalQmtBridge 或 PipeTradeBridge
+    else 账号是高级模式
+        Web->>LTtx: LTtxRpcClient 转发到 normal/trade
+        LTtx->>QMT: 投递到 NormalQmtBridge 或 TxTradeBridge
+    end
+    QMT->>Native: passorder / cancel / get_trade_detail_data / 行情函数
+    Native-->>QMT: 调用结果
+    QMT-->>Web: response
+    Web-->>LTtx: response
+    LTtx-->>API: 按 client_id 原路返回
+    API-->>User: 返回 Python 对象</pre>
+                    </div>
+                    <h4>强制 ctypes 链路</h4>
+                    <p>强制 <code>configure(transport="ctypes")</code> 时，外部 Python 不经过 LTtx 和 Web 统一路由，直接连接 PipeHub。</p>
+                    <div class="guide-mermaid-card compact" aria-label="强制 ctypes 请求链路">
+                      <pre class="mermaid">flowchart LR
+    User["外部 Python"] --> API["cfquant API"]
+    API --> PipeClient["PipeRpcClient"]
+    PipeClient --> PipeHub["cfquant_pipe_hub"]
+    PipeHub --> QmtPipe["QMT Pipe 桥"]
+    QmtPipe --> QmtApi["QMT 原生 API"]</pre>
+                    </div>
+                    <p>这条链路更短，但调用方需要自己处理账号、bridge、模式和市场路由配置。</p>
+                    <h4>强制 lttx 链路</h4>
+                    <p>强制 <code>configure(transport="lttx")</code> 时，外部 Python 直接连 LTtx 请求频道，绕过 Web 账号路由。</p>
+                    <div class="guide-mermaid-card compact" aria-label="强制 lttx 请求链路">
+                      <pre class="mermaid">flowchart LR
+    User["外部 Python"] --> API["cfquant API"]
+    API --> LttxClient["LTtxRpcClient"]
+    LttxClient --> LTtx["LTtx"]
+    LTtx --> QmtBridge["QMT LTtx 桥"]
+    QmtBridge --> QmtApi["QMT 原生 API"]</pre>
+                    </div>
+                    <p>这条链路适合固定高级模式和明确频道的场景，不具备 Web 的账号自动路由和 fallback。</p>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>回调链路</h3>
+                    <p>交易回调分为两类：账号级广播回调和请求级响应回调。</p>
+                    <h4>账号级广播回调</h4>
+                    <ul class="guide-list">
+                      <li><code>on_stock_order</code></li>
+                      <li><code>on_stock_trade</code></li>
+                      <li><code>on_stock_asset</code></li>
+                      <li><code>on_stock_position</code></li>
+                      <li><code>on_order_error</code></li>
+                      <li><code>on_cancel_error</code>，是否能被 QMT 触发取决于当前 QMT 是否绑定该原始回调名</li>
+                    </ul>
+                    <h4>请求级响应回调</h4>
+                    <ul class="guide-list">
+                      <li><code>on_order_stock_async_response</code></li>
+                      <li><code>on_cancel_order_stock_async_response</code></li>
+                      <li>数据下载进度 callback</li>
+                      <li>行情订阅的 <code>quote:&lt;subscribe_id&gt;</code></li>
+                    </ul>
+                    <div class="guide-mermaid-card sequence" aria-label="cfquant 回调广播链路">
+                      <pre class="mermaid">sequenceDiagram
+    participant Native as 大 QMT 原始回调
+    participant Entry as qmt_scripts 入口函数
+    participant Bridge as NormalQmtBridge
+    participant PipeHub as PipeHub
+    participant Web as Web CallbackEventStore / Web Route
+    participant LTtx as LTtx
+    participant Client as 外部 cfquant client
+    participant Callback as XtQuantTraderCallback
+
+    Native->>Entry: order_callback / deal_callback / account_callback
+    Entry->>Bridge: publish_callback_event("trader:on_*", data)
+    Bridge->>Bridge: 根据 account_id/account_type 查订阅者
+    alt 外部直连 ctypes
+        Bridge->>PipeHub: 推送 trader:on_* 到 client_id
+        PipeHub->>Client: delivery event
+    else 外部默认 auto 走 Web route
+        Bridge->>PipeHub: 推送 callback event
+        PipeHub->>Web: callback_event_channel
+        Web->>Web: 记录事件并匹配外部账号订阅者
+        Web->>LTtx: 推送 trader:on_* 到外部 client_id
+        LTtx->>Client: event
+    else 高级模式普通桥
+        Bridge->>LTtx: 推送 trader:on_* 或 callback event
+        LTtx->>Web: Web 监听并转发
+        Web->>LTtx: 推送到外部 client_id
+        LTtx->>Client: event
+    end
+    Client->>Callback: on_stock_order / on_stock_trade</pre>
+                    </div>
+                    <div class="guide-callout warning">
+                      <strong>关键规则</strong>
+                      <span>同步下单、撤单、查询的 <code>response</code> 只回给发起请求的 <code>client_id</code>；账号级交易回调按 <code>bridge_id + account_type + account_id</code> 广播给所有已 <code>subscribe(account)</code> 的客户端；高级模式中的 <code>CFQUANT_TRADE_LOWLAT.py</code> 是纯交易请求桥，不承接 QMT 原始账号回调，账号级回调由 <code>CFQUANT.py</code> 普通桥负责。</span>
+                    </div>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>模式架构图</h3>
+                    <p>不同部署模式的差别主要在 QMT 侧入口和本地传输层。普通多账号建议走默认 auto + Web 统一路由；固定低延迟链路再考虑强制直连。</p>
+                    <div class="guide-mermaid-card mode-map" aria-label="cfquant 模式架构图">
+                      <pre class="mermaid">flowchart TB
+    subgraph Common["通用模式 ctypes"]
+        C1["外部 auto/Web 或 direct ctypes"]
+        C2["PipeHub"]
+        C3["CFQUANT_CTYPE_ALL_LOWLAT.py"]
+        C4["PipeNormalQmtBridge&lt;br/&gt;normal: 行情、查询、回调"]
+        C5["PipeTradeBridge&lt;br/&gt;trade: 下单、撤单、交易查询"]
+        C1 --> C2 --> C3
+        C3 --> C4
+        C3 --> C5
+    end
+
+    subgraph Lite["极致模式 lite"]
+        L1["外部 auto/Web 或 direct lite"]
+        L2["PipeHub"]
+        L3["CFQUANT_LITE.py&lt;br/&gt;自包含"]
+        L1 --> L2 --> L3
+    end
+
+    subgraph Advanced["高级模式 lttx"]
+        A1["外部 auto/Web 或 direct lttx"]
+        A2["LTtx"]
+        A3["CFQUANT.py&lt;br/&gt;普通桥、行情、回调"]
+        A4["CFQUANT_TRADE_LOWLAT.py&lt;br/&gt;纯交易请求桥"]
+        A1 --> A2
+        A2 --> A3
+        A2 --> A4
+    end
+
+    subgraph Market["同账号独立市场"]
+        M1["Web 市场路由"]
+        M2["SH bridge"]
+        M3["SZ bridge"]
+        M1 --> M2
+        M1 --> M3
+    end</pre>
+                    </div>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>组件和模块职责</h3>
+                    <div class="guide-table-wrap architecture-table">
                       <table>
                         <thead>
                           <tr>
-                            <th>文件或模块</th>
+                            <th>模块或组件</th>
+                            <th>路径</th>
+                            <th>主要职责</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>外部 API 总入口</td>
+                            <td><code>cfquant/__init__.py</code></td>
+                            <td>对外暴露 <code>xtdata</code>、<code>xttrader</code>、<code>xttype</code>、<code>configure</code> 等兼容入口。</td>
+                          </tr>
+                          <tr>
+                            <td>交易兼容层</td>
+                            <td><code>cfquant/xttrader.py</code></td>
+                            <td>模拟 <code>xtquant.xttrader</code>，负责 <code>XtQuantTrader</code>、账号订阅、下单、撤单、交易查询、交易回调派发。</td>
+                          </tr>
+                          <tr>
+                            <td>行情兼容层</td>
+                            <td><code>cfquant/xtdata.py</code></td>
+                            <td>模拟 <code>xtquant.xtdata</code>，负责行情查询、行情订阅、数据下载、条件兼容接口。</td>
+                          </tr>
+                          <tr>
+                            <td>类型和常量</td>
+                            <td><code>cfquant/xttype.py</code>、<code>cfquant/xtconstant.py</code></td>
+                            <td>提供 <code>StockAccount</code>、资产、委托、成交、持仓对象和交易常量。</td>
+                          </tr>
+                          <tr>
+                            <td>全局配置</td>
+                            <td><code>cfquant/config.py</code></td>
+                            <td>读取和维护 host、port、token、transport、pipe name、bridge id 等客户端配置。</td>
+                          </tr>
+                          <tr>
+                            <td>频道命名</td>
+                            <td><code>cfquant/channels.py</code></td>
+                            <td>根据 <code>bridge_id</code> 生成 normal、trade、callback 频道。</td>
+                          </tr>
+                          <tr>
+                            <td>协议编解码</td>
+                            <td><code>cfquant/protocol.py</code></td>
+                            <td>统一封装 <code>request</code>、<code>response</code>、<code>event</code>，并处理对象、DataFrame、Series 的序列化。</td>
+                          </tr>
+                          <tr>
+                            <td>RPC 客户端选择</td>
+                            <td><code>cfquant/client.py</code></td>
+                            <td>根据 <code>transport=auto/ctypes/lttx/web_lttx</code> 创建 <code>PipeRpcClient</code>、<code>LTtxRpcClient</code> 或 <code>WebLttxRpcClient</code>。</td>
+                          </tr>
+                          <tr>
+                            <td>外部 Pipe 客户端</td>
+                            <td><code>cfquant/pipe_client.py</code></td>
+                            <td>外部 Python 直连 PipeHub 时使用，维护 <code>api_rx/api_tx</code> 两条 pipe 连接和事件分发线程。</td>
+                          </tr>
+                          <tr>
+                            <td>Pipe 底层传输</td>
+                            <td><code>cfquant/pipe_transport.py</code></td>
+                            <td>Windows named pipe 的创建、连接、frame 读写，以及 QMT 侧 <code>PipeTxClient</code> 适配器。</td>
+                          </tr>
+                          <tr>
+                            <td>PipeHub 核心</td>
+                            <td><code>cfquant/pipe_hub.py</code></td>
+                            <td>作为外部 Python/Web 和 QMT Pipe 桥之间的 named pipe 消息代理，负责请求转发、响应配对、事件投递和状态文件。</td>
+                          </tr>
+                          <tr>
+                            <td>PipeHub 启动入口</td>
+                            <td><code>cfquant_pipe_hub.py</code></td>
+                            <td>独立启动 PipeHub 的命令行入口，通常由 Web 服务自动维护。</td>
+                          </tr>
+                          <tr>
+                            <td>LTtx 客户端封装</td>
+                            <td><code>cfquant/tx.py</code>、<code>LTtx/tx/tx.py</code></td>
+                            <td>LTtx socket 客户端能力，提供 <code>start_tx</code>、<code>start_txg</code>、<code>push</code>、<code>put</code>、<code>get</code> 等。</td>
+                          </tr>
+                          <tr>
+                            <td>LTtx 服务端</td>
+                            <td><code>LTtx/tx/LTtx_server.py</code></td>
+                            <td>本机 LTtx 发布订阅服务，用于 Web route、运行时发现、高级模式直连。</td>
+                          </tr>
+                          <tr>
+                            <td>Web 服务</td>
+                            <td><code>cfquant_web_server.py</code></td>
+                            <td>Web 控制台、账号配置、运行时注册、统一路由、PipeHub 启停、LTtx 启停、callback 监听、WebSocket 推送。</td>
+                          </tr>
+                          <tr>
+                            <td>账号订阅表</td>
+                            <td><code>cfquant/account_routing.py</code></td>
+                            <td>维护 <code>bridge_id + account_type + account_id -&gt; client_id</code> 的订阅关系，辅助回调广播。</td>
+                          </tr>
+                          <tr>
+                            <td>交易桥基类</td>
+                            <td><code>cfquant/tx_trade_bridge.py</code></td>
+                            <td>QMT 侧交易请求分发，支持 <code>passorder</code>、<code>cancel</code>、交易查询、行情兼容查询、账号订阅和请求级事件。</td>
+                          </tr>
+                          <tr>
+                            <td>普通桥</td>
+                            <td><code>cfquant/normal_bridge.py</code></td>
+                            <td>在交易桥基础上增加普通请求队列、行情订阅转发、callback event 通道和 QMT 原始交易回调发布。</td>
+                          </tr>
+                          <tr>
+                            <td>Pipe 桥</td>
+                            <td><code>cfquant/pipe_bridge.py</code></td>
+                            <td>把 <code>NormalQmtBridge</code> 和 <code>TxTradeBridge</code> 包装成通过 PipeHub 通信的 QMT 侧桥。</td>
+                          </tr>
+                          <tr>
+                            <td>旧 LTtx 桥</td>
+                            <td><code>cfquant/qmt_bridge.py</code></td>
+                            <td>早期 QMT 侧 LTtx 桥兼容实现，保留部分旧部署兼容能力。</td>
+                          </tr>
+                          <tr>
+                            <td>通用模式 QMT 入口</td>
+                            <td><code>qmt_scripts/CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
+                            <td>单个 QMT 策略内启动 normal/trade 两个 Pipe 通道，支持请求、行情和账号级回调。</td>
+                          </tr>
+                          <tr>
+                            <td>高级模式普通桥入口</td>
+                            <td><code>qmt_scripts/CFQUANT.py</code></td>
+                            <td>高级模式普通 QMT 入口，负责普通查询、行情和账号级交易回调。</td>
+                          </tr>
+                          <tr>
+                            <td>高级模式交易桥入口</td>
+                            <td><code>qmt_scripts/CFQUANT_TRADE_LOWLAT.py</code></td>
+                            <td>高级模式低延迟交易入口，只处理下单、撤单、交易查询，不承接 QMT 原始账号回调。</td>
+                          </tr>
+                          <tr>
+                            <td>极致模式入口</td>
+                            <td><code>qmt_scripts/CFQUANT_LITE.py</code></td>
+                            <td>自包含 QMT 入口，适配无法正常导入项目 <code>cfquant</code> 包的 QMT 环境。</td>
+                          </tr>
+                          <tr>
+                            <td>独立市场入口</td>
+                            <td><code>qmt_scripts/同账号独立市场/*.py</code></td>
+                            <td>内置对应主入口代码并设置沪/深市场配置，让 Web 可把同一账号不同市场拆到不同 bridge。</td>
+                          </tr>
+                          <tr>
+                            <td>测试脚本</td>
+                            <td><code>cfquant/tests/*.py</code></td>
+                            <td>覆盖行情接收、数据获取、数据下载、交易查询、真实下单、回调监听等场景。</td>
+                          </tr>
+                          <tr>
+                            <td>运行时目录</td>
+                            <td><code>runtime/</code></td>
+                            <td>保存配置、状态、缓存、报告、截图、LTtx 临时数据等运行时文件。</td>
+                          </tr>
+                          <tr>
+                            <td>Web 前端</td>
+                            <td><code>web_dashboard/</code></td>
+                            <td>本地控制台页面，展示账号、桥状态、版本、配置和回调事件。</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>关键运行数据</h3>
+                    <div class="guide-table-wrap runtime-table">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>数据</th>
+                            <th>默认位置或名称</th>
                             <th>作用</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td><code>cfquant_web_server.py</code></td>
-                            <td>提供 Web 控制台、HTTP API、WebSocket 回调和配置保存能力。</td>
+                            <td>Web 配置</td>
+                            <td><code>runtime/config/cfquant_web_config.json</code></td>
+                            <td>保存账号、账号类型、bridge、运行模式、市场路由、Web 端口等配置。</td>
                           </tr>
                           <tr>
-                            <td><code>web_dashboard</code></td>
-                            <td>浏览器端页面，负责交易操作、接口调试、状态查看和教程展示。</td>
+                            <td>Pipe 名称</td>
+                            <td><code>\\.\pipe\cfquant_pipe_hub</code></td>
+                            <td>外部 Pipe 客户端、Web 和 QMT Pipe 桥连接的 named pipe。</td>
                           </tr>
                           <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
-                            <td>通用模式单文件桥，同时注册查询通道、交易通道和回调通道。</td>
+                            <td>LTtx host/port</td>
+                            <td><code>127.0.0.1:2049</code></td>
+                            <td>Web route、高级模式和运行时发现使用。</td>
                           </tr>
                           <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT_LITE.py</code></td>
-                            <td>极致模式自包含入口，不导入 <code>cfquant</code> 包，特别适合国泰君安君弘君智 QMT 等白名单限制环境。</td>
+                            <td>Web route 频道</td>
+                            <td><code>cfquant.web.request</code></td>
+                            <td>外部 <code>auto</code> 命中 Web 路由后的统一请求入口。</td>
                           </tr>
                           <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT.py</code></td>
-                            <td>高级模式普通 QMT 桥，主要负责资金、持仓、委托、成交等查询。</td>
+                            <td>默认 normal 频道</td>
+                            <td><code>cfquant.normal.request</code></td>
+                            <td>普通查询、行情、普通桥请求。</td>
                           </tr>
                           <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT_TRADE_LOWLAT.py</code></td>
-                            <td>高级模式极速交易桥，主要负责低延迟下单、撤单和交易回调。</td>
+                            <td>默认 trade 频道</td>
+                            <td><code>cfquant.trade.request</code></td>
+                            <td>下单、撤单、低延迟交易查询。</td>
                           </tr>
                           <tr>
-                            <td><code>cfquant\start_cfquant.bat</code></td>
-                            <td>启动本地服务和通信组件的入口。</td>
+                            <td>默认 callback 频道</td>
+                            <td><code>cfquant.callback.event</code></td>
+                            <td>QMT 原始交易回调发布给 Web 监听器的事件通道。</td>
+                          </tr>
+                          <tr>
+                            <td>运行时发现 key</td>
+                            <td><code>cfquant.runtime</code></td>
+                            <td>Web 写入 LTtx，外部 <code>auto</code> 读取后决定是否走 Web route。</td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>连接生命周期</h3>
+                    <div class="guide-mermaid-card compact" aria-label="cfquant 连接生命周期">
+                      <pre class="mermaid">stateDiagram-v2
+    [*] --> Imported: import cfquant
+    Imported --> ObjectCreated: 创建 StockAccount / XtQuantTrader
+    ObjectCreated --> Connected: start / connect / subscribe / request
+    Imported --> Connected: xtdata 首次 request
+    Connected --> WebLttx: auto 发现 Web route
+    Connected --> Pipe: transport=ctypes 或 auto fallback
+    Connected --> DirectLttx: transport=lttx
+    WebLttx --> Running: 持续 LTtx 连接和接收线程
+    DirectLttx --> Running: 持续 LTtx 连接和接收线程
+    Pipe --> Running: 持续 named pipe 连接和接收线程
+    Running --> Closed: stop / disconnect / close / configure 重置 / 进程退出
+    Closed --> [*]</pre>
+                    </div>
+                    <h4>要点</h4>
+                    <ul class="guide-list">
+                      <li><code>import cfquant</code> 不会连接 LTtx。</li>
+                      <li>默认 <code>auto + Web 在线</code> 时，第一次请求后外部调用者会持续连接 LTtx 的 Web route。</li>
+                      <li>强制 <code>ctypes/lite</code> 时，外部调用者持续连接 PipeHub，不直接连接 LTtx。</li>
+                      <li>Web 服务自身会维护 LTtx 和必要的 PipeHub，这和外部调用者是否直连 LTtx 是两个不同概念。</li>
+                    </ul>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>推荐使用方式</h3>
+                    <p>普通用户和多账号部署建议保持默认：</p>
+                    <pre class="guide-code">外部 cfquant -&gt; LTtx -&gt; Web 统一路由 -&gt; 账号对应桥 -&gt; 大 QMT</pre>
+                    <p>这样 Web 统一管理账号、模式、bridge、市场路由、fallback 和回调转发。</p>
+                    <p>固定单账号、明确只走通用模式并追求更短链路时，可以使用：</p>
+                    <pre class="guide-code">from cfquant import configure
+
+configure(transport="ctypes")</pre>
+                    <p>但这种方式会绕过 Web 统一路由，调用方需要自行维护账号和 bridge 关系。</p>
                   </div>
                 </article>
 
@@ -1836,7 +2228,8 @@ USER_BRIDGE_ID = "qmt2"</pre>
                     <p>进入“绑定”页面，点击添加或编辑绑定，将账号运行模式选择为“极致模式”，填写资金账号、账号类型和 QMT 核心目录后保存。保存后，网页端会按极致模式路由到 PipeHub。</p>
                     <pre class="guide-code">运行模式：极致模式
 QMT 入口脚本：CFQUANT_LITE.py
-通信链路：Web / 外部 Python -> PipeHub -> 纯 ctypes 自包含桥 -> QMT</pre>
+通信链路：Web Server -> PipeHub -> 纯 ctypes 自包含桥 -> QMT
+外部 Python：默认 auto 先经 LTtx 发现 Web 路由；强制 ctypes 时可直连 PipeHub</pre>
                   </div>
 
                   <div class="guide-section">
@@ -2002,7 +2395,7 @@ cfquant 极致模式运行版本已上报
                         </tbody>
                       </table>
                     </div>
-                    <p>这些 <code>_SH</code> / <code>_SZ</code> 文件是市场入口包装脚本，会先声明市场，再执行原始入口脚本。手工复制时，需要确保对应原始入口脚本也能被找到。</p>
+                    <p>这些 <code>_SH</code> / <code>_SZ</code> 文件已经内置对应主入口代码，QMT 运行时不会再读取上层目录里的原始入口脚本。手工复制时，只需要复制当前模式对应的市场入口文件。</p>
                   </div>
 
                   <div class="guide-section">
@@ -2012,28 +2405,28 @@ cfquant 极致模式运行版本已上报
                         <thead>
                           <tr>
                             <th>市场入口</th>
-                            <th>必须能找到的原始入口</th>
+                            <th>复制要求</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
                             <td><code>CFQUANT_CTYPE_ALL_LOWLAT_SH.py</code> / <code>CFQUANT_CTYPE_ALL_LOWLAT_SZ.py</code></td>
-                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
+                            <td>复制对应市场完整入口；按通用模式要求部署 <code>cfquant</code> 核心包。</td>
                           </tr>
                           <tr>
                             <td><code>CFQUANT_TRADE_LOWLAT_SH.py</code> / <code>CFQUANT_TRADE_LOWLAT_SZ.py</code></td>
-                            <td><code>CFQUANT_TRADE_LOWLAT.py</code></td>
+                            <td>复制对应市场完整入口；按高级模式交易端要求部署 <code>cfquant</code> 核心包。</td>
                           </tr>
                           <tr>
                             <td><code>CFQUANT_LITE_SH.py</code> / <code>CFQUANT_LITE_SZ.py</code></td>
-                            <td><code>CFQUANT_LITE.py</code></td>
+                            <td>复制对应市场完整入口；不需要复制 <code>cfquant</code> 核心包。</td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
                     <div class="guide-callout">
                       <strong>推荐方式</strong>
-                      <span>把 <code>qmt_scripts/同账号独立市场</code> 中的市场入口脚本和 <code>qmt_scripts</code> 根目录里的原始入口脚本一起放到 QMT 可访问的位置。</span>
+                      <span>只复制 <code>qmt_scripts/同账号独立市场</code> 中当前模式对应的 SH/SZ 完整入口文件；项目更新后重新复制这两个市场文件。</span>
                     </div>
                   </div>
 
@@ -2043,6 +2436,8 @@ cfquant 极致模式运行版本已上报
                       <li><strong>完整后缀优先</strong><span><code>.SH</code> 走上海交易端，<code>.SZ</code> 走深圳交易端。</span></li>
                       <li><strong>无后缀时按代码推断</strong><span><code>5</code>、<code>6</code>、<code>9</code> 开头默认上海；<code>0</code>、<code>1</code>、<code>2</code>、<code>3</code> 开头默认深圳。</span></li>
                       <li><strong>批量下单自动拆分</strong><span>同一批委托里同时有 SH 和 SZ 时，系统会拆成两组发送到对应交易端。</span></li>
+                      <li><strong>账号数据聚合</strong><span>持仓、委托、成交分别查询 SH/SZ 子桥后合并；资金不做两边相加，取第一个成功子桥结果并保留分市场明细。</span></li>
+                      <li><strong>回调按账号汇总</strong><span>SH/SZ 子桥分别上报交易回调，网页按主账号订阅时会同时接收两个子桥事件。</span></li>
                     </ul>
                     <pre class="guide-code">000001.SZ -> 深圳交易端 bridge_id=acct_xxx_sz
 601222.SH -> 上海交易端 bridge_id=acct_xxx_sh</pre>
@@ -2070,6 +2465,10 @@ cfquant 极致模式运行版本已上报
                           <tr>
                             <td>SH/SZ 其中一个离线</td>
                             <td>确认上海 QMT 运行 <code>_SH.py</code>，深圳 QMT 运行 <code>_SZ.py</code>，并且两个交易端目录没有填反。</td>
+                          </tr>
+                          <tr>
+                            <td>主桥离线但 SH/SZ 在线</td>
+                            <td>同账号独立市场下这是允许的；主桥可只作为账号路由身份存在，资金、持仓、委托、成交会从 SH/SZ 子桥查询。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -2585,6 +2984,7 @@ USER_BRIDGE_ID = "qmt2"</pre>
     <div class="image-lightbox-caption" id="imageLightboxCaption"></div>
   </div>
 
-  <script src="/app.js?v=web_20260831_01"></script>
+  <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
+  <script src="/app.js?v=web_20260902_01"></script>
 </body>
 </html>

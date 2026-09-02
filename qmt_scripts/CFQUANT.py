@@ -14,7 +14,8 @@ _cf_timer_key = None
 _TIMER_INTERVAL_MS = 500
 _PUMP_MAX_COUNT = 20
 _PUMP_MAX_MS = 0
-DEFAULT_ACCOUNT_ID = ""
+DEFAULT_ACCOUNT_ID = str(os.environ.get("CFQUANT_ACCOUNT_ID") or "").strip()
+DEFAULT_ACCOUNT_TYPE = str(os.environ.get("CFQUANT_ACCOUNT_TYPE") or "STOCK").strip().upper()
 USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
 RUNTIME_CONFIG = {}
@@ -138,12 +139,16 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
-    global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS
+    global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS, DEFAULT_ACCOUNT_ID, DEFAULT_ACCOUNT_TYPE
 
     data = _load_runtime_config()
     RUNTIME_CONFIG = data
     if not data:
         return
+    if data.get("account_id") and not DEFAULT_ACCOUNT_ID:
+        DEFAULT_ACCOUNT_ID = str(data.get("account_id") or "").strip()
+    if data.get("account_type"):
+        DEFAULT_ACCOUNT_TYPE = str(data.get("account_type") or DEFAULT_ACCOUNT_TYPE or "STOCK").strip().upper()
     if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
     channels = data.get("channels") or {}
@@ -242,10 +247,14 @@ _cf_bridge = start_normal_bridge(
     pump_max_count=_PUMP_MAX_COUNT,
     pump_max_ms=_PUMP_MAX_MS,
 )
+if DEFAULT_ACCOUNT_TYPE and _cf_bridge:
+    _cf_bridge.account_type = DEFAULT_ACCOUNT_TYPE
 _print_log("cfquant normal bridge module loaded")
 _print_log("cfquant entry version:%s" % _ENTRY_VERSION)
-_print_log("cfquant bridge id:%s normal_channel:%s callback_channel:%s" % (
+_print_log("cfquant bridge id:%s account:%s/%s normal_channel:%s callback_channel:%s" % (
     BRIDGE_ID,
+    DEFAULT_ACCOUNT_ID or "-",
+    DEFAULT_ACCOUNT_TYPE or "-",
     BRIDGE_CHANNELS["normal"],
     BRIDGE_CHANNELS["callback"],
 ))
@@ -276,11 +285,70 @@ def _schedule_cf_timer(ContextInfo):
         _print_log("cfquant normal bridge timer schedule failed:%s" % e)
 
 
+_QMT_TRADE_CALLBACK_REGISTERED = False
+
+
+def _register_qmt_trade_callback(ContextInfo, stage):
+    global _QMT_TRADE_CALLBACK_REGISTERED
+
+    if ContextInfo is None or _QMT_TRADE_CALLBACK_REGISTERED:
+        return
+    func = getattr(ContextInfo, "register_callback", None)
+    if not callable(func):
+        _print_log("cfquant qmt trade callback register skipped stage=%s reason=missing register_callback" % stage)
+        return
+    try:
+        func(0)
+        _QMT_TRADE_CALLBACK_REGISTERED = True
+        _print_log("cfquant qmt trade callback registered stage=%s" % stage)
+    except Exception as e:
+        _print_log("cfquant qmt trade callback register failed stage=%s error=%s" % (stage, e))
+
+
+def _refresh_auto_trade_callback(stage):
+    if _cf_bridge is None or not hasattr(_cf_bridge, "_enable_auto_trade_callback"):
+        return
+    try:
+        _cf_bridge.auto_trade_callback_enabled = False
+        _cf_bridge._enable_auto_trade_callback()
+        _print_log("cfquant auto trade callback refreshed stage=%s" % stage)
+    except Exception as e:
+        _print_log("cfquant auto trade callback refresh failed stage=%s error=%s" % (stage, e))
+
+
+def _callback_brief(obj):
+    try:
+        parts = []
+        for name in ("account_id", "m_strAccountID", "m_strInstrumentID", "m_strExchangeID", "m_strOrderSysID", "m_nOrderID", "m_strRemark"):
+            value = getattr(obj, name, None)
+            if value is None and hasattr(obj, "get"):
+                value = obj.get(name)
+            if value not in (None, ""):
+                parts.append("%s=%s" % (name, value))
+        return " ".join(parts) or type(obj).__name__
+    except Exception:
+        return type(obj).__name__
+
+
+def _object_to_callback_dict(obj):
+    if hasattr(obj, "items"):
+        return dict(obj)
+    if hasattr(obj, "__dict__"):
+        return dict(vars(obj))
+    return {"value": str(obj)}
+
+
 def init(ContextInfo):
+    _register_qmt_trade_callback(ContextInfo, "init")
     if _cf_bridge:
         _cf_bridge.set_context(ContextInfo)
     _schedule_cf_timer(ContextInfo)
     _print_log("cfquant normal bridge context ready version:%s" % _ENTRY_VERSION)
+
+
+def after_init(ContextInfo):
+    _register_qmt_trade_callback(ContextInfo, "after_init")
+    _refresh_auto_trade_callback("after_init")
 
 
 def handlebar(ContextInfo):
@@ -306,6 +374,7 @@ def stop(ContextInfo):
 
 def _publish_callback(event_name, obj):
     try:
+        _print_log("cfquant raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
         if _cf_bridge:
             _cf_bridge.publish_callback_event(event_name, obj)
     except Exception as e:
@@ -336,7 +405,17 @@ def order_error_callback(ContextInfo, orderError):
     _publish_callback("trader:on_order_error", orderError)
 
 
+def orderError_callback(ContextInfo, passOrderInfo, msg):
+    data = _object_to_callback_dict(passOrderInfo)
+    data["error_msg"] = msg
+    _publish_callback("trader:on_order_error", data)
+
+
 def cancel_error_callback(ContextInfo, cancelError):
+    _publish_callback("trader:on_cancel_error", cancelError)
+
+
+def cancelError_callback(ContextInfo, cancelError):
     _publish_callback("trader:on_cancel_error", cancelError)
 
 

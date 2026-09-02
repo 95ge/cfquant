@@ -21,8 +21,78 @@ import uuid
 import ctypes
 from ctypes import wintypes
 
-CORE_VERSION = "core_20260828_01"
+CORE_VERSION = "core_20260902_01"
 LITE_ENTRY_VERSION = "lite_20260828_01"
+
+_CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
+_ORDER_STATUS_FIELD_NAMES = (
+    "order_status",
+    "m_nOrderStatus",
+    "m_nOrderState",
+    "m_strOrderStatus",
+    "m_strStatus",
+)
+
+
+def _truthy_param(value):
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "y", "on")
+    return bool(value)
+
+
+def _normalize_order_status(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except Exception:
+            return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    try:
+        number = float(text)
+        if number.is_integer():
+            return int(number)
+    except Exception:
+        pass
+    return {
+        "ORDER_UNREPORTED": 48,
+        "ORDER_WAIT_REPORTING": 49,
+        "ORDER_REPORTED": 50,
+        "ORDER_PART_SUCC": 55,
+    }.get(text.upper())
+
+
+def _row_value(row, name):
+    if hasattr(row, name):
+        return getattr(row, name)
+    if hasattr(row, "get"):
+        return row.get(name)
+    return None
+
+
+def _is_cancelable_order(row):
+    for name in _ORDER_STATUS_FIELD_NAMES:
+        value = _row_value(row, name)
+        if value is not None and value != "":
+            return _normalize_order_status(value) in _CANCELABLE_ORDER_STATUS_VALUES
+    return False
+
+
+def _filter_cancelable_orders(rows):
+    if rows is None:
+        return None
+    if isinstance(rows, list):
+        return [row for row in rows if _is_cancelable_order(row)]
+    return rows if _is_cancelable_order(rows) else None
 
 _LANG_LOCK = threading.RLock()
 _LOG_LANGUAGE = ""
@@ -853,9 +923,14 @@ class TxTradeBridge(object):
         self.client_accounts = {}
         self.subscriber_lock = threading.RLock()
         self.started_at = 0.0
+        self.account_type = ""
+        self.auto_trade_callback_enabled = False
 
     def set_context(self, context):
         self.context = context
+        if self.account_id:
+            self._set_context_account(self.account_id, self.account_type)
+        self._enable_auto_trade_callback()
         self._log("tx trade bridge context ready")
         self._publish_runtime_report("context_ready")
 
@@ -1270,6 +1345,8 @@ class TxTradeBridge(object):
                     "format_error": str(e),
                     "raw_type": type(row).__name__,
                 })
+        if detail_type.lower() == "order" and _truthy_param(params.get("cancelable_only")):
+            result = _filter_cancelable_orders(result)
         self._log(
             "query_trade_detail done detail_type=%s count=%s"
             % (detail_type, len(result))
@@ -1288,7 +1365,11 @@ class TxTradeBridge(object):
         if isinstance(order_type, str):
             order_type = 23 if order_type.lower() == "buy" else 24
         price_type = params.get("price_type", 11)
-        order_remark = params.get("order_remark", msg.get("id", "tx_order"))
+        order_remark = self._first_param(
+            params,
+            ("order_remark", "remark", "strategy_name"),
+            msg.get("id", "tx_order"),
+        )
         result = passorder(
             order_type,
             params.get("qmt_order_type", 1101),
@@ -1329,7 +1410,7 @@ class TxTradeBridge(object):
             row.update(order or {})
             if common_account and not row.get("account"):
                 row["account"] = common_account
-            if not row.get("order_remark"):
+            if self._first_param(row, ("order_remark", "remark", "strategy_name")) is None:
                 row["order_remark"] = "%s_%s" % (params.get("order_remark") or msg.get("id", "batch_order"), index + 1)
             try:
                 result = self._order_stock(row, msg)
@@ -2101,6 +2182,7 @@ class TxTradeBridge(object):
         account_id = str(account_id).strip()
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
         self.account_id = account_id
+        self.account_type = account_type
         subscriber_key = (account_type.upper(), account_id)
         client_id = ""
         if msg:
@@ -2110,11 +2192,8 @@ class TxTradeBridge(object):
                 self.account_subscribers.setdefault(subscriber_key, set()).add(client_id)
                 self.client_accounts.setdefault(client_id, set()).add(subscriber_key)
             account_route_subscribe(self.bridge_id, account_id, client_id, account_type=account_type)
-        if self.context is not None:
-            try:
-                self.context.set_account(account_id, account_type.upper())
-            except Exception:
-                self.context.set_account(account_id)
+        self._set_context_account(account_id, account_type)
+        self._enable_auto_trade_callback()
         self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
         return 0
 
@@ -2153,6 +2232,7 @@ class TxTradeBridge(object):
         account_route_unsubscribe(self.bridge_id, account_id=account_id, client_id=client_id, account_type=account_type if account_id else None)
         if account_id and account_id == self.account_id:
             self.account_id = ""
+            self.account_type = ""
         self._log("account unsubscribed account=%s client_id=%s" % (account_id or "-", client_id or "-"))
         return 0
 
@@ -2402,6 +2482,47 @@ class TxTradeBridge(object):
             return account_type
         return mapping.get(account_type, "stock")
 
+    def _set_context_account(self, account_id, account_type=None):
+        if self.context is None or not account_id:
+            return
+        try:
+            if account_type not in (None, ""):
+                self.context.set_account(str(account_id).strip(), str(account_type).upper())
+            else:
+                self.context.set_account(str(account_id).strip())
+        except Exception:
+            self.context.set_account(str(account_id).strip())
+
+    def _enable_auto_trade_callback(self):
+        if self.context is None or self.auto_trade_callback_enabled:
+            return
+        func = getattr(self.context, "set_auto_trade_callback", None)
+        if callable(func):
+            try:
+                result = func(True)
+                self.auto_trade_callback_enabled = True
+                self._log("auto trade callback enabled result=%s" % result)
+                return
+            except Exception as e:
+                self._log("auto trade callback enable failed:%s" % e)
+                return
+        func = self._get_callable("set_auto_trade_callback")
+        if not callable(func):
+            self._log("auto trade callback enable skipped: set_auto_trade_callback not found")
+            return
+        try:
+            result = func(self.context, True)
+            self.auto_trade_callback_enabled = True
+            self._log("auto trade callback enabled result=%s" % result)
+        except TypeError:
+            try:
+                result = func(True)
+                self.auto_trade_callback_enabled = True
+                self._log("auto trade callback enabled result=%s" % result)
+            except Exception as e:
+                self._log("auto trade callback enable failed:%s" % e)
+        except Exception as e:
+            self._log("auto trade callback enable failed:%s" % e)
     def _send_trader_event(self, client_id, name, data):
         if client_id:
             self._send_event(client_id, "trader:%s" % name, data)
@@ -4459,9 +4580,63 @@ if TRADE_LOOP_IN_THREAD:
     _start_trade_loop()
 
 
+_QMT_TRADE_CALLBACK_REGISTERED = False
+
+
+def _register_qmt_trade_callback(ContextInfo, stage):
+    global _QMT_TRADE_CALLBACK_REGISTERED
+
+    if ContextInfo is None or _QMT_TRADE_CALLBACK_REGISTERED:
+        return
+    func = getattr(ContextInfo, "register_callback", None)
+    if not callable(func):
+        _print_log("cfquant lite qmt trade callback register skipped stage=%s reason=missing register_callback" % stage)
+        return
+    try:
+        func(0)
+        _QMT_TRADE_CALLBACK_REGISTERED = True
+        _print_log("cfquant lite qmt trade callback registered stage=%s" % stage)
+    except Exception as e:
+        _print_log("cfquant lite qmt trade callback register failed stage=%s error=%s" % (stage, e))
+
+
+def _refresh_auto_trade_callback(stage):
+    for bridge_name, bridge in (("normal", _normal_bridge), ("trade", _trade_bridge)):
+        if bridge is None or not hasattr(bridge, "_enable_auto_trade_callback"):
+            continue
+        try:
+            bridge.auto_trade_callback_enabled = False
+            bridge._enable_auto_trade_callback()
+            _print_log("cfquant lite auto trade callback refreshed stage=%s bridge=%s" % (stage, bridge_name))
+        except Exception as e:
+            _print_log("cfquant lite auto trade callback refresh failed stage=%s bridge=%s error=%s" % (stage, bridge_name, e))
+
+
+def _callback_brief(obj):
+    try:
+        parts = []
+        for name in ("account_id", "m_strAccountID", "m_strInstrumentID", "m_strExchangeID", "m_strOrderSysID", "m_nOrderID", "m_strRemark"):
+            value = getattr(obj, name, None)
+            if value is None and hasattr(obj, "get"):
+                value = obj.get(name)
+            if value not in (None, ""):
+                parts.append("%s=%s" % (name, value))
+        return " ".join(parts) or type(obj).__name__
+    except Exception:
+        return type(obj).__name__
+
+
+def _object_to_callback_dict(obj):
+    if hasattr(obj, "items"):
+        return dict(obj)
+    if hasattr(obj, "__dict__"):
+        return dict(vars(obj))
+    return {"value": str(obj)}
+
 def init(ContextInfo):
     global _runtime_report_retry_until
 
+    _register_qmt_trade_callback(ContextInfo, "init")
     if _normal_bridge:
         _normal_bridge.set_context(ContextInfo)
         _print_log("cfquant lite normal context ready version:%s" % _ENTRY_VERSION)
@@ -4473,6 +4648,11 @@ def init(ContextInfo):
     _runtime_report_retry_until = time.time() + 60.0
     if not _runtime_report_sent_at:
         _publish_lite_runtime_report("context_ready", force=True)
+
+
+def after_init(ContextInfo):
+    _register_qmt_trade_callback(ContextInfo, "after_init")
+    _refresh_auto_trade_callback("after_init")
 
 
 def handlebar(ContextInfo):
@@ -4507,6 +4687,7 @@ def stop(ContextInfo):
 
 def _publish_callback(event_name, obj):
     try:
+        _print_log("cfquant lite raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
         if _normal_bridge:
             _normal_bridge.publish_callback_event(event_name, obj)
     except Exception as e:
@@ -4537,7 +4718,17 @@ def order_error_callback(ContextInfo, orderError):
     _publish_callback("trader:on_order_error", orderError)
 
 
+def orderError_callback(ContextInfo, passOrderInfo, msg):
+    data = _object_to_callback_dict(passOrderInfo)
+    data["error_msg"] = msg
+    _publish_callback("trader:on_order_error", data)
+
+
 def cancel_error_callback(ContextInfo, cancelError):
+    _publish_callback("trader:on_cancel_error", cancelError)
+
+
+def cancelError_callback(ContextInfo, cancelError):
     _publish_callback("trader:on_cancel_error", cancelError)
 
 
