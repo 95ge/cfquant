@@ -1,6 +1,9 @@
 __pycache__/
 *.py[cod]
 *.pyo
+*.egg-info/
+build/
+dist/
 *.db
 *.db-shm
 *.db-wal
@@ -74,6 +77,9 @@ offcial_site/
 
 # Local Python package distribution workspace; do not upload to GitHub.
 pip_library_dev/
+
+# Local private docs; keep sensitive accounts, broker paths, internal analysis and test reports out of GitHub.
+private_docs/
 
 # Local video synthesis workspace and generated media.
 remotion_intro/

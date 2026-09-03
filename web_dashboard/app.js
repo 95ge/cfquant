@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260902_05';
+const FRONTEND_VERSION = 'web_20260903_07';
 
 const state = {
   accountId: '',
@@ -21,16 +21,22 @@ const state = {
   orderHighlightTimer: null,
   orderCallbackSocket: null,
   orderCallbackKey: '',
+  orderCallbackSocketState: 'idle',
+  orderCallbackSocketDetail: '',
+  orderCallbackHello: null,
   orderCallbackReconnectTimer: null,
   orderCallbackRefreshTimer: null,
   orderCallbackRefreshInFlight: false,
   orderCallbackRefreshPending: false,
   orderCallbackRefreshSections: new Set(),
+  orderCallbackMeta: new Map(),
   latestOrders: [],
   orderSort: { key: 'time', direction: 'desc' },
   cfquantOrderIds: new Set(),
   cfquantOrderRemarks: new Set(),
   callbackEvents: [],
+  callbackLastEventAt: '',
+  callbackLastEventName: '',
   lttxStatus: null,
   bridges: {},
   accountPairs: {},
@@ -94,6 +100,7 @@ const state = {
   statusRefreshInFlight: false,
   callbackRefreshInFlight: false,
   bindingStatusRefreshInFlight: false,
+  bindingStatusRetryTimer: null,
   bindingVerifyBusyKey: '',
   bindingNoticeTimer: null,
 };
@@ -395,7 +402,7 @@ const API_ENDPOINTS = [
     group: 'system',
     title: 'xtquant 平替说明',
     method: 'DOC',
-    path: 'cfquant/docs/xttrader_compatibility.md / cfquant/docs/xtdata_compatibility.md',
+    path: 'cfquant/docs/xttrader平替追踪.md / cfquant/docs/xtdata平替追踪.md',
     desc: '说明 cfquant 对 xtquant.xttrader 和 xtquant.xtdata 的平替进度、已实装接口和当前限制。',
     fields: [],
   },
@@ -1182,23 +1189,49 @@ function renderProjectVersion(info) {
   const qmtRuntime = data.qmt_runtime || data.qmt_saved_report || {};
   const qmtReported = Boolean(qmtRuntime.reported && qmtRuntime.version);
   const qmtSavedVersion = qmtKnownVersion(data, qmtRuntime);
-  const qmtVersion = qmtReported
-    ? qmtRuntimeLabel(qmtRuntime)
-    : (qmtSavedVersion ? `历史 ${qmtSavedVersion}` : qmtRuntimeLabel(qmtRuntime));
+  const qmtVersion = qmtSavedVersion || qmtRuntimeLabel(qmtRuntime);
   const webCoreVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
   const serverFrontendVersion = data.frontend_version || data.web_version || '--';
   const browserFrontendVersion = FRONTEND_VERSION;
   const widget = $('versionWidget');
+  const badge = $('versionBadge');
   const label = $('versionBadgeLabel');
+  const badgeState = $('versionBadgeState');
+  const badgeEntry = $('versionBadgeEntry');
   const badgeMeta = $('versionBadgeMeta');
   const checkState = $('versionCheckState');
   const body = $('versionPopoverBody');
   const alert = $('versionAlert');
-  if (label) label.textContent = state.versionCheckInFlight ? '检查版本...' : `QMT ${qmtSavedVersion || '--'}`;
+  const runtimeEntryScript = qmtRuntime.entry_script || qmtRuntime.qmt_runtime_entry_script || '';
+  const runtimeEntryVersion = qmtRuntime.entry_version || qmtRuntime.runtime_entry_version || qmtRuntime.qmt_runtime_entry_version || '';
+  const runtimeMode = qmtRuntime.runtime_mode || qmtRuntime.mode || qmtRuntime.transport || '';
+  const runtimeReportedAt = qmtRuntime.reported_at_text || qmtRuntime.saved_reported_at_text || '';
+  const badgeStatusText = state.versionCheckInFlight
+    ? '正在检查版本'
+    : qmtReported
+      ? 'QMT 正在运行'
+      : (qmtSavedVersion ? '最近上报已过期' : '等待 QMT 上报');
+  const badgeEntryText = runtimeEntryScript
+    ? `入口 ${runtimeEntryScript}${runtimeEntryVersion ? ` / ${runtimeEntryVersion}` : ''}`
+    : (qmtSavedVersion ? '未记录入口脚本' : '入口脚本待上报');
+  const badgeMetaText = state.versionCheckInFlight
+    ? '正在同步本地、QMT 和远端版本'
+    : qmtReported
+      ? (runtimeReportedAt ? `最近上报 ${runtimeReportedAt}` : '已收到运行时版本上报')
+      : (qmtSavedVersion
+        ? (runtimeReportedAt ? `最后上报 ${runtimeReportedAt}` : '保存的运行版本')
+        : '运行 QMT 桥接脚本后会自动同步');
+  if (label) label.textContent = qmtSavedVersion || '--';
+  if (badgeState) badgeState.textContent = badgeStatusText;
+  if (badgeEntry) badgeEntry.textContent = badgeEntryText;
   if (badgeMeta) {
-    badgeMeta.textContent = qmtReported
-      ? '运行中'
-      : (qmtSavedVersion ? '历史上报' : '等待上报');
+    badgeMeta.textContent = badgeMetaText;
+  }
+  if (badge) {
+    badge.setAttribute(
+      'aria-label',
+      `QMT 核心版本 ${qmtSavedVersion || '未上报'}，${badgeStatusText}。${badgeEntryText}`,
+    );
   }
   const qmtComparison = data.qmt_version_comparison || data.qmt_runtime_comparison || data.qmt_saved_comparison || data.comparison;
   const qmtClassData = { ...data, comparison: qmtComparison, update_available: data.qmt_update_available };
@@ -1235,7 +1268,6 @@ function renderProjectVersion(info) {
   const importedCoreVersion = data.imported_core_version || local.imported_version || '';
   const coreImportStale = Boolean(data.core_version_import_stale || local.import_stale);
   const runtimeDetail = qmtRuntimeDetail(qmtRuntime);
-  const savedDetail = qmtKnownDetail(qmtRuntime);
   const webDetail = coreImportStale
     ? `磁盘 ${webCoreVersion} / Web 进程 ${importedCoreVersion || '--'}，重启 Web 后端后生效`
     : `Web 后端 ${webCoreVersion} / 前端 ${browserFrontendVersion}`;
@@ -1251,29 +1283,61 @@ function renderProjectVersion(info) {
   const stateDetail = qmtReported
     ? (data.qmt_update_available ? '官网有不同的 QMT 核心版本，设置页可执行更新。' : '当前 QMT 运行时未发现需要更新。')
     : (qmtSavedVersion ? 'QMT 暂未在线，正在使用最近一次保存的内置版本做对比。' : '当前无法确认 QMT 内部实际加载版本，请先运行 QMT 桥接脚本。');
+  const runtimeStateText = state.versionCheckInFlight
+    ? '正在检查'
+    : qmtReported
+      ? '运行中'
+      : (qmtSavedVersion ? '上次运行记录' : '未上报');
+  const runtimeStateClass = state.versionCheckInFlight
+    ? 'is-checking'
+    : qmtReported
+      ? 'is-ok'
+      : (qmtSavedVersion ? 'is-stale' : 'is-wait');
+  const runtimeModeText = runtimeMode ? (transportModeLabel(runtimeMode) || runtimeMode) : '--';
+  const runtimeEntryText = runtimeEntryScript || '--';
+  const runtimeEntryVersionText = runtimeEntryVersion || '--';
+  const runtimeReportedText = runtimeReportedAt || '--';
   body.innerHTML = `
-    <div class="version-quick-grid">
-      <div class="version-quick-item ${qmtReported ? 'is-ok' : 'is-wait'}">
-        <span>QMT 运行时</span>
+    <section class="version-runtime-hero ${runtimeStateClass}">
+      <div class="version-runtime-head">
+        <div>
+          <span class="version-section-label">当前 QMT 运行时</span>
+          <strong>${esc(runtimeStateText)}</strong>
+        </div>
+        <span class="version-runtime-status">${esc(qmtReported ? '在线上报' : (qmtSavedVersion ? '历史记录' : '等待连接'))}</span>
+      </div>
+      <div class="version-runtime-value">
+        <span>核心版本</span>
         <strong>${esc(qmtVersion)}</strong>
-        <small>${esc(runtimeDetail)}</small>
       </div>
-      <div class="version-quick-item ${qmtSavedVersion ? 'is-ok' : 'is-wait'}">
-        <span>最近已知 QMT</span>
-        <strong>${esc(qmtSavedVersion || '--')}</strong>
-        <small>${esc(savedDetail)}</small>
+      <dl class="version-runtime-facts">
+        <div><dt>入口脚本</dt><dd>${esc(runtimeEntryText)}</dd></div>
+        <div><dt>入口版本</dt><dd>${esc(runtimeEntryVersionText)}</dd></div>
+        <div><dt>运行模式</dt><dd>${esc(runtimeModeText)}</dd></div>
+        <div><dt>最近上报</dt><dd>${esc(runtimeReportedText)}</dd></div>
+      </dl>
+      <p>${esc(runtimeDetail)}</p>
+    </section>
+    <section class="version-compare-section">
+      <div class="version-section-head">
+        <span>版本对比</span>
+        <strong>${esc(state.versionCheckInFlight ? '检查中' : displayCompareText)}</strong>
       </div>
-      <div class="version-quick-item">
-        <span>${esc(remoteUpdateSourceLabel(remote))}</span>
-        <strong>${esc(remoteVersionText)}</strong>
+      <div class="version-compare-row">
+        <div>
+          <span>${esc(remoteUpdateSourceLabel(remote))}</span>
+          <strong>${esc(remoteVersionText)}</strong>
+        </div>
         <small>${esc(remoteDetail)}</small>
       </div>
-      <div class="version-quick-item ${data.qmt_update_available ? 'is-wait' : 'is-ok'}">
-        <span>更新状态</span>
-        <strong>${esc(state.versionCheckInFlight ? '检查中' : displayCompareText)}</strong>
-        <small>${esc(stateDetail)}</small>
+      <div class="version-compare-row">
+        <div>
+          <span>Web 控制台</span>
+          <strong>${esc(webCoreVersion)} / ${esc(browserFrontendVersion)}</strong>
+        </div>
+        <small>${esc(coreImportStale ? webDetail : '后端核心版本 / 浏览器前端版本')}</small>
       </div>
-    </div>
+    </section>
     <details class="version-details">
       <summary>详细版本</summary>
       <div class="version-detail-list">
@@ -2423,8 +2487,8 @@ function xttraderCompatDocHtml() {
       </section>
       <section>
         <h3>追踪文档</h3>
-        <p><code>cfquant/docs/xttrader_compatibility.md</code></p>
-        <p><code>cfquant/docs/xtdata_compatibility.md</code></p>
+        <p><code>cfquant/docs/xttrader平替追踪.md</code></p>
+        <p><code>cfquant/docs/xtdata平替追踪.md</code></p>
       </section>
     </div>`;
 }
@@ -4949,6 +5013,7 @@ function setView(view) {
     refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message }));
   }
   if (state.appStarted && view === 'callbacks') {
+    connectOrderCallbackSocket();
     refreshCallbacks().catch((error) => log('回调刷新失败', { error: error.message }));
   }
   if (view === 'tutorial') {
@@ -6012,22 +6077,44 @@ async function refreshBindingStatuses() {
     if (overviewBody) overviewBody.innerHTML = '<tr><td colspan="5">暂无账号配置</td></tr>';
     if ($('overviewBindingCount')) $('overviewBindingCount').textContent = '0 组';
     if ($('bindingCount')) $('bindingCount').textContent = '0 个绑定';
+    if (state.bindingStatusRetryTimer) {
+      clearTimeout(state.bindingStatusRetryTimer);
+      state.bindingStatusRetryTimer = null;
+    }
     renderPairVerification(null);
     return;
   }
-  const rows = await Promise.all(entries.map(async (entry) => {
-    try {
-      const params = new URLSearchParams();
-      params.set('account_id', entry.accountId);
-      params.set('account_type', entry.accountType);
-      params.set('account_key', entry.accountKey);
-      if (entry.bridgeId) params.set('bridge_id', entry.bridgeId);
-      const status = await api(`/api/status?${params.toString()}`);
-      return { item: entry, status };
-    } catch (error) {
-      return { item: entry, error };
-    }
-  }));
+  let snapshot;
+  try {
+    snapshot = await api('/api/bindings/status');
+  } catch (error) {
+    snapshot = await legacyBindingStatusSnapshot(entries);
+    log('绑定状态批量接口不可用，已使用兼容查询', { error: error.message });
+  }
+  const statusByKey = new Map();
+  const statusByIdentity = new Map();
+  (snapshot.bindings || []).forEach((row) => {
+    const accountKey = String(row.account_key || '').trim();
+    const identity = [
+      String(row.bridge_id || '').trim(),
+      normalizeAccountType(row.account_type || 'STOCK'),
+      String(row.account_id || '').trim(),
+    ].join('|');
+    if (accountKey) statusByKey.set(accountKey, row);
+    if (identity) statusByIdentity.set(identity, row);
+  });
+  const rows = entries.map((item) => {
+    const identity = [
+      String(item.bridgeId || '').trim(),
+      normalizeAccountType(item.accountType || 'STOCK'),
+      String(item.accountId || '').trim(),
+    ].join('|');
+    const row = statusByKey.get(item.accountKey) || statusByIdentity.get(identity);
+    if (snapshot.error) return { item, error: snapshot.error };
+    if (!row) return { item, error: new Error('绑定状态未返回') };
+    if (row.error) return { item, error: new Error(row.error) };
+    return { item, status: row.status || null };
+  });
   if (body) {
     body.innerHTML = rows.map(({ item, status, error }) => bindingStatusRowHtml(item, status, error, true)).join('');
     if ($('bindingCount')) $('bindingCount').textContent = `${rows.length} 个绑定`;
@@ -6039,6 +6126,47 @@ async function refreshBindingStatuses() {
       : '<tr><td colspan="5">暂无账号配置</td></tr>';
     if ($('overviewBindingCount')) $('overviewBindingCount').textContent = `${overviewRows.length} 组`;
   }
+  const monitorWarmingUp = rows.some(({ status }) => {
+    const selected = status && status.status ? status.status : status;
+    return !!(selected && selected.monitor && selected.monitor.ready === false);
+  });
+  if (monitorWarmingUp && !state.bindingStatusRetryTimer) {
+    state.bindingStatusRetryTimer = setTimeout(() => {
+      state.bindingStatusRetryTimer = null;
+      refreshBindingStatuses().catch((error) => log('绑定状态初始化重试失败', { error: error.message }));
+    }, 1200);
+  } else if (!monitorWarmingUp && state.bindingStatusRetryTimer) {
+    clearTimeout(state.bindingStatusRetryTimer);
+    state.bindingStatusRetryTimer = null;
+  }
+}
+
+async function legacyBindingStatusSnapshot(entries) {
+  const bindings = await Promise.all(entries.map(async (item) => {
+    const params = new URLSearchParams();
+    params.set('account_id', item.accountId || '');
+    params.set('account_type', normalizeAccountType(item.accountType || 'STOCK'));
+    params.set('account_key', item.accountKey || '');
+    params.set('bridge_id', item.bridgeId || '');
+    try {
+      return {
+        account_key: item.accountKey || '',
+        account_id: item.accountId || '',
+        account_type: normalizeAccountType(item.accountType || 'STOCK'),
+        bridge_id: item.bridgeId || '',
+        status: await api(`/api/status?${params.toString()}`),
+      };
+    } catch (error) {
+      return {
+        account_key: item.accountKey || '',
+        account_id: item.accountId || '',
+        account_type: normalizeAccountType(item.accountType || 'STOCK'),
+        bridge_id: item.bridgeId || '',
+        error: error.message,
+      };
+    }
+  }));
+  return { bindings, cached: false, compatibility_fallback: true };
 }
 
 function bindingVerifyKey(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
@@ -6510,16 +6638,41 @@ async function startAuthenticatedApp() {
   if (state.appStarted) return;
   state.appStarted = true;
   renderApiDocs();
-  await refreshStatus();
+  refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
+  refreshStatus().catch((error) => log('状态初始化失败', { error: error.message }));
   refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
   refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
-  await refreshAccount('asset,positions').catch((error) => log('初始化查询失败', { error: error.message }));
-  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('委托初始化失败', { error: error.message }));
-  refreshAccount('trades').catch((error) => log('成交初始化失败', { error: error.message }));
+  refreshInitialAccountData().catch((error) => log('账号数据初始化失败', { error: error.message }));
   refreshUpdateStatus({ log: false }).catch((error) => log('更新状态初始化失败', { error: error.message }));
-  refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
   connectOrderCallbackSocket({ force: true });
   startTimers();
+}
+
+async function refreshInitialAccountData() {
+  const requests = [
+    {
+      sections: 'asset,positions',
+      options: undefined,
+      error: '初始化查询失败',
+    },
+    {
+      sections: 'orders',
+      options: { force: true, subscribe: false },
+      error: '委托初始化失败',
+    },
+    {
+      sections: 'trades',
+      options: undefined,
+      error: '成交初始化失败',
+    },
+  ];
+  for (const request of requests) {
+    try {
+      await refreshAccount(request.sections, request.options);
+    } catch (error) {
+      log(request.error, { error: error.message });
+    }
+  }
 }
 
 async function refreshStatus() {
@@ -6661,9 +6814,12 @@ function selectedTradeChannel() {
 function resetSelectionState() {
   state.callbackSeq = 0;
   state.callbackEvents = [];
+  state.callbackLastEventAt = '';
+  state.callbackLastEventName = '';
   state.orderSnapshot.clear();
   state.orderSnapshotReady = false;
   state.orderHighlights.clear();
+  state.orderCallbackMeta.clear();
   state.cfquantOrderIds.clear();
   state.cfquantOrderRemarks.clear();
   state.orderCallbackRefreshSections.clear();
@@ -6777,8 +6933,28 @@ function positionRowsHtml(rows) {
   }).join('');
 }
 
+function meaningfulOrderId(...values) {
+  for (const value of values) {
+    if (!hasValue(value)) continue;
+    const text = String(value).trim();
+    if (!text || text === '-' || text === '--' || text === '-1') continue;
+    return text;
+  }
+  return '';
+}
+
 function orderKey(row) {
-  return String(row.m_strOrderSysID || row.m_strOrderID || row.order_id || row.m_nOrderID || '');
+  if (!row || typeof row !== 'object') return '';
+  return meaningfulOrderId(
+    row.order_sysid,
+    row.m_strOrderSysID,
+    row.order_id,
+    row.m_strOrderID,
+    row.m_nOrderID,
+    row.entrust_no,
+    row.contract_no,
+    row.m_strContractNo,
+  );
 }
 
 function orderCode(row) {
@@ -6825,13 +7001,15 @@ function rememberCfquantOrder(value) {
     return;
   }
   if (typeof value !== 'object') return;
-  const id = String(
-    value.order_id
-    || value.m_strOrderSysID
-    || value.m_strOrderID
-    || value.m_nOrderID
-    || '',
-  ).trim();
+  const id = meaningfulOrderId(
+    value.order_sysid,
+    value.m_strOrderSysID,
+    value.order_id,
+    value.m_strOrderID,
+    value.m_nOrderID,
+    value.entrust_no,
+    value.contract_no,
+  );
   const remark = String(
     value.order_remark
     || value.remark
@@ -6839,7 +7017,7 @@ function rememberCfquantOrder(value) {
     || value.m_strOrderRemark
     || '',
   ).trim();
-  if (id && id !== '-1') state.cfquantOrderIds.add(id);
+  if (id) state.cfquantOrderIds.add(id);
   if (remark) state.cfquantOrderRemarks.add(remark);
   if (value.result) rememberCfquantOrder(value.result);
   if (value.results) rememberCfquantOrder(value.results);
@@ -7183,7 +7361,6 @@ function trackOrderEvents(rows) {
     if (changed) {
       state.orderSnapshot.set(id, snapshot);
       if (shouldHighlight) markOrderHighlight(id, previous ? 'updated' : 'new');
-      addCallbackEvent(previous ? '委托更新' : '委托出现', snapshot);
     }
   });
   state.orderSnapshotReady = true;
@@ -7196,40 +7373,219 @@ function trackOrderEvents(rows) {
   pruneOrderHighlights();
 }
 
-function addCallbackEvent(type, data) {
-  state.callbackEvents.unshift({
-    time: nowText(),
-    type,
-    ...data,
-  });
-  state.callbackEvents = state.callbackEvents.slice(0, 200);
-  const count = $('callbackCount');
-  if (count) count.textContent = `${state.callbackEvents.length} 条`;
-  if (state.currentView === 'callbacks') {
-    renderCallbacks();
+function timestampMs(value) {
+  if (!hasValue(value)) return 0;
+  if (value instanceof Date) return value.getTime();
+  const text = String(value).trim();
+  if (!text) return 0;
+  if (!/^-?\d+(\.\d+)?$/.test(text)) {
+    const parsed = Date.parse(text);
+    return Number.isNaN(parsed) ? 0 : parsed;
   }
+  const number = Number(text);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  if (number > 100000000000) return Math.round(number);
+  if (number > 100000000) return Math.round(number * 1000);
+  return 0;
+}
+
+function formatDateTimeMs(value) {
+  const ms = timestampMs(value);
+  if (!ms) return nowText();
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return nowText();
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}`;
+}
+
+function callbackEventRawName(event) {
+  if (!event || typeof event !== 'object') return '';
+  if (typeof event.event === 'string') return event.event;
+  if (typeof event.type === 'string') return event.type;
+  return '';
+}
+
+function callbackEventName(event) {
+  return callbackEventRawName(event).toLowerCase();
+}
+
+function callbackEventLabel(eventName) {
+  const name = String(eventName || '').toLowerCase();
+  if (name.includes('on_order_error')) return '下单错误';
+  if (name.includes('on_cancel_error')) return '撤单错误';
+  if (name.includes('on_stock_trade') || name.includes('deal')) return '成交回调';
+  if (name.includes('on_stock_order')) return '委托回调';
+  if (name.includes('on_stock_asset') || name.includes('account')) return '资金回调';
+  if (name.includes('on_stock_position') || name.includes('position')) return '持仓回调';
+  if (name.includes('async_response')) return '异步响应';
+  return eventName || '回调事件';
+}
+
+function callbackEventClass(eventName) {
+  const name = String(eventName || '').toLowerCase();
+  if (name.includes('error')) return 'callback-event-error';
+  if (name.includes('trade') || name.includes('deal')) return 'callback-event-trade';
+  if (name.includes('order') || name.includes('cancel')) return 'callback-event-order';
+  return 'callback-event-other';
+}
+
+function callbackEventData(event) {
+  let data = event && event.data !== undefined
+    ? event.data
+    : (event && event.payload !== undefined ? event.payload : null);
+  if ((data === null || data === undefined) && event && event.result !== undefined) {
+    data = event.result;
+  }
+  if (data === null || data === undefined) data = event;
+  if (data && typeof data === 'object' && data.__cf_type__ === 'object' && data.attrs) {
+    return data.attrs;
+  }
+  if (Array.isArray(data)) return { items: data };
+  return data && typeof data === 'object' ? data : {};
+}
+
+function callbackReceivedMs(event) {
+  return timestampMs(event && event.received_at)
+    || timestampMs(event && event.ts)
+    || timestampMs(event && event.timestamp)
+    || Date.now();
+}
+
+function callbackStockCode(data) {
+  const direct = firstField(data, ['stock_code', 'security_code', 'code', 'm_strStockCode']);
+  if (direct) return direct;
+  const instrument = firstField(data, ['m_strInstrumentID', 'instrument_id']);
+  const exchange = firstField(data, ['m_strExchangeID', 'exchange_id', 'market']);
+  if (instrument && exchange) return `${instrument}.${exchange}`;
+  return instrument || '';
+}
+
+function callbackOrderId(data) {
+  return meaningfulOrderId(
+    data.order_sysid,
+    data.m_strOrderSysID,
+    data.order_id,
+    data.orderId,
+    data.m_strOrderID,
+    data.m_nOrderID,
+    data.entrust_no,
+    data.contract_no,
+    data.m_strContractNo,
+  );
+}
+
+function callbackSource(event, data) {
+  const source = firstField(event || {}, ['source', 'channel'])
+    || firstField(data || {}, ['source', 'order_source', 'callback_source']);
+  if (!source) return 'callback';
+  if (source === '__client__') return 'web';
+  return source;
+}
+
+function callbackStatus(data) {
+  return orderStatus(data)
+    || data.status_msg
+    || data.m_strStatusMsg
+    || data.error_msg
+    || data.err_msg
+    || data.msg
+    || data.message
+    || '';
 }
 
 function normalizeCallbackEvent(event) {
   const data = callbackEventData(event);
-  const eventName = event.event || event.type || 'callback';
-  return {
-    time: event.received_at ? new Date(event.received_at * 1000).toLocaleString('zh-CN', { hour12: false }) : nowText(),
-    type: eventName,
-    code: data.stock_code || `${data.m_strInstrumentID || ''}.${data.m_strExchangeID || ''}`,
-    order_id: data.m_strOrderSysID || data.m_strOrderID || data.m_nOrderID || '',
-    volume: data.m_nVolumeTotalOriginal ?? data.m_nVolume ?? '',
-    traded: data.m_nVolumeTraded ?? '',
-    status: orderStatus(data) || data.m_strStatusMsg || '',
+  const rawName = callbackEventRawName(event) || 'callback';
+  const receivedMs = callbackReceivedMs(event);
+  const accountId = firstField(event || {}, ['account_id', 'm_strAccountID'])
+    || firstField(data, ['account_id', 'm_strAccountID']);
+  const accountType = firstField(event || {}, ['account_type'])
+    || firstField(data, ['account_type']);
+  const volume = firstField(data, ['order_volume', 'm_nVolumeTotalOriginal', 'volume', 'm_nVolume']);
+  const traded = firstField(data, ['traded_volume', 'm_nVolumeTraded', 'deal_volume', 'm_nDealVolume']);
+  const price = firstField(data, ['price', 'entrust_price', 'm_dPrice', 'm_dOrderPrice', 'traded_price', 'm_dTradedPrice']);
+  const row = {
+    seq: Number(event.seq || 0),
+    received_ms: receivedMs,
+    time: formatDateTimeMs(receivedMs),
+    type: rawName,
+    label: callbackEventLabel(rawName),
+    className: callbackEventClass(rawName),
+    cached: !!event.cached,
+    bridge_id: firstField(event || {}, ['bridge_id']) || firstField(data, ['bridge_id']),
+    account_id: accountId,
+    account_type: accountType,
+    source: callbackSource(event, data),
+    code: callbackStockCode(data),
+    name: firstField(data, ['instrument_name', 'm_strInstrumentName', 'stock_name', 'name']),
+    order_id: callbackOrderId(data),
+    volume,
+    traded,
+    price,
+    status: callbackStatus(data),
+    payload_fields: data && typeof data === 'object' ? Object.keys(data).length : 0,
+    payload: data,
+    raw: event,
   };
+  row.summary = [
+    row.code,
+    row.name,
+    row.order_id ? `编号 ${row.order_id}` : '',
+    hasValue(row.volume) ? `数量 ${row.volume}` : '',
+    hasValue(row.traded) ? `成交 ${row.traded}` : '',
+    row.status,
+  ].filter(Boolean).join(' / ');
+  return row;
 }
 
-function callbackEventData(event) {
-  const data = event && event.data !== undefined ? event.data : event;
-  if (data && typeof data === 'object' && data.__cf_type__ === 'object' && data.attrs) {
-    return data.attrs;
+function updateCallbackStatusUi() {
+  const status = $('callbackSocketStatus');
+  const stateMap = {
+    idle: '未连接',
+    connecting: '连接中',
+    open: '已连接',
+    closed: '已断开',
+    disabled: '已关闭',
+    error: '异常',
+  };
+  if (status) {
+    const label = stateMap[state.orderCallbackSocketState] || state.orderCallbackSocketState || '未连接';
+    status.textContent = state.orderCallbackSocketDetail ? `${label} / ${state.orderCallbackSocketDetail}` : label;
+    status.className = state.orderCallbackSocketState === 'open' ? 'is-ok' : (state.orderCallbackSocketState === 'error' ? 'is-error' : '');
   }
-  return data && typeof data === 'object' ? data : {};
+  const filter = $('callbackFilterStatus');
+  if (filter) {
+    const accountId = selectedAccount() || '--';
+    filter.textContent = `${selectedBridge()} / ${accountTypeLabel(selectedAccountType())} / ${accountId} / trader:*`;
+  }
+  const last = $('callbackLastEventStatus');
+  if (last) {
+    last.textContent = state.callbackLastEventAt
+      ? `${state.callbackLastEventAt} / ${state.callbackLastEventName || '回调'}`
+      : '尚未收到真实回调';
+  }
+  const seq = $('callbackSeqStatus');
+  if (seq) {
+    const hello = state.orderCallbackHello || {};
+    const clientCount = hello.clients ?? hello.client_count;
+    const clients = hasValue(clientCount) ? ` / clients ${clientCount}` : '';
+    seq.textContent = `seq ${state.callbackSeq || 0}${clients}`;
+  }
+  const reconnectBtn = $('callbackReconnectBtn');
+  if (reconnectBtn) reconnectBtn.disabled = !state.appStarted || !realtimeOrdersEnabled();
+}
+
+function setOrderCallbackSocketState(status, detail = '') {
+  state.orderCallbackSocketState = status;
+  state.orderCallbackSocketDetail = detail;
+  updateCallbackStatusUi();
+}
+
+function formatCallbackJson(value) {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (error) {
+    return String(value);
+  }
 }
 
 function appendServerCallbackEvent(event, options = {}) {
@@ -7237,18 +7593,18 @@ function appendServerCallbackEvent(event, options = {}) {
   const seq = Number(event.seq || 0);
   if (seq && seq <= state.callbackSeq) return false;
   if (seq) state.callbackSeq = Math.max(state.callbackSeq, seq);
-  state.callbackEvents.unshift(normalizeCallbackEvent(event));
+  const row = normalizeCallbackEvent(event);
+  state.callbackEvents.unshift(row);
   state.callbackEvents = state.callbackEvents.slice(0, 200);
+  state.callbackLastEventAt = row.time;
+  state.callbackLastEventName = row.label;
   const count = $('callbackCount');
-  if (count) count.textContent = `${state.callbackEvents.length} 条`;
+  if (count) count.textContent = `${state.callbackEvents.length} 条真实回调`;
+  updateCallbackStatusUi();
   if (options.render !== false && state.currentView === 'callbacks') {
     renderCallbacks();
   }
-  return true;
-}
-
-function callbackEventName(event) {
-  return String((event && (event.event || event.type)) || '').toLowerCase();
+  return row;
 }
 
 function callbackEventIsTradeRelated(event) {
@@ -7266,9 +7622,32 @@ function orderRowFromCallbackEvent(event) {
   if (!data || typeof data !== 'object') return null;
   const row = { ...data };
   if (!hasValue(firstField(row, ORDER_TIME_FIELDS)) && hasValue(event.received_at)) {
-    row.order_time = Math.round(Number(event.received_at) * 1000);
+    row.order_time = callbackReceivedMs(event);
   }
   return orderKey(row) ? row : null;
+}
+
+function rememberOrderCallbackMeta(row) {
+  if (!row || !row.order_id) return;
+  if (state.orderCallbackMeta.has(row.order_id)) state.orderCallbackMeta.delete(row.order_id);
+  state.orderCallbackMeta.set(row.order_id, {
+    label: row.label,
+    type: row.type,
+    className: row.className,
+    time: row.time,
+    seq: row.seq,
+    status: row.status,
+  });
+  while (state.orderCallbackMeta.size > ORDER_SNAPSHOT_LIMIT) {
+    const oldest = state.orderCallbackMeta.keys().next().value;
+    if (!oldest) break;
+    state.orderCallbackMeta.delete(oldest);
+  }
+}
+
+function orderCallbackMetaForRow(row) {
+  const id = orderKey(row);
+  return id ? state.orderCallbackMeta.get(id) : null;
 }
 
 function mergeOrderCallbackRow(row) {
@@ -7280,6 +7659,7 @@ function mergeOrderCallbackRow(row) {
   const index = rows.findIndex((item) => orderKey(item) === id);
   if (index >= 0) rows[index] = { ...rows[index], ...row };
   else rows.push(row);
+  markOrderHighlight(id, index >= 0 ? 'updated' : 'new');
   renderOrders({ data: rows });
   return true;
 }
@@ -7314,10 +7694,12 @@ function scheduleOrderCallbackRefresh(sections = 'orders') {
   state.orderCallbackRefreshTimer = window.setTimeout(runOrderCallbackRefresh, 180);
 }
 
-function handleOrderCallbackEvent(event) {
-  if (!appendServerCallbackEvent(event, { render: false })) return;
+function handleOrderCallbackEvent(event, options = {}) {
+  const row = appendServerCallbackEvent(event, { render: false });
+  if (!row) return;
   const data = callbackEventData(event);
   rememberCfquantOrder(data);
+  rememberOrderCallbackMeta(row);
   const merged = mergeOrderCallbackRow(orderRowFromCallbackEvent(event));
   const name = callbackEventName(event);
   if (name.includes('stock_trade')) {
@@ -7325,19 +7707,30 @@ function handleOrderCallbackEvent(event) {
   } else if (!merged && callbackEventIsTradeRelated(event)) {
     scheduleOrderCallbackRefresh('orders');
   }
-  if (state.currentView === 'callbacks') {
+  if (options.render !== false && state.currentView === 'callbacks') {
     renderCallbacks();
   }
 }
 
 function handleOrderCallbackPayload(payload) {
-  if (!payload || payload.type === 'hello') return;
+  if (!payload) return;
+  if (payload.type === 'hello') {
+    state.orderCallbackHello = payload;
+    const clientText = hasValue(payload.clients) ? `clients ${payload.clients}` : '';
+    const prefixText = payload.event_prefix || 'trader:*';
+    setOrderCallbackSocketState('open', [prefixText, clientText].filter(Boolean).join(' / '));
+    return;
+  }
   if (payload.type === 'history' && Array.isArray(payload.events)) {
-    payload.events.forEach((event) => handleOrderCallbackEvent(event));
+    payload.events.forEach((event) => handleOrderCallbackEvent(event, { render: false }));
+    if (state.currentView === 'callbacks') renderCallbacks();
     return;
   }
   if (payload.type === 'callback' && payload.event) {
-    handleOrderCallbackEvent(payload.event);
+    const event = payload.cached && payload.event && typeof payload.event === 'object'
+      ? { ...payload.event, cached: true }
+      : payload.event;
+    handleOrderCallbackEvent(event);
   }
 }
 
@@ -7361,16 +7754,19 @@ function closeOrderCallbackSocket() {
       // ignore stale sockets
     }
   }
+  setOrderCallbackSocketState(realtimeOrdersEnabled() ? 'closed' : 'disabled', realtimeOrdersEnabled() ? '' : '实时回调开关关闭');
 }
 
 function connectOrderCallbackSocket(options = {}) {
   if (!state.appStarted || !realtimeOrdersEnabled()) {
     closeOrderCallbackSocket();
+    setOrderCallbackSocketState(realtimeOrdersEnabled() ? 'idle' : 'disabled', realtimeOrdersEnabled() ? '应用尚未启动' : '实时回调开关关闭');
     return;
   }
   const accountId = selectedAccount();
   if (!accountId) {
     closeOrderCallbackSocket();
+    setOrderCallbackSocketState('idle', '未选择账号');
     return;
   }
   const bridgeId = selectedBridge();
@@ -7389,6 +7785,11 @@ function connectOrderCallbackSocket(options = {}) {
   const socket = new WebSocket(apiWsUrl(`/ws/callbacks?${params.toString()}`));
   state.orderCallbackSocket = socket;
   state.orderCallbackKey = socketKey;
+  setOrderCallbackSocketState('connecting', `${accountTypeLabel(accountType)} ${accountId}`);
+  socket.onopen = () => {
+    if (state.orderCallbackSocket !== socket) return;
+    setOrderCallbackSocketState('open', `${accountTypeLabel(accountType)} ${accountId}`);
+  };
   socket.onmessage = (event) => {
     if (state.orderCallbackSocket !== socket) return;
     try {
@@ -7398,12 +7799,16 @@ function connectOrderCallbackSocket(options = {}) {
     }
   };
   socket.onerror = () => {
-    if (state.orderCallbackSocket === socket) log('委托回调 WebSocket 异常');
+    if (state.orderCallbackSocket === socket) {
+      setOrderCallbackSocketState('error', 'WebSocket 异常');
+      log('委托回调 WebSocket 异常');
+    }
   };
   socket.onclose = () => {
     if (state.orderCallbackSocket !== socket) return;
     state.orderCallbackSocket = null;
     state.orderCallbackKey = '';
+    setOrderCallbackSocketState('closed', '等待重连');
     if (!state.appStarted || !realtimeOrdersEnabled() || document.hidden) return;
     state.orderCallbackReconnectTimer = window.setTimeout(() => {
       state.orderCallbackReconnectTimer = null;
@@ -7425,12 +7830,13 @@ async function refreshCallbacks() {
     params.set('account_type', selectedAccountType());
     const accountKey = selectedAccountKey();
     if (accountKey) params.set('account_key', accountKey);
+    params.set('event_prefix', 'trader:');
     params.set('since', state.callbackSeq);
     params.set('limit', 200);
     const payload = await api(`/api/callbacks?${params.toString()}`);
     const events = payload.events || [];
     if (!events.length) return;
-    events.forEach((event) => appendServerCallbackEvent(event, { render: false }));
+    events.forEach((event) => handleOrderCallbackEvent(event, { render: false }));
     if (state.currentView === 'callbacks') {
       renderCallbacks();
     }
@@ -7441,19 +7847,44 @@ async function refreshCallbacks() {
 
 function renderCallbacks() {
   const count = $('callbackCount');
-  if (count) count.textContent = `${state.callbackEvents.length} 条`;
+  if (count) count.textContent = `${state.callbackEvents.length} 条真实回调`;
+  updateCallbackStatusUi();
   const body = $('callbacksBody');
   if (!body) return;
   const html = state.callbackEvents.map((row) => `<tr>
-    <td>${plain(row.time)}</td>
-    <td>${plain(row.type)}</td>
-    <td>${plain(row.code)}</td>
-    <td>${plain(row.order_id)}</td>
-    <td class="num">${plain(row.volume)}</td>
-    <td class="num">${plain(row.traded)}</td>
-    <td>${plain(row.status)}</td>
+    <td>${esc(row.time)}</td>
+    <td>
+      <span class="callback-event-pill ${esc(row.className || '')}">${esc(row.label)}</span>
+      <small class="callback-raw-event">${esc(row.type)}</small>
+    </td>
+    <td>
+      <strong>${esc(row.account_id)}</strong>
+      <small>${esc(accountTypeLabel(row.account_type || selectedAccountType()))}</small>
+    </td>
+    <td>
+      <strong>${esc(row.code)}</strong>
+      <small>${esc(row.name)}</small>
+    </td>
+    <td>${esc(row.order_id)}</td>
+    <td class="num">${money(row.price)}</td>
+    <td class="num">${esc(row.volume)}</td>
+    <td class="num">${esc(row.traded)}</td>
+    <td class="callback-summary-cell">
+      <strong>${esc(row.status)}</strong>
+      <small>${esc(row.summary || `字段 ${row.payload_fields || 0}`)}</small>
+    </td>
+    <td>
+      <span>${esc(row.source)}</span>
+      ${row.cached ? '<small>缓存</small>' : ''}
+    </td>
+    <td>
+      <details class="callback-detail">
+        <summary>完整 JSON</summary>
+        <pre>${esc(formatCallbackJson(row.raw))}</pre>
+      </details>
+    </td>
   </tr>`).join('');
-  body.innerHTML = html || '<tr><td colspan="7">暂无回调事件</td></tr>';
+  body.innerHTML = html || '<tr><td colspan="11">暂无真实回调事件。请确认 QMT 端已启用交易主推并加载 cfquant 回调桥。</td></tr>';
 }
 
 function renderOrders(section) {
@@ -7464,15 +7895,21 @@ function renderOrders(section) {
   $('orderCount').textContent = `${rows.length} 条 / ${cancelableCount} 条可撤`;
   const sortedRows = sortedOrderRows(rows);
   const html = orderRowsHtml(sortedRows, { includeTime: true });
-  $('ordersBody').innerHTML = html || '<tr><td colspan="10">无委托数据</td></tr>';
+  $('ordersBody').innerHTML = html || '<tr><td colspan="11">无委托数据</td></tr>';
   const tradeBody = $('tradeOrdersBody');
   if (tradeBody) {
-    tradeBody.innerHTML = html || '<tr><td colspan="10">无委托数据</td></tr>';
+    tradeBody.innerHTML = html || '<tr><td colspan="11">无委托数据</td></tr>';
   }
   $('selectAllOrders').checked = false;
   const tradeSelectAll = $('selectAllTradeOrders');
   if (tradeSelectAll) tradeSelectAll.checked = false;
   renderOrderSortHeaders();
+}
+
+function orderCallbackCellHtml(row) {
+  const meta = orderCallbackMetaForRow(row);
+  if (!meta) return '<span class="order-callback-empty">未收到</span>';
+  return `<span class="order-callback-tag ${esc(meta.className || '')}">${esc(meta.label)}</span><small>${esc(meta.time)}${meta.seq ? ` / seq ${esc(meta.seq)}` : ''}</small>`;
 }
 
 function orderRowsHtml(rows, options = {}) {
@@ -7483,17 +7920,18 @@ function orderRowsHtml(rows, options = {}) {
     const cancelable = isCancelableOrder(row);
     const highlightType = orderHighlightType(row);
     const highlightClass = highlightType ? ` order-row-highlight order-row-${highlightType}` : '';
-    return `<tr class="clickable${highlightClass}" data-order-id="${plain(orderId)}" data-code="${plain(code)}" data-cancelable="${cancelable ? '1' : '0'}">
-      <td><input class="order-select" type="checkbox" data-order-id="${plain(orderId)}"${cancelable ? '' : ' disabled'}></td>
+    return `<tr class="clickable${highlightClass}" data-order-id="${esc(orderId)}" data-code="${esc(code)}" data-cancelable="${cancelable ? '1' : '0'}">
+      <td><input class="order-select" type="checkbox" data-order-id="${esc(orderId)}"${cancelable ? '' : ' disabled'}></td>
       <td class="num">${index + 1}</td>
-      ${includeTime ? `<td>${plain(orderTime(row))}</td>` : ''}
-      <td><span class="source-pill ${orderSourceClass(row)}">${plain(orderSource(row))}</span></td>
-      <td>${plain(code)}</td>
-      <td>${plain(orderName(row))}</td>
-      <td class="num">${plain(orderVolume(row))}</td>
-      <td class="num">${plain(tradedVolume(row))}</td>
-      <td>${plain(orderStatus(row))}</td>
-      <td>${plain(orderId)}</td>
+      ${includeTime ? `<td>${esc(orderTime(row))}</td>` : ''}
+      <td><span class="source-pill ${orderSourceClass(row)}">${esc(orderSource(row))}</span></td>
+      <td>${esc(code)}</td>
+      <td>${esc(orderName(row))}</td>
+      <td class="num">${esc(orderVolume(row))}</td>
+      <td class="num">${esc(tradedVolume(row))}</td>
+      <td>${esc(orderStatus(row))}</td>
+      <td class="order-callback-cell">${orderCallbackCellHtml(row)}</td>
+      <td>${esc(orderId)}</td>
     </tr>`;
   }).join('');
 }
@@ -7600,13 +8038,6 @@ async function submitOrder(event) {
     const data = await api('/api/order', { method: 'POST', body: JSON.stringify(body) });
     rememberCfquantOrder(data);
     log('委托已提交', data);
-    addCallbackEvent('提交委托', {
-      code: body.stock_code,
-      order_id: data.result && (data.result.order_id || data.result.m_strOrderSysID),
-      volume: body.volume,
-      traded: 0,
-      status: 'submitted',
-    });
     await refreshAccount('asset,positions', { force: true });
     await refreshAccount('orders', { force: true, subscribe: false });
   } catch (error) {
@@ -7683,13 +8114,6 @@ async function sendCancel(orderId, channel) {
   };
   const data = await api('/api/cancel', { method: 'POST', body: JSON.stringify(body) });
   log('撤单已提交', data);
-  addCallbackEvent('提交撤单', {
-    code: '',
-    order_id: body.order_id,
-    volume: '',
-    traded: '',
-    status: 'cancel_requested',
-  });
   await refreshAccount('orders', { force: true, subscribe: false });
 }
 
@@ -8863,6 +9287,23 @@ async function boot() {
     realtimeOrdersToggle.addEventListener('change', () => {
       if (realtimeOrdersToggle.checked) connectOrderCallbackSocket({ force: true });
       else closeOrderCallbackSocket();
+    });
+  }
+  const callbackRefreshBtn = $('callbackRefreshBtn');
+  if (callbackRefreshBtn) {
+    callbackRefreshBtn.addEventListener('click', () => refreshCallbacks().catch((error) => log('回调刷新失败', { error: error.message })));
+  }
+  const callbackReconnectBtn = $('callbackReconnectBtn');
+  if (callbackReconnectBtn) {
+    callbackReconnectBtn.addEventListener('click', () => restartOrderCallbackSocket());
+  }
+  const callbackClearBtn = $('callbackClearBtn');
+  if (callbackClearBtn) {
+    callbackClearBtn.addEventListener('click', () => {
+      state.callbackEvents = [];
+      state.callbackLastEventAt = '';
+      state.callbackLastEventName = '';
+      renderCallbacks();
     });
   }
   $('clearLogBtn').addEventListener('click', () => { $('logBox').innerHTML = ''; });

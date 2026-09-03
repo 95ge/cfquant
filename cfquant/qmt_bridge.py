@@ -625,7 +625,8 @@ class CfquantQmtBridge(object):
             func = self.context.get_trade_detail_data
         if not func:
             raise NotImplementedError("当前QMT环境未找到get_trade_detail_data函数")
-        result = func(
+        result = self._call_trade_detail_data(
+            func,
             account.get("account_id", ""),
             self._account_type_name(account.get("account_type")).lower(),
             str(datatype).lower(),
@@ -634,6 +635,23 @@ class CfquantQmtBridge(object):
         if str(datatype).upper() == "ORDER" and self._truthy_param(params.get("cancelable_only")):
             rows = filter_cancelable_orders(rows)
         return rows
+
+    def _call_trade_detail_data(self, func, account_id, account_type, datatype):
+        # QMT's fourth argument is strategyname, not ContextInfo.
+        variants = [
+            ((account_id, account_type, datatype), {}),
+            ((account_id, account_type, datatype, ""), {}),
+        ]
+        last_error = None
+        for args, kwargs in variants:
+            try:
+                return func(*args, **kwargs)
+            except TypeError as e:
+                last_error = e
+                continue
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no available trade detail call variant")
 
     def _format_trade_detail_rows(self, rows, datatype):
         datatype = str(datatype).upper()

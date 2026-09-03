@@ -23,6 +23,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         schedule_timer=True,
         pump_max_count=20,
         pump_max_ms=0,
+        dispatch_on_qmt_thread=False,
         connect_timeout_ms=3000,
     ):
         super(PipeNormalQmtBridge, self).__init__(
@@ -39,6 +40,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             schedule_timer=schedule_timer,
             pump_max_count=pump_max_count,
             pump_max_ms=pump_max_ms,
+            dispatch_on_qmt_thread=dispatch_on_qmt_thread,
         )
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
         self.request_channels = request_channels or [request_channel]
@@ -48,6 +50,8 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         if self.running:
             return self
         self.running = True
+        if not self.started_at:
+            self.started_at = time.time()
         self.tx = PipeTxClient(
             pipe_name=self.pipe_name,
             request_channel=self.request_channel,
@@ -65,6 +69,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             "pipe normal bridge started pipe=%s request_channel=%s"
             % (self.pipe_name, self.request_channel)
         )
+        self._publish_runtime_report("start")
         return self
 
     def close(self):
@@ -125,6 +130,8 @@ class PipeTradeBridge(TxTradeBridge):
         if self.running:
             return self
         self.running = True
+        if not self.started_at:
+            self.started_at = time.time()
         self.tx = PipeTxClient(
             pipe_name=self.pipe_name,
             request_channel=self.request_channel,
@@ -138,6 +145,7 @@ class PipeTradeBridge(TxTradeBridge):
             "pipe trade bridge started pipe=%s request_channel=%s"
             % (self.pipe_name, self.request_channel)
         )
+        self._publish_runtime_report("start")
         return self
 
     def close(self):
@@ -187,6 +195,7 @@ def start_pipe_normal_bridge(
     schedule_timer=True,
     pump_max_count=20,
     pump_max_ms=0,
+    dispatch_on_qmt_thread=False,
     connect_timeout_ms=3000,
 ):
     import sys
@@ -208,6 +217,7 @@ def start_pipe_normal_bridge(
         schedule_timer=schedule_timer,
         pump_max_count=pump_max_count,
         pump_max_ms=pump_max_ms,
+        dispatch_on_qmt_thread=dispatch_on_qmt_thread,
         connect_timeout_ms=connect_timeout_ms,
     ).start()
 

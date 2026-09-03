@@ -4,11 +4,29 @@
 
 ## 安装
 
-在项目目录执行：
+推荐直接从 PyPI 安装：
+
+```powershell
+pip install cfquant
+```
+
+如果需要 LTtx 的 ZMQ 模式：
+```powershell
+pip install "cfquant[zmq]"
+```
+
+源码开发或本地调试时，在项目目录执行：
 
 ```powershell
 cd D:\cfquant
 pip install -e .
+```
+
+安装后会提供两个命令行入口：
+
+```powershell
+cfquant-web
+cfquant-pipe-hub
 ```
 
 ## 推荐用法

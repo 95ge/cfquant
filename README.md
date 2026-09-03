@@ -9,6 +9,7 @@
 - [Python 版本支持](#python-版本支持)
 - [模式区别](#模式区别)
 - [快速启动](#快速启动)
+- [PyPI 安装](#pypi-安装)
 - [文档导航](#文档导航)
 - [Web 控制台](#web-控制台)
 - [外部 Python](#外部-python)
@@ -45,8 +46,8 @@ cfquant 是面向大 QMT 的本地转接层，目标是替代 miniQMT 的常见�
 | 国泰君安君弘君智 QMT 等白名单限制无法导入核心包 | 使用极致模式，QMT 只加载 `CFQUANT_LITE.py` |
 | 普通/信用账户、多账号、多 QMT | 在 Web“绑定”页逐个配置账号类型、账号和 QMT 核心目录 |
 | 追求更低交易延迟 | 使用高级模式，需要普通 QMT + 极速交易端 QMT |
-| 从 miniQMT / `xtquant` 切换 | 看 [miniQMT 迁移到大 QMT 指南](docs/miniqmt_to_bigqmt_migration.md)、[外部 Python 接入](docs/README_外部Python接入.md) |
-| 日志、重启、更新、回滚 | 看 [运维与更新](docs/README_运维与更新.md) |
+| 从 miniQMT / `xtquant` 切换 | 看 [miniQMT 迁移到大 QMT 指南](docs/miniQMT迁移到大QMT指南.md)、[外部 Python 接入](docs/外部Python接入.md) |
+| 日志、重启、更新、回滚 | 看 [运维与更新](docs/运维与更新.md) |
 
 ## Python 版本支持
 
@@ -113,19 +114,48 @@ restart_cfquant.bat    重启本地服务
 重启cfquant.bat        中文重启脚本
 ```
 
+## PyPI 安装
+
+外部 Python 只接入 cfquant 库时，可以直接安装：
+
+```powershell
+pip install cfquant
+```
+
+如果要启用 LTtx 的 ZMQ 模式，再安装可选扩展：
+```powershell
+pip install "cfquant[zmq]"
+```
+
+安装后可直接使用：
+
+```powershell
+cfquant-web
+cfquant-pipe-hub
+```
+
+源码开发或本地调试时仍可在项目目录执行：
+
+```powershell
+pip install -e .
+```
+
+PyPI 包只包含运行必需内容：`cfquant` 核心库、`LTtx` 通信层、Web 控制台静态资源、QMT 入口脚本和两个命令行入口。`runtime/`、`log/`、`docs/`、`official_site/`、视频工程、测试数据和本地发布目录不会上传到 PyPI。
+
+GitHub 和 PyPI 是两个独立发布渠道：推送 GitHub 只同步源码和打包规则，不代表发布 PyPI；只有明确执行 `python -m build` 和 `python -m twine upload ...` 时，才会发布新的 PyPI 安装包。
+
 ## 文档导航
 
 | 分类 | 文档 |
 |---|---|
 | 部署教程 | [通用模式部署指南](docs/通用模式部署指南.md)、[极致模式部署指南](docs/极致模式部署指南.md)、[高级模式部署指南](docs/高级模式部署指南.md) |
-| 账号配置 | [账号运行配置说明](docs/web_account_runtime_configuration.md) |
-| 信用账户 | [信用账户支持方案](docs/信用账户支持方案.md) |
-| 外部接入 | [miniQMT 迁移到大 QMT 指南](docs/miniqmt_to_bigqmt_migration.md)、[外部 Python 接入](docs/README_外部Python接入.md) |
-| 运维更新 | [运维与更新](docs/README_运维与更新.md) |
-| 接口兼容 | [xtdata 兼容说明](docs/xtdata_compatibility.md)、[xttrader 兼容说明](docs/xttrader_compatibility.md) |
-| 能力矩阵 | [QMT 接口能力矩阵](docs/qmt_function_capability_matrix.md) |
-| 测试报告 | [延迟测试报告](docs/ctypes_pipe_vs_lttx_latency_20260813.md) |
-| 项目背景 | [微信文章思路整理](docs/wechat_article_cfquant_intro.md) |
+| 账号配置 | [账号运行配置说明](docs/Web账号运行配置说明.md) |
+| 信用账户 | 信用账户内部方案单独维护，不随公开 GitHub 文档发布 |
+| 外部接入 | [miniQMT 迁移到大 QMT 指南](docs/miniQMT迁移到大QMT指南.md)、[外部 Python 接入](docs/外部Python接入.md) |
+| 运维更新 | [运维与更新](docs/运维与更新.md) |
+| 接口兼容 | [xtdata 兼容说明](docs/xtdata平替追踪.md)、[xttrader 兼容说明](docs/xttrader平替追踪.md) |
+| 能力矩阵 | [QMT 接口能力矩阵](docs/QMT函数封装能力清单.md) |
+| 测试报告 | 真实环境延迟报告单独维护，不随公开 GitHub 文档发布 |
 
 更详细的图文部署教程也可以直接在 Web 控制台的“教程”页面查看。README 只保留入口说明，避免首次阅读成本过高。
 
@@ -161,7 +191,7 @@ tick = xtdata.get_full_tick(["000001.SZ"])
 print(tick)
 ```
 
-默认 `transport=auto`，通常不需要手动调用 `configure()`。详细路由规则、强制指定通道和环境变量见 [外部 Python 接入](docs/README_外部Python接入.md)。
+默认 `transport=auto`，通常不需要手动调用 `configure()`。详细路由规则、强制指定通道和环境变量见 [外部 Python 接入](docs/外部Python接入.md)。
 
 ## 实测延迟
 
@@ -169,7 +199,7 @@ print(tick)
 
 交易时间真实下单撤单测试中，普通 QMT 下单约 `175.897 ms`，极速交易端约 `1.026 ms`，ctypes 交易通道约 `20.147 ms`。非交易时间、午间休市或首次启动时，行情源、柜台连接、本地缓存和 QMT 回调节奏可能不活跃，请求耗时会明显高于交易时间。
 
-完整交易时间、非交易时间、行情快照、查询、下单和撤单数据见 [延迟测试报告](docs/ctypes_pipe_vs_lttx_latency_20260813.md)。
+完整交易时间、非交易时间、行情快照、查询、下单和撤单数据属于真实环境测试材料，单独放在本地私有文档目录维护。
 
 ## 目录结构
 
@@ -203,6 +233,13 @@ cfquant/
 
 
 ## 版本日志
+
+### core_20260903_05 / web_20260903_07
+
+- QMT 脚本运行时版本上报改为读取已部署的 `cfquant` 包版本，并同步写入可由 Web 和其他进程读取的运行标记，便于确认实际启动的桥接版本。
+- 修复交易明细查询误传 QMT 参数的问题，避免部分 QMT 环境返回空请求对象后访问 `request_id` 失败。
+- 普通桥请求改由 QMT 定时器和回调线程消费，并增加并发串行保护，避免后台线程跨线程调用 QMT API。
+- PipeHub 在线状态、账号资产和持仓改由 Web 服务后台缓存维护；启用账号会在后台预热，绑定页面进入时不再等待长时间 QMT 查询。
 
 ### web_20260902_05
 
@@ -368,8 +405,8 @@ cfquant/
 ### core_20260817_07
 
 - README 改为入口型结构，突出 miniQMT 替代、大 QMT 功能转接、多账号、低延迟和 `xtquant` 无缝切换能力。
-- 将外部 Python 接入说明迁移到 `docs/README_外部Python接入.md`。
-- 将启停、日志、版本探测、在线更新和回滚说明迁移到 `docs/README_运维与更新.md`。
+- 将外部 Python 接入说明迁移到 `docs/外部Python接入.md`。
+- 将启停、日志、版本探测、在线更新和回滚说明迁移到 `docs/运维与更新.md`。
 
 ### core_20260817_06
 

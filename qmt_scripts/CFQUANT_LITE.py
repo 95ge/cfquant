@@ -21,7 +21,7 @@ import uuid
 import ctypes
 from ctypes import wintypes
 
-CORE_VERSION = "core_20260902_03"
+CORE_VERSION = "core_20260903_03"
 LITE_ENTRY_VERSION = "lite_20260828_01"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -4043,13 +4043,16 @@ _runtime_report_pending_log_at = 0.0
 _runtime_report_count = 0
 _runtime_report_last_error = ""
 _runtime_report_retry_until = 0.0
+_runtime_marker_started_at = time.time()
 DEFAULT_ACCOUNT_ID = ""
+DEFAULT_ACCOUNT_TYPE = str(os.environ.get("CFQUANT_ACCOUNT_TYPE") or "STOCK").strip().upper()
 USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
 PIPE_NAME = os.environ.get("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub")
 RUNTIME_CONFIG_PATH = ""
 RUNTIME_CONFIG = {}
 RUNTIME_CHANNELS = {}
+QMT_MARKET = os.environ.get("CFQUANT_MARKET", "").strip().upper()
 PIPE_CONNECT_TIMEOUT_MS = int(os.environ.get("CFQUANT_PIPE_CONNECT_TIMEOUT_MS", "3000"))
 TRADE_LOOP_IN_THREAD = os.environ.get("CFQUANT_CTYPE_TRADE_THREAD", "1").strip().lower() in ("1", "true", "yes", "on")
 NORMAL_PUMP_MAX_COUNT = int(os.environ.get("CFQUANT_CTYPE_NORMAL_PUMP_MAX_COUNT", "100"))
@@ -4266,7 +4269,7 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
-    global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS
+    global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET, DEFAULT_ACCOUNT_ID, DEFAULT_ACCOUNT_TYPE
 
     path, data = _load_runtime_config()
     RUNTIME_CONFIG_PATH = path
@@ -4274,8 +4277,19 @@ def _apply_runtime_config():
     if not data:
         _write_runtime_log("cfquant lite runtime config not found")
         return
+    if data.get("account_id") and not DEFAULT_ACCOUNT_ID:
+        DEFAULT_ACCOUNT_ID = str(data.get("account_id") or "").strip()
+    if data.get("account_type"):
+        DEFAULT_ACCOUNT_TYPE = str(data.get("account_type") or DEFAULT_ACCOUNT_TYPE or "STOCK").strip().upper()
     if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
+    if data.get("market"):
+        market = str(data.get("market") or "").strip().upper()
+        if market in ("SH", "SZ"):
+            QMT_MARKET = market
+            if not os.environ.get("CFQUANT_MARKET"):
+                os.environ["CFQUANT_MARKET"] = market
+                os.environ["CFQUANT_MARKET_SOURCE"] = "cfquant_entry"
     if data.get("pipe_name") and _env_allows_runtime_override("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub"):
         PIPE_NAME = data.get("pipe_name")
     channels = data.get("channels") or {}
@@ -4315,6 +4329,179 @@ for _channel_key in ("normal", "trade", "callback"):
     _channel_value = RUNTIME_CHANNELS.get(_channel_key) or RUNTIME_CONFIG.get("%s_channel" % _channel_key)
     if _channel_value:
         BRIDGE_CHANNELS[_channel_key] = str(_channel_value).strip()
+
+
+
+def _lite_marker_text(value):
+    if value is None:
+        return ""
+    try:
+        return str(value).strip()
+    except Exception:
+        return ""
+
+
+def _lite_marker_path(value):
+    value = _lite_marker_text(value)
+    if not value:
+        return ""
+    try:
+        return os.path.abspath(os.path.expandvars(os.path.expanduser(value)))
+    except Exception:
+        return value
+
+
+def _lite_marker_safe_name(value, default="runtime"):
+    value = _lite_marker_text(value) or default
+    chars = []
+    for ch in value:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            chars.append(ch)
+        else:
+            chars.append("_")
+    name = "".join(chars).strip("._")
+    return name or default
+
+
+def _lite_marker_add_dir(paths, path):
+    path = _lite_marker_path(path)
+    if not path:
+        return
+    try:
+        key = os.path.normcase(os.path.abspath(path))
+    except Exception:
+        key = path.lower()
+    for item in paths:
+        try:
+            item_key = os.path.normcase(os.path.abspath(item))
+        except Exception:
+            item_key = item.lower()
+        if item_key == key:
+            return
+    paths.append(path)
+
+
+def _lite_runtime_marker_dirs():
+    paths = []
+    config = RUNTIME_CONFIG if isinstance(RUNTIME_CONFIG, dict) else {}
+    for key in ("qmt_runtime_marker_dir", "runtime_marker_dir"):
+        _lite_marker_add_dir(paths, config.get(key))
+    for key in ("runtime_status_dir", "web_runtime_status_dir"):
+        base = _lite_marker_path(config.get(key))
+        if base:
+            _lite_marker_add_dir(paths, os.path.join(base, "qmt_runtime"))
+    for key in ("runtime_dir", "web_runtime_dir"):
+        base = _lite_marker_path(config.get(key))
+        if base:
+            _lite_marker_add_dir(paths, os.path.join(base, "status", "qmt_runtime"))
+    for name in ("CFQUANT_QMT_RUNTIME_MARKER_DIR", "CFQUANT_RUNTIME_MARKER_DIR"):
+        _lite_marker_add_dir(paths, os.environ.get(name))
+    for name in ("CFQUANT_RUNTIME_STATUS_DIR", "CFQUANT_WEB_RUNTIME_STATUS_DIR"):
+        base = _lite_marker_path(os.environ.get(name))
+        if base:
+            _lite_marker_add_dir(paths, os.path.join(base, "qmt_runtime"))
+    for name in ("CFQUANT_RUNTIME_DIR", "CFQUANT_WEB_RUNTIME_DIR"):
+        base = _lite_marker_path(os.environ.get(name))
+        if base:
+            _lite_marker_add_dir(paths, os.path.join(base, "status", "qmt_runtime"))
+    base_dir = _entry_base_dir()
+    if base_dir:
+        parent_dir = os.path.dirname(base_dir)
+        _lite_marker_add_dir(paths, os.path.join(base_dir, "runtime", "status", "qmt_runtime"))
+        if parent_dir and parent_dir != base_dir:
+            _lite_marker_add_dir(paths, os.path.join(parent_dir, "runtime", "status", "qmt_runtime"))
+            if os.path.basename(base_dir).lower() == "python":
+                _lite_marker_add_dir(paths, os.path.join(parent_dir, "bin.x64", "runtime", "status", "qmt_runtime"))
+    return paths
+
+
+def _write_lite_runtime_marker(reason="startup"):
+    try:
+        config = RUNTIME_CONFIG if isinstance(RUNTIME_CONFIG, dict) else {}
+        dirs = _lite_runtime_marker_dirs()
+        if not dirs:
+            return {"ok": False, "files": [], "errors": ["no marker dir"]}
+        now = time.time()
+        started_at = _runtime_marker_started_at or now
+        entry_file = _entry_file_path() or "<string>"
+        entry_script = os.path.basename(entry_file) if entry_file and not entry_file.startswith("<") else "CFQUANT_LITE.py"
+        account_type = _lite_marker_text(config.get("account_type") or os.environ.get("CFQUANT_ACCOUNT_TYPE") or DEFAULT_ACCOUNT_TYPE or "STOCK").upper()
+        report = {
+            "schema": "cfquant.qmt.runtime",
+            "report_schema": "cfquant.qmt.runtime_marker.v1",
+            "version": CORE_VERSION,
+            "core_version": CORE_VERSION,
+            "entry_version": LITE_ENTRY_VERSION,
+            "runtime_entry_version": LITE_ENTRY_VERSION,
+            "qmt_runtime_entry_version": LITE_ENTRY_VERSION,
+            "entry_script": entry_script,
+            "entry_file": entry_file,
+            "bridge": "CFQUANT_LITE",
+            "bridge_id": BRIDGE_ID,
+            "account_id": _lite_marker_text(DEFAULT_ACCOUNT_ID or config.get("account_id")),
+            "account_type": account_type,
+            "account_key": _lite_marker_text(config.get("account_key")),
+            "mode": _lite_marker_text(config.get("mode") or "lite"),
+            "transport": "lite",
+            "runtime_mode": "lite_extreme_pipe",
+            "channel_key": "normal",
+            "request_channel": BRIDGE_CHANNELS.get("normal"),
+            "callback_event_channel": BRIDGE_CHANNELS.get("callback"),
+            "channels": dict(BRIDGE_CHANNELS),
+            "pipe_name": PIPE_NAME,
+            "market": _lite_marker_text(QMT_MARKET or config.get("market")),
+            "market_role": _lite_marker_text(config.get("market_role")),
+            "market_route_parent_bridge_id": _lite_marker_text(config.get("market_route_parent_bridge_id")),
+            "config_path": RUNTIME_CONFIG_PATH,
+            "module_file": entry_file,
+            "python": sys.executable,
+            "pid": os.getpid(),
+            "cwd": os.getcwd(),
+            "started_at": started_at,
+            "started_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_at)),
+            "reported_at": now,
+            "reported_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "reason": reason,
+            "source": "qmt_startup_marker",
+        }
+        name = "cfquant_qmt_runtime_%s_normal_%s_%s.json" % (
+            _lite_marker_safe_name(BRIDGE_ID, "default"),
+            _lite_marker_safe_name(os.path.splitext(entry_script)[0], "CFQUANT_LITE"),
+            _lite_marker_safe_name(os.getpid(), "pid"),
+        )
+        files = []
+        errors = []
+        for directory in dirs:
+            try:
+                os.makedirs(directory, exist_ok=True)
+                path = os.path.join(directory, name)
+                temp_path = "%s.%s.tmp" % (path, os.getpid())
+                data = dict(report)
+                data["marker_dir"] = directory
+                data["marker_file"] = path
+                data["marker_written_at"] = time.time()
+                data["marker_written_at_text"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(data["marker_written_at"]))
+                with io.open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+                try:
+                    os.replace(temp_path, path)
+                except AttributeError:
+                    if os.path.exists(path):
+                        os.remove(path)
+                    os.rename(temp_path, path)
+                files.append(path)
+            except Exception as e:
+                errors.append("%s: %s" % (directory, e))
+        if files and reason in ("module_loaded", "context_ready"):
+            _print_log("cfquant lite runtime marker written version=%s reason=%s file=%s" % (CORE_VERSION, reason, files[0]))
+        if errors and not files:
+            _print_log("cfquant lite runtime marker write failed reason=%s error=%s" % (reason, "; ".join(errors)))
+        return {"ok": bool(files), "files": files, "primary_file": files[0] if files else "", "errors": errors, "report": report}
+    except Exception as e:
+        _print_log("cfquant lite runtime marker write failed reason=%s error=%s" % (reason, e))
+        return {"ok": False, "files": [], "errors": [str(e)]}
+
+_write_lite_runtime_marker("module_loaded")
 
 _normal_bridge = start_pipe_normal_bridge(
     None,
@@ -4375,8 +4562,9 @@ def _publish_lite_runtime_report(reason="startup", force=False):
     if not force and now - _runtime_report_last_attempt_at < 1.0:
         return False
     _runtime_report_last_attempt_at = now
+    marker = _write_lite_runtime_marker(reason)
     if not _normal_bridge:
-        return False
+        return bool(marker.get("ok"))
     try:
         tx = getattr(_normal_bridge, "tx", None)
         if tx is None:

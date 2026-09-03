@@ -19,18 +19,13 @@ import sys
 from packaging import version
 
 #运行需要的库
-need_packge = {'psutil':{'pip_name':'psutil','version':'1.0.0'},
-               'pandas':{'pip_name':'pandas','version':'0.0.1'},
-               'orjson':{'pip_name':'orjson','version':'0.0.1'},
-               'zmq':{'pip_name':'pyzmq','version':'0.0.1'},
-               'websockets':{'pip_name':'websockets','version':'0.0.1'},
-               'lz4':{'pip_name':'lz4','version':'0.0.1'},
-               'cryptography':{'pip_name':'cryptography','version':'0.0.1'},
-               'tabulate':{'pip_name':'tabulate','version':'0.0.1'},
-               'hashlib':{'pip_name':'hashlib','version':'0.0.1'},
-               'pandas_market_calendars':{'pip_name':'pandas_market_calendars','version':'latest'},
-               'pytz':{'pip_name':'pytz','version':'0.0.0'}
-               }
+need_packge = {
+    'psutil': {'pip_name': 'psutil', 'version': '1.0.0'},
+    'pandas': {'pip_name': 'pandas', 'version': '0.0.1'},
+    'tabulate': {'pip_name': 'tabulate', 'version': '0.0.1'},
+    'pandas_market_calendars': {'pip_name': 'pandas-market-calendars', 'version': '0.0.1'},
+    'pytz': {'pip_name': 'pytz', 'version': '0.0.0'},
+}
 
 
 def _hidden_subprocess_kwargs():
@@ -86,7 +81,7 @@ def ensure_modules_with_version(modules: dict):
                     print(f"[AutoInstall] {import_name} 已安装，版本为 {installed_version}，满足要求")
         except ImportError:
             # 安装或升级
-            install_target = pip_name if required_version == "latest" else "lastest"
+            install_target = pip_name if required_version == "latest" else "%s>=%s" % (pip_name, required_version)
             print(f"[AutoInstall] 正在安装/升级 {pip_name} → {required_version}...")
             try:
                 subprocess.check_call([
@@ -188,6 +183,12 @@ def _lttx_file_path(file_name):
 
 def _lttx_dataframe_path(var):
     return os.path.join(_ensure_lttx_dir(_lttx_dataframe_data_dir()), "%s.csv" % var)
+
+def _lttx_dict_var_path():
+    configured = os.environ.get("CFQUANT_LTTX_DICT_VAR_FILE")
+    if configured:
+        return os.path.abspath(configured)
+    return os.path.join(_ensure_lttx_dir(_lttx_runtime_dir()), "data0.txt")
 
 def _lttx_log_dir():
     configured = os.environ.get("CFQUANT_LTTX_LOG_DIR")
@@ -819,8 +820,7 @@ def main_test():
 
 def load_dict_var():
     try:
-        # 假设 data0.txt 和 LTtx_server.py 在同一目录
-        config_path = os.path.join(os.path.dirname(__file__), 'data0.txt')
+        config_path = _lttx_dict_var_path()
         
         # 尝试打开并读取 JSON 文件
         with open(config_path, 'r', encoding='utf-8') as f:
@@ -1043,8 +1043,7 @@ def make_dir():
 
 def main_save_dict_var():
     global dict_var_on, dict_var
-    # 获取当前脚本所在目录，并构建文件路径
-    file_path = os.path.join(os.path.dirname(__file__), 'data0.txt')
+    file_path = _lttx_dict_var_path()
 
     while True:
         if dict_var_on:

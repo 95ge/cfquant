@@ -9,6 +9,7 @@ from .protocol import loads_message, pack_event, pack_response
 from .version import __version__ as CORE_VERSION
 from . import account_routing
 from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, set_log_language, translate_log
+from .runtime_report import build_qmt_runtime_report, write_qmt_runtime_marker
 from .xttype import filter_cancelable_orders
 
 
@@ -312,43 +313,73 @@ class TxTradeBridge(object):
         return status
 
     def _runtime_info(self):
-        now = time.time()
+        globals_dict = self.globals_dict or {}
+        config = globals_dict.get("RUNTIME_CONFIG") if isinstance(globals_dict.get("RUNTIME_CONFIG"), dict) else {}
+        channels = globals_dict.get("BRIDGE_CHANNELS") if isinstance(globals_dict.get("BRIDGE_CHANNELS"), dict) else {}
+        if not channels and isinstance(config.get("channels"), dict):
+            channels = config.get("channels")
+        channel_key = "normal" if "normal" in str(self.request_channel or "").lower() else "trade"
+        transport = "pipe" if getattr(self, "pipe_name", "") else "lttx"
         entry_file = ""
         try:
-            entry_file = str((self.globals_dict or {}).get("__file__") or "")
+            entry_file = str(globals_dict.get("__file__") or "")
         except Exception:
             entry_file = ""
-        return {
-            "schema": "cfquant.qmt.runtime",
-            "version": CORE_VERSION,
-            "core_version": CORE_VERSION,
-            "bridge": type(self).__name__,
-            "bridge_id": self.bridge_id,
-            "account_id": self.account_id,
-            "request_channel": self.request_channel,
-            "pid": os.getpid(),
-            "python": sys.executable,
-            "core_dir": os.path.dirname(os.path.abspath(__file__)),
-            "version_file": os.path.join(os.path.dirname(os.path.abspath(__file__)), "version.py"),
-            "entry_file": entry_file,
-            "started_at": self.started_at,
-            "started_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.started_at)) if self.started_at else "",
-            "reported_at": now,
-            "reported_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
-        }
+        return build_qmt_runtime_report(
+            reason="status",
+            version=CORE_VERSION,
+            core_version=CORE_VERSION,
+            bridge=type(self).__name__,
+            bridge_id=self.bridge_id,
+            account_id=self.account_id,
+            account_type=self.account_type or config.get("account_type") or globals_dict.get("DEFAULT_ACCOUNT_TYPE"),
+            account_key=config.get("account_key"),
+            mode=config.get("mode") or transport,
+            transport=transport,
+            runtime_mode=type(self).__name__,
+            channel_key=channel_key,
+            request_channel=self.request_channel,
+            channels=channels,
+            pipe_name=getattr(self, "pipe_name", ""),
+            market=config.get("market") or globals_dict.get("QMT_MARKET"),
+            market_role=config.get("market_role"),
+            market_route_parent_bridge_id=config.get("market_route_parent_bridge_id"),
+            config=config,
+            globals_dict=globals_dict,
+            entry_file=entry_file,
+            module_file=__file__,
+            started_at=self.started_at,
+        )
 
     def _publish_runtime_report(self, reason):
-        tx = self.tx
-        if tx is None or not hasattr(tx, "put"):
-            return
         try:
             channel_key = "normal" if "normal" in str(self.request_channel or "").lower() else "trade"
+            if not self.started_at:
+                self.started_at = time.time()
             data = self._runtime_info()
             data.update({
                 "reason": reason,
-                "transport": "lttx",
+                "transport": "pipe" if getattr(self, "pipe_name", "") else "lttx",
                 "channel_key": channel_key,
             })
+            try:
+                config = self.globals_dict.get("RUNTIME_CONFIG") if isinstance(self.globals_dict.get("RUNTIME_CONFIG"), dict) else {}
+                entry_file = str((self.globals_dict or {}).get("__file__") or "")
+                entry_base_dir = os.path.dirname(os.path.abspath(entry_file)) if entry_file and not entry_file.startswith("<") else ""
+                marker = write_qmt_runtime_marker(data, config=config, entry_base_dir=entry_base_dir)
+                if marker.get("ok"):
+                    self._log(
+                        "qmt runtime marker written version=%s reason=%s file=%s"
+                        % (data.get("core_version") or "-", reason, marker.get("primary_file") or "")
+                    )
+                elif marker.get("errors"):
+                    self._log("qmt runtime marker write failed reason=%s error=%s" % (reason, "; ".join(marker.get("errors") or [])))
+            except Exception as e:
+                self._log("qmt runtime marker write failed reason=%s error=%s" % (reason, e))
+
+            tx = self.tx
+            if tx is None or not hasattr(tx, "put"):
+                return
             payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             key = "cfquant.qmt.runtime.%s" % self.bridge_id
             tx.put(key, payload)
@@ -490,7 +521,12 @@ class TxTradeBridge(object):
             % (account_id, account_type.lower(), detail_type.lower())
         )
         try:
-            rows = func(account_id, account_type.lower(), detail_type.lower()) or []
+            rows = self._call_trade_detail_data(
+                func,
+                account_id,
+                account_type.lower(),
+                detail_type.lower(),
+            ) or []
         except Exception as e:
             self._log(
                 "query_trade_detail call failed account=%s detail_type=%s error=%s"
@@ -518,6 +554,23 @@ class TxTradeBridge(object):
             % (detail_type, len(result))
         )
         return result
+
+    def _call_trade_detail_data(self, func, account_id, account_type, detail_type):
+        # QMT's fourth argument is strategyname, not ContextInfo.
+        variants = [
+            ((account_id, account_type, detail_type), {}),
+            ((account_id, account_type, detail_type, ""), {}),
+        ]
+        last_error = None
+        for args, kwargs in variants:
+            try:
+                return func(*args, **kwargs)
+            except TypeError as e:
+                last_error = e
+                continue
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no available trade detail call variant")
 
     def _order_stock(self, params, msg):
         passorder = self._get_callable("passorder")

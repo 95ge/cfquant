@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260902_05">
+  <link rel="stylesheet" href="/styles.css?v=web_20260903_04">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -216,15 +216,26 @@
         </div>
         <div id="versionWidget" class="version-widget" tabindex="0" aria-label="版本信息">
           <button id="versionBadge" class="version-badge" type="button" aria-describedby="versionPopover" aria-expanded="false">
-            <span id="versionBadgeDot" class="version-dot"></span>
-            <span class="version-badge-copy">
-              <strong id="versionBadgeLabel">QMT --</strong>
-              <small id="versionBadgeMeta">版本状态</small>
+            <span class="version-badge-head">
+              <span class="version-badge-state">
+                <span id="versionBadgeDot" class="version-dot"></span>
+                <span id="versionBadgeState">等待 QMT 上报</span>
+              </span>
+              <span class="version-badge-chevron" aria-hidden="true"></span>
             </span>
+            <span class="version-badge-value">
+              <span>QMT 核心版本</span>
+              <strong id="versionBadgeLabel">--</strong>
+            </span>
+            <span id="versionBadgeEntry" class="version-badge-entry">入口脚本待上报</span>
+            <small id="versionBadgeMeta">运行脚本后会自动同步版本信息</small>
           </button>
           <div id="versionPopover" class="version-popover" role="tooltip">
             <div class="version-popover-head">
-              <strong>版本信息</strong>
+              <div>
+                <span>运行状态</span>
+                <strong>版本与部署</strong>
+              </div>
               <span id="versionCheckState">未检查远端</span>
             </div>
             <div id="versionPopoverBody" class="version-popover-body">正在加载版本信息...</div>
@@ -320,7 +331,7 @@
             </div>
           </div>
 
-          <div class="panel span-8 view-panel view-overview view-trade asset-panel">
+          <div class="panel span-4 view-panel view-overview view-trade asset-panel">
             <div class="panel-head">
               <h2>资产</h2>
               <span id="assetLatency" class="metric-note"></span>
@@ -333,7 +344,7 @@
             </div>
           </div>
 
-          <div class="panel span-4 view-panel view-overview view-status">
+          <div class="panel span-4 view-panel view-overview view-status home-status-panel">
             <div class="panel-head">
               <h2>操作</h2>
               <span id="lastRefresh" class="metric-note"></span>
@@ -411,7 +422,7 @@
             </div>
           </div>
 
-          <div class="panel span-4 view-panel view-overview view-orders orders-panel">
+          <div class="panel span-12 view-panel view-overview view-orders orders-panel">
             <div class="panel-head">
               <h2>实时委托</h2>
               <div class="head-actions">
@@ -432,6 +443,7 @@
                     <th class="num"><button class="sort-header" type="button" data-order-sort="volume">数量<span class="sort-mark" aria-hidden="true"></span></button></th>
                     <th class="num"><button class="sort-header" type="button" data-order-sort="traded">成交<span class="sort-mark" aria-hidden="true"></span></button></th>
                     <th><button class="sort-header" type="button" data-order-sort="status">状态<span class="sort-mark" aria-hidden="true"></span></button></th>
+                    <th>最后回调</th>
                     <th><button class="sort-header" type="button" data-order-sort="id">编号<span class="sort-mark" aria-hidden="true"></span></button></th>
                   </tr>
                 </thead>
@@ -530,6 +542,7 @@
                       <th class="num"><button class="sort-header" type="button" data-order-sort="volume">数量<span class="sort-mark" aria-hidden="true"></span></button></th>
                       <th class="num"><button class="sort-header" type="button" data-order-sort="traded">成交<span class="sort-mark" aria-hidden="true"></span></button></th>
                       <th><button class="sort-header" type="button" data-order-sort="status">状态<span class="sort-mark" aria-hidden="true"></span></button></th>
+                      <th>最后回调</th>
                       <th><button class="sort-header" type="button" data-order-sort="id">编号<span class="sort-mark" aria-hidden="true"></span></button></th>
                     </tr>
                   </thead>
@@ -647,20 +660,35 @@
 
           <div class="panel span-12 view-panel view-callbacks">
             <div class="panel-head">
-              <h2>委托回调</h2>
-              <span id="callbackCount" class="metric-note"></span>
+              <h2>交易回调</h2>
+              <div class="head-actions">
+                <span id="callbackCount" class="metric-note"></span>
+                <button id="callbackRefreshBtn" type="button">刷新</button>
+                <button id="callbackReconnectBtn" type="button">重连</button>
+                <button id="callbackClearBtn" type="button">清空</button>
+              </div>
             </div>
-            <div class="table-wrap">
-              <table>
+            <div class="callback-status-grid">
+              <div><span>连接状态</span><strong id="callbackSocketStatus">未连接</strong></div>
+              <div><span>订阅过滤</span><strong id="callbackFilterStatus">--</strong></div>
+              <div><span>最后事件</span><strong id="callbackLastEventStatus">尚未收到真实回调</strong></div>
+              <div><span>服务端序号</span><strong id="callbackSeqStatus">seq 0</strong></div>
+            </div>
+            <div class="table-wrap callback-table-wrap">
+              <table class="callback-table">
                 <thead>
                   <tr>
-                    <th>时间</th>
-                    <th>类型</th>
+                    <th>接收时间</th>
+                    <th>事件</th>
+                    <th>账号</th>
                     <th>代码</th>
                     <th>委托编号</th>
+                    <th class="num">价格</th>
                     <th class="num">数量</th>
                     <th class="num">成交</th>
-                    <th>状态</th>
+                    <th>状态 / 摘要</th>
+                    <th>来源</th>
+                    <th>完整信息</th>
                   </tr>
                 </thead>
                 <tbody id="callbacksBody"></tbody>
@@ -2987,6 +3015,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260902_05"></script>
+  <script src="/app.js?v=web_20260903_07"></script>
 </body>
 </html>

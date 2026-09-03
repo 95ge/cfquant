@@ -1,0 +1,53 @@
+include README.md
+include requirements.txt
+include cfquant_web_server.py
+include cfquant_pipe_hub.py
+
+recursive-include cfquant *.py
+recursive-include LTtx *.py
+include LTtx/tx/Config.txt
+
+recursive-include web_dashboard *.html *.css *.js *.svg *.png
+recursive-include qmt_scripts *.py *.md
+
+recursive-exclude cfquant/tests *
+recursive-exclude LTtx/tx/__pycache__ *
+recursive-exclude LTtx/tx/log_data *
+recursive-exclude LTtx/tx/tx_log *
+recursive-exclude runtime *
+recursive-exclude log *
+recursive-exclude docs *
+recursive-exclude scripts *
+recursive-exclude log_data *
+recursive-exclude tx_log *
+recursive-exclude reports *
+recursive-exclude dataframe_data *
+recursive-exclude file_data *
+recursive-exclude official_site *
+recursive-exclude offcial_site *
+recursive-exclude remotion_intro *
+recursive-exclude pip_library_dev *
+recursive-exclude .cfquant_project_updates *
+recursive-exclude .cfquant_updates *
+recursive-exclude .updates *
+recursive-exclude .pytest_cache *
+recursive-exclude .playwright-cli *
+recursive-exclude .local_archive *
+recursive-exclude .vscode *
+
+exclude AGENTS.md
+exclude .gitignore
+exclude *.bat
+exclude *.log
+exclude *.db
+exclude *.sqlite
+exclude *.sqlite3
+exclude *.mp4
+exclude *.mov
+exclude *.avi
+exclude *.mkv
+exclude *.webm
+exclude LTtx/tx/data0.txt
+global-exclude __pycache__/*
+global-exclude *.py[cod]
+global-exclude *.pyo
