@@ -1,3 +1,5 @@
+import pytest
+
 from cfquant import xtconstant
 from cfquant.qmt_bridge import CfquantQmtBridge
 from cfquant.tx_trade_bridge import TxTradeBridge
@@ -118,6 +120,95 @@ def test_tx_trade_bridge_filters_cancelable_order_query():
     assert [row["m_nOrderID"] for row in result] == ["can-cancel"]
 
 
+def test_tx_trade_bridge_query_prefers_three_arg_signature():
+    context = object()
+    calls = []
+
+    def get_trade_detail_data(*args):
+        calls.append(args)
+        return [{"m_dAvailable": 1.0}]
+
+    bridge = TxTradeBridge(
+        context,
+        show=False,
+        globals_dict={"get_trade_detail_data": get_trade_detail_data},
+    )
+
+    result = bridge._query_trade_detail({
+        "account": {"account_id": "A123", "account_type": "STOCK"},
+    }, "account")
+
+    assert calls == [("A123", "stock", "account")]
+    assert result[0]["m_dAvailable"] == 1.0
+
+
+def test_tx_trade_bridge_query_falls_back_to_three_args():
+    rows = [{"m_dAvailable": 2.0}]
+
+    def get_trade_detail_data(account_id, account_type, detail_type):
+        assert (account_id, account_type, detail_type) == ("A123", "stock", "account")
+        return rows
+
+    bridge = TxTradeBridge(
+        object(),
+        show=False,
+        globals_dict={"get_trade_detail_data": get_trade_detail_data},
+    )
+
+    result = bridge._query_trade_detail({
+        "account": {"account_id": "A123", "account_type": "STOCK"},
+    }, "account")
+
+    assert result[0]["m_dAvailable"] == 2.0
+
+
+def test_tx_trade_bridge_query_uses_empty_strategy_name_when_fourth_arg_is_required():
+    calls = []
+
+    def get_trade_detail_data(*args):
+        calls.append(args)
+        if len(args) == 3:
+            raise TypeError("strategyname is required")
+        return [{"m_dAvailable": 2.5}]
+
+    bridge = TxTradeBridge(
+        object(),
+        show=False,
+        globals_dict={"get_trade_detail_data": get_trade_detail_data},
+    )
+
+    result = bridge._query_trade_detail({
+        "account": {"account_id": "A123", "account_type": "STOCK"},
+    }, "account")
+
+    assert calls == [
+        ("A123", "stock", "account"),
+        ("A123", "stock", "account", ""),
+    ]
+    assert result[0]["m_dAvailable"] == 2.5
+
+
+def test_tx_trade_bridge_query_does_not_retry_request_id_error_with_context():
+    calls = []
+
+    def get_trade_detail_data(*args):
+        calls.append(args)
+        raise AttributeError("'NoneType' object has no attribute 'request_id'")
+
+    bridge = TxTradeBridge(
+        object(),
+        show=False,
+        globals_dict={"get_trade_detail_data": get_trade_detail_data},
+    )
+
+    with pytest.raises(AttributeError, match="request_id"):
+        bridge._query_trade_detail({
+            "account": {"account_id": "A123", "account_type": "STOCK"},
+        }, "account")
+
+    assert calls == [("A123", "stock", "account")]
+
+
 def test_qmt_bridge_filters_cancelable_order_query():
     rows = [
         {"m_nOrderID": "can-cancel", "m_nOrderStatus": xtconstant.ORDER_PART_SUCC},
@@ -135,3 +226,73 @@ def test_qmt_bridge_filters_cancelable_order_query():
     }, "ORDER")
 
     assert [row["m_nOrderID"] for row in result] == ["can-cancel"]
+
+
+def test_qmt_bridge_query_prefers_three_arg_signature():
+    context = object()
+    calls = []
+
+    def get_trade_detail_data(*args):
+        calls.append(args)
+        return [{"m_dAvailable": 3.0}]
+
+    bridge = CfquantQmtBridge(
+        context,
+        show=False,
+        globals_dict={"get_trade_detail_data": get_trade_detail_data},
+    )
+
+    result = bridge._query_trade_detail({
+        "account": {"account_id": "A123", "account_type": "STOCK"},
+    }, "ACCOUNT")
+
+    assert calls == [("A123", "stock", "account")]
+    assert result[0]["m_dAvailable"] == 3.0
+
+
+def test_qmt_bridge_query_uses_empty_strategy_name_when_fourth_arg_is_required():
+    calls = []
+
+    def get_trade_detail_data(*args):
+        calls.append(args)
+        if len(args) == 3:
+            raise TypeError("strategyname is required")
+        return [{"m_dAvailable": 4.0}]
+
+    context = object()
+    bridge = CfquantQmtBridge(
+        context,
+        show=False,
+        globals_dict={"get_trade_detail_data": get_trade_detail_data},
+    )
+
+    result = bridge._query_trade_detail({
+        "account": {"account_id": "A123", "account_type": "STOCK"},
+    }, "ACCOUNT")
+
+    assert calls == [
+        ("A123", "stock", "account"),
+        ("A123", "stock", "account", ""),
+    ]
+    assert result[0]["m_dAvailable"] == 4.0
+
+
+def test_qmt_bridge_query_does_not_retry_request_id_error_with_context():
+    calls = []
+
+    def get_trade_detail_data(*args):
+        calls.append(args)
+        raise AttributeError("'NoneType' object has no attribute 'request_id'")
+
+    bridge = CfquantQmtBridge(
+        object(),
+        show=False,
+        globals_dict={"get_trade_detail_data": get_trade_detail_data},
+    )
+
+    with pytest.raises(AttributeError, match="request_id"):
+        bridge._query_trade_detail({
+            "account": {"account_id": "A123", "account_type": "STOCK"},
+        }, "ACCOUNT")
+
+    assert calls == [("A123", "stock", "account")]

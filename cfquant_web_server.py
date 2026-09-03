@@ -29,9 +29,24 @@ import urllib.request
 import zipfile
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+try:
+    from importlib import resources as importlib_resources
+    if not hasattr(importlib_resources, "files"):
+        raise ImportError
+except Exception:
+    try:
+        import importlib_resources
+    except Exception:
+        importlib_resources = None
 
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-_LTTX_TX_DIR = os.path.join(_PROJECT_DIR, "LTtx", "tx")
+_PACKAGE_DIR = os.path.dirname(os.path.abspath(__import__("cfquant").__file__))
+_SOURCE_ROOT = os.path.abspath(os.path.join(_PACKAGE_DIR, os.pardir))
+_RUNNING_FROM_SOURCE = (
+    os.path.isfile(os.path.join(_SOURCE_ROOT, "pyproject.toml"))
+    and os.path.isfile(os.path.join(_SOURCE_ROOT, "web_dashboard", "index.html"))
+)
+_LTTX_TX_DIR = os.path.join(_SOURCE_ROOT, "LTtx", "tx")
 
 
 def _prepend_import_path(path):
@@ -55,21 +70,42 @@ from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response
+from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
 from cfquant.version import __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260902_05"
-BASE_DIR = _PROJECT_DIR
+WEB_VERSION = "web_20260903_07"
+BASE_DIR = os.path.abspath(os.environ.get("CFQUANT_BASE_DIR") or _SOURCE_ROOT)
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
-STATIC_DIR = os.path.join(BASE_DIR, "web_dashboard")
-RUNTIME_DIR = os.path.abspath(os.environ.get("CFQUANT_RUNTIME_DIR") or os.path.join(BASE_DIR, "runtime"))
+STATIC_DIR = os.environ.get("CFQUANT_WEB_STATIC_DIR") or os.path.join(BASE_DIR, "web_dashboard")
+PACKAGE_STATIC_NAME = "web_dashboard"
+
+
+def default_state_dir():
+    configured = os.environ.get("CFQUANT_HOME") or os.environ.get("CFQUANT_STATE_DIR")
+    if configured:
+        return os.path.abspath(os.path.expanduser(os.path.expandvars(configured)))
+    if _RUNNING_FROM_SOURCE:
+        return BASE_DIR
+    if os.name == "nt":
+        root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.abspath(os.path.join(root, "cfquant"))
+    root = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.abspath(os.path.join(root, "cfquant"))
+
+
+STATE_DIR = default_state_dir()
+RUNTIME_DIR = os.path.abspath(os.environ.get("CFQUANT_RUNTIME_DIR") or os.path.join(STATE_DIR, "runtime"))
 RUNTIME_CONFIG_DIR = os.path.join(RUNTIME_DIR, "config")
 RUNTIME_DB_DIR = os.path.join(RUNTIME_DIR, "db")
 RUNTIME_LTTX_DIR = os.path.join(RUNTIME_DIR, "lttx")
 RUNTIME_MEDIA_DIR = os.path.join(RUNTIME_DIR, "media")
 RUNTIME_REPORTS_DIR = os.path.join(RUNTIME_DIR, "reports")
 RUNTIME_STATUS_DIR = os.path.join(RUNTIME_DIR, "status")
+QMT_RUNTIME_MARKER_DIR = os.path.abspath(
+    os.environ.get("CFQUANT_QMT_RUNTIME_MARKER_DIR") or os.path.join(RUNTIME_STATUS_DIR, "qmt_runtime")
+)
 RUNTIME_AVATAR_DIR = os.path.join(RUNTIME_MEDIA_DIR, "avatars")
 try:
     os.makedirs(RUNTIME_CONFIG_DIR, exist_ok=True)
@@ -78,21 +114,43 @@ try:
     os.makedirs(RUNTIME_MEDIA_DIR, exist_ok=True)
     os.makedirs(RUNTIME_REPORTS_DIR, exist_ok=True)
     os.makedirs(RUNTIME_STATUS_DIR, exist_ok=True)
+    os.makedirs(QMT_RUNTIME_MARKER_DIR, exist_ok=True)
     os.makedirs(RUNTIME_AVATAR_DIR, exist_ok=True)
 except Exception:
-    RUNTIME_DIR = BASE_DIR
-    RUNTIME_CONFIG_DIR = BASE_DIR
-    RUNTIME_DB_DIR = BASE_DIR
-    RUNTIME_LTTX_DIR = BASE_DIR
-    RUNTIME_MEDIA_DIR = BASE_DIR
-    RUNTIME_REPORTS_DIR = BASE_DIR
-    RUNTIME_STATUS_DIR = BASE_DIR
-    RUNTIME_AVATAR_DIR = BASE_DIR
-LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(BASE_DIR, "log"))
+    RUNTIME_DIR = os.path.join(tempfile.gettempdir(), "cfquant", "runtime")
+    RUNTIME_CONFIG_DIR = os.path.join(RUNTIME_DIR, "config")
+    RUNTIME_DB_DIR = os.path.join(RUNTIME_DIR, "db")
+    RUNTIME_LTTX_DIR = os.path.join(RUNTIME_DIR, "lttx")
+    RUNTIME_MEDIA_DIR = os.path.join(RUNTIME_DIR, "media")
+    RUNTIME_REPORTS_DIR = os.path.join(RUNTIME_DIR, "reports")
+    RUNTIME_STATUS_DIR = os.path.join(RUNTIME_DIR, "status")
+    QMT_RUNTIME_MARKER_DIR = os.path.abspath(
+        os.environ.get("CFQUANT_QMT_RUNTIME_MARKER_DIR") or os.path.join(RUNTIME_STATUS_DIR, "qmt_runtime")
+    )
+    RUNTIME_AVATAR_DIR = os.path.join(RUNTIME_MEDIA_DIR, "avatars")
+    for directory in (
+        RUNTIME_CONFIG_DIR,
+        RUNTIME_DB_DIR,
+        RUNTIME_LTTX_DIR,
+        RUNTIME_MEDIA_DIR,
+        RUNTIME_REPORTS_DIR,
+        RUNTIME_STATUS_DIR,
+        QMT_RUNTIME_MARKER_DIR,
+        RUNTIME_AVATAR_DIR,
+    ):
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except Exception:
+            pass
+LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(STATE_DIR, "log"))
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
 except Exception:
-    LOG_DIR = BASE_DIR
+    LOG_DIR = os.path.join(tempfile.gettempdir(), "cfquant", "log")
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+    except Exception:
+        LOG_DIR = tempfile.gettempdir()
 LOG_FILE = os.path.join(LOG_DIR, "cfquant_web_server.runtime.log")
 LOG_RETENTION_DAYS = int(os.environ.get("CFQUANT_LOG_RETENTION_DAYS", "30"))
 LOG_CLEANUP_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_LOG_CLEANUP_INTERVAL_SECONDS", "21600"))
@@ -180,13 +238,64 @@ def official_release_info(site_url=None):
     return release
 
 
+def _safe_static_rel_path(path):
+    if path in ("", "/"):
+        path = "/index.html"
+    rel_path = posixpath.normpath(urllib.parse.unquote(path or ""))
+    rel_path = rel_path.lstrip("/")
+    if rel_path in ("", "."):
+        rel_path = "index.html"
+    parts = [part for part in rel_path.split("/") if part and part != "."]
+    if not parts or any(part == ".." for part in parts):
+        return ""
+    return "/".join(parts)
+
+
+def _package_static_file(rel_path):
+    if importlib_resources is None:
+        return None
+    try:
+        node = importlib_resources.files(PACKAGE_STATIC_NAME)
+        for part in rel_path.split("/"):
+            node = node.joinpath(part)
+        return node if node.is_file() else None
+    except Exception:
+        return None
+
+
+def static_assets_available():
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return True
+    return _package_static_file("index.html") is not None
+
+
+def read_static_asset(path):
+    rel_path = _safe_static_rel_path(path)
+    if not rel_path:
+        raise PermissionError("forbidden static path")
+    static_root = os.path.abspath(STATIC_DIR)
+    full_path = os.path.abspath(os.path.join(static_root, rel_path.replace("/", os.sep)))
+    try:
+        if os.path.commonpath([static_root, full_path]) == static_root and os.path.isfile(full_path):
+            with open(full_path, "rb") as f:
+                return rel_path, f.read()
+    except ValueError:
+        pass
+    node = _package_static_file(rel_path)
+    if node is not None:
+        return rel_path, node.read_bytes()
+    return rel_path, None
+
+
 LTTX_HOST = os.environ.get("CFQUANT_LTTX_HOST", "127.0.0.1")
 LTTX_PORT = int(os.environ.get("CFQUANT_LTTX_PORT", "2049"))
 LTTX_DIR = os.path.join(BASE_DIR, "LTtx", "tx")
 LTTX_ENTRY = os.environ.get("CFQUANT_LTTX_ENTRY") or os.path.join(LTTX_DIR, "LTtx_server.py")
 LTTX_STDOUT_LOG = os.path.join(LOG_DIR, "lttx_server.stdout.log")
 LTTX_STDERR_LOG = os.path.join(LOG_DIR, "lttx_server.stderr.log")
-PIPE_HUB_ENTRY = os.environ.get("CFQUANT_PIPE_HUB_ENTRY") or os.path.join(BASE_DIR, "cfquant_pipe_hub.py")
+PIPE_HUB_ENTRY = os.environ.get("CFQUANT_PIPE_HUB_ENTRY") or os.path.join(_SOURCE_ROOT, "cfquant_pipe_hub.py")
+PIPE_HUB_MODULE = "cfquant_pipe_hub"
 PIPE_HUB_STDOUT_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stdout.log")
 PIPE_HUB_STDERR_LOG = os.path.join(LOG_DIR, "cfquant_pipe_hub.stderr.log")
 PIPE_HUB_STATUS_FILE = os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or os.path.join(
@@ -227,6 +336,7 @@ CHANNELS = ENV_BRIDGES[DEFAULT_BRIDGE_ID]["channels"]
 CALLBACK_EVENT_CHANNEL = CHANNELS["callback"]
 STATUS_CHECK_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_INTERVAL", "15"))
 STATUS_PROBE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_PROBE_TIMEOUT", "8"))
+PIPE_HUB_STATUS_CACHE_SECONDS = float(os.environ.get("CFQUANT_WEB_PIPE_HUB_STATUS_CACHE_SECONDS", "2"))
 RUNTIME_REPORT_TTL_SECONDS = float(os.environ.get("CFQUANT_QMT_RUNTIME_REPORT_TTL", "75"))
 QMT_RUNTIME_VERSION_FILE = os.environ.get("CFQUANT_QMT_RUNTIME_VERSION_FILE") or os.path.join(
     RUNTIME_STATUS_DIR,
@@ -234,6 +344,18 @@ QMT_RUNTIME_VERSION_FILE = os.environ.get("CFQUANT_QMT_RUNTIME_VERSION_FILE") or
 )
 ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
+ACCOUNT_CACHE_BACKGROUND_TIMEOUT_SECONDS = max(
+    0.5,
+    min(
+        ACCOUNT_QUERY_TIMEOUT_SECONDS,
+        float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_BACKGROUND_TIMEOUT", "5")),
+    ),
+)
+ACCOUNT_CACHE_PREWARM_SECTIONS = tuple(
+    section.strip().lower()
+    for section in os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_PREWARM_SECTIONS", "asset,positions").split(",")
+    if section.strip()
+)
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
 AVATAR_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_AVATAR_UPLOAD_MAX_BYTES", str(2 * 1024 * 1024)))
 DEFAULT_UPDATE_REPO_URL = os.environ.get("CFQUANT_UPDATE_REPO_URL", "https://github.com/95ge/cfquant.git").strip()
@@ -241,7 +363,10 @@ DEFAULT_OFFICIAL_SITE_URL = os.environ.get("CFQUANT_OFFICIAL_SITE_URL", "https:/
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
 UPDATE_REMOTE_CACHE_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_CACHE_SECONDS", "300"))
 UPDATE_REMOTE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_TIMEOUT_SECONDS", "12"))
-PROJECT_UPDATE_DIR = os.path.join(BASE_DIR, ".cfquant_project_updates")
+PROJECT_UPDATE_DIR = os.path.join(
+    BASE_DIR if _RUNNING_FROM_SOURCE else STATE_DIR,
+    ".cfquant_project_updates",
+)
 PROJECT_UPDATE_BACKUP_KEEP = int(os.environ.get("CFQUANT_PROJECT_UPDATE_BACKUP_KEEP", "2"))
 QMT_ENTRY_SCRIPT_NAMES = (
     "CFQUANT_CTYPE_ALL_LOWLAT.py",
@@ -2194,6 +2319,26 @@ def _advanced_mode_readiness(bridge_id=None):
     }
 
 
+def cached_advanced_mode_readiness(bridge_id=None):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    snapshot = STATUS_MONITOR.latest(bridge_id=bridge_id, mode="lttx")
+    normal = snapshot.get("normal") or {}
+    trade = snapshot.get("trade") or {}
+    missing = []
+    if not normal.get("online"):
+        missing.append("普通通道")
+    if not trade.get("online"):
+        missing.append("交易通道")
+    return {
+        "bridge_id": bridge_id,
+        "bridge_name": bridge_config(bridge_id)["name"],
+        "ready": not missing,
+        "missing": missing,
+        "status": snapshot,
+        "cached": True,
+    }
+
+
 def resolve_bridge_id(account_id=None, bridge_id=None, account_type=None, account_key=None):
     account_id = str(account_id or "").strip()
     account_key = str(account_key or "").strip()
@@ -3132,9 +3277,9 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
     config = WEB_CONFIG.account_config(account_id=account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key) if WEB_CONFIG else {}
     account_key = account_key or (config or {}).get("account_key") or account_key_for(account_id, account_type, bridge_id)
     preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key)
-    ctypes_status = ctypes_bridge_status(bridge_id)
+    ctypes_status = STATUS_MONITOR.latest(bridge_id=bridge_id, mode="ctypes")
     if preferred_mode == "lttx":
-        advanced = _advanced_mode_readiness(bridge_id)
+        advanced = cached_advanced_mode_readiness(bridge_id)
     else:
         advanced = {
             "bridge_id": bridge_id,
@@ -3171,7 +3316,7 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
         if not child_bridge_id:
             continue
         try:
-            child_ctypes_status = ctypes_bridge_status(child_bridge_id)
+            child_ctypes_status = STATUS_MONITOR.latest(bridge_id=child_bridge_id, mode="ctypes")
         except Exception as e:
             market_route_statuses[market] = {
                 "market": market,
@@ -3190,7 +3335,7 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
         child_ctypes_ready = bool((child_ctypes_status.get("trade") or {}).get("online"))
         if preferred_mode == "lttx":
             try:
-                child_advanced = _advanced_mode_readiness(child_bridge_id)
+                child_advanced = cached_advanced_mode_readiness(child_bridge_id)
                 child_advanced_status = child_advanced.get("status") or {}
                 child_advanced_ready = bool((child_advanced_status.get("trade") or {}).get("online"))
             except Exception as e:
@@ -3261,77 +3406,173 @@ def account_route_status(account_id, bridge_id=None, account_type=None, account_
     }
 
 
+def binding_status_snapshot():
+    configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
+    pairs = WEB_CONFIG.account_pairs() if WEB_CONFIG is not None else {}
+    entries = []
+    known_keys = set()
+
+    def append_entry(account_key, account_id, account_type, bridge_id):
+        account_key = str(account_key or "").strip()
+        account_id = str(account_id or "").strip()
+        account_type = normalize_account_type(account_type or "STOCK")
+        bridge_id = str(bridge_id or "").strip()
+        if not account_id:
+            return
+        if not account_key:
+            account_key = account_key_for(account_id, account_type, bridge_id or DEFAULT_BRIDGE_ID)
+        if account_key in known_keys:
+            return
+        known_keys.add(account_key)
+        entries.append({
+            "account_key": account_key,
+            "account_id": account_id,
+            "account_type": account_type,
+            "bridge_id": bridge_id,
+        })
+
+    for raw_key, config in configs.items():
+        config = config if isinstance(config, dict) else {}
+        account_id = str(config.get("account_id") or raw_key or "").strip()
+        account_type = normalize_account_type(config.get("account_type") or "STOCK")
+        bridge_id = str(config.get("bridge_id") or DEFAULT_BRIDGE_ID).strip()
+        append_entry(config.get("account_key") or raw_key, account_id, account_type, bridge_id)
+
+    for raw_key, pair in pairs.items():
+        if isinstance(pair, dict):
+            account_id = str(pair.get("account_id") or raw_key or "").strip()
+            account_type = normalize_account_type(pair.get("account_type") or "STOCK")
+            bridge_id = str(pair.get("bridge_id") or "").strip()
+            account_key = pair.get("account_key") or raw_key
+        else:
+            account_id = str(raw_key or "").strip()
+            account_type = "STOCK"
+            bridge_id = str(pair or "").strip()
+            account_key = account_key_for(account_id, account_type, bridge_id or DEFAULT_BRIDGE_ID)
+        append_entry(account_key, account_id, account_type, bridge_id)
+
+    rows = []
+    for entry in entries:
+        try:
+            status = account_route_status(
+                entry["account_id"],
+                bridge_id=entry["bridge_id"] or None,
+                account_type=entry["account_type"],
+                account_key=entry["account_key"],
+            )
+            rows.append(dict(entry, status=status))
+        except Exception as error:
+            rows.append(dict(entry, error=str(error)))
+    now = time.time()
+    return {
+        "bindings": rows,
+        "cached": True,
+        "checked_at": now,
+        "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+    }
+
+
 class PipeHubManager(object):
     def __init__(self):
         self._lock = threading.RLock()
         self._process = None
         self._status = None
         self._last_error = ""
+        self._status_cache = None
+        self._status_cache_at = 0.0
 
     def _python_exe(self):
         return sys.executable
 
-    def status(self):
-        data = self._read_status_file()
-        if data:
-            self._status = data
-        running = False
-        process_pid = None
-        if self._process is not None and getattr(self._process, "poll", lambda: 1)() is None:
-            process_pid = self._process.pid
-            running = True
-        if not running:
-            try:
-                status_pid = int((self._status or {}).get("pid") or 0)
-            except Exception:
-                status_pid = 0
-            if status_pid:
-                status_details = process_details_by_pid([status_pid])
-                status_command = (status_details.get(status_pid) or {}).get("command_line") or ""
-                if os.path.basename(os.path.abspath(PIPE_HUB_ENTRY)).lower() in status_command.lower():
-                    process_pid = status_pid
-                    running = True
-        if not running:
-            entry_name = os.path.basename(os.path.abspath(PIPE_HUB_ENTRY)).lower()
-            rows = run_powershell_json(
-                "$name='%s'; "
-                "$rows=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
-                "Where-Object { $_.Name -like 'python*.exe' -and $_.CommandLine -and $_.CommandLine.ToLower().Contains($name) } | "
-                "ForEach-Object { [pscustomobject]@{ pid=$_.ProcessId; command_line=$_.CommandLine } }); "
-                "if ($null -eq $rows) { '[]' } else { @($rows) | ConvertTo-Json -Compress }"
-                % entry_name.replace("'", "''"),
-                timeout=5.0,
-            )
-            for row in rows:
+    def _entry_path(self):
+        entry = os.path.abspath(PIPE_HUB_ENTRY)
+        return entry if os.path.isfile(entry) else ""
+
+    def _command(self):
+        entry = self._entry_path()
+        if entry:
+            return [self._python_exe(), entry]
+        return [self._python_exe(), "-m", PIPE_HUB_MODULE]
+
+    def _command_matches(self, command_line):
+        command_line = str(command_line or "").lower()
+        entry = self._entry_path()
+        if entry and os.path.basename(entry).lower() in command_line:
+            return True
+        return PIPE_HUB_MODULE.lower() in command_line
+
+    def status(self, force=False):
+        with self._lock:
+            now_monotonic = time.monotonic()
+            if (
+                not force
+                and self._status_cache is not None
+                and now_monotonic - self._status_cache_at < PIPE_HUB_STATUS_CACHE_SECONDS
+            ):
+                return dict(self._status_cache)
+
+            data = self._read_status_file()
+            if data:
+                self._status = data
+            running = False
+            process_pid = None
+            if self._process is not None and getattr(self._process, "poll", lambda: 1)() is None:
+                process_pid = self._process.pid
+                running = True
+            if not running:
                 try:
-                    candidate_pid = int(row.get("pid") or 0)
+                    status_pid = int((self._status or {}).get("pid") or 0)
                 except Exception:
-                    candidate_pid = 0
-                if candidate_pid:
-                    process_pid = candidate_pid
-                    running = True
-                    break
-        return {
-            "running": running,
-            "pipe_name": (self._status or {}).get("pipe_name") or normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
-            "status_file": PIPE_HUB_STATUS_FILE,
-            "process_pid": process_pid,
-            "last_error": self._last_error,
-            "status": self._status or {},
-            "entry": os.path.abspath(PIPE_HUB_ENTRY),
-            "checked_at": time.time(),
-        }
+                    status_pid = 0
+                if status_pid:
+                    status_details = process_details_by_pid([status_pid])
+                    status_command = (status_details.get(status_pid) or {}).get("command_line") or ""
+                    if self._command_matches(status_command):
+                        process_pid = status_pid
+                        running = True
+            if not running:
+                entry_name = os.path.basename(self._entry_path() or PIPE_HUB_MODULE).lower()
+                module_name = PIPE_HUB_MODULE.lower()
+                rows = run_powershell_json(
+                    "$name='%s'; $module='%s'; "
+                    "$rows=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | "
+                    "Where-Object { $_.Name -like 'python*.exe' -and $_.CommandLine -and ($_.CommandLine.ToLower().Contains($name) -or $_.CommandLine.ToLower().Contains($module)) } | "
+                    "ForEach-Object { [pscustomobject]@{ pid=$_.ProcessId; command_line=$_.CommandLine } }); "
+                    "if ($null -eq $rows) { '[]' } else { @($rows) | ConvertTo-Json -Compress }"
+                    % (entry_name.replace("'", "''"), module_name.replace("'", "''")),
+                    timeout=5.0,
+                )
+                for row in rows:
+                    try:
+                        candidate_pid = int(row.get("pid") or 0)
+                    except Exception:
+                        candidate_pid = 0
+                    if candidate_pid:
+                        process_pid = candidate_pid
+                        running = True
+                        break
+            result = {
+                "running": running,
+                "pipe_name": (self._status or {}).get("pipe_name") or normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
+                "status_file": PIPE_HUB_STATUS_FILE,
+                "process_pid": process_pid,
+                "last_error": self._last_error,
+                "status": self._status or {},
+                "entry": self._entry_path() or PIPE_HUB_MODULE,
+                "checked_at": time.time(),
+            }
+            self._status_cache = result
+            self._status_cache_at = now_monotonic
+            return dict(result)
 
     def start(self):
         with self._lock:
             if self._process is not None and getattr(self._process, "poll", lambda: 1)() is None:
-                return self.status()
-            current = self.status()
+                return self.status(force=True)
+            current = self.status(force=True)
             if current.get("running"):
                 return current
-            entry = os.path.abspath(PIPE_HUB_ENTRY)
-            if not os.path.isfile(entry):
-                raise RuntimeError("pipe hub entry not found: %s" % entry)
+            command = self._command()
             creationflags = 0
             if os.name == "nt":
                 creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -3350,8 +3591,8 @@ class PipeHubManager(object):
             stderr = open(PIPE_HUB_STDERR_LOG, "a", encoding="utf-8", buffering=1)
             try:
                 self._process = subprocess.Popen(
-                    [self._python_exe(), entry],
-                    cwd=BASE_DIR,
+                    command,
+                    cwd=STATE_DIR if os.path.isdir(STATE_DIR) else BASE_DIR,
                     stdin=subprocess.DEVNULL,
                     stdout=stdout,
                     stderr=stderr,
@@ -3365,7 +3606,7 @@ class PipeHubManager(object):
                 except Exception:
                     pass
             time.sleep(0.8)
-            return self.status()
+            return self.status(force=True)
 
     def stop(self):
         with self._lock:
@@ -3400,7 +3641,7 @@ class PipeHubManager(object):
                     self._last_error = (completed.stderr or completed.stdout or "").strip()
             except Exception as e:
                 self._last_error = str(e)
-        return self.status()
+        return self.status(force=True)
 
     def _read_status_file(self):
         if not os.path.isfile(PIPE_HUB_STATUS_FILE):
@@ -3985,6 +4226,16 @@ class RuntimeVersionRegistry(object):
         runtime = runtime if isinstance(runtime, dict) else {}
         status = status if isinstance(status, dict) else {}
         request_channel = self._first_value(runtime, status, keys=("request_channel", "callback_event_channel"))
+        reported_at = self._first_number(
+            runtime,
+            status,
+            keys=("reported_at", "marker_written_at", "marker_mtime", "checked_at"),
+        ) or now
+        reported_at_text = self._first_value(
+            runtime,
+            status,
+            keys=("reported_at_text", "marker_written_at_text", "marker_mtime_text", "checked_at_text"),
+        ) or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(reported_at))
         return {
             "bridge_id": normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID),
             "channel_key": str(channel_key or "").strip(),
@@ -3993,6 +4244,8 @@ class RuntimeVersionRegistry(object):
             "core_version": str(version or "").strip(),
             "source": source,
             "mode": str(mode or "").strip(),
+            "transport": self._first_value(runtime, status, keys=("transport",)),
+            "report_schema": self._first_value(runtime, status, keys=("report_schema", "schema")),
             "runtime_mode": self._first_value(
                 runtime,
                 status,
@@ -4010,15 +4263,25 @@ class RuntimeVersionRegistry(object):
             ),
             "bridge": self._first_value(runtime, status, keys=("bridge",)),
             "account_id": self._first_value(runtime, status, keys=("account_id",)),
+            "account_type": self._first_value(runtime, status, keys=("account_type",)),
+            "account_key": self._first_value(runtime, status, keys=("account_key",)),
             "pid": self._first_value(runtime, status, keys=("pid",)),
             "python": self._first_value(runtime, status, keys=("python",)),
             "entry_file": self._first_value(runtime, status, keys=("entry_file", "qmt_runtime_entry_file")),
             "core_dir": self._first_value(runtime, status, keys=("core_dir",)),
             "version_file": self._first_value(runtime, status, keys=("version_file",)),
+            "pipe_name": self._first_value(runtime, status, keys=("pipe_name",)),
+            "market": self._first_value(runtime, status, keys=("market",)),
+            "market_role": self._first_value(runtime, status, keys=("market_role",)),
+            "marker_file": self._first_value(runtime, status, keys=("marker_file", "marker_primary_file")),
+            "marker_dir": self._first_value(runtime, status, keys=("marker_dir",)),
+            "marker_written_at": self._first_value(runtime, status, keys=("marker_written_at",)),
+            "marker_written_at_text": self._first_value(runtime, status, keys=("marker_written_at_text",)),
+            "reason": self._first_value(runtime, status, keys=("reason",)),
             "started_at": runtime.get("started_at") or status.get("started_at") or 0,
             "started_at_text": runtime.get("started_at_text") or status.get("started_at_text") or "",
-            "reported_at": now,
-            "reported_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "reported_at": reported_at,
+            "reported_at_text": reported_at_text,
             "reported": True,
             "stale": False,
             "has_report": True,
@@ -4055,12 +4318,27 @@ class RuntimeVersionRegistry(object):
                     return str(value).strip()
         return ""
 
+    def _first_number(self, *items, keys):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for key in keys:
+                value = item.get(key)
+                if value in (None, ""):
+                    continue
+                try:
+                    return float(value)
+                except Exception:
+                    continue
+        return 0.0
+
 
 RUNTIME_VERSIONS = RuntimeVersionRegistry()
 
 
 def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
     bridge_id = normalize_bridge_id(bridge_id)
+    read_qmt_runtime_marker_reports(bridge_id)
     channels = bridge_channels(bridge_id)
     hub = PIPE_HUB.status()
     hub_status = hub.get("status") or {}
@@ -6763,6 +7041,11 @@ def write_qmt_bridge_identity(row):
             "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
             "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
             "channels": channels,
+            "runtime_dir": RUNTIME_DIR,
+            "runtime_status_dir": RUNTIME_STATUS_DIR,
+            "runtime_marker_dir": QMT_RUNTIME_MARKER_DIR,
+            "qmt_runtime_marker_dir": QMT_RUNTIME_MARKER_DIR,
+            "qmt_runtime_version_file": QMT_RUNTIME_VERSION_FILE,
             "qmt_log_language": WEB_CONFIG.qmt_log_language() if WEB_CONFIG is not None else "zh",
             "qmt_log_enabled": WEB_CONFIG.qmt_log_enabled() if WEB_CONFIG is not None else True,
             "updated_at": time.time(),
@@ -6856,6 +7139,11 @@ def write_qmt_market_bridge_identities(row):
                 "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
                 "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
                 "channels": channels,
+                "runtime_dir": RUNTIME_DIR,
+                "runtime_status_dir": RUNTIME_STATUS_DIR,
+                "runtime_marker_dir": QMT_RUNTIME_MARKER_DIR,
+                "qmt_runtime_marker_dir": QMT_RUNTIME_MARKER_DIR,
+                "qmt_runtime_version_file": QMT_RUNTIME_VERSION_FILE,
                 "market": market,
                 "market_role": "trade",
                 "market_route_parent_bridge_id": parent_bridge_id,
@@ -7518,14 +7806,18 @@ class ChannelStatusMonitor(object):
         with self._lock:
             self._snapshots.pop(bridge_id, None)
 
-    def latest(self, bridge_id=DEFAULT_BRIDGE_ID):
+    def latest(self, bridge_id=DEFAULT_BRIDGE_ID, mode=None):
         bridge_id = normalize_bridge_id(bridge_id)
-        if not bridge_has_lttx_account(bridge_id):
-            return ctypes_bridge_status(bridge_id)
+        requested_mode = normalize_transport_mode(
+            mode or ("lttx" if bridge_has_lttx_account(bridge_id) else "ctypes")
+        )
+        cache_key = "ctypes" if is_ctypes_transport_mode(requested_mode) else "lttx"
         channels = bridge_channels(bridge_id)
         with self._lock:
-            if bridge_id in self._snapshots:
-                return self._snapshots[bridge_id]
+            snapshots = self._snapshots.get(bridge_id) or {}
+            cached = snapshots.get(cache_key)
+            if cached:
+                return dict(cached)
         now = time.time()
         return {
             "bridge_id": bridge_id,
@@ -7547,6 +7839,7 @@ class ChannelStatusMonitor(object):
                 "interval_seconds": self.interval,
                 "cached": True,
                 "ready": False,
+                "transport_mode": cache_key,
             },
         }
 
@@ -7555,32 +7848,66 @@ class ChannelStatusMonitor(object):
             started = time.time()
             try:
                 for bridge_id in current_bridges():
-                    bridge_started = time.time()
-                    if not bridge_has_lttx_account(bridge_id):
-                        snapshot = ctypes_bridge_status(bridge_id)
-                    else:
-                        snapshot = probe_bridge_status(bridge_id=bridge_id, timeout=self.timeout, mode="lttx")
-                    snapshot["bridge_id"] = bridge_id
-                    snapshot["bridge_name"] = bridge_config(bridge_id)["name"]
-                    snapshot["checked_at"] = time.time()
-                    snapshot["checked_at_text"] = time.strftime(
-                        "%Y-%m-%d %H:%M:%S",
-                        time.localtime(snapshot["checked_at"]),
-                    )
-                    snapshot["monitor"] = {
-                        "running": self._running,
-                        "interval_seconds": self.interval,
-                        "cached": True,
-                        "ready": True,
-                        "probe_ms": round((time.time() - bridge_started) * 1000, 2),
-                    }
+                    snapshots = {}
+                    for mode in ("ctypes", "lttx"):
+                        if mode == "lttx" and not bridge_has_lttx_account(bridge_id):
+                            continue
+                        bridge_started = time.time()
+                        try:
+                            if mode == "ctypes":
+                                snapshot = ctypes_bridge_status(bridge_id)
+                            else:
+                                snapshot = probe_bridge_status(bridge_id=bridge_id, timeout=self.timeout, mode="lttx")
+                            snapshot["bridge_id"] = bridge_id
+                            snapshot["bridge_name"] = bridge_config(bridge_id)["name"]
+                            snapshot["checked_at"] = time.time()
+                            snapshot["checked_at_text"] = time.strftime(
+                                "%Y-%m-%d %H:%M:%S",
+                                time.localtime(snapshot["checked_at"]),
+                            )
+                            snapshot["monitor"] = {
+                                "running": self._running,
+                                "interval_seconds": self.interval,
+                                "cached": True,
+                                "ready": True,
+                                "transport_mode": mode,
+                                "probe_ms": round((time.time() - bridge_started) * 1000, 2),
+                            }
+                        except Exception as error:
+                            channels = bridge_channels(bridge_id)
+                            snapshot = {
+                                "bridge_id": bridge_id,
+                                "bridge_name": bridge_config(bridge_id)["name"],
+                                "normal": {
+                                    "online": False,
+                                    "channel": channels["normal"],
+                                    "error": str(error),
+                                },
+                                "trade": {
+                                    "online": False,
+                                    "channel": channels["trade"],
+                                    "error": str(error),
+                                },
+                                "checked_at": time.time(),
+                                "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "monitor": {
+                                    "running": self._running,
+                                    "interval_seconds": self.interval,
+                                    "cached": True,
+                                    "ready": True,
+                                    "transport_mode": mode,
+                                    "probe_ms": round((time.time() - bridge_started) * 1000, 2),
+                                },
+                            }
+                        snapshots[mode] = snapshot
                     with self._lock:
-                        self._snapshots[bridge_id] = snapshot
+                        self._snapshots[bridge_id] = snapshots
             except Exception as e:
                 safe_print("channel status monitor probe failed: %s" % e)
             elapsed = time.time() - started
             delay = max(0.5, self.interval - elapsed)
             self._stop_event.wait(delay)
+            self._stop_event.clear()
 
 
 STATUS_MONITOR = ChannelStatusMonitor()
@@ -8019,11 +8346,13 @@ def merge_market_child_channel_results(primary, fallback, market, sections):
 
 
 class AccountDataCache(object):
-    def __init__(self, interval=ACCOUNT_CACHE_REFRESH_SECONDS):
+    def __init__(self, interval=ACCOUNT_CACHE_REFRESH_SECONDS, background_timeout=ACCOUNT_CACHE_BACKGROUND_TIMEOUT_SECONDS):
         self.interval = float(interval)
+        self.background_timeout = float(background_timeout)
         self._lock = threading.RLock()
         self._entries = {}
         self._subscriptions = {}
+        self._prewarm_subscriptions = {}
         self._thread = None
         self._running = False
         self._stop_event = threading.Event()
@@ -8033,10 +8362,19 @@ class AccountDataCache(object):
             return
         self._running = True
         self._stop_event.clear()
+        prewarm = self.prime_configured_accounts()
         self._thread = threading.Thread(target=self._loop)
         self._thread.daemon = True
         self._thread.start()
-        safe_print("cfquant account data cache started interval=%ss" % self.interval)
+        safe_print(
+            "cfquant account data cache started interval=%ss background_timeout=%ss prewarm_accounts=%s prewarm_subscriptions=%s"
+            % (
+                self.interval,
+                self.background_timeout,
+                prewarm["account_count"],
+                prewarm["subscription_count"],
+            )
+        )
 
     def close(self):
         self._running = False
@@ -8193,6 +8531,80 @@ class AccountDataCache(object):
             current = self._subscriptions.setdefault(key, set())
             current.update(sections)
 
+    def prime_configured_accounts(self, sections=None):
+        sections = sections if sections is not None else ACCOUNT_CACHE_PREWARM_SECTIONS
+        if isinstance(sections, str):
+            sections = sections.split(",")
+        sections = sorted(set(
+            str(section or "").strip().lower()
+            for section in sections
+            if str(section or "").strip().lower() in ACCOUNT_ACTIONS
+        ))
+        desired = {}
+        account_count = 0
+        for configured_key, config in enabled_account_configs().items():
+            config = config if isinstance(config, dict) else {}
+            account_id = str(config.get("account_id") or "").strip()
+            if not account_id:
+                continue
+            account_type = normalize_account_type(config.get("account_type") or "STOCK")
+            bridge_id = normalize_bridge_id(config.get("bridge_id") or DEFAULT_BRIDGE_ID)
+            account_key = str(config.get("account_key") or configured_key or "").strip()
+            account_key = account_key or account_key_for(account_id, account_type, bridge_id)
+            try:
+                bridge_config(bridge_id)
+            except Exception as error:
+                safe_print(
+                    "account data cache prewarm skipped invalid bridge=%s account=%s type=%s error=%s"
+                    % (bridge_id, account_id, account_type, error)
+                )
+                continue
+
+            _config, routes = account_market_route_entries(
+                account_id=account_id,
+                account_type=account_type,
+                bridge_id=bridge_id,
+                account_key=account_key,
+            )
+            targets = []
+            if routes:
+                for route in routes:
+                    route_bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
+                    if not route_bridge_id:
+                        continue
+                    try:
+                        bridge_config(route_bridge_id)
+                    except Exception as error:
+                        safe_print(
+                            "account data cache prewarm skipped invalid route bridge=%s account=%s type=%s error=%s"
+                            % (route_bridge_id, account_id, account_type, error)
+                        )
+                        continue
+                    if route_bridge_id:
+                        targets.append((route_bridge_id, "trade"))
+            if not targets:
+                targets.append((bridge_id, "normal"))
+
+            account_count += 1
+            for target_bridge_id, channel in targets:
+                key = self._cache_key(
+                    target_bridge_id,
+                    channel,
+                    account_id,
+                    account_type=account_type,
+                    account_key=account_key,
+                )
+                desired.setdefault(key, set()).update(sections)
+
+        with self._lock:
+            self._prewarm_subscriptions = desired
+        self._wake()
+        return {
+            "account_count": account_count,
+            "subscription_count": len(desired),
+            "sections": list(sections),
+        }
+
     def _missing_sections(self, bridge_id, channel, account_id, sections, account_type="STOCK", account_key=None):
         with self._lock:
             return [
@@ -8252,6 +8664,7 @@ class AccountDataCache(object):
                 "enabled": True,
                 "force": bool(force),
                 "interval_seconds": self.interval,
+                "background_timeout_seconds": self.background_timeout,
                 "refresh_queued": bool(refresh_queued),
             },
         }
@@ -8292,16 +8705,28 @@ class AccountDataCache(object):
 
     def _refresh_subscriptions(self):
         with self._lock:
+            combined = {}
+            for subscriptions_by_key in (self._prewarm_subscriptions, self._subscriptions):
+                for key, sections in subscriptions_by_key.items():
+                    combined.setdefault(key, set()).update(sections)
             subscriptions = [
                 (bridge_id, channel, account_key, account_id, account_type, sorted(sections))
-                for (bridge_id, channel, account_key, account_id, account_type), sections in self._subscriptions.items()
+                for (bridge_id, channel, account_key, account_id, account_type), sections in combined.items()
                 if account_id and sections
             ]
         for bridge_id, channel, account_key, account_id, account_type, sections in subscriptions:
             if not self._running:
                 break
             try:
-                live = query_account_live(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
+                live = query_account_live(
+                    bridge_id,
+                    channel,
+                    account_id,
+                    sections,
+                    timeout=self.background_timeout,
+                    account_type=account_type,
+                    account_key=account_key,
+                )
                 self._store_result(bridge_id, channel, account_id, live, sections, account_type=account_type, account_key=account_key)
             except Exception as e:
                 safe_print(
@@ -8506,6 +8931,7 @@ def cancel_order(body):
 def save_bridge_config(body):
     row = WEB_CONFIG.save_bridge(body or {})
     STATUS_MONITOR.wake()
+    ACCOUNT_CACHE.prime_configured_accounts()
     CALLBACKS.refresh_channels(callback_channels())
     return {
         "bridge": row,
@@ -8518,6 +8944,7 @@ def delete_bridge_config(body):
     WEB_CONFIG.delete_bridge(bridge_id)
     STATUS_MONITOR.forget(bridge_id)
     STATUS_MONITOR.wake()
+    ACCOUNT_CACHE.prime_configured_accounts()
     CALLBACKS.refresh_channels(callback_channels())
     return {
         "bridges": WEB_CONFIG.bridges(),
@@ -8544,6 +8971,7 @@ def save_account_pair(body):
         display_name=display_name,
     )
     STATUS_MONITOR.wake()
+    ACCOUNT_CACHE.prime_configured_accounts()
     return {
         "pair": row,
         "account_pairs": WEB_CONFIG.account_pairs(),
@@ -8593,12 +9021,14 @@ def save_account_runtime_config(body):
     )
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
+    runtime = ensure_account_runtime(row["mode"])
+    ACCOUNT_CACHE.prime_configured_accounts()
     STATUS_MONITOR.wake()
     CALLBACKS.refresh_channels(callback_channels())
     return {
         "account": row,
         "qmt_bridge_identity": identity,
-        "runtime": ensure_account_runtime(row["mode"]),
+        "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
         "account_pairs": WEB_CONFIG.account_pairs(),
         "account_configs": WEB_CONFIG.account_configs(),
@@ -8640,6 +9070,9 @@ def delete_account_runtime_config(body):
             WEB_CONFIG._data["default_account_id"] = str(next_row.get("account_id") or DEFAULT_ACCOUNT_ID).strip() or DEFAULT_ACCOUNT_ID
             WEB_CONFIG._data["default_account_type"] = normalize_account_type(next_row.get("account_type") or "STOCK")
         WEB_CONFIG._save_locked()
+    ACCOUNT_CACHE.prime_configured_accounts()
+    STATUS_MONITOR.wake()
+    CALLBACKS.refresh_channels(callback_channels())
     return {
         "setup": WEB_CONFIG.setup_info(),
         "account_pairs": WEB_CONFIG.account_pairs(),
@@ -9259,6 +9692,30 @@ def read_lttx_runtime_report(bridge_id=None):
                 pass
 
 
+def read_qmt_runtime_marker_reports(bridge_id=None):
+    bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+    latest = None
+    try:
+        for data in read_qmt_runtime_marker_files([QMT_RUNTIME_MARKER_DIR], max_files=256):
+            item_bridge_id = normalize_bridge_id(data.get("bridge_id") or DEFAULT_BRIDGE_ID)
+            if item_bridge_id != bridge_id:
+                continue
+            report = RUNTIME_VERSIONS.update_from_event({
+                "type": "event",
+                "event": "cfquant.runtime",
+                "bridge_id": item_bridge_id,
+                "data": data,
+                "meta": {"bridge_id": item_bridge_id, "source": "qmt_runtime_marker"},
+            })
+            if not report:
+                continue
+            if latest is None or float(report.get("reported_at") or 0) > float(latest.get("reported_at") or 0):
+                latest = report
+    except Exception as e:
+        safe_print("qmt runtime marker read failed: %s" % e)
+    return latest
+
+
 def runtime_probe_modes(bridge_id=None):
     bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
     modes = []
@@ -9285,6 +9742,7 @@ def runtime_probe_modes(bridge_id=None):
 def refresh_runtime_version_report(bridge_id=None, timeout=1.6):
     bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
     errors = []
+    read_qmt_runtime_marker_reports(bridge_id)
     read_lttx_runtime_report(bridge_id)
     for mode in runtime_probe_modes(bridge_id):
         if is_ctypes_transport_mode(mode):
@@ -9530,6 +9988,7 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
     bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
     local = _local_project_version_info()
     core_version = local.get("version") or current_core_version()
+    read_qmt_runtime_marker_reports(bridge_id)
     qmt_runtime = refresh_runtime_version_report(bridge_id, timeout=1.2) if force else RUNTIME_VERSIONS.latest(bridge_id)
     qmt_runtime_version = qmt_runtime.get("version") if qmt_runtime.get("reported") else ""
     latest_qmt_core_version = qmt_runtime.get("version") if qmt_runtime.get("has_report") else ""
@@ -10685,6 +11144,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     account_route_status(account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
                     if account_id else STATUS_MONITOR.latest(bridge_id=bridge_id)
                 ))
+            elif parsed.path == "/api/bindings/status":
+                self._write_json(ok(binding_status_snapshot()))
             elif parsed.path == "/api/callbacks":
                 account_id = (query.get("account_id") or [""])[0]
                 account_type = normalize_account_type((query.get("account_type") or ["STOCK"])[0]) if query.get("account_type") else ""
@@ -10967,27 +11428,22 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         self.request.sendall(bytes([0x80 | opcode, length]) + payload)
 
     def _serve_static(self, path):
-        if path in ("", "/"):
-            path = "/index.html"
-        path = posixpath.normpath(urllib.parse.unquote(path))
-        path = path.lstrip("/")
-        full_path = os.path.abspath(os.path.join(STATIC_DIR, path))
-        if not full_path.startswith(os.path.abspath(STATIC_DIR)):
+        try:
+            rel_path, raw = read_static_asset(path)
+        except PermissionError:
             self._write_json(fail("forbidden", 403), status=403)
             return
-        if not os.path.isfile(full_path):
+        if raw is None:
             self._write_json(fail("not found", 404), status=404)
             return
-        content_type = mimetypes.guess_type(full_path)[0] or "application/octet-stream"
-        with open(full_path, "rb") as f:
-            data = f.read()
+        content_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
         try:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Length", str(len(raw)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(data)
+            self.wfile.write(raw)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError) as e:
             safe_print("client disconnected while writing static response: %s" % e)
 
@@ -11070,7 +11526,7 @@ def spawn_reloaded_web_server(reload_request):
     try:
         process = subprocess.Popen(
             command,
-            cwd=BASE_DIR,
+            cwd=STATE_DIR if os.path.isdir(STATE_DIR) else BASE_DIR,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -11095,8 +11551,8 @@ def main(argv=None):
     else:
         args.port = normalize_web_port(args.port, default=WEB_CONFIG.web_port(), strict=True)
 
-    if not os.path.isdir(STATIC_DIR):
-        raise RuntimeError("static directory not found: %s" % STATIC_DIR)
+    if not static_assets_available():
+        raise RuntimeError("static assets not found: %s or package %s" % (STATIC_DIR, PACKAGE_STATIC_NAME))
     configured_modes = configured_runtime_modes()
     ensure_lttx_started("Web 启动预启动")
     global WEB_BOUND_HOST, WEB_BOUND_PORT

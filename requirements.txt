@@ -1,7 +1,7 @@
 pandas
-orjson
 packaging
 psutil
 pytz
 tabulate
 pandas_market_calendars
+importlib-resources; python_version < "3.9"

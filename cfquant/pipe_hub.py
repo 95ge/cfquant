@@ -51,6 +51,8 @@ class CfquantPipeHub(object):
         self.client_by_id = {}
         self.client_tx_by_id = {}
         self.client_ids_by_conn = {}
+        self.client_conn_meta_by_conn = {}
+        self.client_generation_by_id = {}
         self.state_lock = threading.RLock()
         self.status_file = os.path.abspath(
             os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or default_status_file("cfquant_pipe_hub_status.json")
@@ -105,6 +107,8 @@ class CfquantPipeHub(object):
             self.client_by_id.clear()
             self.client_tx_by_id.clear()
             self.client_ids_by_conn.clear()
+            self.client_conn_meta_by_conn.clear()
+            self.client_generation_by_id.clear()
         for conn in conns:
             try:
                 conn.close()
@@ -156,21 +160,15 @@ class CfquantPipeHub(object):
         while self.running:
             if role == "qmt_rx":
                 with self.qmt_lock:
-                    if conn not in self.qmt_channel_by_conn:
-                        break
+                    active = conn in self.qmt_channel_by_conn
             elif role == "api_rx":
                 with self.state_lock:
-                    if conn not in self.client_ids_by_conn:
-                        break
-            try:
-                raw = conn.read_frame()
-            except Exception as e:
-                if self.running:
-                    self._log("pipe passive rx closed role=%s error=%s" % (role, e))
+                    active = conn in self.client_ids_by_conn
+            else:
+                active = False
+            if not active:
                 break
-            if raw is None:
-                break
-            self._log("pipe ignored passive frame role=%s len=%s" % (role, len(raw or "")))
+            time.sleep(0.2)
 
     def _handle_hello(self, conn, envelope, current_role):
         role = envelope.get("role") or current_role
@@ -278,6 +276,7 @@ class CfquantPipeHub(object):
         raw = envelope.get("payload")
         msg = loads_message(raw)
         target = None
+        status_changed = False
         if not msg:
             client_id = envelope.get("channel") or envelope.get("client_id")
             if client_id:
@@ -302,6 +301,7 @@ class CfquantPipeHub(object):
             request_id = msg.get("id")
             with self.state_lock:
                 pending = self.pending.pop(request_id, None)
+            status_changed = pending is not None
             if pending:
                 target = pending.get("conn")
                 api_received_at = pending.get("api_received_at") or qmt_received_at
@@ -332,6 +332,8 @@ class CfquantPipeHub(object):
             except Exception as e:
                 self._log("pipe response/event delivery failed: %s" % e)
                 self._drop_conn(target)
+        if status_changed:
+            self._write_status()
 
     def _pack_callback_event(self, raw):
         try:
@@ -378,12 +380,34 @@ class CfquantPipeHub(object):
             return self.client_by_id.get(client_id)
 
     def _remember_client(self, conn, client_id, receive_conn=True):
+        close_old = []
         with self.state_lock:
+            if receive_conn:
+                generation = int(self.client_generation_by_id.get(client_id) or 0) + 1
+                self.client_generation_by_id[client_id] = generation
+                mapping = self.client_by_id
+            else:
+                generation = int(self.client_generation_by_id.get(client_id) or 0) or 1
+                self.client_generation_by_id[client_id] = generation
+                mapping = self.client_tx_by_id
+            old = mapping.get(client_id)
+            if old is not None and old is not conn:
+                self._detach_client_conn_locked(old, client_id)
+                close_old.append(old)
             if receive_conn:
                 self.client_by_id[client_id] = conn
             else:
                 self.client_tx_by_id[client_id] = conn
             self.client_ids_by_conn.setdefault(conn, set()).add(client_id)
+            self.client_conn_meta_by_conn.setdefault(conn, {})[client_id] = {
+                "receive": bool(receive_conn),
+                "generation": generation,
+            }
+        for old in close_old:
+            try:
+                old.close()
+            except Exception:
+                pass
 
     def _drop_conn(self, conn):
         failed_pending = []
@@ -396,14 +420,49 @@ class CfquantPipeHub(object):
                     self.qmt_tx_by_channel.pop(channel, None)
         close_peers = []
         with self.state_lock:
-            client_ids = self.client_ids_by_conn.pop(conn, set())
+            meta_by_client = self.client_conn_meta_by_conn.pop(conn, {})
+            client_ids = set(self.client_ids_by_conn.pop(conn, set())) | set(meta_by_client.keys())
             for client_id in client_ids:
-                rx_conn = self.client_by_id.pop(client_id, None)
-                tx_conn = self.client_tx_by_id.pop(client_id, None)
-                for peer in (rx_conn, tx_conn):
-                    if peer is not None and peer is not conn and peer not in close_peers:
-                        close_peers.append(peer)
-                    self.client_ids_by_conn.pop(peer, None)
+                meta = meta_by_client.get(client_id) or {}
+                generation = meta.get("generation")
+                receive_conn = meta.get("receive")
+                rx_conn = self.client_by_id.get(client_id)
+                tx_conn = self.client_tx_by_id.get(client_id)
+                rx_generation = self._client_conn_generation_locked(rx_conn, client_id)
+                tx_generation = self._client_conn_generation_locked(tx_conn, client_id)
+
+                if rx_conn is conn:
+                    self.client_by_id.pop(client_id, None)
+                if tx_conn is conn:
+                    self.client_tx_by_id.pop(client_id, None)
+
+                if receive_conn is True:
+                    peer = tx_conn
+                    peer_generation = tx_generation
+                    peer_mapping = self.client_tx_by_id
+                elif receive_conn is False:
+                    peer = rx_conn
+                    peer_generation = rx_generation
+                    peer_mapping = self.client_by_id
+                else:
+                    peer = None
+                    peer_generation = None
+                    peer_mapping = None
+
+                if (
+                    peer is not None
+                    and peer is not conn
+                    and generation is not None
+                    and peer_generation == generation
+                    and peer not in close_peers
+                ):
+                    close_peers.append(peer)
+                    if peer_mapping is not None and peer_mapping.get(client_id) is peer:
+                        peer_mapping.pop(client_id, None)
+                    self._detach_client_conn_locked(peer, client_id)
+
+                if self.client_by_id.get(client_id) is None and self.client_tx_by_id.get(client_id) is None:
+                    self.client_generation_by_id.pop(client_id, None)
             for request_id, pending in list(self.pending.items()):
                 pending_conn = pending.get("conn")
                 qmt_conn = pending.get("qmt_conn")
@@ -423,6 +482,27 @@ class CfquantPipeHub(object):
                 pass
         for request_id, pending, message in failed_pending:
             self._send_error(pending.get("conn"), request_id, message)
+
+    def _detach_client_conn_locked(self, conn, client_id):
+        if conn is None:
+            return
+        client_ids = self.client_ids_by_conn.get(conn)
+        if client_ids is not None:
+            client_ids.discard(client_id)
+            if not client_ids:
+                self.client_ids_by_conn.pop(conn, None)
+        meta_by_client = self.client_conn_meta_by_conn.get(conn)
+        if meta_by_client is not None:
+            meta_by_client.pop(client_id, None)
+            if not meta_by_client:
+                self.client_conn_meta_by_conn.pop(conn, None)
+
+    def _client_conn_generation_locked(self, conn, client_id):
+        if conn is None:
+            return None
+        meta_by_client = self.client_conn_meta_by_conn.get(conn) or {}
+        meta = meta_by_client.get(client_id) or {}
+        return meta.get("generation")
 
     def _start_maintenance(self):
         if self.maintenance_thread is not None and self.maintenance_thread.is_alive():

@@ -100,8 +100,8 @@ QMT 侧需要两个入口：
 
 完整兼容情况见：
 
-- [xttrader 兼容说明](xttrader_compatibility.md)
-- [xtdata 兼容说明](xtdata_compatibility.md)
+- [xttrader 兼容说明](xttrader平替追踪.md)
+- [xtdata 兼容说明](xtdata平替追踪.md)
 
 ### 2. 部署并启动 cfquant
 
@@ -189,7 +189,7 @@ print(asset, positions)
 
 默认 `transport=auto`。只要本地 Web 服务和 QMT 入口在线，外部程序通常不需要手动配置 PipeHub、LTtx 或 HTTP 端口。
 
-详细外部接入规则见 [外部 Python 接入](README_外部Python接入.md)。
+详细外部接入规则见 [外部 Python 接入](外部Python接入.md)。
 
 ## 多进程访问同一个账户
 
@@ -283,7 +283,7 @@ trader.start()
 - 超时次数
 - QMT 重启或断线后的恢复情况
 
-项目内已有参考报告：[普通 QMT、极速交易端与 ctypes Pipe 接口耗时对比](ctypes_pipe_vs_lttx_latency_20260813.md)。
+真实环境延迟报告单独放在本地私有文档目录维护，公开文档只保留验证方法和指标口径。
 
 如果客户有极速柜台权限，可以优先对比通用模式和高级模式的下单、撤单、交易查询耗时，再决定是否把生产账号切到高级模式。
 

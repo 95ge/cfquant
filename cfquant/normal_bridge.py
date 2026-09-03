@@ -38,6 +38,7 @@ class NormalQmtBridge(TxTradeBridge):
         schedule_timer=True,
         pump_max_count=20,
         pump_max_ms=0,
+        dispatch_on_qmt_thread=False,
     ):
         super(NormalQmtBridge, self).__init__(
             context,
@@ -58,6 +59,8 @@ class NormalQmtBridge(TxTradeBridge):
         self.worker_source_lock = threading.Lock()
         self.pump_max_count = int(pump_max_count)
         self.pump_max_ms = float(pump_max_ms)
+        self.dispatch_on_qmt_thread = bool(dispatch_on_qmt_thread)
+        self.dispatch_lock = threading.RLock()
         self.coalesce_lock = threading.RLock()
         self.coalesced_requests = {}
         self.coalesce_join_count = 0
@@ -76,6 +79,8 @@ class NormalQmtBridge(TxTradeBridge):
         if self.running:
             return self
         self.running = True
+        if not self.started_at:
+            self.started_at = time.time()
         txl = self._load_txl()
         self.tx = txl(self.ip, self.port, self.token)
         self.tx.start_tx()
@@ -96,10 +101,17 @@ class NormalQmtBridge(TxTradeBridge):
             self._set_context_account(self.account_id, self.account_type)
         self._enable_auto_trade_callback()
         self._subscribe_internal_whole_quote()
-        self._start_worker_thread(context)
+        if self.dispatch_on_qmt_thread:
+            self._log("normal bridge QMT-thread dispatch enabled")
+        else:
+            self._start_worker_thread(context)
         if self.schedule_timer:
             self._schedule_timer()
-        self._log("normal bridge worker is released by quote/timer/handlebar callbacks")
+        if self.dispatch_on_qmt_thread:
+            dispatch_source = "QMT timer/handlebar callbacks" if self.schedule_timer else "QMT caller thread callbacks"
+            self._log("normal bridge requests are consumed by %s" % dispatch_source)
+        else:
+            self._log("normal bridge worker is released by quote/timer/handlebar callbacks")
         self._log("normal bridge context ready")
         self._publish_runtime_report("context_ready")
 
@@ -294,10 +306,15 @@ class NormalQmtBridge(TxTradeBridge):
         return "%s|%s" % (action, params_key)
 
     def pump(self):
+        if self.dispatch_on_qmt_thread:
+            return self._drain_requests("pump")
         self._release_worker("pump")
         return self.request_queue.qsize()
 
     def on_timer(self, *args, **kwargs):
+        if self.dispatch_on_qmt_thread:
+            self._drain_requests("timer")
+            return
         self._release_worker("timer")
 
     def _release_worker(self, source):
@@ -323,22 +340,23 @@ class NormalQmtBridge(TxTradeBridge):
                 self._log("normal bridge worker error source=%s error=%s" % (source, e))
 
     def _drain_requests(self, source):
-        start = time.perf_counter()
-        count = 0
-        while self.running and count < self.pump_max_count:
-            if self.pump_max_ms > 0 and (time.perf_counter() - start) * 1000 >= self.pump_max_ms:
-                break
-            try:
-                item = self.request_queue.get_nowait()
-            except queue.Empty:
-                break
-            msg, received_at, coalesce_key = self._queue_item_parts(item)
-            if coalesce_key:
-                self._drain_coalesced_request(source, msg, received_at, coalesce_key)
-            else:
-                self._drain_single_request(source, msg, received_at)
-            count += 1
-        return count
+        with self.dispatch_lock:
+            start = time.perf_counter()
+            count = 0
+            while self.running and count < self.pump_max_count:
+                if self.pump_max_ms > 0 and (time.perf_counter() - start) * 1000 >= self.pump_max_ms:
+                    break
+                try:
+                    item = self.request_queue.get_nowait()
+                except queue.Empty:
+                    break
+                msg, received_at, coalesce_key = self._queue_item_parts(item)
+                if coalesce_key:
+                    self._drain_coalesced_request(source, msg, received_at, coalesce_key)
+                else:
+                    self._drain_single_request(source, msg, received_at)
+                count += 1
+            return count
 
     def _queue_item_parts(self, item):
         try:
@@ -604,6 +622,14 @@ class NormalQmtBridge(TxTradeBridge):
             "schedule_timer": self.schedule_timer,
             "pump_max_count": self.pump_max_count,
             "pump_max_ms": self.pump_max_ms,
+            "dispatch_on_qmt_thread": self.dispatch_on_qmt_thread,
+            "dispatch_thread": (
+                "qmt_timer_or_handlebar"
+                if self.dispatch_on_qmt_thread and self.schedule_timer
+                else "qmt_caller_thread"
+                if self.dispatch_on_qmt_thread
+                else "worker"
+            ),
             "coalesced_group_count": coalesced_group_count,
             "coalesced_waiter_count": coalesced_waiters,
             "coalesce_join_count": self.coalesce_join_count,
@@ -624,6 +650,7 @@ def start_normal_bridge(
     schedule_timer=True,
     pump_max_count=20,
     pump_max_ms=0,
+    dispatch_on_qmt_thread=False,
 ):
     import sys
 
@@ -645,4 +672,5 @@ def start_normal_bridge(
         schedule_timer=schedule_timer,
         pump_max_count=pump_max_count,
         pump_max_ms=pump_max_ms,
+        dispatch_on_qmt_thread=dispatch_on_qmt_thread,
     ).start()

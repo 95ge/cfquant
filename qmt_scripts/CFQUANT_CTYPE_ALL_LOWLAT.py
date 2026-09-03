@@ -372,9 +372,10 @@ _normal_bridge = start_pipe_normal_bridge(
     bridge_id=BRIDGE_ID,
     account_id=DEFAULT_ACCOUNT_ID,
     show=True,
-    schedule_timer=True,
+    schedule_timer=False,
     pump_max_count=NORMAL_PUMP_MAX_COUNT,
     pump_max_ms=NORMAL_PUMP_MAX_MS,
+    dispatch_on_qmt_thread=True,
     connect_timeout_ms=PIPE_CONNECT_TIMEOUT_MS,
 )
 if DEFAULT_ACCOUNT_TYPE and _normal_bridge:
@@ -442,7 +443,7 @@ def _attach_normal_status_extra():
             "ctype_trade_pump_max_ms": TRADE_PUMP_MAX_MS,
             "ctype_trade_timer_interval_ms": TRADE_TIMER_INTERVAL_MS,
             "ctype_trade_dispatch_thread": "qmt_timer_or_handlebar",
-            "ctype_trade_route_mode": "xttrader_to_normal_worker",
+            "ctype_trade_route_mode": "xttrader_to_normal_qmt_timer",
         })
         return data
 
@@ -532,6 +533,15 @@ def _handle_trade_raw_direct(raw):
     _trade_direct_dispatch_count += 1
 
 
+def _bind_dispatch_context(ContextInfo):
+    if ContextInfo is None:
+        return
+    if _normal_bridge:
+        _normal_bridge.context = ContextInfo
+    if _trade_bridge:
+        _trade_bridge.context = ContextInfo
+
+
 def _start_trade_loop():
     global _trade_thread, _trade_loop_started_at, _trade_loop_error
 
@@ -552,7 +562,14 @@ def _start_trade_loop():
 
 
 def cfquant_ctype_trade_timer(*args, **kwargs):
+    context = args[0] if args else kwargs.get("ContextInfo") or kwargs.get("context")
+    _bind_dispatch_context(context)
     _drain_trade_requests("timer")
+    if _normal_bridge:
+        try:
+            _normal_bridge.pump()
+        except Exception as e:
+            _print_log("cfquant ctypes normal bridge pump failed source=trade_timer error:%s" % e)
 
 
 def _schedule_trade_timer(ContextInfo):
@@ -651,6 +668,7 @@ def after_init(ContextInfo):
 
 
 def handlebar(ContextInfo):
+    _bind_dispatch_context(ContextInfo)
     if TRADE_LOOP_IN_THREAD:
         _start_trade_loop()
     _drain_trade_requests("handlebar")

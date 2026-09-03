@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,10 +10,47 @@ readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
   "pandas>=1.0",
+  "packaging>=20",
+  "psutil>=5.8",
+  "pytz",
+  "tabulate",
+  "pandas-market-calendars",
+  "importlib-resources>=5; python_version < '3.9'",
 ]
 
+[project.optional-dependencies]
+dev = ["build>=1.0", "twine>=5.0"]
+zmq = ["pyzmq>=25"]
+
+[project.scripts]
+cfquant-web = "cfquant_web_server:main"
+cfquant-pipe-hub = "cfquant_pipe_hub:main"
+
 [tool.setuptools]
-packages = ["cfquant", "LTtx", "LTtx.tx"]
+py-modules = ["cfquant_web_server", "cfquant_pipe_hub"]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cfquant*", "LTtx*", "web_dashboard*", "qmt_scripts*"]
+exclude = ["cfquant.tests", "cfquant.tests.*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"LTtx.tx" = ["Config.txt"]
+"web_dashboard" = [
+  "*.html",
+  "*.css",
+  "*.js",
+  "*.svg",
+  "avatars/*.svg",
+  "vendor/*.js",
+  "image/*/*.png",
+]
+"qmt_scripts" = [
+  "同账号独立市场/*.py",
+  "同账号独立市场/*.md",
+]
 
 [tool.pytest.ini_options]
 norecursedirs = ["pip_library_dev", ".cfquant_project_updates", ".cfquant_updates", ".updates", "runtime"]
