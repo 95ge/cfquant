@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#eef4f7">
+  <title>cfquant.org | 大 QMT 本地桥接层</title>
+  <meta name="description" content="cfquant 把大 QMT 的行情、查询、交易、回调能力整理成 miniQMT 形态，供 Web 控制台和外部 Python 程序轻量调用。">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=site_20260902_01">
+</head>
+<body>
+  <svg class="icons" aria-hidden="true">
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4h10a4 4 0 0 1 4 4v12H9a4 4 0 0 0-4-4V4Zm0 12V4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><path d="M8 8h11v11H8zM5 16H4V5h11v1" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M5 21a7 7 0 0 1 14 0" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 15.4A8 8 0 0 1 8.6 4 8.5 8.5 0 1 0 20 15.4Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.9a3.4 3.4 0 0 0-.9-2.6c3-.3 6.1-1.5 6.1-6.5A5 5 0 0 0 20 5.1 4.7 4.7 0 0 0 19.9 2s-1-.3-3.3 1.2a11.4 11.4 0 0 0-6 0C8.3 1.7 7.3 2 7.3 2a4.7 4.7 0 0 0-.1 3.1A5 5 0 0 0 6 8.1c0 5 3.1 6.2 6.1 6.5a3.4 3.4 0 0 0-.9 2.6V22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V5m0 0-4 4m4-4 4 4M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 8v5m0 4h.01M10.3 3.9 2.8 17a2 2 0 0 0 1.7 3h15a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><path d="m3 15 5-5 4 4 2-2 7 7M8 8h.01" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#content">跳到主要内容</a>
+
+  <header class="topnav">
+    <div class="container topnav-inner">
+      <button class="brand brand-button" type="button" data-jump-view="project" aria-label="cfquant 首页">
+        <span class="brand-mark">CF</span>
+        <span><strong translate="no">cfquant</strong><small>QMT bridge layer</small></span>
+      </button>
+
+      <nav class="site-links" id="siteLinks" aria-label="主导航">
+        <button class="nav-link nav-tab is-active" type="button" data-view="project">项目</button>
+        <button class="nav-link nav-tab" type="button" data-view="architecture">架构</button>
+        <button class="nav-link nav-tab" type="button" data-view="downloads">下载</button>
+        <button class="nav-link nav-tab" type="button" data-view="docs">文档</button>
+        <button class="nav-link nav-tab" type="button" data-view="forum">论坛</button>
+        <button class="nav-link nav-tab" type="button" data-view="features">建议</button>
+        <button class="nav-link nav-tab" type="button" data-view="feedback">反馈</button>
+      </nav>
+
+      <div class="nav-actions top-actions">
+        <button class="icon-btn menu-toggle" id="mobileToggle" type="button" aria-label="打开导航菜单" aria-expanded="false"><svg class="i"><use href="#i-menu"/></svg></button>
+        <a class="icon-btn hide-mobile" href="https://github.com/95ge/cfquant" target="_blank" rel="noreferrer" aria-label="打开 GitHub 仓库" title="GitHub"><svg class="i"><use href="#i-github"/></svg></a>
+        <button id="themeToggle" class="icon-btn icon-button" type="button" title="切换深色主题" aria-label="切换深色主题"><span class="theme-icon" aria-hidden="true">D</span></button>
+        <button id="userButton" class="user-chip hidden" type="button"></button>
+        <button id="authButton" class="btn btn-secondary" type="button">登录 / 注册</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="content" class="site-shell project-mode">
+    <section id="view-project" class="view is-active project-view" aria-label="项目介绍">
+      <section class="section hero">
+        <div class="container hero-grid">
+          <div class="hero-copy">
+            <span class="section-kicker">CFQUANT · 大 QMT 本地桥接层</span>
+            <h1>把大 QMT 转成 miniQMT 形态来使用</h1>
+            <p class="lead">cfquant 把依赖本地终端、接口分散的大 QMT 能力整理为外部 Python 程序更容易调用的使用层，统一封装行情、交易、回调、账号路由和更新反馈。</p>
+            <div class="hero-actions">
+              <button class="btn btn-primary" type="button" data-jump-view="downloads"><svg class="i"><use href="#i-download"/></svg>下载最新版本</button>
+              <button class="btn btn-secondary" type="button" data-jump-view="docs"><svg class="i"><use href="#i-book"/></svg>查看部署文档</button>
+              <button class="btn btn-ghost" type="button" data-jump-view="forum">进入论坛</button>
+              <button class="btn btn-ghost" type="button" data-jump-view="features">功能建议</button>
+            </div>
+            <div class="version-row" aria-label="最新版本摘要">
+              <div><span>核心版本</span><strong id="releaseCoreSummary" class="meta">同步中</strong></div>
+              <div><span>Web 版本</span><strong id="releaseWebSummary" class="meta">同步中</strong></div>
+              <div><span>更新时间</span><strong id="releaseUpdatedSummary" class="meta">同步中</strong></div>
+              <div><span>下载次数</span><strong id="releaseDownloadsSummary" class="meta">同步中</strong></div>
+            </div>
+            <div class="hero-subnav" aria-label="常用路径">
+              <button class="route-chip" type="button" data-jump-view="downloads"><strong>安装或升级</strong><span class="help">先看最新包、历史包和 SHA256。</span></button>
+              <button class="route-chip" type="button" data-jump-view="architecture"><strong>理解架构</strong><span class="help">按 auto、ctypes、lttx 和回调查看链路。</span></button>
+              <button class="route-chip" type="button" data-jump-view="forum"><strong>使用中排查</strong><span class="help">按错误信息、接口名和分类筛选讨论。</span></button>
+              <button class="route-chip" type="button" data-jump-view="features"><strong>提交功能建议</strong><span class="help">记录需求场景，按票数和状态沉淀路线索引。</span></button>
+              <button class="route-chip" type="button" data-jump-view="feedback"><strong>带截图反馈</strong><span class="help">公开处理进度，登录后跟踪通知。</span></button>
+            </div>
+          </div>
+
+          <div class="run-visual" aria-label="cfquant 运行链路交互示意">
+            <div class="visual-inner">
+              <div class="visual-top">
+                <div>
+                  <p class="meta">运行链路</p>
+                  <h2>从 QMT 到外部 Python 的轻量桥</h2>
+                </div>
+                <div class="mode-tabs" role="tablist" aria-label="接入模式">
+                  <button class="seg is-active" type="button" data-mode="normal">通用</button>
+                  <button class="seg" type="button" data-mode="lite">极致</button>
+                  <button class="seg" type="button" data-mode="advanced">高级</button>
+                </div>
+              </div>
+              <div class="flow-diagram">
+                <div class="flow-node"><span class="dot"></span><strong>大 QMT</strong><p class="help" id="modeQmt">加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></p></div>
+                <div class="connector" aria-hidden="true"></div>
+                <div class="flow-node" data-role="bridge"><span class="dot"></span><strong>cfquant</strong><p class="help">PipeHub、ctypes 单文件桥、账号路由和回调整理。</p></div>
+                <div class="connector" aria-hidden="true"></div>
+                <div class="flow-node"><span class="dot"></span><strong>外部 Python</strong><p class="help" id="modePython">读取行情、查询持仓、提交交易请求。</p></div>
+              </div>
+              <div class="detail-panel" id="mode-detail-panel">
+                <p class="mono" id="modeScript">Web / Python -> PipeHub -> ctypes 单文件桥 -> QMT</p>
+                <p class="help" id="modeUse">适合快速部署、单账号验证和多数常规使用。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <h2>不是重做交易终端，而是把大 QMT 变轻。</h2>
+            <p>首页把用户真正要判断的四件事放到前面：接入形态、运行链路、模式差异和支持闭环。</p>
+          </div>
+          <div class="bento-grid">
+            <article class="card feature-card large"><span class="mark"><svg class="i"><use href="#i-check"/></svg></span><h3>miniQMT 形态切换</h3><p>尽量保留原有调用习惯，把大 QMT 的接口组织成更容易接入的外部程序使用层。</p><p class="meta">面向迁移用户</p></article>
+            <article class="card feature-card"><span class="mark"><svg class="i"><use href="#i-book"/></svg></span><h3>大 QMT 能力转接</h3><p class="help">行情、查询、交易、回调和账号路由放在同一套桥接语义里。</p></article>
+            <article class="card feature-card"><span class="mark"><svg class="i"><use href="#i-user"/></svg></span><h3>多账号运行</h3><p class="help">官网把账号路径、运行状态和排障入口放在同一条阅读路径上。</p></article>
+            <article class="card feature-card"><span class="mark"><svg class="i"><use href="#i-alert"/></svg></span><h3>低延迟链路说明</h3><p class="help">只描述链路选择和实测环境参考，不承诺固定延迟或交易收益。</p></article>
+            <article class="card feature-card"><span class="mark"><svg class="i"><use href="#i-copy"/></svg></span><h3>支持闭环</h3><p class="help">下载、论坛、反馈和邮件通知互相连通，减少问题散在私聊里。</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <h2>三种接入模式，按环境限制和延迟目标选择。</h2>
+            <p>表格优先展示决策差异，长解释放到文档页，新用户能先选方向，排障用户能快速定位脚本名。</p>
+          </div>
+          <div class="compare-wrap">
+            <table>
+              <thead><tr><th>模式</th><th>QMT 入口</th><th>链路</th><th>适用场景</th></tr></thead>
+              <tbody>
+                <tr><td><strong>通用模式</strong></td><td><code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></td><td>Web / 外部 Python -> PipeHub -> ctypes 单文件桥 -> QMT</td><td>快速部署、单账号验证和多数常规使用。</td></tr>
+                <tr><td><strong>极致模式</strong></td><td><code>CFQUANT_LITE.py</code></td><td>QMT 侧入口自包含，不导入 <code>cfquant</code> 核心包。</td><td>白名单限制严格的 QMT 环境。</td></tr>
+                <tr><td><strong>高级模式</strong></td><td><code>CFQUANT.py</code> + <code>CFQUANT_TRADE_LOWLAT.py</code></td><td>普通 QMT 与极速交易端 QMT 分工。</td><td>追求更低下单、撤单延迟的场景。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <h2>功能支持表</h2>
+            <p>下面这张表按当前主链路口径整理：哪些能力已经接通，哪些能力不在 cfquant 的职责范围内。个别依赖券商 QMT callable 的项目，会在说明里单独标注。</p>
+          </div>
+          <div class="compare-wrap">
+            <table>
+              <thead>
+                <tr><th>功能</th><th>状态</th><th>说明</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><strong>行情查询与订阅</strong></td>
+                  <td><span class="status status-success">支持</span></td>
+                  <td>读取行情、全推快照、单股订阅等主链路能力已接通。</td>
+                </tr>
+                <tr>
+                  <td><strong>下单与撤单</strong></td>
+                  <td><span class="status status-success">支持</span></td>
+                  <td>通用模式和高级模式都可以按账号路由到对应 QMT 端执行。</td>
+                </tr>
+                <tr>
+                  <td><strong>委托 / 成交 / 持仓 / 资金查询</strong></td>
+                  <td><span class="status status-success">支持</span></td>
+                  <td>可按账号读取交易状态，并给外部程序返回结构化结果。</td>
+                </tr>
+                <tr>
+                  <td><strong>账号级回调广播</strong></td>
+                  <td><span class="status status-success">支持</span></td>
+                  <td>同一账号下订阅了交易端的调用者都能收到委托、成交、资金和持仓回调。</td>
+                </tr>
+                <tr>
+                  <td><strong>多账号路由</strong></td>
+                  <td><span class="status status-success">支持</span></td>
+                  <td>按 <code>bridge_id</code>、<code>account_type</code>、<code>account_id</code> 进行路由。</td>
+                </tr>
+                <tr>
+                  <td><strong>历史行情下载</strong></td>
+                  <td><span class="status status-success">支持</span></td>
+                  <td>固定走普通 QMT，支持进度回调和结果返回。</td>
+                </tr>
+                <tr>
+                  <td><strong>财务数据查询</strong></td>
+                  <td><span class="status status-success">支持</span></td>
+                  <td>读取本地已下载财务数据，适合查询和校验。</td>
+                </tr>
+                <tr>
+                  <td><strong>财务数据直接下载</strong></td>
+                  <td><span class="status status-danger">不支持</span></td>
+                  <td>大 QMT 官网脚本侧没有稳定的直接下载函数，当前只保留本地数据校验和读取。</td>
+                </tr>
+                <tr>
+                  <td><strong>脱离 QMT 独立运行</strong></td>
+                  <td><span class="status status-danger">不支持</span></td>
+                  <td>cfquant 仍依赖本地 QMT 终端和桥接脚本，不能单独替代 QMT 运行。</td>
+                </tr>
+                <tr>
+                  <td><strong>替代完整 QMT 桌面端</strong></td>
+                  <td><span class="status status-danger">不支持</span></td>
+                  <td>它是桥接层，不是新的交易终端。</td>
+                </tr>
+                <tr>
+                  <td><strong>回测引擎 / 本地数据库替代</strong></td>
+                  <td><span class="status status-danger">不支持</span></td>
+                  <td>不负责回测数据引擎或本地历史库替代，这部分仍应由独立工具承担。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <h2>从下载包到外部 Python 调用，路径必须可扫描。</h2>
+            <p>新版把部署动作拆成真实顺序，并把支持入口放在每一步旁边。</p>
+          </div>
+          <div class="path">
+            <article class="path-step"><h3>下载项目包</h3><p class="help">官网镜像包优先；没有镜像时显示待登记，并保留 GitHub 备用入口。</p></article>
+            <article class="path-step"><h3>启动 Web 控制台</h3><p class="help">检查 QMT 路径、账号和桥接进程状态。</p></article>
+            <article class="path-step"><h3>配置账号和路径</h3><p class="help">确认本地终端、交易账号和运行权限。</p></article>
+            <article class="path-step"><h3>加载入口脚本</h3><p class="help">按通用、极致或高级模式选择脚本。</p></article>
+            <article class="path-step"><h3>外部程序调用</h3><p class="help">策略程序读取行情、提交请求并处理回调。</p></article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container split">
+          <div>
+            <span class="section-kicker">社区数据</span>
+            <h2>下载、讨论和反馈都在官网闭环。</h2>
+            <dl class="metric-grid stat-grid">
+              <div class="metric"><span>用户</span><strong id="statUsers">0</strong></div>
+              <div class="metric"><span>帖子</span><strong id="statThreads">0</strong></div>
+              <div class="metric"><span>回复</span><strong id="statReplies">0</strong></div>
+              <div class="metric"><span>下载</span><strong id="statDownloads">0</strong></div>
+            </dl>
+          </div>
+          <aside class="card">
+            <div class="composer-row">
+              <h3>热门讨论</h3>
+              <button class="btn btn-ghost" type="button" data-jump-view="forum">全部</button>
+            </div>
+            <div id="hotThreads" class="compact-list"></div>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-architecture" class="view" aria-label="架构说明">
+      <section class="section simple-hero">
+        <div class="container">
+          <span class="section-kicker">架构工作台</span>
+          <h1>把调用、路由和回调放在一张可操作的图里。</h1>
+          <p class="lead">这页把 cfquant 架构拆成可切换的链路视图：默认 auto 路由、强制 ctypes、强制 lttx、回调广播、模式差异和运行时数据。</p>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container architecture-shell">
+          <aside class="architecture-control card">
+            <div>
+              <h2>链路视图</h2>
+              <p class="help">先选场景，再播放路径。深色节点代表当前步骤，浅色节点代表本链路会经过的模块。</p>
+            </div>
+            <div class="arch-route-grid" role="tablist" aria-label="架构链路切换">
+              <button class="arch-route-btn is-active" type="button" role="tab" aria-selected="true" data-arch-route="overview">总览</button>
+              <button class="arch-route-btn" type="button" role="tab" aria-selected="false" data-arch-route="auto">auto</button>
+              <button class="arch-route-btn" type="button" role="tab" aria-selected="false" data-arch-route="ctypes">ctypes</button>
+              <button class="arch-route-btn" type="button" role="tab" aria-selected="false" data-arch-route="lttx">lttx</button>
+              <button class="arch-route-btn" type="button" role="tab" aria-selected="false" data-arch-route="callback">回调</button>
+              <button class="arch-route-btn" type="button" role="tab" aria-selected="false" data-arch-route="modes">模式</button>
+              <button class="arch-route-btn" type="button" role="tab" aria-selected="false" data-arch-route="runtime">运行时</button>
+            </div>
+            <div class="arch-route-summary">
+              <span class="status" id="archRouteType">总体架构</span>
+              <h3 id="archRouteSummaryTitle">七层调用结构</h3>
+              <p class="help" id="archRouteSummary">外部 Python 通过 cfquant API 进入客户端选择层，再由 Web、PipeHub 或 LTtx 投递到 QMT 内部桥。</p>
+              <p class="mono" id="archRouteDecision">核心判断：transport 与 Web route 是否在线。</p>
+            </div>
+            <div class="arch-player">
+              <button class="btn btn-secondary" type="button" id="archPrev">上一层</button>
+              <button class="btn btn-primary" type="button" id="archPlay">播放</button>
+              <button class="btn btn-secondary" type="button" id="archNext">下一层</button>
+            </div>
+            <div class="arch-progress-card">
+              <div class="composer-row"><span class="meta">当前步骤</span><strong class="mono" id="archStepIndicator">1 / 7</strong></div>
+              <div class="arch-progress-track" aria-hidden="true"><div class="arch-progress-value" id="archProgress"></div></div>
+              <p class="help" id="archStepLabel">外部 Python 调用者发起交易、查询或行情请求。</p>
+            </div>
+          </aside>
+
+          <div class="architecture-stage">
+            <div class="arch-stage-head">
+              <div>
+                <h2 id="archRouteTitle">总体架构</h2>
+                <p class="help" id="archRouteLead">点击节点可查看职责，切换链路时会自动高亮相关模块。</p>
+              </div>
+              <span class="status status-success" id="archStatus">可交互</span>
+            </div>
+            <div class="arch-map" aria-label="cfquant 架构节点图">
+              <div class="arch-lane"><div class="arch-lane-title">外部调用</div><button class="arch-node" type="button" data-arch-node="user"><strong>外部 Python</strong><span>策略 / 测试 / 业务</span></button></div>
+              <div class="arch-lane"><div class="arch-lane-title">API 层</div><button class="arch-node" type="button" data-arch-node="xttrader"><strong>xttrader.py</strong><span>交易 / 账户 / 回调</span></button><button class="arch-node" type="button" data-arch-node="xtdata"><strong>xtdata.py</strong><span>行情 / 订阅 / 下载</span></button><button class="arch-node" type="button" data-arch-node="xttype"><strong>类型常量</strong><span>对象模型兼容</span></button></div>
+              <div class="arch-lane"><div class="arch-lane-title">客户端协议</div><button class="arch-node" type="button" data-arch-node="config"><strong>config</strong><span>transport / bridge</span></button><button class="arch-node" type="button" data-arch-node="rpc"><strong>client.py</strong><span>自动选择客户端</span></button><button class="arch-node" type="button" data-arch-node="protocol"><strong>protocol</strong><span>请求 / 响应 / 事件</span></button></div>
+              <div class="arch-lane"><div class="arch-lane-title">本地服务</div><button class="arch-node" type="button" data-arch-node="web"><strong>Web 路由</strong><span>账号 / fallback</span></button><button class="arch-node" type="button" data-arch-node="pipehub"><strong>PipeHub</strong><span>named pipe 中转</span></button><button class="arch-node" type="button" data-arch-node="lttx"><strong>LTtx</strong><span>socket 发布订阅</span></button><button class="arch-node" type="button" data-arch-node="runtime"><strong>runtime</strong><span>账号和模式配置</span></button></div>
+              <div class="arch-lane"><div class="arch-lane-title">QMT 入口</div><button class="arch-node" type="button" data-arch-node="ctype-entry"><strong>通用入口</strong><span>CTYPE_ALL_LOWLAT</span></button><button class="arch-node" type="button" data-arch-node="lite-entry"><strong>极致入口</strong><span>CFQUANT_LITE</span></button><button class="arch-node" type="button" data-arch-node="normal-entry"><strong>普通桥入口</strong><span>CFQUANT.py</span></button><button class="arch-node" type="button" data-arch-node="trade-entry"><strong>交易桥入口</strong><span>TRADE_LOWLAT</span></button><button class="arch-node" type="button" data-arch-node="market-entry"><strong>市场拆分</strong><span>沪 / 深 bridge</span></button></div>
+              <div class="arch-lane"><div class="arch-lane-title">QMT 桥</div><button class="arch-node" type="button" data-arch-node="pipe-bridge"><strong>Pipe 桥</strong><span>接入 PipeHub</span></button><button class="arch-node" type="button" data-arch-node="normal-bridge"><strong>普通桥</strong><span>查询 / 行情 / 回调</span></button><button class="arch-node" type="button" data-arch-node="trade-bridge"><strong>交易桥</strong><span>下单 / 撤单</span></button></div>
+              <div class="arch-lane"><div class="arch-lane-title">原生能力</div><button class="arch-node" type="button" data-arch-node="qmt-native"><strong>QMT 原生</strong><span>passorder / cancel</span></button><button class="arch-node" type="button" data-arch-node="callback-event"><strong>回调事件</strong><span>trader:on_*</span></button></div>
+            </div>
+            <div class="arch-chain" id="archCurrentChain" aria-live="polite"></div>
+          </div>
+
+          <aside class="architecture-inspector card">
+            <div class="arch-detail">
+              <span class="status" id="archDetailLayer">外部调用</span>
+              <h2 id="archDetailTitle">外部 Python 调用者</h2>
+              <code id="archDetailPath">策略、测试脚本、业务程序</code>
+              <p class="help" id="archDetailBody">发起 order_stock、query、xtdata 等请求，也负责接收响应和订阅后的事件。</p>
+            </div>
+            <div>
+              <h3>本链路步骤</h3>
+              <div class="arch-step-list" id="archStepList"></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <h2>实时数据流向示意，让用户看懂每一类消息怎么穿过系统。</h2>
+            <p>这是基于架构逻辑的动态演示，不连接真实服务。切换数据类型后，路径、载荷、频道和事件队列会同步更新。</p>
+          </div>
+          <div class="dataflow-shell">
+            <div class="dataflow-board">
+              <div class="dataflow-head">
+                <div>
+                  <h2 id="flowTitle">默认请求流</h2>
+                  <span class="status status-success" id="flowStatus">实时演示</span>
+                  <p class="help" id="flowLead">外部 Python 发起请求后，经 API、客户端选择和 Web 路由进入 QMT 桥，再把响应原路返回。</p>
+                </div>
+                <div class="hero-actions"><button class="btn btn-primary" type="button" id="flowPlay">播放流动</button><button class="btn btn-secondary" type="button" id="flowNext">下一跳</button></div>
+              </div>
+              <div class="flow-mode-strip" role="tablist" aria-label="实时流向类型">
+                <button class="flow-mode-btn is-active" type="button" role="tab" aria-selected="true" data-flow-mode="request">请求流</button>
+                <button class="flow-mode-btn" type="button" role="tab" aria-selected="false" data-flow-mode="market">行情流</button>
+                <button class="flow-mode-btn" type="button" role="tab" aria-selected="false" data-flow-mode="trade-callback">交易回调</button>
+                <button class="flow-mode-btn" type="button" role="tab" aria-selected="false" data-flow-mode="download">下载进度</button>
+                <button class="flow-mode-btn" type="button" role="tab" aria-selected="false" data-flow-mode="heartbeat">运行心跳</button>
+              </div>
+              <div class="flow-network" aria-label="cfquant 实时数据流向网络">
+                <svg class="flow-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                  <path class="flow-link" data-flow-link="caller-api" data-from="caller" data-to="api"></path>
+                  <path class="flow-link" data-flow-link="api-client" data-from="api" data-to="client"></path>
+                  <path class="flow-link" data-flow-link="client-route" data-from="client" data-to="route"></path>
+                  <path class="flow-link" data-flow-link="route-hub" data-from="route" data-to="hub"></path>
+                  <path class="flow-link" data-flow-link="hub-entry" data-from="hub" data-to="entry"></path>
+                  <path class="flow-link" data-flow-link="entry-bridge" data-from="entry" data-to="bridge"></path>
+                  <path class="flow-link" data-flow-link="bridge-native" data-from="bridge" data-to="native"></path>
+                </svg>
+                <div class="flow-packet" id="flowPacket" aria-hidden="true"></div>
+                <div class="flow-node-grid">
+                  <button class="flow-system-node" type="button" data-flow-node="caller"><strong>外部 Python</strong><span>策略进程</span></button>
+                  <button class="flow-system-node" type="button" data-flow-node="api"><strong>API 兼容层</strong><span>xttrader / xtdata</span></button>
+                  <button class="flow-system-node" type="button" data-flow-node="client"><strong>RPC 客户端</strong><span>auto / ctypes / lttx</span></button>
+                  <button class="flow-system-node" type="button" data-flow-node="route"><strong>Web / LTtx</strong><span>统一路由与发现</span></button>
+                  <button class="flow-system-node" type="button" data-flow-node="hub"><strong>PipeHub</strong><span>named pipe 中转</span></button>
+                  <button class="flow-system-node" type="button" data-flow-node="entry"><strong>QMT 入口</strong><span>模式脚本</span></button>
+                  <button class="flow-system-node" type="button" data-flow-node="bridge"><strong>QMT 桥</strong><span>normal / trade</span></button>
+                  <button class="flow-system-node" type="button" data-flow-node="native"><strong>QMT 原生</strong><span>接口与回调</span></button>
+                </div>
+              </div>
+              <div class="flow-timeline" id="flowTimeline" aria-live="polite"></div>
+            </div>
+            <aside class="dataflow-side">
+              <article class="card payload-card">
+                <h2 id="flowPayloadTitle">order_stock 请求</h2>
+                <span class="status" id="flowPayloadType">request</span>
+                <p class="help" id="flowPayloadCopy">请求从外部 Python 进入 API 层，最终由 QMT 原生交易函数处理，响应只回给发起请求的 client_id。</p>
+                <div class="payload-grid">
+                  <div class="payload-cell"><span>频道</span><strong id="flowChannel">cfquant.web.request</strong></div>
+                  <div class="payload-cell"><span>载荷</span><strong id="flowPayload">request.order_stock</strong></div>
+                  <div class="payload-cell"><span>当前跳点</span><strong id="flowHop">外部 Python</strong></div>
+                  <div class="payload-cell"><span>处理规则</span><strong id="flowRule">按 client_id 返回</strong></div>
+                </div>
+              </article>
+              <article class="card">
+                <div class="composer-row"><h3>事件队列</h3><span class="status" id="flowEventCount">0 / 8</span></div>
+                <div class="event-stream" id="flowEvents"></div>
+              </article>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <h2>模块职责按排障路径组织，而不是按文件名平铺。</h2>
+            <p>搜索框支持路径、模块名和职责关键词；层级筛选帮助用户从 API、协议、本地服务或 QMT 入口快速定位问题。</p>
+          </div>
+          <div class="filter-bar arch-filter">
+            <div><label for="archModuleSearch">搜索模块</label><input class="field-control" id="archModuleSearch" placeholder="例如 PipeHub、回调、xtdata、TRADE_LOWLAT"></div>
+            <div><label for="archLayerFilter">层级</label><select class="field-control" id="archLayerFilter"><option value="all">全部层级</option><option value="api">API 层</option><option value="client">客户端协议</option><option value="service">本地服务</option><option value="entry">QMT 入口</option><option value="bridge">QMT 桥</option></select></div>
+            <div><span class="meta">结果</span><strong class="mono" id="archModuleCount">0 个模块</strong></div>
+            <button class="btn btn-secondary" type="button" id="archModuleClear">清空</button>
+          </div>
+          <div class="compare-wrap">
+            <table>
+              <thead><tr><th>模块</th><th>路径</th><th>主要职责</th><th>常见定位点</th></tr></thead>
+              <tbody>
+                <tr class="arch-module-row" data-layer="api" data-search="外部 API cfquant init xttrader xtdata xttype xtconstant 兼容入口 交易 行情"><td><strong>外部 API 总入口</strong></td><td><code>cfquant/__init__.py</code></td><td>暴露 xtdata、xttrader、xttype、configure 等兼容入口。</td><td>迁移 miniQMT 调用习惯时先看这里。</td></tr>
+                <tr class="arch-module-row" data-layer="api" data-search="交易兼容层 xttrader XtQuantTrader 账号订阅 下单 撤单 回调派发"><td><strong>交易兼容层</strong></td><td><code>cfquant/xttrader.py</code></td><td>负责 XtQuantTrader、账号订阅、下单、撤单、交易查询和交易回调派发。</td><td>交易接口或回调签名不一致时定位。</td></tr>
+                <tr class="arch-module-row" data-layer="api" data-search="行情兼容层 xtdata 行情查询 行情订阅 数据下载"><td><strong>行情兼容层</strong></td><td><code>cfquant/xtdata.py</code></td><td>负责行情查询、行情订阅、数据下载和条件兼容接口。</td><td>on_tick、数据下载进度和行情缺口。</td></tr>
+                <tr class="arch-module-row" data-layer="client" data-search="配置 频道 协议 config channels protocol request response event bridge_id"><td><strong>配置、频道与协议</strong></td><td><code>config.py</code> / <code>channels.py</code> / <code>protocol.py</code></td><td>维护 transport、pipe name、bridge_id，并统一封装 request、response 和 event。</td><td>频道名、序列化和 bridge 对不上。</td></tr>
+                <tr class="arch-module-row" data-layer="client" data-search="RPC 客户端选择 client auto Pipe LTtx WebLttx"><td><strong>RPC 客户端选择</strong></td><td><code>cfquant/client.py</code></td><td>根据 transport=auto、ctypes、lttx、web_lttx 创建对应客户端。</td><td>判断请求为什么走 Web、PipeHub 或 LTtx。</td></tr>
+                <tr class="arch-module-row" data-layer="service" data-search="Web 服务 cfquant_web_server Web 控制台 统一路由 账号配置 回调转发 fallback"><td><strong>Web 服务</strong></td><td><code>cfquant_web_server.py</code></td><td>维护 Web 控制台、账号配置、统一路由、运行时注册、callback 监听和 WebSocket 推送。</td><td>多账号、fallback、控制台状态异常。</td></tr>
+                <tr class="arch-module-row" data-layer="service" data-search="PipeHub pipe_hub cfquant_pipe_hub named pipe 消息代理 请求转发 响应配对 事件投递"><td><strong>PipeHub 核心</strong></td><td><code>cfquant/pipe_hub.py</code></td><td>作为外部 Python、Web 和 QMT Pipe 桥之间的 named pipe 消息代理。</td><td>ctypes、lite 和通用模式的连接问题。</td></tr>
+                <tr class="arch-module-row" data-layer="service" data-search="LTtx tx socket 发布订阅 服务端 cfquant.runtime 高级模式"><td><strong>LTtx 服务</strong></td><td><code>LTtx/tx/LTtx_server.py</code></td><td>提供本机 socket 发布订阅，用于 Web route、运行时发现和高级模式直连。</td><td>auto 发现、Web route 和高级模式请求。</td></tr>
+                <tr class="arch-module-row" data-layer="entry" data-search="通用模式 QMT 入口 CTYPE_ALL_LOWLAT 单文件 双通道 normal trade"><td><strong>通用模式入口</strong></td><td><code>qmt_scripts/CFQUANT_CTYPE_ALL_LOWLAT.py</code></td><td>单个 QMT 策略内启动 normal 和 trade 两个 Pipe 通道。</td><td>快速部署和多数常规使用。</td></tr>
+                <tr class="arch-module-row" data-layer="entry" data-search="极致模式 lite CFQUANT_LITE 自包含 白名单"><td><strong>极致模式入口</strong></td><td><code>qmt_scripts/CFQUANT_LITE.py</code></td><td>自包含入口，适配无法正常导入 cfquant 包的 QMT 环境。</td><td>白名单限制严格的本地终端。</td></tr>
+                <tr class="arch-module-row" data-layer="bridge" data-search="普通桥 normal_bridge 回调发布 行情订阅 普通请求队列"><td><strong>普通桥</strong></td><td><code>cfquant/normal_bridge.py</code></td><td>处理普通请求队列、行情订阅转发、callback event 通道和 QMT 原始交易回调发布。</td><td>账号级广播回调的源头。</td></tr>
+                <tr class="arch-module-row" data-layer="bridge" data-search="交易桥 tx_trade_bridge passorder cancel 交易查询 请求级响应"><td><strong>交易桥</strong></td><td><code>cfquant/tx_trade_bridge.py</code></td><td>分发 passorder、cancel、交易查询、账号订阅和请求级事件。</td><td>同步响应只回到发起 client_id。</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <article class="card empty-card" id="archModuleEmpty" hidden><h3>没有匹配的模块</h3><p class="help">请换一个路径、模块名或职责关键词，比如 Web、PipeHub、回调、行情或交易。</p></article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-head">
+            <h2>连接生命周期要单独讲清楚，避免把 import 误解成已连接。</h2>
+            <p>生命周期条把何时连接、连接到哪里、何时关闭拆成六个状态；运行时数据列出排障时最常用的配置和频道。</p>
+          </div>
+          <div class="lifecycle-grid">
+            <button class="life-step is-active" type="button" data-life="imported"><strong>导入</strong><span>import cfquant</span></button>
+            <button class="life-step" type="button" data-life="object"><strong>创建对象</strong><span>StockAccount / Trader</span></button>
+            <button class="life-step" type="button" data-life="connect"><strong>首次连接</strong><span>start / request</span></button>
+            <button class="life-step" type="button" data-life="route"><strong>选择链路</strong><span>Web / Pipe / LTtx</span></button>
+            <button class="life-step" type="button" data-life="running"><strong>持续运行</strong><span>接收线程</span></button>
+            <button class="life-step" type="button" data-life="closed"><strong>关闭</strong><span>stop / close</span></button>
+          </div>
+          <article class="card"><span class="status" id="lifeStatus">未连接</span><h3 id="lifeTitle">导入 cfquant</h3><p class="help" id="lifeBody">仅导入包不会连接 LTtx，也不会创建 PipeHub 连接。真正连接发生在 start、connect、subscribe 或首次请求。</p></article>
+          <div class="runtime-grid">
+            <article class="runtime-card"><strong>Web 配置</strong><code>runtime/config/cfquant_web_config.json</code><p class="help">保存账号、账号类型、bridge、运行模式、市场路由和 Web 端口。</p></article>
+            <article class="runtime-card"><strong>Pipe 名称</strong><code>\\.\pipe\cfquant_pipe_hub</code><p class="help">外部 Pipe 客户端、Web 和 QMT Pipe 桥共同连接的 named pipe。</p></article>
+            <article class="runtime-card"><strong>LTtx 地址</strong><code>127.0.0.1:2049</code><p class="help">Web route、高级模式和运行时发现使用。</p></article>
+            <article class="runtime-card"><strong>统一请求频道</strong><code>cfquant.web.request</code><p class="help">外部 auto 命中 Web 路由后的统一入口。</p></article>
+            <article class="runtime-card"><strong>回调频道</strong><code>cfquant.callback.event</code><p class="help">QMT 原始交易回调发布给 Web 监听器。</p></article>
+            <article class="runtime-card"><strong>发现 key</strong><code>cfquant.runtime</code><p class="help">Web 写入 LTtx，外部 auto 读取后决定是否走 Web route。</p></article>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-downloads" class="view" aria-label="下载更新">
+      <section class="section simple-hero download-hero">
+        <div class="container">
+          <span class="section-kicker">下载与版本</span>
+          <h1>最新版本优先，校验信息不折叠。</h1>
+          <p class="lead">用户来到下载页时，第一任务是确认版本、大小、更新时间、SHA256 和备用入口。</p>
+        </div>
+      </section>
+      <section class="section">
+        <div class="container stack xl-gap">
+          <div id="releasePanel" class="release-panel"></div>
+          <div>
+            <div class="section-head">
+              <h2>历史下载列表保留完整校验路径。</h2>
+              <p>版本字段、说明和 SHA256 使用等宽字体，数值列稳定展示，窄屏退化为卡片列表。</p>
+            </div>
+            <div id="downloadList" class="download-grid"></div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-docs" class="view" aria-label="部署文档入口">
+      <section class="section simple-hero">
+        <div class="container">
+          <span class="section-kicker">文档入口</span>
+          <h1>先回答怎么部署，再进入接口细节。</h1>
+          <p class="lead">文档页按用户任务组织，不按仓库目录组织。部署、迁移、升级、接口兼容和运维排障都留在站内完成。</p>
+        </div>
+      </section>
+      <section class="section">
+        <div class="container bento-grid docs-grid">
+          <a class="card feature-card large card-link" href="/docs/deployment.html"><span class="mark"><svg class="i"><use href="#i-book"/></svg></span><h3>部署指南</h3><p>下载项目包、启动控制台、配置 QMT 路径和账号。</p></a>
+          <a class="card feature-card card-link" href="/docs/external-python.html"><h3>外部 Python 接入</h3><p class="help">说明 PipeHub、ctypes 单文件桥和调用边界。</p></a>
+          <a class="card feature-card card-link" href="/docs/mini-qmt-migration.html"><h3>miniQMT 迁移</h3><p class="help">从 miniQMT / xtquant 接入方式迁移到大 QMT 的注意项。</p></a>
+          <a class="card feature-card card-link" href="/docs/operations.html"><h3>运维更新</h3><p class="help">升级、回滚、版本日志和 SHA256 校验。</p></a>
+          <a class="card feature-card card-link" href="/docs/api-compatibility.html"><h3>接口兼容</h3><p class="help">行情、查询、交易、回调模块的兼容说明。</p></a>
+          <a class="card feature-card card-link" href="/docs/troubleshooting.html"><h3>排障路径</h3><p class="help">错误信息走论坛，带截图的问题走反馈。</p></a>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-forum" class="view" aria-label="论坛讨论">
+      <section class="section simple-hero">
+        <div class="container">
+          <span class="section-kicker">cfquant 讨论区</span>
+          <h1>论坛像排障队列，不像公告墙。</h1>
+          <p class="lead">分类、搜索、状态和最后活跃时间是主信息。发布问题会引导登录，空状态会告诉用户下一步该做什么。</p>
+        </div>
+      </section>
+      <section class="section">
+        <div class="container forum-shell forum-layout">
+          <div class="board forum-board">
+            <div class="board-head forum-board-head">
+              <div><h2>问题讨论</h2><p class="help">集中跟踪 QMT 部署、行情订阅、交易请求、Socket 桥接和更新安装问题。</p></div>
+              <button id="newThreadButton" class="btn btn-primary" type="button"><svg class="i"><use href="#i-plus"/></svg>发布问题</button>
+            </div>
+            <div class="filter-bar forum-toolbar">
+              <div id="categoryTabs" class="tabs segmented"></div>
+              <label class="search-box" for="threadSearch"><span>搜索关键词、错误信息、接口名</span><input id="threadSearch" class="field-control" type="search" placeholder="例如 PipeHub / 回调 / CFQUANT_LITE.py" autocomplete="off"></label>
+            </div>
+            <form id="threadForm" class="compose-panel hidden">
+              <div class="form-row two">
+                <label for="threadCategory"><span>分类</span><select id="threadCategory" name="category" class="field-control"></select></label>
+                <label for="threadTags"><span>标签</span><input id="threadTags" name="tags" class="field-control" type="text" placeholder="例如：部署,行情,交易" autocomplete="off"></label>
+              </div>
+              <label for="threadTitle"><span>标题</span><input id="threadTitle" name="title" class="field-control" type="text" maxlength="120" required autocomplete="off"></label>
+              <label for="threadBody"><span>问题描述</span><textarea id="threadBody" name="body" class="field-control" rows="6" required autocomplete="off"></textarea></label>
+              <div class="form-actions"><button class="btn btn-primary" type="submit">提交</button><button id="cancelThreadButton" class="btn btn-secondary" type="button">取消</button></div>
+            </form>
+            <div id="threadList" class="topic-list thread-list"></div>
+          </div>
+          <aside class="side-panel forum-side">
+            <article class="card">
+              <h3>提问前先补齐上下文</h3>
+              <div class="priority-list">
+                <button type="button" data-copy="请补充 QMT 路径、脚本名、端口和完整错误"><strong>部署问题</strong><span class="help">QMT 路径、脚本名、端口和完整错误。</span></button>
+                <button type="button" data-copy="请补充订阅参数、回调日志和消费方式"><strong>行情问题</strong><span class="help">订阅参数、回调日志和消费方式。</span></button>
+                <button type="button" data-jump-view="features"><strong>功能建议</strong><span class="help">新接口、工作流和官网需求放到建议池。</span></button>
+                <button type="button" data-jump-view="feedback"><strong>带截图的问题</strong><span class="help">建议走反馈页上传附件。</span></button>
+              </div>
+            </article>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-thread" class="view thread-page" aria-label="帖子详情">
+      <section class="section">
+        <div class="container thread-shell">
+          <div>
+            <div class="back-row"><button id="backToForumButton" class="btn btn-ghost" type="button"><svg class="i"><use href="#i-back"/></svg>返回论坛</button></div>
+            <div id="threadPageContent" class="thread-page-content"></div>
+          </div>
+          <aside class="side-panel">
+            <article class="card"><h3>截图和敏感信息</h3><p class="help">含账号、路径或截图的问题建议转到反馈页，可以公开进度，也能登录后跟踪自己的处理记录。</p><button class="btn btn-secondary full" type="button" data-jump-view="feedback">提交反馈</button></article>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-features" class="view" aria-label="功能建议">
+      <section class="section simple-hero">
+        <div class="container">
+          <span class="section-kicker">功能建议池</span>
+          <h1>把功能需求从讨论串里拆出来，按状态和票数沉淀。</h1>
+          <p class="lead">用户可以提交接口、行情、交易、官网和文档相关需求；管理员会在后台评估并同步状态。</p>
+        </div>
+      </section>
+      <section class="section">
+        <div class="container feedback-shell feedback-console feature-shell">
+          <div class="board feature-content">
+            <div class="board-head">
+              <div>
+                <h2>建议工作台</h2>
+                <p class="help">公开需求池展示所有建议，提交后会进入待评估状态。</p>
+              </div>
+            </div>
+            <div id="featureMenu" class="tabs forum-tabs feedback-menu feature-menu" aria-label="功能建议菜单">
+              <button class="tab feedback-menu-button feature-menu-button is-active" type="button" data-feature-panel="public"><strong>需求池</strong><span>按票数和状态查看</span></button>
+              <button class="tab feedback-menu-button feature-menu-button" type="button" data-feature-panel="submit"><strong>提交建议</strong><span>描述场景和收益</span></button>
+              <button class="tab feedback-menu-button feature-menu-button" type="button" data-feature-panel="mine"><strong>我的建议</strong><span>登录后跟踪状态</span></button>
+            </div>
+            <section id="featurePanelPublic" class="feedback-panel feature-panel feature-list-card is-active" data-feature-panel-view="public">
+              <div class="panel-head">
+                <h2>公开需求池</h2>
+                <button id="refreshPublicFeatures" class="btn btn-secondary" type="button">刷新</button>
+              </div>
+              <div id="featureSubmitSuccess" class="feedback-submit-success hidden" role="status" aria-live="polite"></div>
+              <div id="featureList" class="feedback-feed feature-feed"></div>
+            </section>
+            <section id="featurePanelSubmit" class="feedback-panel feature-panel" data-feature-panel-view="submit">
+              <form id="featureForm" class="feedback-form-card feature-form-card">
+                <div class="form-card-head">
+                  <span class="section-kicker">Request</span>
+                  <h2>提交一个可评估的功能建议</h2>
+                  <p>建议说明使用场景、当前绕行方式、希望补齐的接口或官网能力。登录用户会自动绑定账号，未登录时需要填写邮箱。</p>
+                </div>
+                <label for="featureTitle"><span>建议标题</span><input id="featureTitle" name="title" class="field-control" type="text" maxlength="120" required autocomplete="off" placeholder="例如：增加批量撤单接口"></label>
+                <div class="form-row two">
+                  <label for="featureModule"><span>模块</span><select id="featureModule" name="module" class="field-control">
+                    <option value="bridge">桥接运行</option>
+                    <option value="quote">行情数据</option>
+                    <option value="trade">交易接口</option>
+                    <option value="web">官网 / 控制台</option>
+                    <option value="docs">文档示例</option>
+                    <option value="other">其它</option>
+                  </select></label>
+                  <label for="featurePriority"><span>优先级</span><select id="featurePriority" name="priority" class="field-control">
+                    <option value="normal">常规</option>
+                    <option value="high">高</option>
+                    <option value="low">低</option>
+                  </select></label>
+                </div>
+                <label for="featureContact"><span>联系邮箱</span><input id="featureContact" name="contact" class="field-control" type="email" autocomplete="email" spellcheck="false" placeholder="用于状态更新通知"></label>
+                <label for="featureUseCase"><span>使用场景</span><textarea id="featureUseCase" name="use_case" class="field-control" rows="3" maxlength="1200" autocomplete="off" placeholder="说明谁会用、在哪一步用、现在怎么绕行"></textarea></label>
+                <label for="featureBody"><span>建议内容</span><textarea id="featureBody" name="body" class="field-control" rows="7" maxlength="5000" required autocomplete="off" placeholder="描述希望增加的能力、入参/出参、预期行为或官网页面需求"></textarea></label>
+                <div class="form-actions"><button class="btn btn-primary" type="submit">提交建议</button></div>
+              </form>
+            </section>
+            <section id="featurePanelMine" class="feedback-panel feature-panel feature-list-card" data-feature-panel-view="mine">
+              <div class="panel-head">
+                <h2>我的建议</h2>
+                <button id="refreshMyFeatures" class="btn btn-secondary" type="button">刷新</button>
+              </div>
+              <div id="myFeatureList" class="feedback-feed feature-feed"></div>
+            </section>
+          </div>
+          <aside class="side-panel">
+            <article class="card">
+              <h3>建议拆分规则</h3>
+              <div class="checklist">
+                <div class="check-row"><span class="status status-success">需求</span><span>新接口、参数、页面和流程优化</span><button class="btn btn-ghost" type="button" data-feature-panel="submit">填写</button></div>
+                <div class="check-row"><span class="status status-warning">问题</span><span>报错、截图和安装失败仍走反馈页</span><button class="btn btn-ghost" type="button" data-jump-view="feedback">反馈</button></div>
+                <div class="check-row"><span class="status">讨论</span><span>不确定是否为缺陷时先到论坛交流</span><button class="btn btn-ghost" type="button" data-jump-view="forum">论坛</button></div>
+              </div>
+            </article>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-feedback" class="view" aria-label="问题反馈">
+      <section class="section simple-hero">
+        <div class="container">
+          <span class="section-kicker">问题反馈工作台</span>
+          <h1>反馈页按处理状态组织，不做营销段落。</h1>
+          <p class="lead">公开反馈、提交反馈和我的反馈使用同一套标签、附件、处理回复和通知规则。</p>
+        </div>
+      </section>
+      <section class="section">
+        <div class="container feedback-shell feedback-console">
+          <div class="board feedback-content">
+            <div class="board-head"><div><h2>反馈工作台</h2><p class="help">默认展示公开反馈，提交成功后回到公开列表。</p></div></div>
+            <div id="feedbackMenu" class="tabs forum-tabs feedback-menu" aria-label="反馈菜单">
+              <button class="tab feedback-menu-button is-active" type="button" data-feedback-panel="public"><strong>公开反馈</strong><span>查看处理进度</span></button>
+              <button class="tab feedback-menu-button" type="button" data-feedback-panel="submit"><strong>提交反馈</strong><span>补充问题和截图</span></button>
+              <button class="tab feedback-menu-button" type="button" data-feedback-panel="mine"><strong>我的反馈</strong><span>登录后跟踪</span></button>
+            </div>
+            <section id="feedbackPanelPublic" class="feedback-panel feedback-list-card is-active" data-feedback-panel-view="public">
+              <div class="panel-head"><h2>公开反馈</h2><button id="refreshPublicFeedback" class="btn btn-secondary" type="button">刷新</button></div>
+              <div id="feedbackSubmitSuccess" class="feedback-submit-success hidden" role="status" aria-live="polite"></div>
+              <div id="publicFeedbackList" class="feedback-feed"></div>
+            </section>
+            <section id="feedbackPanelSubmit" class="feedback-panel" data-feedback-panel-view="submit">
+              <form id="feedbackForm" class="feedback-form-card">
+                <div class="form-card-head"><span class="section-kicker">Submit</span><h2>提交一个可跟踪的问题</h2><p>反馈提交后默认公开展示。建议隐藏账号、手机号、路径等敏感信息，截图可点击选择，也可以直接 Ctrl+V 粘贴。</p></div>
+                <label for="feedbackTitle"><span>标题</span><input id="feedbackTitle" name="title" class="field-control" type="text" maxlength="120" required autocomplete="off"></label>
+                <label for="feedbackContact"><span>联系邮箱</span><input id="feedbackContact" name="contact" class="field-control" type="email" autocomplete="email" spellcheck="false" placeholder="用于接收处理回复"></label>
+                <label for="feedbackBody"><span>问题描述</span><textarea id="feedbackBody" name="body" class="field-control" rows="8" required autocomplete="off"></textarea></label>
+                <label class="upload-field upload-zone" for="feedbackScreenshots"><span>截图附件</span><input id="feedbackScreenshots" name="screenshots" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple><small>可选，最多 4 张，每张不超过 3MB。支持从剪贴板直接粘贴图片。</small></label>
+                <div id="feedbackDropHint" class="paste-hint"><strong>Ctrl+V 粘贴截图</strong><span>复制截图后在当前页面直接粘贴，会自动生成缩略图。</span></div>
+                <div id="feedbackPreview" class="screenshot-preview"></div>
+                <div class="form-actions"><button class="btn btn-primary" type="submit">提交反馈</button></div>
+              </form>
+            </section>
+            <section id="feedbackPanelMine" class="feedback-panel feedback-list-card" data-feedback-panel-view="mine">
+              <div class="panel-head"><h2>我的反馈</h2><button id="refreshMyFeedback" class="btn btn-secondary" type="button">刷新</button></div>
+              <div id="myFeedbackList" class="feedback-feed"></div>
+            </section>
+          </div>
+          <aside class="side-panel">
+            <article class="card">
+              <h3>提交检查</h3>
+              <div class="checklist">
+                <div class="check-row"><span class="status status-success">通过</span><span>标题清楚说明问题</span><button class="btn btn-ghost" type="button" data-feedback-panel="submit">去填写</button></div>
+                <div class="check-row"><span class="status status-warning">建议</span><span>截图能缩短排查时间</span><button class="btn btn-ghost" type="button" data-feedback-panel="submit">上传</button></div>
+                <div class="check-row"><span class="status">说明</span><span>邮箱用于处理回复通知</span><button class="btn btn-ghost" type="button" data-jump-view="center">通知</button></div>
+              </div>
+            </article>
+          </aside>
+        </div>
+      </section>
+    </section>
+
+    <section id="view-center" class="view" aria-label="用户中心">
+      <section class="section simple-hero">
+        <div class="container">
+          <span class="section-kicker">User Center</span>
+          <h1>用户中心像设置页和通知中心，不放宣传文案。</h1>
+          <p class="lead">查看账号信息、互动通知和站内通知，支持标记已读、头像和邮件偏好设置。</p>
+        </div>
+      </section>
+      <section class="section">
+        <div class="container">
+          <div id="centerContent" class="account-shell center-layout"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="pagefoot">
+    <div class="container footer-inner">
+      <span>cfquant.org · 官网重设计 v3</span>
+      <div class="hero-actions">
+        <button class="btn btn-ghost" type="button" data-jump-view="project">项目</button>
+        <button class="btn btn-ghost" type="button" data-jump-view="architecture">架构</button>
+        <button class="btn btn-ghost" type="button" data-jump-view="downloads">下载</button>
+        <button class="btn btn-ghost" type="button" data-jump-view="features">建议</button>
+        <button class="btn btn-ghost" type="button" data-jump-view="feedback">反馈</button>
+      </div>
+    </div>
+  </footer>
+
+  <div id="authModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="modal modal-panel auth-panel">
+      <div class="modal-head">
+        <h2 id="authTitle">注册 / 登录</h2>
+        <button id="closeAuth" class="icon-btn icon-button" type="button" aria-label="关闭"><svg class="i"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="modal-body">
+        <div class="tabs auth-switch">
+          <button class="tab switch-tab is-active" type="button" data-auth-mode="register">注册</button>
+          <button class="tab switch-tab" type="button" data-auth-mode="login">登录</button>
+        </div>
+        <form id="registerForm" class="auth-form">
+          <div class="form-row two">
+            <label for="registerUsername"><span>用户名</span><input id="registerUsername" name="username" class="field-control" type="text" minlength="3" maxlength="32" autocomplete="username" spellcheck="false" placeholder="3-32 位字符" required></label>
+            <label for="registerPhone"><span>手机号</span><input id="registerPhone" name="phone" class="field-control" type="tel" inputmode="numeric" autocomplete="tel" maxlength="11" required></label>
+          </div>
+          <div class="form-row two">
+            <label for="registerEmail"><span>邮箱</span><input id="registerEmail" name="email" class="field-control" type="email" autocomplete="email" spellcheck="false" placeholder="可选，不发验证码"></label>
+            <label for="registerName"><span>昵称</span><input id="registerName" name="display_name" class="field-control" type="text" autocomplete="nickname" maxlength="32" placeholder="可选"></label>
+          </div>
+          <div class="form-row two">
+            <label for="registerPassword"><span>密码</span><input id="registerPassword" name="password" class="field-control" type="password" minlength="6" maxlength="128" autocomplete="new-password" required></label>
+            <label for="registerPasswordConfirm"><span>确认密码</span><input id="registerPasswordConfirm" name="password_confirm" class="field-control" type="password" minlength="6" maxlength="128" autocomplete="new-password" required></label>
+          </div>
+          <button class="btn btn-primary full" type="submit">注册并登录</button>
+        </form>
+        <form id="loginForm" class="auth-form hidden">
+          <label for="loginAccount"><span>用户名 / 手机号 / 邮箱</span><input id="loginAccount" name="account" class="field-control" type="text" autocomplete="username" spellcheck="false" required></label>
+          <label for="loginPassword"><span>密码</span><input id="loginPassword" name="password" class="field-control" type="password" autocomplete="current-password" required></label>
+          <div class="auth-options">
+            <label class="check-field"><input id="loginRemember" name="remember_account" type="checkbox"><span>记住账号</span></label>
+            <label class="check-field"><input id="loginAutoLogin" name="keep_login" type="checkbox"><span>保持登录状态</span></label>
+          </div>
+          <button class="btn btn-primary full" type="submit">登录</button>
+        </form>
+        <p class="auth-note">用户名、手机号、邮箱均可作为登录账号。退出登录会清除当前设备的登录状态。</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="imageModal" class="modal-backdrop image-modal hidden" role="dialog" aria-modal="true" aria-labelledby="imageModalTitle">
+    <div class="modal wide modal-panel image-modal-panel">
+      <div class="modal-head image-modal-head">
+        <h2 id="imageModalTitle">图片预览</h2>
+        <button id="closeImageModal" class="icon-btn icon-button" type="button" aria-label="关闭图片预览"><svg class="i"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="image-modal-body">
+        <img id="imageModalImage" alt="图片预览">
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/config.js"></script>
+  <script src="/app.js?v=site_20260902_01"></script>
+</body>
+</html>

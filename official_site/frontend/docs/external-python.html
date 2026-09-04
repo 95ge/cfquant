@@ -1,0 +1,123 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8fafc">
+  <title>外部 Python 接入 | cfquant.org</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=site_20260902_01">
+</head>
+<body class="doc-shell">
+  <a class="skip-link" href="#content">跳到主要内容</a>
+  <header class="topnav">
+    <div class="container topnav-inner">
+      <a class="brand-button" href="/" aria-label="cfquant 首页"><span class="brand-mark">CF</span><span><strong translate="no">cfquant</strong><small>QMT Bridge Community</small></span></a>
+      <nav class="site-links" aria-label="主导航">
+        <a class="nav-tab" href="/#project">项目</a>
+        <a class="nav-tab" href="/#downloads">下载</a>
+        <a class="nav-tab is-active" href="/#docs">文档</a>
+        <a class="nav-tab" href="/#forum">论坛</a>
+        <a class="nav-tab" href="/#feedback">反馈</a>
+        <a class="nav-tab" href="/#center">用户中心</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="section hero-section compact-hero">
+      <div class="container hero-center">
+        <p class="eyebrow">站内文档</p>
+        <h1>外部 Python 接入</h1>
+        <p class="lead">外部策略可以按接近 xtquant 的方式导入 cfquant，由本地 Web 统一路由到在线的 QMT 入口脚本。</p>
+        <div class="doc-meta">
+          <span class="doc-pill">Python SDK</span>
+          <span class="doc-pill">默认 auto 路由</span>
+          <span class="doc-pill">行情 / 查询 / 交易</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container doc-layout">
+        <article class="doc-article">
+          <section id="install" class="doc-panel">
+            <h2>1. 安装本地包</h2>
+            <p>在 cfquant 项目目录中安装开发模式包，让外部 Python 能直接导入当前项目代码。</p>
+            <pre class="doc-code"><code>cd D:\cfquant
+pip install -e .</code></pre>
+          </section>
+
+          <section id="import" class="doc-panel">
+            <h2>2. 推荐导入方式</h2>
+            <pre class="doc-code"><code>from cfquant import xtdata
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount</code></pre>
+            <p>行情查询示例：</p>
+            <pre class="doc-code"><code>tick = xtdata.get_full_tick(["000001.SZ"])
+print(tick)</code></pre>
+            <p>账号查询示例：</p>
+            <pre class="doc-code"><code>account = StockAccount("2220009880")
+trader = XtQuantTrader("", 0, account=account)
+trader.start()
+
+asset = trader.query_stock_asset(account)
+positions = trader.query_stock_positions(account)
+print(asset, positions)</code></pre>
+          </section>
+
+          <section id="route" class="doc-panel">
+            <h2>3. 默认自动路由</h2>
+            <p>默认 <code>CFQUANT_TRANSPORT=auto</code>。Web 服务启动后会写入运行注册信息，外部 cfquant 会优先通过 LTtx 发现 Web 统一路由；发现失败时再回退到通用 PipeHub。</p>
+            <ul>
+              <li>账号配置为高级模式时，Web 会优先走高级通道。</li>
+              <li>高级通道不可用时，会回退到该账号的 ctypes 通用桥。</li>
+              <li>外部策略通常不需要手写通道名。</li>
+            </ul>
+          </section>
+
+          <section id="configure" class="doc-panel">
+            <h2>4. 强制指定通道</h2>
+            <p>排查问题或特殊部署时可以临时指定通道。</p>
+            <pre class="doc-code"><code>from cfquant import configure
+
+configure(
+    transport="web_lttx",
+    host="127.0.0.1",
+    port=2049,
+    token="LTtx",
+    web_request_channel="cfquant.web.request",
+)</code></pre>
+            <pre class="doc-code"><code>configure(
+    transport="ctypes",
+    pipe_name=r"\\.\pipe\cfquant_pipe_hub",
+    timeout=15,
+)</code></pre>
+          </section>
+
+          <section id="check" class="doc-panel">
+            <h2>5. 接入前检查</h2>
+            <ul>
+              <li>Web 控制台已启动，QMT 侧入口脚本在线。</li>
+              <li>账号绑定里资金账号、账户类型、模式和 QMT 目录正确。</li>
+              <li>外部 Python 环境能导入 <code>cfquant</code>。</li>
+              <li>先做只读查询，再逐步验证下单、撤单等交易接口。</li>
+            </ul>
+          </section>
+        </article>
+
+        <aside class="doc-toc" aria-label="本文目录">
+          <strong>本文目录</strong>
+          <a href="#install">安装本地包</a>
+          <a href="#import">导入与示例</a>
+          <a href="#route">自动路由</a>
+          <a href="#configure">强制指定通道</a>
+          <a href="#check">接入前检查</a>
+          <a href="/#docs">返回文档入口</a>
+        </aside>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+

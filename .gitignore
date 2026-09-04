@@ -47,6 +47,7 @@ runtime/media/**
 runtime/reports/**
 runtime/status/*
 runtime/screenshots/*
+runtime/cli-qmt-export/
 !runtime/db/.gitkeep
 !runtime/config/.gitkeep
 !runtime/cache/
@@ -71,8 +72,13 @@ runtime/screenshots/*
 .pytest_cache/
 .mypy_cache/
 
-# Official website source and release packages are published separately, not to GitHub.
-official_site/
+# Official website source is versioned; runtime data and local release payloads stay out of Git.
+official_site/data/
+official_site/uploads/
+official_site/temp/
+official_site/packages/*.zip
+official_site/packages/*.tar.gz
+official_site/**/*.env
 offcial_site/
 
 # Local Python package distribution workspace; do not upload to GitHub.

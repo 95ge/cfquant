@@ -1,0 +1,195 @@
+{
+  "schema": "open-design.design-manifest.v1",
+  "title": "fe7a33f6-b89b-4e2c-b3ef-68b71761204b",
+  "entryFile": "cfquant-official-site-prototype-v2.html",
+  "sourceFiles": {
+    "all": [
+      "%SystemDrive%/ProgramData/Microsoft/Windows/Caches/{6AF0698E-D558-4F6E-9B3C-3716689AF493}.2.ver0x0000000000000001.db",
+      "%SystemDrive%/ProgramData/Microsoft/Windows/Caches/{DDF571F2-BE98-426D-8288-1A9A39C3FDA2}.2.ver0x0000000000000001.db",
+      "%SystemDrive%/ProgramData/Microsoft/Windows/Caches/cversions.2.db",
+      "项目架构图.md",
+      "brand-spec.md",
+      "cfquant-official-site-prototype-v2.html",
+      "cfquant-official-site-prototype-v3.html",
+      "cfquant-official-site-prototype.html",
+      "opendesign_official_site_redesign_requirements.md"
+    ],
+    "html": [
+      "cfquant-official-site-prototype-v2.html",
+      "cfquant-official-site-prototype-v3.html",
+      "cfquant-official-site-prototype.html"
+    ],
+    "css": [],
+    "scriptsAndComponents": [],
+    "assets": [
+      "%SystemDrive%/ProgramData/Microsoft/Windows/Caches/{6AF0698E-D558-4F6E-9B3C-3716689AF493}.2.ver0x0000000000000001.db",
+      "%SystemDrive%/ProgramData/Microsoft/Windows/Caches/{DDF571F2-BE98-426D-8288-1A9A39C3FDA2}.2.ver0x0000000000000001.db",
+      "%SystemDrive%/ProgramData/Microsoft/Windows/Caches/cversions.2.db",
+      "项目架构图.md",
+      "brand-spec.md",
+      "opendesign_official_site_redesign_requirements.md"
+    ]
+  },
+  "screens": [
+    {
+      "file": "cfquant-official-site-prototype-v2.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "cfquant-official-site-prototype-v3.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    },
+    {
+      "file": "cfquant-official-site-prototype.html",
+      "role": "screen",
+      "implementationNote": "Preserve visual hierarchy, responsive behavior, and interactive states from this screen."
+    }
+  ],
+  "screenFilePolicy": {
+    "mode": "screen-file-first",
+    "entryFileRole": "primary-screen",
+    "rules": [
+      "Each distinct user-facing screen or surface must be delivered and implemented as its own file/route.",
+      "If a landing page is present or requested, keep it in landing.html and do not merge it into the product app screen.",
+      "When multiple HTML screens exist, index.html is a launcher/overview only; it must not be treated as the combined final UI.",
+      "Keep product app screens, landing pages, platform screens, and OS widget surfaces separate in production code."
+    ]
+  },
+  "appModules": [
+    "Identify domain-specific in-app modules from the exported UI; do not reduce them to generic cards.",
+    "For each major module, implement purpose, default/loading/empty/error/success states, and responsive behavior.",
+    "Keep app modules separate from OS home-screen widgets in the production component model."
+  ],
+  "osWidgets": [
+    "If the export includes home-screen, lock-screen, Live Activity, tablet glance, or Android widget surfaces, implement them as platform quick-access surfaces outside the app UI.",
+    "If none are present, do not invent OS widgets unless the product requirements request them."
+  ],
+  "landingPage": {
+    "detection": "Inspect files and screen names for a marketing/landing page surface. If present, keep it separate from product app screens.",
+    "requiredSections": [
+      "hero",
+      "value props",
+      "product proof/screenshots",
+      "feature proof",
+      "CTA"
+    ]
+  },
+  "tokens": {
+    "source": [
+      "cfquant-official-site-prototype-v2.html"
+    ],
+    "required": [
+      "background",
+      "surface",
+      "foreground",
+      "muted text",
+      "border",
+      "accent",
+      "radius",
+      "shadow",
+      "spacing",
+      "type scale",
+      "motion"
+    ],
+    "note": "Extract/freeze tokens before framework implementation so coding tools do not substitute default theme colors or typography."
+  },
+  "interactions": {
+    "source": [
+      "cfquant-official-site-prototype-v2.html"
+    ],
+    "requiredStates": [
+      "default",
+      "hover",
+      "focus",
+      "active",
+      "disabled",
+      "loading",
+      "empty",
+      "error",
+      "success"
+    ],
+    "requiredBehaviors": [
+      "forms/validation where present",
+      "tabs/filters where present",
+      "dialogs/sheets/drawers where present",
+      "copy/generate/share actions where present",
+      "player or quick controls where present"
+    ],
+    "note": "If the prototype is static, derive missing behavior from visible controls and document it before coding."
+  },
+  "responsiveViewports": [
+    {
+      "name": "mobile-compact",
+      "width": 360,
+      "height": 800,
+      "category": "mobile",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "mobile-standard",
+      "width": 390,
+      "height": 844,
+      "category": "mobile",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "mobile-large",
+      "width": 430,
+      "height": 932,
+      "category": "mobile",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "foldable-small-tablet",
+      "width": 600,
+      "height": 960,
+      "category": "foldable-tablet",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "tablet-portrait",
+      "width": 820,
+      "height": 1180,
+      "category": "tablet",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "tablet-landscape",
+      "width": 1024,
+      "height": 768,
+      "category": "tablet",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "laptop",
+      "width": 1366,
+      "height": 768,
+      "category": "desktop",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "desktop",
+      "width": 1440,
+      "height": 900,
+      "category": "desktop",
+      "mustAvoidHorizontalScroll": true
+    },
+    {
+      "name": "wide",
+      "width": 1920,
+      "height": 1080,
+      "category": "wide",
+      "mustAvoidHorizontalScroll": true
+    }
+  ],
+  "implementationChecklist": [
+    "Open entryFile first and map screens, modules, tokens, and interactions.",
+    "Extract tokens before writing framework components.",
+    "Implement app-specific modules with real states instead of generic card grids.",
+    "Preserve or rebuild JS interactions for meaningful UX actions.",
+    "Validate screenshots at desktop/tablet/mobile viewports with no horizontal overflow.",
+    "Keep landing pages, in-app modules, and OS widgets as separate implementation surfaces."
+  ]
+}

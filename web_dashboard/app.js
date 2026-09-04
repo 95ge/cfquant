@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260903_07';
+const FRONTEND_VERSION = 'web_20260904_09';
 
 const state = {
   accountId: '',
@@ -48,6 +48,7 @@ const state = {
   apiEndpointId: 'quote_subscribe_whole',
   apiKey: '',
   apiSocket: null,
+  apiDebugRequestSeq: 0,
   downloadSocket: null,
   downloadJobId: '',
   downloadJobStatus: 'idle',
@@ -101,6 +102,7 @@ const state = {
   callbackRefreshInFlight: false,
   bindingStatusRefreshInFlight: false,
   bindingStatusRetryTimer: null,
+  bindingStatusSnapshot: null,
   bindingVerifyBusyKey: '',
   bindingNoticeTimer: null,
 };
@@ -109,9 +111,11 @@ const $ = (id) => document.getElementById(id);
 const ACCOUNT_PAIR_KEY = 'cfquant.account_bridge_pairs';
 const ACCOUNT_SELECTION_KEY = 'cfquant.account_key';
 const TUTORIAL_TOPIC_KEY = 'cfquant.tutorial_topic';
+const DEPLOY_MODE_TAB_KEY = 'cfquant.deploy_mode_tab';
 const ONBOARDING_AUTO_SHOWN_KEY = 'cfquant.onboarding_auto_shown.v3';
 const SETTINGS_TAB_KEY = 'cfquant.settings_tab';
 const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups';
+const ACCOUNT_CONFIG_CACHE_KEY = 'cfquant.account_config_cache.v1';
 const WEB_AUTH_TOKEN_KEY = 'cfquant.web_auth_token';
 const WEB_AUTH_SESSION_TOKEN_KEY = 'cfquant.web_auth_session_token';
 const WEB_AUTH_REMEMBER_KEY = 'cfquant.web_auth_remember';
@@ -343,8 +347,8 @@ const API_ENDPOINTS = [
     title: '查资金',
     method: 'GET',
     path: '/api/account',
-    desc: '查询指定账号的资金信息。',
-    defaults: { sections: 'asset', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    desc: '实时查询指定账号的资金信息。接口测试默认直连交易端，不使用账户缓存。',
+    defaults: { sections: 'asset', force: '1', subscribe: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['account_id', 'account_type', 'timeout'],
   },
   {
@@ -353,8 +357,8 @@ const API_ENDPOINTS = [
     title: '查持仓',
     method: 'GET',
     path: '/api/account',
-    desc: '查询指定账号的持仓列表。',
-    defaults: { sections: 'positions', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    desc: '实时查询指定账号的持仓列表。接口测试默认直连交易端，不使用账户缓存。',
+    defaults: { sections: 'positions', force: '1', subscribe: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['account_id', 'account_type', 'timeout'],
   },
   {
@@ -363,8 +367,8 @@ const API_ENDPOINTS = [
     title: '查委托',
     method: 'GET',
     path: '/api/account',
-    desc: '查询指定账号的委托列表。',
-    defaults: { sections: 'orders', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    desc: '实时查询指定账号的委托列表。接口测试默认直连交易端，不使用账户缓存。',
+    defaults: { sections: 'orders', force: '1', subscribe: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['account_id', 'account_type', 'timeout'],
   },
   {
@@ -373,8 +377,8 @@ const API_ENDPOINTS = [
     title: '查成交',
     method: 'GET',
     path: '/api/account',
-    desc: '查询指定账号的成交列表。',
-    defaults: { sections: 'trades', force: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    desc: '实时查询指定账号的成交列表。接口测试默认直连交易端，不使用账户缓存。',
+    defaults: { sections: 'trades', force: '1', subscribe: '0', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['account_id', 'account_type', 'timeout'],
   },
   {
@@ -499,7 +503,7 @@ const API_ENDPOINTS = [
 
 const API_FIELD_META = {
   bridge_id: { label: '内部通道', type: 'bridge' },
-  account_id: { label: '账号', type: 'text', placeholder: '2220009880' },
+  account_id: { label: '账号', type: 'text', placeholder: '请输入资金账号' },
   account_type: { label: '账户类型', type: 'account_type' },
   credit_query_action: { label: '信用查询', type: 'credit_query_action', param: 'action' },
   channel: { label: '查询通道', type: 'channel' },
@@ -550,6 +554,7 @@ const API_PARAM_DOCS = {
   timeout: '本次调试等待 QMT 响应的秒数。网络或桥接异常时建议保持 12 秒，避免页面长时间请求中。',
   sections: '账号数据段，asset/positions/orders/trades。',
   force: '是否强制刷新缓存，1 表示立即查询。',
+  subscribe: '是否订阅账户缓存。接口测试中的账户查询默认为 0，表示直接查询 QMT/交易端。',
   since: '回调起始序号。',
   limit: '返回条数上限。',
   side: '委托方向，buy 或 sell。',
@@ -669,12 +674,16 @@ const API_RETURN_DOCS = {
     ['websocket_clients', 'WebSocket 客户端数量'],
   ],
   asset: [
+    ['cache.response_latency_ms', '本次 Web 缓存响应耗时（毫秒）'],
+    ['asset.refresh_latency_ms', '后台刷新资金数据耗时（毫秒）'],
     ['balance', '总资产'],
     ['available', '可用资金'],
     ['market_value', '总市值'],
     ['position_profit', '持仓盈亏'],
   ],
   positions: [
+    ['cache.response_latency_ms', '本次 Web 缓存响应耗时（毫秒）'],
+    ['positions.refresh_latency_ms', '后台刷新持仓数据耗时（毫秒）'],
     ['stock_code', '证券代码'],
     ['instrument_name', '证券名称'],
     ['volume', '持仓数量'],
@@ -682,6 +691,8 @@ const API_RETURN_DOCS = {
     ['market_value', '市值'],
   ],
   orders: [
+    ['cache.response_latency_ms', '本次 Web 缓存响应耗时（毫秒）'],
+    ['orders.refresh_latency_ms', '后台刷新委托数据耗时（毫秒）'],
     ['order_time', '委托时间'],
     ['order_source', '委托来源：cfquant 或 其他'],
     ['stock_code', '证券代码'],
@@ -692,6 +703,8 @@ const API_RETURN_DOCS = {
     ['m_strOrderSysID', '委托编号'],
   ],
   trades: [
+    ['cache.response_latency_ms', '本次 Web 缓存响应耗时（毫秒）'],
+    ['trades.refresh_latency_ms', '后台刷新成交数据耗时（毫秒）'],
     ['trade_time', '成交时间'],
     ['stock_code', '证券代码'],
     ['instrument_name', '证券名称'],
@@ -812,12 +825,12 @@ const WS_CALLBACK_EXAMPLE = {
   event: {
     seq: 12,
     event: 'trader:on_stock_order',
-    account_id: '2220009880',
+    account_id: 'YOUR_ACCOUNT_ID',
     bridge_id: 'default',
     received_at: 1783440000.123,
     data: {
       stock_code: '000001.SZ',
-      m_strAccountID: '2220009880',
+      m_strAccountID: 'YOUR_ACCOUNT_ID',
       m_strInstrumentID: '000001',
       m_strExchangeID: 'SZ',
       m_strInstrumentName: '平安银行',
@@ -1060,12 +1073,27 @@ function bindingMarketRouteHasMissingDir(enabled, routes = {}) {
   return ['SH', 'SZ'].some((market) => !String(routes[market] && routes[market].qmt_dir || '').trim());
 }
 
+function syncAdvancedQmtDirField(inputId, mode) {
+  const input = $(inputId);
+  if (!input) return;
+  const field = input.closest('.field');
+  const advanced = normalizeTransportMode(mode) === 'lttx';
+  if (field) field.classList.toggle('hidden', !advanced);
+  input.required = advanced;
+}
+
+function qmtDirsAreSame(first, second) {
+  const normalize = (value) => String(value || '').trim().replace(/[\\/]+$/, '').toLowerCase();
+  return normalize(first) && normalize(first) === normalize(second);
+}
+
 function bindingSaveSummary({
   accountId,
   accountType,
   displayName,
   mode,
   qmtDir,
+  qmtTradeDir,
   dataProvider,
   marketRoutingEnabled,
   marketBridges,
@@ -1082,6 +1110,9 @@ function bindingSaveSummary({
     parts.push(missing.length ? `市场路由已启用，${missing.join('/')}目录未填写` : '市场路由已启用，SH/SZ目录已记录');
   } else {
     parts.push(qmtDir ? 'QMT目录已记录' : 'QMT目录未填写');
+  }
+  if (normalizeTransportMode(mode) === 'lttx') {
+    parts.push(qmtDir && qmtTradeDir ? '高级模式两个 QMT 目录已记录' : '高级模式需要两个 QMT 目录');
   }
   if (dataProvider) parts.push('共享行情源');
   if (legacyFallback) parts.push('后端使用兼容保存，重启 Web 后可保存完整运行配置');
@@ -1404,7 +1435,7 @@ function renderProjectVersionLegacy(info) {
   const readmeNote = coreImportStale
     ? `磁盘版本 ${coreVersion} / Web进程导入 ${importedCoreVersion || '--'}，建议重启 Web 后端完成运行态切换`
     : (local.matches_readme === false
-      ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
+      ? `版本日志版本为 ${local.changelog_version || '--'}，与核心版本不一致`
       : `来源：${coreSource}${local.checked_at_text ? ` / ${local.checked_at_text}` : ''}`);
   const frontendNote = serverFrontendVersion && serverFrontendVersion !== '--' && serverFrontendVersion !== browserFrontendVersion
     ? `浏览器 ${browserFrontendVersion} / 服务端 ${serverFrontendVersion}，建议强制刷新页面`
@@ -1442,7 +1473,7 @@ function renderProjectVersionLegacy(info) {
       <div class="version-info-row">
         <span>版本状态</span>
         <strong>${esc(stateText)}</strong>
-        <small>${esc(data.update_available ? '远端有新版本，进入设置页可执行更新。' : '基于官网发布包或 README 版本号判断。')}</small>
+        <small>${esc(data.update_available ? '远端有新版本，进入设置页可执行更新。' : '基于官网发布包或版本日志判断。')}</small>
       </div>
     </div>
     <div class="version-log-wrap">
@@ -1828,6 +1859,31 @@ function isTaskProgressEndpoint(endpoint) {
   return isDownloadEndpoint(endpoint) || isExportEndpoint(endpoint);
 }
 
+function isQuoteSubscriptionEndpoint(endpoint) {
+  return !!endpoint && ['quote_subscribe_whole', 'quote_subscribe_single', 'quote_unsubscribe'].includes(endpoint.id);
+}
+
+function endpointHasChannelField(endpoint) {
+  return !!endpoint && (endpoint.fields || []).some((field) => {
+    const meta = API_FIELD_META[field] || {};
+    const name = meta.param || field;
+    return name === 'channel';
+  });
+}
+
+function apiEndpointChannel(endpoint) {
+  if (!endpoint || endpoint.method === 'WS' || endpoint.method === 'DOC') return '';
+  if (endpoint.id === 'callbacks') return '';
+  if (isDownloadEndpoint(endpoint) || isQuoteSubscriptionEndpoint(endpoint)) return 'normal';
+  if (isExportEndpoint(endpoint) || (endpoint.group || '') === 'trade') return 'trade';
+  return endpointHasChannelField(endpoint) ? selectedChannel() : '';
+}
+
+function applyApiEndpointChannel(endpoint, params) {
+  const channel = apiEndpointChannel(endpoint);
+  if (channel) params.channel = channel;
+}
+
 function apiGroupForEndpoint(endpointId) {
   const endpoint = apiEndpointById(endpointId);
   return endpoint.group || 'trade';
@@ -1857,7 +1913,9 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   const form = $('apiForm');
   if (!list || !form) return;
   const endpoint = apiEndpointById(endpointId);
+  const previousEndpointId = state.apiEndpointId;
   state.apiEndpointId = endpoint.id;
+  if (previousEndpointId !== endpoint.id) state.apiDebugRequestSeq += 1;
   if (options.ensureGroupOpen) {
     state.apiOpenGroups.add(endpoint.group || 'trade');
   }
@@ -1905,6 +1963,7 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   renderApiDocDetail(endpoint);
   updateQuoteLivePanel(endpoint);
   updateDownloadProgressPanel(endpoint);
+  renderApiResponseLatency(null, endpoint);
   updateApiRequestPreview();
 }
 
@@ -2813,16 +2872,22 @@ function syncTopStatusDisplay() {
 function syncTransportChannelControls() {
   const mode = activeAccountMode();
   const universal = isCtypesTransportMode(mode);
+  const lttx = normalizeTransportMode(mode) === 'lttx';
   const modeLabel = transportModeLabel(mode);
   const query = $('queryChannel');
   const trade = $('tradeChannel');
   [query, trade].forEach((node) => {
     if (!node) return;
-    node.disabled = universal;
-    node.title = universal ? `${modeLabel}由 ctypes 单桥自动路由` : '高级模式可选择普通 QMT 或极速交易端';
+    node.disabled = universal || lttx;
+    node.title = universal
+      ? `${modeLabel}由 ctypes 单桥自动路由`
+      : '高级模式交易和账户查询固定走交易端；下载和行情订阅固定走普通 QMT';
   });
   if (universal) {
     if (query) query.value = 'normal';
+    if (trade) trade.value = 'trade';
+  } else if (lttx) {
+    if (query) query.value = 'trade';
     if (trade) trade.value = 'trade';
   }
 }
@@ -3036,6 +3101,7 @@ function showSetupOverlay(message = '') {
   const accountInput = $('setupAccountId');
   const accountTypeInput = $('setupAccountType');
   const qmtDirInput = $('setupQmtDir');
+  const qmtTradeDirInput = $('setupQmtTradeDir');
   const modeInput = $('setupMode');
   const adminFields = $('setupAdminFields');
   const adminUsernameInput = $('setupAdminUsername');
@@ -3051,9 +3117,6 @@ function showSetupOverlay(message = '') {
   }
   if (adminPasswordInput) adminPasswordInput.value = '';
   if (adminPasswordConfirmInput) adminPasswordConfirmInput.value = '';
-  if (accountInput && !accountInput.value) {
-    accountInput.value = setup.default_account_id || state.defaultAccountId || '';
-  }
   if (accountTypeInput) {
     accountTypeInput.value = normalizeAccountType(setup.default_account_type || state.defaultAccountType || (defaultConfig && defaultConfig.account_type) || 'STOCK');
   }
@@ -3061,12 +3124,22 @@ function showSetupOverlay(message = '') {
     qmtDirInput.value = setup.default_qmt_dir || (defaultConfig && defaultConfig.qmt_dir) || '';
   }
   if (modeInput) modeInput.value = setup.default_mode || (defaultConfig && defaultConfig.mode) || 'ctypes';
+  if (qmtTradeDirInput && !qmtTradeDirInput.value) {
+    qmtTradeDirInput.value = setup.default_qmt_trade_dir || (defaultConfig && defaultConfig.qmt_trade_dir) || '';
+  }
+  syncAdvancedQmtDirField('setupQmtTradeDir', modeInput && modeInput.value);
   updateSetupSteps('config');
   const status = $('setupStatus');
   if (status) status.textContent = message;
   overlay.scrollTop = 0;
   const card = overlay.querySelector('.setup-card');
   if (card) card.scrollTop = 0;
+  const focusTarget = [
+    adminRequired ? adminUsernameInput : null,
+    accountInput,
+    qmtDirInput,
+  ].find((input) => input && !input.value.trim()) || accountInput;
+  if (focusTarget) window.requestAnimationFrame(() => focusTarget.focus());
 }
 
 function clearOnboardingAutoShown() {
@@ -3087,7 +3160,7 @@ function onboardingAutoShownKey() {
 }
 
 function updateSetupSteps(activeStep) {
-  const order = ['config', 'identity', 'qmt', 'verify'];
+  const order = ['config', 'identity', 'qmt'];
   const activeIndex = Math.max(0, order.indexOf(activeStep));
   document.querySelectorAll('[data-setup-step]').forEach((node) => {
     const index = order.indexOf(node.dataset.setupStep);
@@ -3109,6 +3182,7 @@ async function submitSetupForm(event) {
     account_id: $('setupAccountId') ? $('setupAccountId').value.trim() : '',
     account_type: $('setupAccountType') ? $('setupAccountType').value : 'STOCK',
     qmt_dir: $('setupQmtDir') ? $('setupQmtDir').value.trim() : '',
+    qmt_trade_dir: $('setupQmtTradeDir') ? $('setupQmtTradeDir').value.trim() : '',
     mode: $('setupMode') ? $('setupMode').value : 'ctypes',
   };
   if (adminRequired) {
@@ -3145,13 +3219,25 @@ async function submitSetupForm(event) {
   }
   if (!body.account_id) {
     if (status) status.textContent = '账号不能为空';
+    const input = $('setupAccountId');
+    if (input) input.focus();
     return;
   }
-  if (status) {
-    status.textContent = body.qmt_dir
-      ? '正在保存初始化配置...'
-      : 'QMT 核心目录为空，自动更新将不可用，正在保存...';
+  if (normalizeTransportMode(body.mode) === 'lttx') {
+    if (!body.qmt_dir || !body.qmt_trade_dir) {
+      if (status) status.textContent = '请填写两个 QMT 目录';
+      const input = body.qmt_dir ? $('setupQmtTradeDir') : $('setupQmtDir');
+      if (input) input.focus();
+      return;
+    }
+    if (qmtDirsAreSame(body.qmt_dir, body.qmt_trade_dir)) {
+      if (status) status.textContent = '两个 QMT 目录不能相同';
+      const input = $('setupQmtTradeDir');
+      if (input) input.focus();
+      return;
+    }
   }
+  if (status) status.textContent = '正在保存...';
   updateSetupSteps('identity');
   try {
     const data = await api('/api/setup/initialize', {
@@ -3174,13 +3260,13 @@ async function submitSetupForm(event) {
     await loadConfig();
     hideSetupOverlay();
     await startAuthenticatedApp();
-    clearOnboardingAutoShown();
-    openOnboardingGuide({ auto: true, reason: 'setup' });
+    localStorage.setItem(onboardingAutoShownKey(), '1');
     log('初始化配置已保存', {
       account_id: body.account_id,
       account_type: body.account_type,
       mode: body.mode,
       qmt_dir_configured: !!body.qmt_dir,
+      qmt_trade_dir_configured: !!body.qmt_trade_dir,
       admin_registered: adminRequired,
       bridge_identity: data.qmt_bridge_identity || null,
     });
@@ -3198,6 +3284,7 @@ async function reinitializeSetup() {
   try {
     await api('/api/setup/reset', { method: 'POST', body: '{}' });
     clearOnboardingAutoShown();
+    clearAccountConfigCache();
     window.location.reload();
   } catch (error) {
     log('重新初始化失败', { error: error.message });
@@ -3516,11 +3603,17 @@ function closeQmtUpdateProgress() {
   renderQmtUpdateProgress();
 }
 
+function syncUpdateResultDetails(box, payload) {
+  const details = box && box.closest ? box.closest('.update-result-details') : null;
+  if (details) details.open = !!payload;
+}
+
 function renderUpdateResult(payload) {
   const box = $('updateResultBox');
   if (!box) return;
   renderUpdateNotice('updateNoticeBox', payload, { forceQmtRestart: true });
   box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
+  syncUpdateResultDetails(box, payload);
 }
 
 function renderProjectUpdateResult(payload) {
@@ -3528,6 +3621,7 @@ function renderProjectUpdateResult(payload) {
   if (!box) return;
   renderUpdateNotice('projectUpdateNoticeBox', payload, { forceQmtRestart: false });
   box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
+  syncUpdateResultDetails(box, payload);
 }
 
 function buildUpdateNoticeLines(payload, options = {}) {
@@ -3604,40 +3698,31 @@ function buildUpdateNoticeModel(payload, options = {}) {
 function renderUpdateNoticeCard(model, options = {}) {
   if (!model) return '';
   const meta = [
-    model.version ? `当前版本：${model.version}` : '',
-    model.bridgeId ? `桥接端：${model.bridgeId}` : '',
-    model.targetDir ? `目标目录：${model.targetDir}` : '',
+    model.version ? `版本 ${model.version}` : '',
+    model.bridgeId ? `桥接 ${model.bridgeId}` : '',
   ].filter(Boolean);
-  const modeRows = Object.entries(model.modeFiles || {});
+  const entryText = model.entryFiles.length ? `入口：${model.entryFiles.join('、')}` : '';
   const compactClass = options.compact ? ' compact' : '';
+  const primaryLine = model.entryRequired
+    ? (model.lines.find((line) => line.strong.includes('入口')) || model.lines[0] || null)
+    : (model.lines[0] || null);
+  const secondaryLine = primaryLine
+    ? model.lines.find((line) => line !== primaryLine && line.strong !== primaryLine.strong)
+    : null;
   return `
     <div class="update-notice-card${compactClass}">
       <div class="update-notice-head">
         <div>
           <strong>${esc(model.title)}</strong>
-          <span>${esc(model.subtitle)}</span>
+          <span>${esc(primaryLine ? primaryLine.text : model.subtitle)}</span>
         </div>
         <em>${esc(model.entryRequired ? '需手动处理' : '需重启')}</em>
       </div>
       ${meta.length ? `<div class="update-notice-meta">${meta.map((item) => `<span>${esc(item)}</span>`).join('')}</div>` : ''}
-      <div class="update-notice-grid">
-        ${model.lines.map((line) => `
-          <section>
-            <strong>${esc(line.strong)}</strong>
-            <span>${esc(line.text)}</span>
-          </section>
-        `).join('')}
-      </div>
-      <ol class="update-notice-steps">
-        ${model.steps.map((step) => `<li>${esc(step)}</li>`).join('')}
-      </ol>
-      ${modeRows.length ? `
-        <div class="update-notice-mode-files">
-          ${modeRows.map(([name, files]) => `
-            <span><strong>${esc(name)}</strong>${esc(Array.isArray(files) ? files.join('、') : String(files || ''))}</span>
-          `).join('')}
-        </div>
-      ` : ''}
+      ${(secondaryLine || entryText) ? `<div class="update-notice-mode-files">
+        ${secondaryLine ? `<span><strong>${esc(secondaryLine.strong)}</strong>${esc(secondaryLine.text)}</span>` : ''}
+        ${entryText ? `<span>${esc(entryText)}</span>` : ''}
+      </div>` : ''}
     </div>`;
 }
 
@@ -3754,6 +3839,10 @@ function remoteUpdateDetail(remote = {}, fallback = DEFAULT_UPDATE_REPO_URL) {
 function renderUpdateVersionInfo(data) {
   const box = $('updateVersionInfo');
   if (!box) return;
+  if (!data) {
+    box.innerHTML = '<div class="update-version-empty">等待刷新</div>';
+    return;
+  }
   const version = data && data.version_status ? data.version_status : {};
   const current = version.current || {};
   const remote = version.remote || {};
@@ -3773,34 +3862,28 @@ function renderUpdateVersionInfo(data) {
     || version.runtime_comparison
     || (version.matches_remote === true ? 'same' : (version.matches_remote === false ? 'different' : 'unknown'));
   const compareClass = projectUpdateCompareClass(qmtComparison, remote.error);
-  const runtimeDetail = qmtRuntimeDetail(report);
-  const savedDetail = qmtKnownDetail(report);
+  const qmtMainVersion = runtimeVersion || latestQmtVersion || fileVersion || '--';
+  const qmtDetails = [
+    runtimeVersion ? `运行 ${runtimeVersion}` : (runtimeReported ? '运行时为空' : '运行未上报'),
+    latestQmtVersion && latestQmtVersion !== runtimeVersion ? `已知 ${latestQmtVersion}` : '',
+    fileVersion && fileVersion !== runtimeVersion && fileVersion !== latestQmtVersion ? `磁盘 ${fileVersion}` : '',
+  ].filter(Boolean).join(' / ');
   const compareSource = version.compare_source === 'qmt_runtime'
-    ? '基于当前 QMT 运行时上报版本判断。'
-    : (latestQmtVersion ? '基于系统保存的最近一次 QMT 内置版本判断。' : '没有 QMT 运行时或历史上报时，无法判断 QMT 内置版本。');
+    ? '按运行时判断'
+    : (latestQmtVersion ? '按最近已知版本判断' : '缺少 QMT 上报');
   box.innerHTML = `
     <div class="update-version-item">
-      <span>QMT 运行时</span>
-      <strong>${esc(runtimeVersion || (report.has_report ? '未运行' : '未上报'))}</strong>
-      <small>${esc(runtimeDetail)}</small>
+      <span>当前 QMT</span>
+      <strong>${esc(qmtMainVersion)}</strong>
+      <small>${esc(qmtDetails)}</small>
     </div>
     <div class="update-version-item">
-      <span>最近已知 QMT</span>
-      <strong>${esc(latestQmtVersion || '--')}</strong>
-      <small>${esc(savedDetail)}</small>
-    </div>
-    <div class="update-version-item">
-      <span>磁盘核心</span>
-      <strong>${esc(fileVersion || '--')}</strong>
-      <small>${esc(fileVersion ? '仅表示 QMT 目录里的文件版本，QMT 重启前不等于运行时版本。' : '未读取到 QMT 目录中的 cfquant/version.py。')}</small>
-    </div>
-    <div class="update-version-item">
-      <span>${esc(remoteUpdateSourceLabel(remote))}</span>
+      <span>远端</span>
       <strong>${esc(updateVersionLabel(remote))}</strong>
       <small>${esc(remoteUpdateDetail(remote))}</small>
     </div>
     <div class="update-version-item update-version-compare ${compareClass}">
-      <span>QMT 对比</span>
+      <span>状态</span>
       <strong>${esc(projectUpdateCompareText(qmtComparison, remote.error))}</strong>
       <small>${esc(compareSource)}</small>
     </div>`;
@@ -3850,6 +3933,10 @@ function projectUpdateCompareClass(value, remoteError = '') {
 function renderProjectUpdateVersionInfo(data) {
   const box = $('projectUpdateVersionInfo');
   if (!box) return;
+  if (!data) {
+    box.innerHTML = '<div class="update-version-empty">等待刷新</div>';
+    return;
+  }
   const version = data && data.version_info ? data.version_info : {};
   const local = version.local || {};
   const remote = version.remote || {};
@@ -3859,34 +3946,29 @@ function renderProjectUpdateVersionInfo(data) {
   const currentVersion = version.current_version || local.version || data && data.current_version || '--';
   const webVersion = version.web_version || version.frontend_version || '--';
   const browserFrontendVersion = FRONTEND_VERSION;
-  const localDetail = local.matches_readme === false
-    ? `README 最新日志版本为 ${local.readme_version || '--'}，与核心版本不一致`
+  const localDetail = local.matches_changelog === false
+    ? `版本日志版本为 ${local.changelog_version || '--'}，与核心版本不一致`
     : `来源：${local.source || '本地项目'}`;
   const webDetail = webVersion !== browserFrontendVersion
-    ? `浏览器前端 ${browserFrontendVersion} / 服务端 ${webVersion}，建议强制刷新页面。`
-    : `浏览器前端与服务端静态资源一致。`;
+    ? `前端 ${browserFrontendVersion} / 服务端 ${webVersion}`
+    : `Web ${webVersion}`;
   const remoteDetail = remoteUpdateDetail(remote);
   const compareClass = projectUpdateCompareClass(version.comparison, remote.error);
   box.innerHTML = `
     <div class="update-version-item">
-      <span>当前 Web 项目</span>
+      <span>当前 Web</span>
       <strong>${esc(currentVersion)}</strong>
-      <small>${esc(localDetail)}</small>
+      <small>${esc(webVersion !== '--' ? webDetail : localDetail)}</small>
     </div>
     <div class="update-version-item">
-      <span>Web 前端</span>
-      <strong>${esc(webVersion)}</strong>
-      <small>${esc(webDetail)}</small>
-    </div>
-    <div class="update-version-item">
-      <span>${esc(remoteUpdateSourceLabel(remote))}</span>
+      <span>远端</span>
       <strong>${esc(projectRemoteVersion)}</strong>
       <small>${esc(remote.version || remote.error ? remoteDetail : '未检查远端版本')}</small>
     </div>
     <div class="update-version-item update-version-compare ${compareClass}">
-      <span>版本对比</span>
+      <span>状态</span>
       <strong>${esc(projectUpdateCompareText(version.comparison, remote.error))}</strong>
-      <small>${remote.error ? '网络不通时不影响本地功能' : '优先基于官网发布包判断，回退时基于 README 版本日志判断'}</small>
+      <small>${remote.error ? '远端不可达' : '官网优先'}</small>
     </div>`;
 }
 
@@ -3898,7 +3980,6 @@ function renderProjectUpdateStatus(data) {
   const repoInput = $('projectUpdateRepoInput');
   const refInput = $('projectUpdateRefInput');
   const defaultRepo = (data && data.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
-  const defaultOfficial = (data && data.default_official_site_url) || DEFAULT_OFFICIAL_SITE_URL;
   const defaultRef = (data && data.default_ref) || DEFAULT_UPDATE_REF;
   if (repoInput && !repoInput.value.trim()) repoInput.value = defaultRepo;
   if (refInput && !refInput.value.trim()) refInput.value = defaultRef;
@@ -3922,13 +4003,11 @@ function renderProjectUpdateStatus(data) {
       const remote = version.remote || {};
       const compareText = version.comparison ? projectUpdateCompareText(version.comparison, remote.error) : '';
       const parts = [
-        data.ready ? 'Web 项目可更新' : 'Web 项目未就绪',
-        data.current_version ? `版本 ${data.current_version}` : '',
-        compareText ? `对比 ${compareText}` : '',
-        `备份 ${backups.length} 个`,
+        data.ready ? '可更新' : '未就绪',
+        data.current_version ? `当前 ${data.current_version}` : '',
+        compareText || '',
+        `备份 ${backups.length}`,
       ].filter(Boolean);
-      if (defaultOfficial) parts.push('官网优先');
-      if (defaultRepo && defaultRef) parts.push(`回退 ${defaultRef}`);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
       if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
       status.textContent = parts.join(' · ');
@@ -4162,7 +4241,6 @@ function renderUpdateStatus(data) {
   const repoInput = $('updateRepoInput');
   const refInput = $('updateRefInput');
   const defaultRepo = (data && data.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
-  const defaultOfficial = (data && data.default_official_site_url) || DEFAULT_OFFICIAL_SITE_URL;
   const defaultRef = (data && data.default_ref) || DEFAULT_UPDATE_REF;
   if (repoInput && !repoInput.value.trim()) repoInput.value = defaultRepo;
   if (refInput && !refInput.value.trim()) refInput.value = defaultRef;
@@ -4181,24 +4259,19 @@ function renderUpdateStatus(data) {
       status.textContent = '未加载更新状态';
       status.title = '';
     } else {
-      const targets = data.targets || {};
-      const latestQmtVersion = data.latest_qmt_core_version || data.qmt_builtin_version || '';
       const qmtCompare = data.version_status && data.version_status.qmt_version_comparison
         ? projectUpdateCompareText(data.version_status.qmt_version_comparison, (data.version_status.remote || {}).error)
         : '';
       const parts = [
         `${selectedAccount() || data.bridge_name || data.bridge_id || selectedBridge()}：${data.ready ? '可更新' : '未就绪'}`,
       ];
-      const layoutText = updateLayoutText(targets.layout);
-      if (layoutText) parts.push(layoutText);
+      if (data.advanced_mode) {
+        parts.push(data.qmt_trade_dir ? '高级模式' : '缺少第二个 QMT 目录');
+      }
       if (data.current_version) parts.push(`运行时 ${data.current_version}`);
-      else parts.push(data.runtime_reported ? '运行时版本为空' : '运行时未上报');
-      if (latestQmtVersion) parts.push(`已知 QMT ${latestQmtVersion}`);
-      if (data.file_version) parts.push(`磁盘 ${data.file_version}`);
-      if (qmtCompare) parts.push(`对比 ${qmtCompare}`);
-      parts.push(`备份 ${backups.length} 个`);
-      if (defaultOfficial) parts.push('官网优先');
-      if (defaultRepo && defaultRef) parts.push(`回退 ${defaultRef}`);
+      else parts.push(data.runtime_reported ? '运行时为空' : '运行未上报');
+      if (qmtCompare) parts.push(qmtCompare);
+      parts.push(`备份 ${backups.length}`);
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
       if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
       status.textContent = parts.join(' · ');
@@ -4429,14 +4502,15 @@ function apiFieldHtml(fieldName) {
 function setApiDefaults(endpoint) {
   const form = $('apiForm');
   if (!form) return;
+  const endpointChannel = apiEndpointChannel(endpoint);
   const values = {
     bridge_id: selectedBridge(),
     account_id: selectedAccount(),
     account_type: selectedAccountType(),
     account_key: selectedAccountKey(),
-    channel: selectedChannel(),
+    channel: endpointChannel || selectedChannel(),
     whole_quote_channel: 'normal',
-    trade_channel: selectedTradeChannel(),
+    trade_channel: endpointChannel || selectedTradeChannel(),
     transport_mode: state.transportMode,
     side: 'buy',
     since: '0',
@@ -4452,6 +4526,11 @@ function setApiDefaults(endpoint) {
       element.value = values[fieldName];
     } else if (values[element.name] !== undefined) {
       element.value = values[element.name];
+    }
+    if (fieldName === 'channel' || fieldName === 'trade_channel') {
+      const locked = !!endpointChannel;
+      element.disabled = locked;
+      element.title = locked ? '该接口按后端路由规则固定通道' : '';
     }
   });
 }
@@ -4479,6 +4558,7 @@ function currentApiRequest() {
       params.account_key = selectedAccountKey();
     }
   }
+  applyApiEndpointChannel(endpoint, params);
   if (endpoint.id === 'batch_order') {
     try {
       params.orders = params.orders_json ? JSON.parse(params.orders_json) : [];
@@ -4612,6 +4692,96 @@ function apiDebugElapsedMs(startedAt) {
   return Math.round(Math.max(0, performance.now() - startedAt));
 }
 
+function toLatencyMs(value) {
+  const latency = Number(value);
+  return Number.isFinite(latency) && latency >= 0 ? latency : null;
+}
+
+function formatLatencyMs(value) {
+  const latency = toLatencyMs(value);
+  if (latency === null) return '--';
+  if (latency >= 1000) return `${(latency / 1000).toFixed(2)} s`;
+  if (latency >= 100) return `${latency.toFixed(0)} ms`;
+  if (latency >= 10) return `${latency.toFixed(1)} ms`;
+  return `${latency.toFixed(2)} ms`;
+}
+
+function apiResponseLatency(payload, endpoint) {
+  const data = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload.data
+    : null;
+  const accountQueryIds = new Set(['asset', 'positions', 'orders', 'trades']);
+  const isAccountQuery = !!(endpoint && accountQueryIds.has(endpoint.id));
+  const section = isAccountQuery && data && typeof data === 'object'
+    ? data[endpoint.id]
+    : null;
+  const sectionLatency = toLatencyMs(section && typeof section === 'object'
+    ? (section.refresh_latency_ms !== undefined ? section.refresh_latency_ms : section.latency_ms)
+    : undefined);
+  const cacheResponseLatency = toLatencyMs(data && data.cache && data.cache.response_latency_ms);
+  if (isAccountQuery && (cacheResponseLatency !== null || sectionLatency !== null)) {
+    return {
+      latency: cacheResponseLatency !== null ? cacheResponseLatency : sectionLatency,
+      source: cacheResponseLatency !== null ? '本次接口响应耗时' : `${endpoint.title}查询耗时`,
+      refreshLatency: sectionLatency,
+      cached: !!(section && section.cached),
+      force: !!(data && data.cache && data.cache.force),
+      cacheAgeMs: toLatencyMs(section && section.cache_age_ms),
+    };
+  }
+  const topLevelLatency = toLatencyMs(data && typeof data === 'object' ? data.latency_ms : undefined);
+  if (topLevelLatency !== null) {
+    return {
+      latency: topLevelLatency,
+      source: '服务端处理耗时',
+      cached: false,
+    };
+  }
+  return null;
+}
+
+function renderApiResponseLatency(payload, endpoint, clientElapsedMs = null) {
+  const panel = $('apiResponseLatency');
+  const labelNode = $('apiResponseLatencyLabel');
+  const valueNode = $('apiResponseLatencyValue');
+  const metaNode = $('apiResponseLatencyMeta');
+  if (!panel || !labelNode || !valueNode || !metaNode) return;
+  const group = endpoint && (endpoint.group || '');
+  const supportsLatency = endpoint && ['data', 'trade'].includes(group) && endpoint.method !== 'WS';
+  const metrics = supportsLatency ? apiResponseLatency(payload, endpoint) : null;
+  const clientElapsed = toLatencyMs(clientElapsedMs);
+  if (!supportsLatency || (!metrics && clientElapsed === null)) {
+    panel.classList.add('hidden');
+    labelNode.textContent = '接口耗时';
+    valueNode.textContent = '--';
+    metaNode.textContent = '';
+    return;
+  }
+  panel.classList.remove('hidden');
+  labelNode.textContent = group === 'data' ? '数据接口耗时' : '交易接口耗时';
+  if (metrics) {
+    const cacheHit = metrics.cached && !metrics.force;
+    valueNode.textContent = formatLatencyMs(metrics.latency);
+    const details = [metrics.source];
+    if (metrics.force) {
+      details.push('本次强制刷新');
+    } else if (metrics.cached) {
+      details.push('来自账户缓存');
+    }
+    if (cacheHit && metrics.refreshLatency !== null && Math.abs(metrics.refreshLatency - metrics.latency) > 0.01) {
+      details.push(`后台刷新 ${formatLatencyMs(metrics.refreshLatency)}`);
+    }
+    if (cacheHit && metrics.cacheAgeMs !== null) {
+      details.push(`缓存年龄 ${formatLatencyMs(metrics.cacheAgeMs)}`);
+    }
+    if (clientElapsed !== null) details.push(`页面往返 ${formatLatencyMs(clientElapsed)}`);
+    metaNode.textContent = details.join(' · ');
+  } else {
+    valueNode.textContent = formatLatencyMs(clientElapsed);
+    metaNode.textContent = '页面往返耗时，服务端未返回 latency_ms';
+  }
+}
+
 function apiDebugOutput(payload, request, startedAt, extra = {}) {
   const debug = {
     endpoint: request.endpointId || state.apiEndpointId,
@@ -4625,11 +4795,17 @@ function apiDebugOutput(payload, request, startedAt, extra = {}) {
   return JSON.stringify({ ...payload, debug }, null, 2);
 }
 
+function isCurrentApiDebugRequest(seq, endpoint) {
+  return seq === state.apiDebugRequestSeq && endpoint && state.apiEndpointId === endpoint.id;
+}
+
 async function sendApiDebugRequest(event) {
   event.preventDefault();
   if (state.apiDebugBusy) return;
   const request = currentApiRequest();
   const endpoint = apiEndpointById(state.apiEndpointId);
+  const requestSeq = ++state.apiDebugRequestSeq;
+  renderApiResponseLatency(null, endpoint);
   if (request.method === 'DOC') {
     return;
   }
@@ -4691,6 +4867,8 @@ async function sendApiDebugRequest(event) {
     } catch (error) {
       payload = text;
     }
+    if (!isCurrentApiDebugRequest(requestSeq, endpoint)) return;
+    renderApiResponseLatency(payload, endpoint, apiDebugElapsedMs(startedAt));
     $('apiResponseBox').textContent = apiDebugOutput(payload, request, startedAt, { http_status: response.status });
     handleApiDebugPayload(payload);
     if (isDownloadEndpoint(endpoint)) {
@@ -4703,6 +4881,8 @@ async function sendApiDebugRequest(event) {
     const message = aborted
       ? `前端调试超时 ${Math.round(timeoutMs / 1000)} 秒，后端或 QMT 可能仍在处理。请先检查绑定状态里的 SH/SZ 子桥是否在线，再缩小调试接口范围或调大 timeout。`
       : error.message;
+    if (!isCurrentApiDebugRequest(requestSeq, endpoint)) return;
+    renderApiResponseLatency(null, endpoint, apiDebugElapsedMs(startedAt));
     $('apiResponseBox').textContent = apiDebugOutput({ ok: false, error: message }, request, startedAt, { aborted });
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(null, error);
@@ -5010,7 +5190,15 @@ function setView(view) {
     refreshStatus().catch((error) => log('状态刷新失败', { error: error.message }));
   }
   if (state.appStarted && view === 'bindings') {
-    refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message }));
+    renderCachedBindingStatuses();
+    if (!state.bindingStatusRefreshInFlight) {
+      state.bindingStatusRefreshInFlight = true;
+      refreshBindingStatuses()
+        .catch((error) => log('绑定状态刷新失败', { error: error.message }))
+        .finally(() => {
+          state.bindingStatusRefreshInFlight = false;
+        });
+    }
   }
   if (state.appStarted && view === 'callbacks') {
     connectOrderCallbackSocket();
@@ -5144,7 +5332,7 @@ function marketRouteSummary(config = {}) {
   }).join(' | ');
 }
 
-function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'STOCK', bridgeId = '', displayName = '', account = null, qmtDir = '', mode = 'ctypes', dataProvider = false, marketRoutingEnabled = false, marketBridges = null }) {
+function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'STOCK', bridgeId = '', displayName = '', account = null, qmtDir = '', qmtTradeDir = '', mode = 'ctypes', dataProvider = false, marketRoutingEnabled = false, marketBridges = null }) {
   accountId = String(accountId || (account && account.account_id) || '').trim();
   accountType = normalizeAccountType(accountType || (account && account.account_type) || 'STOCK');
   bridgeId = String(bridgeId || (account && account.bridge_id) || state.defaultBridgeId || 'default').trim();
@@ -5165,6 +5353,7 @@ function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'ST
       bridge_id: bridgeId,
       display_name: displayName,
       qmt_dir: (account && account.qmt_dir) || currentConfig.qmt_dir || qmtDir || '',
+      qmt_trade_dir: (account && account.qmt_trade_dir) || currentConfig.qmt_trade_dir || qmtTradeDir || '',
       mode: (account && account.mode) || currentConfig.mode || mode || 'ctypes',
       data_provider: (account && Object.prototype.hasOwnProperty.call(account, 'data_provider'))
         ? !!account.data_provider
@@ -5259,6 +5448,73 @@ function loadAccountPairs() {
   } catch (error) {
     return {};
   }
+}
+
+function bindingEntriesFromState() {
+  const configEntries = accountConfigEntries().map((item) => ({ ...item, kind: 'pair' }));
+  const known = new Set(configEntries.map((item) => item.accountKey));
+  const pairEntries = accountPairEntries()
+    .filter((item) => !known.has(item.accountKey))
+    .map((item) => ({
+      ...item,
+      kind: 'pair',
+      config: {
+        account_id: item.accountId,
+        account_type: item.accountType,
+        account_key: item.accountKey,
+        bridge_id: item.bridgeId,
+        display_name: item.displayName || '',
+      },
+    }));
+  return [...configEntries, ...pairEntries].filter((item) => item.accountId);
+}
+
+function saveAccountConfigCache(data = {}) {
+  const cache = {
+    saved_at: Date.now(),
+    default_account_id: data.default_account_id || state.defaultAccountId || '',
+    default_account_type: normalizeAccountType(data.default_account_type || state.defaultAccountType || 'STOCK'),
+    default_account_key: data.default_account_key || state.defaultAccountKey || '',
+    default_bridge_id: data.default_bridge_id || state.defaultBridgeId || 'default',
+    bridges: data.bridges || state.bridges || {},
+    account_pairs: data.account_pairs || state.accountPairs || {},
+    account_configs: data.account_configs || state.accountConfigs || {},
+    binding_status_snapshot: data.binding_status_snapshot || state.bindingStatusSnapshot || null,
+    setup: data.setup || state.setup || null,
+  };
+  try {
+    localStorage.setItem(ACCOUNT_CONFIG_CACHE_KEY, JSON.stringify(cache));
+  } catch (error) {
+    log('账号配置缓存保存失败', { error: error.message });
+  }
+}
+
+function loadAccountConfigCache() {
+  try {
+    const cache = JSON.parse(localStorage.getItem(ACCOUNT_CONFIG_CACHE_KEY) || '{}');
+    return cache && typeof cache === 'object' ? cache : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function clearAccountConfigCache() {
+  localStorage.removeItem(ACCOUNT_CONFIG_CACHE_KEY);
+}
+
+function hydrateAccountConfigFromCache() {
+  const cache = loadAccountConfigCache();
+  if (!cache || !cache.account_configs) return false;
+  state.defaultAccountId = cache.default_account_id || state.defaultAccountId || '';
+  state.defaultAccountType = normalizeAccountType(cache.default_account_type || state.defaultAccountType || 'STOCK');
+  state.defaultAccountKey = cache.default_account_key || state.defaultAccountKey || '';
+  state.defaultBridgeId = cache.default_bridge_id || state.defaultBridgeId || 'default';
+  state.bridges = cache.bridges || state.bridges || {};
+  state.accountPairs = cache.account_pairs || state.accountPairs || {};
+  state.accountConfigs = cache.account_configs || state.accountConfigs || {};
+  state.bindingStatusSnapshot = cache.binding_status_snapshot || state.bindingStatusSnapshot || null;
+  state.setup = cache.setup || state.setup || null;
+  return true;
 }
 
 function accountPairEntries() {
@@ -5370,6 +5626,7 @@ async function saveAccountConfigRequest(body) {
         bridge_id: legacyBridgeId,
         display_name: body.display_name || '',
         qmt_dir: body.qmt_dir || '',
+        qmt_trade_dir: body.qmt_trade_dir || '',
         mode: body.mode || 'ctypes',
         data_provider: !!body.data_provider,
       },
@@ -5585,12 +5842,86 @@ function renderAccountPairs() {
   });
 }
 
+function renderBindingEmptyRows() {
+  const body = $('bindingStatusBody');
+  const overviewBody = $('overviewBindingBody');
+  if (body) {
+    body.innerHTML = `<tr class="binding-empty-row"><td colspan="9">
+      <div class="binding-empty">
+        <strong>暂无账号绑定</strong>
+        <span>添加账号后，这里会显示绑定信息、运行状态和验证入口。</span>
+        <button class="primary" type="button" data-binding-action="add">添加绑定</button>
+      </div>
+    </td></tr>`;
+  }
+  if (overviewBody) overviewBody.innerHTML = '<tr><td colspan="5">暂无账号配置</td></tr>';
+  if ($('overviewBindingCount')) $('overviewBindingCount').textContent = '0 组';
+  if ($('bindingCount')) $('bindingCount').textContent = '0 个绑定';
+  renderPairVerification(null);
+}
+
+function renderBindingRows(rows) {
+  const body = $('bindingStatusBody');
+  const overviewBody = $('overviewBindingBody');
+  if (body) {
+    body.innerHTML = rows.map(({ item, status, error, pending, stale }) => bindingStatusRowHtml(item, status, error, true, { pending, stale })).join('');
+    if ($('bindingCount')) $('bindingCount').textContent = `${rows.length} 个绑定`;
+  }
+  if (overviewBody) {
+    const overviewRows = rows.filter(({ item }) => item.kind === 'pair');
+    overviewBody.innerHTML = overviewRows.length
+      ? overviewRows.map(({ item, status, error, pending, stale }) => bindingStatusRowHtml(item, status, error, false, { pending, stale })).join('')
+      : '<tr><td colspan="5">暂无账号配置</td></tr>';
+    if ($('overviewBindingCount')) $('overviewBindingCount').textContent = `${overviewRows.length} 组`;
+  }
+}
+
+function renderCachedBindingStatuses() {
+  const entries = bindingEntriesFromState();
+  if (!entries.length) {
+    renderBindingEmptyRows();
+    return [];
+  }
+  const snapshot = state.bindingStatusSnapshot || {};
+  if (Array.isArray(snapshot.bindings)) {
+    const statusByKey = new Map();
+    const statusByIdentity = new Map();
+    snapshot.bindings.forEach((row) => {
+      const accountKey = String(row.account_key || '').trim();
+      const identity = [
+        String(row.bridge_id || '').trim(),
+        normalizeAccountType(row.account_type || 'STOCK'),
+        String(row.account_id || '').trim(),
+      ].join('|');
+      if (accountKey) statusByKey.set(accountKey, row);
+      if (identity) statusByIdentity.set(identity, row);
+    });
+    const rows = entries.map((item) => {
+      const identity = [
+        String(item.bridgeId || '').trim(),
+        normalizeAccountType(item.accountType || 'STOCK'),
+        String(item.accountId || '').trim(),
+      ].join('|');
+      const row = statusByKey.get(item.accountKey) || statusByIdentity.get(identity);
+      if (!row) return { item, status: null, error: null, pending: true };
+      if (row.error) return { item, error: new Error(row.error) };
+      return { item, status: row.status || null, stale: true };
+    });
+    renderBindingRows(rows);
+    return rows;
+  }
+  const rows = entries.map((item) => ({ item, status: null, error: null, pending: true }));
+  renderBindingRows(rows);
+  return rows;
+}
+
 async function saveCurrentAccountPair() {
   const accountId = selectedAccount();
   const accountType = selectedAccountType();
   const accountKey = selectedAccountKey();
   const form = $('bindingForm');
   const qmtDir = form && form.qmt_dir ? form.qmt_dir.value.trim() : '';
+  const qmtTradeDir = form && form.qmt_trade_dir ? form.qmt_trade_dir.value.trim() : '';
   const mode = form && form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form && form.data_provider && form.data_provider.checked);
   const marketRoutingEnabled = !!(form && form.market_routing_enabled && form.market_routing_enabled.checked);
@@ -5609,6 +5940,16 @@ async function saveCurrentAccountPair() {
     log('账号为空，无法保存配对');
     return;
   }
+  if (normalizeTransportMode(mode) === 'lttx') {
+    if (!qmtDir || !qmtTradeDir) {
+      setBindingNotice('高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error', { autoHide: false });
+      return;
+    }
+    if (qmtDirsAreSame(qmtDir, qmtTradeDir)) {
+      setBindingNotice('高级模式的两个 QMT 核心目录必须不同。', 'error', { autoHide: false });
+      return;
+    }
+  }
   setBindingSaveBusy(true);
   setBindingNotice('正在保存账号绑定并刷新连接状态...', 'busy', { autoHide: false });
   try {
@@ -5617,6 +5958,7 @@ async function saveCurrentAccountPair() {
       account_type: accountType,
       account_key: accountKey,
       qmt_dir: qmtDir,
+      qmt_trade_dir: qmtTradeDir,
       mode,
       data_provider: dataProvider,
       market_routing_enabled: marketRoutingEnabled,
@@ -5635,6 +5977,8 @@ async function saveCurrentAccountPair() {
     applyAccountPair(state.accountKey || accountId);
     syncBindingForm();
     renderAccountPairs();
+    renderCachedBindingStatuses();
+    saveAccountConfigCache(data);
     let refreshError = null;
     try {
       await refreshBindingStatuses();
@@ -5648,6 +5992,7 @@ async function saveCurrentAccountPair() {
       accountType,
       mode,
       qmtDir,
+      qmtTradeDir,
       dataProvider,
       marketRoutingEnabled,
       marketBridges,
@@ -5692,6 +6037,8 @@ async function removeCurrentAccountPair() {
     applyAccountPair(state.accountKey || state.accountId);
     syncBindingForm();
   }
+  renderCachedBindingStatuses();
+  saveAccountConfigCache(data);
   await refreshBindingStatuses();
   log('账号配置已删除', { account_id: accountId, account_type: accountType });
 }
@@ -5732,6 +6079,8 @@ function syncBindingForm() {
   if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
   if (form.qmt_dir) form.qmt_dir.value = config && config.qmt_dir ? config.qmt_dir : '';
   if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
+  if (form.qmt_trade_dir) form.qmt_trade_dir.value = config && config.qmt_trade_dir ? config.qmt_trade_dir : '';
+  syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
   if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
   const routes = normalizeMarketRoutes(config || {});
   if (form.market_routing_enabled) form.market_routing_enabled.checked = isMarketRoutingEnabled(config || {});
@@ -5759,6 +6108,8 @@ function fillBindingForm(values = {}) {
   if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
   if (form.qmt_dir) form.qmt_dir.value = values.qmtDir || '';
   if (form.mode) form.mode.value = values.mode || 'ctypes';
+  if (form.qmt_trade_dir) form.qmt_trade_dir.value = values.qmtTradeDir || '';
+  syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
   if (form.data_provider) form.data_provider.checked = !!values.dataProvider;
   const routes = normalizeMarketRoutes({ market_bridges: values.marketBridges || {} });
   if (form.market_routing_enabled) form.market_routing_enabled.checked = !!values.marketRoutingEnabled;
@@ -5785,6 +6136,7 @@ function openBindingDialog(options = {}) {
     bridgeId,
     displayName,
     qmtDir: config && config.qmt_dir ? config.qmt_dir : '',
+    qmtTradeDir: config && config.qmt_trade_dir ? config.qmt_trade_dir : '',
     mode: config && config.mode ? config.mode : 'ctypes',
     dataProvider: !!(config && config.data_provider),
     marketRoutingEnabled: isMarketRoutingEnabled(config || {}),
@@ -5916,8 +6268,19 @@ async function submitBindingForm(event) {
   const displayName = form.display_name ? form.display_name.value.trim() : '';
   const accountType = normalizeAccountType(form.account_type ? form.account_type.value : 'STOCK');
   const qmtDir = form.qmt_dir ? form.qmt_dir.value.trim() : '';
+  const qmtTradeDir = form.qmt_trade_dir ? form.qmt_trade_dir.value.trim() : '';
   const mode = form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
+  if (normalizeTransportMode(mode) === 'lttx') {
+    if (!qmtDir || !qmtTradeDir) {
+      setBindingNotice('高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error', { autoHide: false });
+      return;
+    }
+    if (qmtDirsAreSame(qmtDir, qmtTradeDir)) {
+      setBindingNotice('高级模式的两个 QMT 核心目录必须不同。', 'error', { autoHide: false });
+      return;
+    }
+  }
   const bridgeId = String(form.dataset.bridgeId || '').trim();
   const marketRoutingEnabled = !!(form.market_routing_enabled && form.market_routing_enabled.checked);
   const marketBridges = {
@@ -5945,6 +6308,7 @@ async function submitBindingForm(event) {
       account_type: accountType,
       bridge_id: bridgeId || undefined,
       qmt_dir: qmtDir,
+      qmt_trade_dir: qmtTradeDir,
       mode,
       data_provider: dataProvider,
       market_routing_enabled: marketRoutingEnabled,
@@ -5963,6 +6327,7 @@ async function submitBindingForm(event) {
       displayName,
       account: responseAccount,
       qmtDir,
+      qmtTradeDir,
       mode,
       dataProvider,
       marketRoutingEnabled,
@@ -5979,6 +6344,8 @@ async function submitBindingForm(event) {
     applyAccountPair(state.accountKey);
     syncBindingForm();
     renderAccountPairs();
+    renderCachedBindingStatuses();
+    saveAccountConfigCache(data);
     let refreshError = null;
     try {
       await refreshBindingStatuses();
@@ -5994,6 +6361,7 @@ async function submitBindingForm(event) {
       displayName,
       mode,
       qmtDir,
+      qmtTradeDir,
       dataProvider,
       marketRoutingEnabled,
       marketBridges,
@@ -6025,6 +6393,8 @@ async function deleteBridge(bridgeId) {
     state.accountPairs = data.account_pairs || {};
     renderAccountPairs();
     renderBridgeConfigList();
+    renderCachedBindingStatuses();
+    saveAccountConfigCache(data);
     await refreshBindingStatuses();
     log('桥接端已删除', { bridge_id: bridgeId });
   } catch (error) {
@@ -6047,41 +6417,20 @@ async function refreshConfig() {
   renderAccountPairs();
   renderBridgeConfigList();
   renderApiDocs(state.apiEndpointId);
+  renderCachedBindingStatuses();
+  saveAccountConfigCache(data);
   await refreshBindingStatuses();
   await refreshUpdateStatus({ log: false }).catch((error) => log('更新状态刷新失败', { error: error.message }));
 }
 
 async function refreshBindingStatuses() {
-  const body = $('bindingStatusBody');
-  const overviewBody = $('overviewBindingBody');
-  const configEntries = accountConfigEntries().map((item) => ({ ...item, kind: 'pair' }));
-  const known = new Set(configEntries.map((item) => item.accountKey));
-  const pairEntries = accountPairEntries()
-    .filter((item) => !known.has(item.accountKey))
-    .map((item) => ({
-      ...item,
-      kind: 'pair',
-      config: { account_id: item.accountId, account_type: item.accountType, account_key: item.accountKey, bridge_id: item.bridgeId, display_name: item.displayName || '' },
-    }));
-  const entries = [...configEntries, ...pairEntries].filter((item) => item.accountId);
+  const entries = bindingEntriesFromState();
   if (!entries.length) {
-    if (body) {
-      body.innerHTML = `<tr class="binding-empty-row"><td colspan="9">
-        <div class="binding-empty">
-          <strong>暂无账号绑定</strong>
-          <span>添加账号后，这里会显示绑定信息、运行状态和验证入口。</span>
-          <button class="primary" type="button" data-binding-action="add">添加绑定</button>
-        </div>
-      </td></tr>`;
-    }
-    if (overviewBody) overviewBody.innerHTML = '<tr><td colspan="5">暂无账号配置</td></tr>';
-    if ($('overviewBindingCount')) $('overviewBindingCount').textContent = '0 组';
-    if ($('bindingCount')) $('bindingCount').textContent = '0 个绑定';
+    renderBindingEmptyRows();
     if (state.bindingStatusRetryTimer) {
       clearTimeout(state.bindingStatusRetryTimer);
       state.bindingStatusRetryTimer = null;
     }
-    renderPairVerification(null);
     return;
   }
   let snapshot;
@@ -6091,6 +6440,8 @@ async function refreshBindingStatuses() {
     snapshot = await legacyBindingStatusSnapshot(entries);
     log('绑定状态批量接口不可用，已使用兼容查询', { error: error.message });
   }
+  state.bindingStatusSnapshot = snapshot;
+  saveAccountConfigCache();
   const statusByKey = new Map();
   const statusByIdentity = new Map();
   (snapshot.bindings || []).forEach((row) => {
@@ -6115,17 +6466,7 @@ async function refreshBindingStatuses() {
     if (row.error) return { item, error: new Error(row.error) };
     return { item, status: row.status || null };
   });
-  if (body) {
-    body.innerHTML = rows.map(({ item, status, error }) => bindingStatusRowHtml(item, status, error, true)).join('');
-    if ($('bindingCount')) $('bindingCount').textContent = `${rows.length} 个绑定`;
-  }
-  if (overviewBody) {
-    const overviewRows = rows.filter(({ item }) => item.kind === 'pair');
-    overviewBody.innerHTML = overviewRows.length
-      ? overviewRows.map(({ item, status, error }) => bindingStatusRowHtml(item, status, error, false)).join('')
-      : '<tr><td colspan="5">暂无账号配置</td></tr>';
-    if ($('overviewBindingCount')) $('overviewBindingCount').textContent = `${overviewRows.length} 组`;
-  }
+  renderBindingRows(rows);
   const monitorWarmingUp = rows.some(({ status }) => {
     const selected = status && status.status ? status.status : status;
     return !!(selected && selected.monitor && selected.monitor.ready === false);
@@ -6206,7 +6547,9 @@ function setBindingVerifyBusy(accountId, bridgeId, accountType = 'STOCK', accoun
   updateBindingVerifyButtons();
 }
 
-function bindingStatusRowHtml(item, status, error, withVerify) {
+function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
+  const pending = !!options.pending && !status && !error;
+  const stale = !!options.stale && !pending && !error;
   const selected = status && status.status ? status.status : status;
   const normalOnline = !!(selected && selected.normal && selected.normal.online);
   const tradeOnline = !!(selected && selected.trade && selected.trade.online);
@@ -6235,7 +6578,11 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const marketReadyCount = configuredMarketLines.filter((row) => row.online).length;
   const marketStatusText = configuredMarketLines.map((row) => row.text).join(' / ');
   const qmtDirText = config && config.qmt_dir ? config.qmt_dir : '未填写（自动更新不可用）';
-  const title = error ? error.message : '';
+  const qmtTradeDirText = config && config.qmt_trade_dir ? config.qmt_trade_dir : '';
+  const qmtDisplayText = normalizeTransportMode(preferred) === 'lttx'
+    ? `${qmtDirText} / 极速端：${qmtTradeDirText || '未填写'}`
+    : qmtDirText;
+  const title = error ? error.message : (stale ? '上次状态，正在后台刷新' : '');
   const accountText = item.accountId || item.account_id || '未绑定';
   const accountType = normalizeAccountType(item.accountType || item.account_type || (config && config.account_type) || 'STOCK');
   const displayName = String(item.displayName || item.display_name || (config && (config.display_name || config.account_name)) || '').trim();
@@ -6252,16 +6599,19 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
   const verifyLabel = verifying ? '验证中' : '验证';
   const preferredLabel = transportModeLabel(preferred, true);
   const effectiveLabel = transportModeLabel(effective, true);
-  const statusClass = error ? 'offline' : (marketEnabled
+  const statusClass = pending ? 'warn' : (error ? 'offline' : (marketEnabled
     ? (marketReadyCount >= 2 ? 'online' : (marketReadyCount > 0 ? 'warn' : 'offline'))
-    : (normalOnline && tradeOnline ? 'online' : (normalOnline || tradeOnline ? 'warn' : 'offline')));
-  const statusLabel = error ? '状态失败' : (marketEnabled
+    : (normalOnline && tradeOnline ? 'online' : (normalOnline || tradeOnline ? 'warn' : 'offline'))));
+  const statusLabel = pending ? '刷新中' : (error ? '状态失败' : (marketEnabled
     ? (marketReadyCount >= 2 ? '市场路由在线' : (marketReadyCount > 0 ? '市场路由部分在线' : '市场路由离线'))
-    : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线')));
+    : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线'))));
   const mainBridgeLabel = normalOnline || tradeOnline ? '在线' : (marketEnabled && marketReadyCount > 0 ? '未启用' : '离线');
-  const connectionLines = marketEnabled && configuredMarketLines.length
+  let connectionLines = pending
+    ? ['状态后台刷新中']
+    : (marketEnabled && configuredMarketLines.length
     ? [`主桥 ${mainBridgeLabel}`, ...configuredMarketLines.map((row) => row.text)]
-    : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`];
+    : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`]);
+  if (stale) connectionLines = ['上次状态，后台刷新中', ...connectionLines];
   const connectionHtml = connectionLines
     .map((line) => `<small class="binding-cell-note binding-status-line">${esc(line)}</small>`)
     .join('');
@@ -6270,8 +6620,8 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
     return `<tr title="${esc(title)}">
       <td>${esc(accountTitle)}<br><small>${esc(accountSubtext)}</small></td>
       <td>${esc(preferredLabel)}</td>
-      <td><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}${status && status.fallback ? '（已回退）' : ''}</span></td>
-      <td>${esc(qmtDirText)}</td>
+      <td><span class="status-dot ${esc(statusClass)}">${esc(pending ? '待刷新' : effectiveLabel)}${status && status.fallback ? '（已回退）' : ''}</span></td>
+      <td>${esc(qmtDisplayText)}</td>
       <td>${provider ? '共享行情源' : '--'}</td>
     </tr>`;
   }
@@ -6297,13 +6647,13 @@ function bindingStatusRowHtml(item, status, error, withVerify) {
       ${connectionHtml}
     </td>
     <td data-label="首选模式">${esc(preferredLabel)}模式</td>
-    <td data-label="实际模式"><span class="status-dot ${esc(statusClass)}">${esc(effectiveLabel)}模式${status && status.fallback ? '（已回退）' : ''}</span></td>
+    <td data-label="实际模式"><span class="status-dot ${esc(statusClass)}">${esc(pending ? '待刷新' : `${effectiveLabel}模式`)}${status && status.fallback ? '（已回退）' : ''}</span></td>
     <td class="binding-channel-cell" data-label="内部通道">
       <strong class="binding-bridge-name">${esc(bridgeName)}</strong>
       <small class="binding-cell-note">${esc(bridgeId || 'default')}</small>
       ${marketEnabled && marketStatusText ? `<small class="binding-cell-note">${esc(marketStatusText)}</small>` : ''}
     </td>
-    <td class="binding-dir-cell" data-label="QMT 目录" title="${esc(qmtDirText)}">${esc(qmtDirText)}</td>
+    <td class="binding-dir-cell" data-label="QMT 目录" title="${esc(qmtDisplayText)}">${esc(qmtDisplayText)}</td>
     <td data-label="数据源">${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
   </tr>`;
 }
@@ -6501,7 +6851,7 @@ function renderLttxStatus(data) {
   } else if (!data) {
     runtime.textContent = 'LTtx 状态未知';
   } else {
-    runtime.textContent = `LTtx 未运行，cfquant Python 库自动发现不可用；可通过网页或 cfquant\\start_cfquant.bat 启动。`;
+    runtime.textContent = `LTtx 未运行，cfquant Python 库自动发现不可用；可通过网页或 cfquant\\启动cfquant.bat 启动。`;
   }
 }
 
@@ -6552,8 +6902,12 @@ async function loadConfigLegacy() {
   if (tradeChannel && $('tradeChannel').querySelector(`option[value="${tradeChannel}"]`)) {
     $('tradeChannel').value = tradeChannel;
   }
+  syncTransportChannelControls();
+  selectedChannel();
+  selectedTradeChannel();
   renderAccountPairs();
   renderBridgeConfigList();
+  renderCachedBindingStatuses();
   renderApiKeyStatus(data.api_key);
   const apiBaseInput = $('apiBaseUrlInput');
   if (apiBaseInput) {
@@ -6608,8 +6962,12 @@ async function loadConfig() {
   if (tradeChannel && $('tradeChannel').querySelector(`option[value="${tradeChannel}"]`)) {
     $('tradeChannel').value = tradeChannel;
   }
+  syncTransportChannelControls();
+  selectedChannel();
+  selectedTradeChannel();
   renderAccountPairs();
   renderBridgeConfigList();
+  renderCachedBindingStatuses();
   renderApiKeyStatus(data.api_key);
   const apiBaseInput = $('apiBaseUrlInput');
   if (apiBaseInput && !apiBaseInput.value.trim()) {
@@ -6630,6 +6988,7 @@ async function loadConfig() {
     refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
   }
   syncOnboardingWizard();
+  if (!data.auth_required) saveAccountConfigCache(data);
   log('Web TX', { reply_channel: data.reply_channel || '', auth_required: !!data.auth_required });
   return data;
 }
@@ -6638,7 +6997,14 @@ async function startAuthenticatedApp() {
   if (state.appStarted) return;
   state.appStarted = true;
   renderApiDocs();
-  refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
+  if (!state.bindingStatusRefreshInFlight) {
+    state.bindingStatusRefreshInFlight = true;
+    refreshBindingStatuses()
+      .catch((error) => log('绑定状态初始化失败', { error: error.message }))
+      .finally(() => {
+        state.bindingStatusRefreshInFlight = false;
+      });
+  }
   refreshStatus().catch((error) => log('状态初始化失败', { error: error.message }));
   refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
   refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
@@ -6796,14 +7162,16 @@ function selectedBridge() {
 }
 
 function selectedChannel() {
-  state.queryChannel = isCtypesTransportMode(activeAccountMode()) ? 'normal' : $('queryChannel').value;
+  const mode = activeAccountMode();
+  state.queryChannel = isCtypesTransportMode(mode) ? 'normal' : 'trade';
   if ($('queryChannel')) $('queryChannel').value = state.queryChannel;
   localStorage.setItem('cfquant.query_channel', state.queryChannel);
   return state.queryChannel;
 }
 
 function selectedTradeChannel() {
-  const channel = isCtypesTransportMode(activeAccountMode())
+  const mode = activeAccountMode();
+  const channel = isCtypesTransportMode(mode) || normalizeTransportMode(mode) === 'lttx'
     ? 'trade'
     : (($('tradeChannel') && $('tradeChannel').value) || 'trade');
   if ($('tradeChannel')) $('tradeChannel').value = channel;
@@ -8251,19 +8619,32 @@ function parentWinPath(path) {
   return index > 0 ? path.slice(0, index) : '';
 }
 
+function accountConfigQmtTradeDir(config = {}) {
+  return String(config.qmt_trade_dir
+    || config.trade_qmt_dir
+    || config.advanced_qmt_dir
+    || config.qmt_trade_core_dir
+    || '').trim();
+}
+
 function onboardingCurrentConfig() {
+  const selectedInfo = selectedAccountInfo();
+  const selectedConfig = selectedInfo && selectedInfo.config ? selectedInfo.config : null;
   const accountId = ($('onboardingAccountId') && $('onboardingAccountId').value.trim())
+    || (selectedInfo && selectedInfo.accountId)
     || state.accountId
     || state.defaultAccountId
     || (state.setup && state.setup.default_account_id)
     || '';
   const accountType = normalizeAccountType(
     ($('onboardingAccountType') && $('onboardingAccountType').value)
+    || (selectedInfo && selectedInfo.accountType)
     || state.accountType
     || state.defaultAccountType
     || (state.setup && state.setup.default_account_type)
     || 'STOCK'
   );
+  const selectedKey = selectedInfo && selectedInfo.accountKey ? selectedInfo.accountKey : '';
   const exact = accountId ? accountConfigEntries().find((item) => (
     item.accountId === accountId && item.accountType === accountType
   )) : null;
@@ -8272,7 +8653,53 @@ function onboardingCurrentConfig() {
   const setupConfig = state.setup && state.setup.account_configs
     ? state.setup.account_configs[setupKey]
     : null;
-  return existing || setupConfig || {};
+  const selectedKeyConfig = selectedKey ? findAccountConfigByKey(selectedKey) : null;
+  return existing || selectedKeyConfig || selectedConfig || setupConfig || {};
+}
+
+function onboardingSavedQmtTradeDir(config = onboardingCurrentConfig()) {
+  const direct = accountConfigQmtTradeDir(config);
+  if (direct) return direct;
+  const setupDefault = String(state.setup && state.setup.default_qmt_trade_dir || '').trim();
+  if (setupDefault) return setupDefault;
+  const valuesAccountId = ($('onboardingAccountId') && $('onboardingAccountId').value.trim())
+    || config.account_id
+    || state.accountId
+    || state.defaultAccountId
+    || '';
+  const valuesAccountType = normalizeAccountType(
+    ($('onboardingAccountType') && $('onboardingAccountType').value)
+    || config.account_type
+    || state.accountType
+    || state.defaultAccountType
+    || 'STOCK'
+  );
+  const entries = accountConfigEntries();
+  const exact = entries.find((item) => (
+    item.accountId === valuesAccountId
+    && item.accountType === valuesAccountType
+    && accountConfigQmtTradeDir(item.config)
+  ));
+  if (exact) return accountConfigQmtTradeDir(exact.config);
+  const selected = selectedAccountInfo();
+  const selectedTradeDir = accountConfigQmtTradeDir(selected && selected.config || {});
+  if (selectedTradeDir) return selectedTradeDir;
+  const advanced = entries.filter((item) => (
+    normalizeTransportMode(item.config && item.config.mode) === 'lttx'
+    && accountConfigQmtTradeDir(item.config)
+  ));
+  return advanced.length === 1 ? accountConfigQmtTradeDir(advanced[0].config) : '';
+}
+
+function fillOnboardingQmtTradeDirFromSaved() {
+  const input = $('onboardingQmtTradeDir');
+  const modeInput = $('onboardingMode');
+  if (!input || normalizeTransportMode(modeInput && modeInput.value) !== 'lttx') return false;
+  if (input.value.trim()) return false;
+  const saved = onboardingSavedQmtTradeDir();
+  if (!saved) return false;
+  input.value = saved;
+  return true;
 }
 
 function onboardingValues() {
@@ -8290,6 +8717,7 @@ function onboardingValues() {
     account_type: accountType,
     account_key: config.account_key || makeAccountKey(accountId, accountType, config.bridge_id || state.defaultBridgeId || 'default'),
     qmt_dir: $('onboardingQmtDir') ? $('onboardingQmtDir').value.trim() : (config.qmt_dir || ''),
+    qmt_trade_dir: $('onboardingQmtTradeDir') ? $('onboardingQmtTradeDir').value.trim() : accountConfigQmtTradeDir(config),
     mode: $('onboardingMode') ? $('onboardingMode').value : (config.mode || 'ctypes'),
     data_provider: $('onboardingDataProvider') ? $('onboardingDataProvider').checked : !!config.data_provider,
   };
@@ -8298,32 +8726,29 @@ function onboardingValues() {
 function onboardingDeployPlan(values = onboardingValues()) {
   const mode = normalizeTransportMode(values.mode);
   const qmtDir = values.qmt_dir || '';
+  const qmtTradeDir = values.qmt_trade_dir || '';
   const installDir = parentWinPath(qmtDir);
   const pythonDir = installDir ? joinWinPath(installDir, 'python') : '';
+  const tradeInstallDir = parentWinPath(qmtTradeDir);
+  const tradePythonDir = tradeInstallDir ? joinWinPath(tradeInstallDir, 'python') : '';
   const entryScript = qmtEntryScriptForMode(mode);
   const baseRows = [
-    ['账户类型', accountTypeLabel(values.account_type)],
     ['资金账号', values.account_id || '--'],
-    ['运行模式', transportModeLabel(mode)],
-    ['当前填写的 QMT 核心目录', qmtDir || '未填写'],
-    ['核心包目录', qmtDir ? joinWinPath(qmtDir, 'cfquant') : '请先填写 QMT 核心目录'],
-    ['身份配置', qmtDir ? joinWinPath(qmtDir, 'cfquant_bridge_config.json') : '请先填写 QMT 核心目录'],
+    ['QMT 核心目录', qmtDir || '未填写'],
+    ['复制核心包到', qmtDir ? joinWinPath(qmtDir, 'cfquant') : '请先填写 QMT 核心目录'],
   ];
   if (mode === 'lttx') {
     return [
       ...baseRows,
-      ['普通 QMT 脚本目录', pythonDir || '请先填写普通 QMT 的 QMT 核心目录'],
       ['普通 QMT 加载', pythonDir ? joinWinPath(pythonDir, 'CFQUANT.py') : '请先填写普通 QMT 的 QMT 核心目录'],
-      ['极速交易端 QMT', '请另外打开一个 QMT 终端，使用同一 bridge_id'],
-      ['极速交易端加载', '在另一个 QMT 的 python 目录加载 CFQUANT_TRADE_LOWLAT.py'],
-      ['高级模式注意', '不要在同一个 QMT 里同时运行 CFQUANT.py 和 CFQUANT_TRADE_LOWLAT.py'],
+      ['极速 QMT 目录', qmtTradeDir || '请先填写第二个 QMT 核心目录'],
+      ['极速 QMT 加载', tradePythonDir ? joinWinPath(tradePythonDir, 'CFQUANT_TRADE_LOWLAT.py') : '请先填写第二个 QMT 核心目录'],
     ];
   }
   return [
     ...baseRows,
-    ['QMT 脚本目录', pythonDir || '请先填写 QMT 核心目录'],
-    [`${transportModeLabel(mode)}加载`, pythonDir ? joinWinPath(pythonDir, entryScript) : '请先填写 QMT 核心目录'],
-    ['部署数量', `只需要一个 QMT，一个${transportModeLabel(mode)}脚本`],
+    ['QMT 加载', pythonDir ? joinWinPath(pythonDir, entryScript) : '请先填写 QMT 核心目录'],
+    ['脚本数量', `一个 QMT，一个${transportModeLabel(mode)}脚本`],
   ];
 }
 
@@ -8341,8 +8766,8 @@ function renderOnboardingDeployPlan() {
     const entryScript = qmtEntryScriptForMode(mode);
     notice.classList.toggle('warning', advanced);
     notice.innerHTML = advanced
-      ? '<strong>高级模式必须两个 QMT</strong><span>普通 QMT 可以和通用端部署在同一个 QMT 里；极速交易端必须单独打开另一个 QMT，并在那个 QMT 中加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>'
-      : `<strong>${esc(transportModeLabel(mode))}只加载一个脚本</strong><span>在 QMT 模型研究中加载 <code>${esc(entryScript)}</code>。${esc(transportModeLabel(mode))}不需要加载 <code>CFQUANT.py</code> 或 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>`;
+      ? '<strong>高级模式</strong><span>普通 QMT 加载 <code>CFQUANT.py</code>，极速交易端加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>'
+      : `<strong>${esc(transportModeLabel(mode))}</strong><span>只加载 <code>${esc(entryScript)}</code>。</span>`;
   }
 }
 
@@ -8469,10 +8894,16 @@ function syncOnboardingWizard(options = {}) {
   if (qmtInput && (shouldFill || !qmtInput.value.trim())) {
     qmtInput.value = config.qmt_dir || (state.setup && state.setup.default_qmt_dir) || '';
   }
+  const qmtTradeInput = $('onboardingQmtTradeDir');
+  if (qmtTradeInput && (shouldFill || !qmtTradeInput.value.trim())) {
+    qmtTradeInput.value = accountConfigQmtTradeDir(config) || (state.setup && state.setup.default_qmt_trade_dir) || '';
+  }
   const modeInput = $('onboardingMode');
   if (modeInput) {
     modeInput.value = config.mode || (state.setup && state.setup.default_mode) || 'ctypes';
   }
+  syncAdvancedQmtDirField('onboardingQmtTradeDir', modeInput && modeInput.value);
+  fillOnboardingQmtTradeDirFromSaved();
   const providerInput = $('onboardingDataProvider');
   if (providerInput) {
     providerInput.checked = config.data_provider !== false;
@@ -8489,6 +8920,16 @@ function syncOnboardingWizard(options = {}) {
 async function saveOnboardingConfig(event) {
   if (event) event.preventDefault();
   const values = onboardingValues();
+  if (normalizeTransportMode(values.mode) === 'lttx') {
+    if (!values.qmt_dir || !values.qmt_trade_dir) {
+      setOnboardingStatus('onboardingConfigStatus', '高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error');
+      return;
+    }
+    if (qmtDirsAreSame(values.qmt_dir, values.qmt_trade_dir)) {
+      setOnboardingStatus('onboardingConfigStatus', '高级模式的两个 QMT 核心目录必须不同。', 'error');
+      return;
+    }
+  }
   if (!values.account_id) {
     setOnboardingStatus('onboardingConfigStatus', '请先填写资金账号。', 'error');
     return;
@@ -8631,11 +9072,19 @@ function wireOnboardingGuide() {
     markOnboardingStepDone('intro');
     setOnboardingStep('config');
   });
-  ['onboardingAccountId', 'onboardingAccountType', 'onboardingQmtDir', 'onboardingMode', 'onboardingDataProvider'].forEach((id) => {
+  ['onboardingAccountId', 'onboardingAccountType', 'onboardingQmtDir', 'onboardingQmtTradeDir', 'onboardingMode', 'onboardingDataProvider'].forEach((id) => {
     const input = $(id);
     if (input) input.addEventListener('input', renderOnboardingDeployPlan);
     if (input) input.addEventListener('change', renderOnboardingDeployPlan);
   });
+  const onboardingMode = $('onboardingMode');
+  if (onboardingMode) {
+    onboardingMode.addEventListener('change', () => {
+      syncAdvancedQmtDirField('onboardingQmtTradeDir', onboardingMode.value);
+      fillOnboardingQmtTradeDirFromSaved();
+      renderOnboardingDeployPlan();
+    });
+  }
   const useCurrent = $('onboardingUseCurrentBtn');
   if (useCurrent) useCurrent.addEventListener('click', () => {
     syncOnboardingWizard({ force: true });
@@ -8705,8 +9154,20 @@ function wireOnboardingGuide() {
 }
 
 function setTutorialTopic(name) {
+  const tutorialAliases = {
+    deploy_guide: 'deploy',
+    deploy_guide_lite: 'deploy',
+    deploy_guide_advanced: 'deploy',
+  };
+  const deployTabAliases = {
+    deploy_guide: 'ctypes',
+    deploy_guide_lite: 'lite',
+    deploy_guide_advanced: 'advanced',
+  };
+  const deployTab = deployTabAliases[name] || '';
+  name = tutorialAliases[name] || name;
   if (!document.querySelector(`.tutorial-menu-item[data-guide="${name}"]`)) {
-    name = 'onboarding';
+    name = 'deploy';
   }
   localStorage.setItem(TUTORIAL_TOPIC_KEY, name);
   document.querySelectorAll('.tutorial-menu-item').forEach((item) => {
@@ -8715,8 +9176,43 @@ function setTutorialTopic(name) {
   document.querySelectorAll('.tutorial-topic').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.guidePanel === name);
   });
+  if (name === 'deploy') {
+    setDeployModeTab(deployTab || localStorage.getItem(DEPLOY_MODE_TAB_KEY) || 'ctypes');
+  }
   if (name === 'onboarding') syncOnboardingWizard();
   if (state.currentView === 'tutorial') renderActiveTutorialMermaid();
+}
+
+function setDeployModeTab(mode) {
+  const aliases = {
+    common: 'ctypes',
+    universal: 'ctypes',
+    ctypes: 'ctypes',
+    lite: 'lite',
+    extreme: 'lite',
+    advanced: 'advanced',
+    lttx: 'advanced',
+  };
+  mode = aliases[mode] || 'ctypes';
+  if (!document.querySelector(`[data-deploy-mode="${mode}"]`)) {
+    mode = 'ctypes';
+  }
+  localStorage.setItem(DEPLOY_MODE_TAB_KEY, mode);
+  document.querySelectorAll('[data-deploy-mode]').forEach((button) => {
+    const active = button.dataset.deployMode === mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.setAttribute('tabindex', active ? '0' : '-1');
+  });
+  document.querySelectorAll('[data-deploy-mode-panel]').forEach((panel) => {
+    const active = panel.dataset.deployModePanel === mode;
+    panel.classList.toggle('active', active);
+    if (active) {
+      panel.removeAttribute('hidden');
+    } else {
+      panel.setAttribute('hidden', '');
+    }
+  });
 }
 
 function initializeMermaidRenderer() {
@@ -8888,7 +9384,16 @@ function wireTutorialNavigation() {
       }
     });
   });
-  setTutorialTopic(localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'onboarding');
+  setTutorialTopic(localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'deploy');
+}
+
+function wireDeployModeNavigation() {
+  document.querySelectorAll('[data-deploy-mode]').forEach((button) => {
+    button.addEventListener('click', () => {
+      setDeployModeTab(button.dataset.deployMode);
+    });
+  });
+  setDeployModeTab(localStorage.getItem(DEPLOY_MODE_TAB_KEY) || 'ctypes');
 }
 
 function wireViewShortcuts() {
@@ -9030,6 +9535,7 @@ async function boot() {
   wireNavigation();
   wireDataTabs();
   wireTutorialNavigation();
+  wireDeployModeNavigation();
   wireViewShortcuts();
   wireOnboardingGuide();
   wireSettingsNavigation();
@@ -9041,6 +9547,15 @@ async function boot() {
   renderProjectVersion(null);
   setDataTab(localStorage.getItem('cfquant.trade_tab') || 'positions', false);
   setView(localStorage.getItem('cfquant.view') || 'overview');
+  if (hydrateAccountConfigFromCache()) {
+    renderBridgeSelect(state.bridges);
+    renderAccountSelect(state.defaultAccountId);
+    applyAccountPair(state.accountKey || state.accountId);
+    syncBindingForm();
+    renderAccountPairs();
+    renderBridgeConfigList();
+    renderCachedBindingStatuses();
+  }
   $('refreshBtn').addEventListener('click', async () => {
     try {
       await refreshAccount('asset,positions', { force: true });
@@ -9085,6 +9600,10 @@ async function boot() {
   const bridgeForm = $('bridgeForm');
   if (bridgeForm) bridgeForm.addEventListener('submit', submitBridgeForm);
   $('bindingForm').addEventListener('submit', submitBindingForm);
+  const bindingMode = $('bindingMode');
+  if (bindingMode) {
+    bindingMode.addEventListener('change', () => syncAdvancedQmtDirField('bindingQmtTradeDir', bindingMode.value));
+  }
   const openOnboardingGuideBtn = $('openOnboardingGuideBtn');
   if (openOnboardingGuideBtn) {
     openOnboardingGuideBtn.addEventListener('click', () => openOnboardingGuide({ manual: true }));
@@ -9198,6 +9717,10 @@ async function boot() {
   const logoutBtn = $('webAuthLogoutBtn');
   if (logoutBtn) logoutBtn.addEventListener('click', () => logoutWebAuth());
   $('setupForm').addEventListener('submit', submitSetupForm);
+  const setupMode = $('setupMode');
+  if (setupMode) {
+    setupMode.addEventListener('change', () => syncAdvancedQmtDirField('setupQmtTradeDir', setupMode.value));
+  }
   $('reinitializeSetupBtn').addEventListener('click', reinitializeSetup);
   $('logCleanupForm').addEventListener('submit', (event) => {
     event.preventDefault();

@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cfquant.org 管理后台</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/admin.css?v=site_20260901_01">
+</head>
+<body class="admin-body">
+  <main>
+    <section id="adminLoginPanel" class="admin-login-screen">
+      <div class="admin-login-card">
+        <a class="brand" href="/" aria-label="返回官网">
+          <span class="brand-mark">cf</span>
+          <span>
+            <strong>cfquant 管理后台</strong>
+            <small>/95ge Operations</small>
+          </span>
+        </a>
+        <div class="section-head compact">
+          <div>
+            <p class="eyebrow">Admin</p>
+            <h1>后台登录</h1>
+            <p>请输入管理员账号和密码。</p>
+          </div>
+        </div>
+        <form id="adminLoginForm" class="wide-form admin-login-form">
+          <label>
+            <span>用户名</span>
+            <input id="adminUsername" type="text" autocomplete="username" required>
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="adminPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <button class="primary-button" type="submit">登录</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="adminWorkspace" class="admin-layout hidden">
+      <aside class="admin-sidebar">
+        <a class="admin-brand" href="/" aria-label="返回官网">
+          <span class="brand-mark">cf</span>
+          <span>
+            <strong>cfquant</strong>
+            <small>管理后台</small>
+          </span>
+        </a>
+        <nav class="admin-menu" aria-label="后台菜单">
+          <button class="admin-menu-button is-active" type="button" data-admin-section="overview">运营总览</button>
+          <button class="admin-menu-button" type="button" data-admin-section="users">用户管理</button>
+          <button class="admin-menu-button" type="button" data-admin-section="threads">讨论管理</button>
+          <button class="admin-menu-button" type="button" data-admin-section="feedback">反馈处理</button>
+          <button class="admin-menu-button" type="button" data-admin-section="features">需求建议</button>
+          <button class="admin-menu-button" type="button" data-admin-section="downloads">更新包</button>
+          <button class="admin-menu-button" type="button" data-admin-section="email">邮件服务</button>
+          <button class="admin-menu-button" type="button" data-admin-section="notifications">站内通知</button>
+        </nav>
+        <div class="admin-sidebar-actions">
+          <a class="ghost-button" href="/">返回官网</a>
+          <button id="adminLogout" class="ghost-button hidden" type="button">退出登录</button>
+        </div>
+      </aside>
+
+      <main class="admin-main">
+        <header class="admin-main-header">
+          <div>
+            <p id="adminBreadcrumb" class="eyebrow">Operations</p>
+            <h1 id="adminPageTitle">运营总览</h1>
+          </div>
+          <button id="adminRefresh" class="ghost-button" type="button">刷新</button>
+        </header>
+
+        <section id="adminViewOverview" class="admin-view is-active" data-admin-view="overview">
+          <dl id="adminStats" class="stat-grid admin-stats"></dl>
+          <div class="admin-grid">
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>站点点击</h2>
+              </div>
+              <div id="topPaths" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>IP 来源</h2>
+              </div>
+              <div id="topIps" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>来源页面</h2>
+              </div>
+              <div id="topReferrers" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>近 30 天访问</h2>
+              </div>
+              <div id="dailyVisits" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>最近访问</h2>
+              </div>
+              <div id="recentVisits" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>最近用户</h2>
+              </div>
+              <div id="recentUsers" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>最近讨论</h2>
+              </div>
+              <div id="recentThreads" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>最新反馈</h2>
+              </div>
+              <div id="recentFeedback" class="table-wrap"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="adminViewUsers" class="admin-view" data-admin-view="users">
+          <form id="userFilterForm" class="admin-toolbar">
+            <label>
+              <span>搜索用户</span>
+              <input id="userSearch" type="search" placeholder="ID / 用户名 / 昵称 / 手机号 / 邮箱">
+            </label>
+            <label>
+              <span>状态</span>
+              <select id="userStatusFilter">
+                <option value="">全部</option>
+                <option value="active">正常</option>
+                <option value="suspended">禁用</option>
+                <option value="blocked">拉黑</option>
+              </select>
+            </label>
+            <button class="primary-button" type="submit">搜索</button>
+          </form>
+
+          <div class="admin-two-column">
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>用户列表</h2>
+              </div>
+              <div id="userTable" class="table-wrap"></div>
+            </section>
+
+            <section id="userEditor" class="admin-panel admin-editor">
+              <div class="panel-head">
+                <h2>编辑用户</h2>
+              </div>
+              <div id="userEditEmpty" class="empty-state compact"><span>从左侧选择用户</span></div>
+              <form id="userEditForm" class="admin-form hidden">
+                <input id="userId" type="hidden">
+                <label>
+                  <span>用户名</span>
+                  <input id="userUsername" type="text" minlength="3" maxlength="32" required>
+                </label>
+                <label>
+                  <span>昵称</span>
+                  <input id="userDisplayName" type="text" maxlength="60" required>
+                </label>
+                <div class="form-row two">
+                  <label>
+                    <span>手机号</span>
+                    <input id="userPhone" type="tel" required>
+                  </label>
+                  <label>
+                    <span>邮箱</span>
+                    <input id="userEmail" type="email">
+                  </label>
+                </div>
+                <div class="form-row two">
+                  <label>
+                    <span>状态</span>
+                    <select id="userStatus">
+                      <option value="active">正常</option>
+                      <option value="suspended">禁用</option>
+                      <option value="blocked">拉黑</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>头像颜色</span>
+                    <input id="userAvatarColor" type="color" value="#1f6feb">
+                  </label>
+                </div>
+                <div class="admin-avatar-editor">
+                  <div id="userAvatarPreview"></div>
+                  <label>
+                    <span>头像地址</span>
+                    <input id="userAvatarUrl" type="text" placeholder="/avatars/market-blue.svg">
+                  </label>
+                </div>
+                <label>
+                  <span>重置密码</span>
+                  <input id="userPassword" type="password" minlength="6" maxlength="128" autocomplete="new-password" placeholder="留空则不修改">
+                </label>
+                <button class="primary-button" type="submit">保存用户</button>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section id="adminViewThreads" class="admin-view" data-admin-view="threads">
+          <form id="threadFilterForm" class="admin-toolbar">
+            <label>
+              <span>搜索讨论</span>
+              <input id="threadSearch" type="search" placeholder="ID / 标题 / 内容 / 作者 / 标签">
+            </label>
+            <label>
+              <span>状态</span>
+              <select id="threadStatusFilter">
+                <option value="">全部</option>
+                <option value="open">开放</option>
+                <option value="locked">锁定</option>
+              </select>
+            </label>
+            <button class="primary-button" type="submit">搜索</button>
+          </form>
+
+          <div class="admin-two-column wide-left">
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>帖子列表</h2>
+              </div>
+              <div id="threadTable" class="table-wrap"></div>
+            </section>
+            <section class="admin-panel admin-editor">
+              <div class="panel-head">
+                <h2>帖子回复</h2>
+              </div>
+              <div id="threadReplyTitle" class="admin-selection-title">请选择帖子</div>
+              <div id="threadReplyMeta" class="meta-line"></div>
+              <div id="replyTable" class="admin-reply-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="adminViewFeedback" class="admin-view" data-admin-view="feedback">
+          <div class="admin-feedback-layout">
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>反馈列表</h2>
+              </div>
+              <div id="feedbackTable" class="admin-feedback-list"></div>
+            </section>
+            <section class="admin-panel admin-editor">
+              <div class="panel-head">
+                <h2>反馈详情</h2>
+              </div>
+              <div id="feedbackDetail" class="admin-feedback-detail"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="adminViewFeatures" class="admin-view" data-admin-view="features">
+          <form id="featureFilterForm" class="admin-toolbar">
+            <label>
+              <span>搜索建议</span>
+              <input id="featureSearch" type="search" placeholder="ID / 标题 / 内容 / 场景">
+            </label>
+            <label>
+              <span>状态</span>
+              <select id="featureStatusFilter">
+                <option value="">全部</option>
+                <option value="open">待评估</option>
+                <option value="reviewing">评估中</option>
+                <option value="planned">已排期</option>
+                <option value="done">已完成</option>
+                <option value="declined">暂不采纳</option>
+              </select>
+            </label>
+            <label>
+              <span>模块</span>
+              <select id="featureModuleFilter">
+                <option value="">全部</option>
+                <option value="bridge">桥接运行</option>
+                <option value="quote">行情数据</option>
+                <option value="trade">交易接口</option>
+                <option value="web">官网 / 控制台</option>
+                <option value="docs">文档示例</option>
+                <option value="other">其它</option>
+              </select>
+            </label>
+            <button class="primary-button" type="submit">搜索</button>
+          </form>
+
+          <section class="admin-panel">
+            <div class="panel-head">
+              <h2>需求建议池</h2>
+            </div>
+            <div id="featureTable" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="adminViewDownloads" class="admin-view" data-admin-view="downloads">
+          <div class="admin-actions-grid">
+            <form id="downloadForm" class="admin-panel admin-form">
+              <div class="panel-head">
+                <h2>登记更新包</h2>
+                <button id="clearDownloadForm" class="ghost-button" type="button">新建</button>
+              </div>
+              <input id="downloadId" type="hidden">
+              <label>
+                <span>标题</span>
+                <input id="downloadTitle" type="text" value="cfquant 更新包" required>
+              </label>
+              <label>
+                <span>版本</span>
+                <input id="downloadVersion" type="text" placeholder="例如 core_20260818_01" required>
+              </label>
+              <label>
+                <span>本地文件名</span>
+                <input id="downloadFile" type="text" placeholder="放入 official_site/packages 后填写">
+              </label>
+              <label>
+                <span>外部链接</span>
+                <input id="downloadUrl" type="url" placeholder="GitHub 或网盘链接">
+              </label>
+              <label>
+                <span>说明</span>
+                <textarea id="downloadNotes" rows="4"></textarea>
+              </label>
+              <button class="primary-button" type="submit">保存更新包</button>
+            </form>
+
+            <section class="admin-panel">
+              <div class="panel-head">
+                <h2>更新包管理</h2>
+              </div>
+              <div id="downloadTable" class="table-wrap"></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="adminViewEmail" class="admin-view" data-admin-view="email">
+          <div class="admin-actions-grid email-admin-grid">
+            <form id="emailSettingsForm" class="admin-panel admin-form">
+              <div class="panel-head">
+                <h2>SMTP 配置</h2>
+                <span id="emailSettingsStatus" class="meta-line">未加载</span>
+              </div>
+              <label class="check-field">
+                <input id="emailEnabled" type="checkbox">
+                <span>启用邮件服务</span>
+              </label>
+              <label>
+                <span>SMTP 主机</span>
+                <input id="emailSmtpHost" type="text" placeholder="smtp.example.com">
+              </label>
+              <div class="form-row two">
+                <label>
+                  <span>端口</span>
+                  <input id="emailSmtpPort" type="number" min="1" max="65535" value="587">
+                </label>
+                <label>
+                  <span>加密方式</span>
+                  <select id="emailSmtpSecurity">
+                    <option value="starttls">STARTTLS</option>
+                    <option value="ssl">SSL</option>
+                    <option value="none">不加密</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                <span>SMTP 用户名</span>
+                <input id="emailSmtpUsername" type="text" autocomplete="username">
+              </label>
+              <label>
+                <span>SMTP 密码 / 授权码</span>
+                <input id="emailSmtpPassword" type="password" autocomplete="new-password" placeholder="留空则保留已保存密码">
+              </label>
+              <label class="check-field">
+                <input id="emailClearPassword" type="checkbox">
+                <span>清除已保存密码</span>
+              </label>
+              <div class="form-row two">
+                <label>
+                  <span>发件邮箱</span>
+                  <input id="emailFromEmail" type="email" autocomplete="email">
+                </label>
+                <label>
+                  <span>发件名称</span>
+                  <input id="emailFromName" type="text" value="cfquant 官网">
+                </label>
+              </div>
+              <label>
+                <span>测试收件邮箱</span>
+                <input id="emailTestRecipient" type="email" placeholder="保存配置后发送测试">
+              </label>
+              <div class="form-actions">
+                <button class="primary-button" type="submit">保存配置</button>
+                <button id="emailTestButton" class="ghost-button" type="button">发送测试</button>
+              </div>
+            </form>
+
+            <form id="emailSendForm" class="admin-panel admin-form">
+              <div class="panel-head">
+                <h2>发送邮件</h2>
+              </div>
+              <label>
+                <span>选择用户</span>
+                <select id="emailUserSelect">
+                  <option value="">手动填写收件邮箱</option>
+                </select>
+              </label>
+              <label>
+                <span>收件邮箱</span>
+                <input id="emailRecipient" type="email" placeholder="选择用户后自动填充">
+              </label>
+              <label>
+                <span>邮件标题</span>
+                <input id="emailSubject" type="text" maxlength="200" required>
+              </label>
+              <label>
+                <span>邮件内容</span>
+                <textarea id="emailBody" rows="10" required></textarea>
+              </label>
+              <button class="primary-button" type="submit">发送邮件</button>
+            </form>
+          </div>
+
+          <section class="admin-panel email-log-panel">
+            <div class="panel-head">
+              <h2>发送日志</h2>
+              <button id="refreshEmailLogs" class="ghost-button" type="button">刷新日志</button>
+            </div>
+            <div id="emailLogTable" class="table-wrap"></div>
+          </section>
+        </section>
+
+        <section id="adminViewNotifications" class="admin-view" data-admin-view="notifications">
+          <form id="broadcastForm" class="admin-panel admin-form admin-broadcast-form">
+            <div class="panel-head">
+              <h2>发送站内通知</h2>
+            </div>
+            <label>
+              <span>标题</span>
+              <input id="broadcastTitle" type="text" required>
+            </label>
+            <label>
+              <span>内容</span>
+              <textarea id="broadcastBody" rows="7" required></textarea>
+            </label>
+            <button class="primary-button" type="submit">发送给全部用户</button>
+          </form>
+        </section>
+      </main>
+    </section>
+  </main>
+
+  <div id="adminImageModal" class="modal image-modal hidden" role="dialog" aria-modal="true" aria-labelledby="adminImageModalTitle">
+    <div class="modal-panel image-modal-panel">
+      <div class="modal-head image-modal-head">
+        <h2 id="adminImageModalTitle">图片预览</h2>
+        <button id="closeAdminImageModal" class="icon-button" type="button" aria-label="关闭图片预览">X</button>
+      </div>
+      <div class="image-modal-body">
+        <img id="adminImageModalImage" alt="图片预览">
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="/config.js"></script>
+  <script src="/admin.js?v=site_20260901_01"></script>
+</body>
+</html>

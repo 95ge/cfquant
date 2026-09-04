@@ -259,11 +259,90 @@ def _ensure_path():
         pass
 
 
+def _install_logging_compat():
+    """Keep this entry compatible with older cfquant packages in QMT."""
+    logging_module = importlib.import_module("cfquant.logging_i18n")
+
+    if not hasattr(logging_module, "normalize_log_language"):
+        def _normalize_log_language(value=None):
+            value = str(value or "").strip().lower()
+            return "en" if value in ("en", "english") else "zh"
+
+        logging_module.normalize_log_language = _normalize_log_language
+
+    if not hasattr(logging_module, "normalize_log_enabled"):
+        def _normalize_log_enabled(value=None):
+            if isinstance(value, bool):
+                return value
+            if value is None:
+                return True
+            text = str(value).strip().lower()
+            return text not in ("0", "false", "no", "off", "disable", "disabled", "closed", "close")
+
+        logging_module.normalize_log_enabled = _normalize_log_enabled
+
+    if not hasattr(logging_module, "_CFQUANT_COMPAT_LOG_LANGUAGE"):
+        logging_module._CFQUANT_COMPAT_LOG_LANGUAGE = ""
+    if not hasattr(logging_module, "_CFQUANT_COMPAT_LOG_ENABLED"):
+        logging_module._CFQUANT_COMPAT_LOG_ENABLED = None
+
+    if not hasattr(logging_module, "get_log_language"):
+        def _get_log_language():
+            if logging_module._CFQUANT_COMPAT_LOG_LANGUAGE:
+                return logging_module._CFQUANT_COMPAT_LOG_LANGUAGE
+            return logging_module.normalize_log_language(
+                os.environ.get("CFQUANT_QMT_LOG_LANGUAGE")
+                or os.environ.get("CFQUANT_LOG_LANGUAGE")
+                or "zh"
+            )
+
+        logging_module.get_log_language = _get_log_language
+
+    if not hasattr(logging_module, "set_log_language"):
+        def _set_log_language(value):
+            language = logging_module.normalize_log_language(value)
+            logging_module._CFQUANT_COMPAT_LOG_LANGUAGE = language
+            return language
+
+        logging_module.set_log_language = _set_log_language
+
+    if not hasattr(logging_module, "get_log_enabled"):
+        def _get_log_enabled():
+            if logging_module._CFQUANT_COMPAT_LOG_ENABLED is not None:
+                return bool(logging_module._CFQUANT_COMPAT_LOG_ENABLED)
+            return logging_module.normalize_log_enabled(
+                os.environ.get("CFQUANT_QMT_LOG_ENABLED")
+                or os.environ.get("CFQUANT_LOG_ENABLED")
+                or "1"
+            )
+
+        logging_module.get_log_enabled = _get_log_enabled
+
+    if not hasattr(logging_module, "set_log_enabled"):
+        def _set_log_enabled(value):
+            enabled = logging_module.normalize_log_enabled(value)
+            logging_module._CFQUANT_COMPAT_LOG_ENABLED = enabled
+            return enabled
+
+        logging_module.set_log_enabled = _set_log_enabled
+
+    if not hasattr(logging_module, "translate_log"):
+        def _translate_log(message, language=None):
+            return str(message)
+
+        logging_module.translate_log = _translate_log
+
+    return logging_module
+
+
 _ensure_path()
 _apply_runtime_config()
 
+_logging_i18n = _install_logging_compat()
+get_log_enabled = _logging_i18n.get_log_enabled
+translate_log = _logging_i18n.translate_log
+
 from cfquant import __version__ as _ENTRY_VERSION
-from cfquant.logging_i18n import get_log_enabled, translate_log
 
 
 def _print_log(message):

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" role="img" aria-label="Amber Pulse avatar">
+  <defs>
+    <linearGradient id="bg" x1="20" y1="18" x2="138" y2="142" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#f59e0b"/>
+      <stop offset="1" stop-color="#5c3b00"/>
+    </linearGradient>
+  </defs>
+  <rect width="160" height="160" rx="32" fill="url(#bg)"/>
+  <path d="M25 83h25l9-18 16 36 13-55 17 37h30" fill="none" stroke="#fff7df" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" opacity=".58"/>
+  <circle cx="80" cy="65" r="31" fill="#fff7df"/>
+  <path d="M41 132c8-29 24-43 39-43s31 14 39 43" fill="#ffd784"/>
+  <circle cx="66" cy="75" r="5" fill="#5c3b00"/>
+  <circle cx="94" cy="75" r="5" fill="#5c3b00"/>
+  <path d="M68 91h24" stroke="#5c3b00" stroke-width="5" stroke-linecap="round"/>
+</svg>

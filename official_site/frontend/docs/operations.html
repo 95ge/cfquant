@@ -1,0 +1,117 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f8fafc">
+  <title>运维更新 | cfquant.org</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css?v=site_20260902_01">
+</head>
+<body class="doc-shell">
+  <a class="skip-link" href="#content">跳到主要内容</a>
+  <header class="topnav">
+    <div class="container topnav-inner">
+      <a class="brand-button" href="/" aria-label="cfquant 首页"><span class="brand-mark">CF</span><span><strong translate="no">cfquant</strong><small>QMT Bridge Community</small></span></a>
+      <nav class="site-links" aria-label="主导航">
+        <a class="nav-tab" href="/#project">项目</a>
+        <a class="nav-tab" href="/#downloads">下载</a>
+        <a class="nav-tab is-active" href="/#docs">文档</a>
+        <a class="nav-tab" href="/#forum">论坛</a>
+        <a class="nav-tab" href="/#feedback">反馈</a>
+        <a class="nav-tab" href="/#center">用户中心</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="content">
+    <section class="section hero-section compact-hero">
+      <div class="container hero-center">
+        <p class="eyebrow">站内文档</p>
+        <h1>运维更新</h1>
+        <p class="lead">整理本地服务启停、日志定位、版本检查、Web 项目更新和 QMT 核心更新的日常路径。</p>
+        <div class="doc-meta">
+          <span class="doc-pill">启停脚本</span>
+          <span class="doc-pill">日志定位</span>
+          <span class="doc-pill">更新回滚</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="container doc-layout">
+        <article class="doc-article">
+          <section id="scripts" class="doc-panel">
+            <h2>启停脚本</h2>
+            <pre class="doc-code"><code>start_cfquant.bat      启动本地服务
+stop_cfquant.bat       停止本地服务
+restart_cfquant.bat    重启本地服务
+启动cfquant.bat        中文启动脚本
+停止cfquant.bat        中文停止脚本
+重启cfquant.bat        中文重启脚本</code></pre>
+            <p>日常运维通常使用重启脚本。重启只重启 Web 和 PipeHub，并保留 LTtx，避免外部 Python 自动发现入口中断。</p>
+          </section>
+
+          <section id="logs" class="doc-panel">
+            <h2>日志目录</h2>
+            <pre class="doc-code"><code>log/
+  cfquant_startup.log
+  cfquant_web_server.runtime.log
+  cfquant_web_server.stdout.log
+  cfquant_web_server.stderr.log
+  cfquant_pipe_hub.stdout.log
+  cfquant_pipe_hub.stderr.log
+  lttx_server.stdout.log
+  lttx_server.stderr.log
+  cfquant_qmt_bridge.log</code></pre>
+            <p>网页打不开或启动脚本报错时，优先看 <code>cfquant_startup.log</code> 和 <code>cfquant_web_server.stderr.log</code>。</p>
+          </section>
+
+          <section id="runtime" class="doc-panel">
+            <h2>运行数据目录</h2>
+            <p>运行状态、配置数据库、缓存、截图和报告统一放到 <code>runtime/</code>，不进入发布包源码管理。</p>
+            <pre class="doc-code"><code>runtime/
+  config/
+  db/
+  lttx/
+  reports/
+  media/
+  cache/
+  status/
+  screenshots/</code></pre>
+          </section>
+
+          <section id="version" class="doc-panel">
+            <h2>版本检查</h2>
+            <p>Web 左上角会显示当前版本号。鼠标悬停可查看本地版本、远端版本、更新日志和版本检查失败原因。内网或无法访问外网时，版本探测失败不影响交易和行情。</p>
+          </section>
+
+          <section id="update" class="doc-panel">
+            <h2>更新策略</h2>
+            <div class="table-wrap">
+              <table class="doc-table">
+                <thead><tr><th>类型</th><th>作用</th><th>注意事项</th></tr></thead>
+                <tbody>
+                  <tr><td>Web 项目更新</td><td>更新本地 Web、PipeHub、SDK 和脚本</td><td>更新前生成备份，失败时回滚，完成后自动重启 Web。</td></tr>
+                  <tr><td>QMT 核心更新</td><td>更新每个已绑定 QMT 的 <code>bin.x64/cfquant/</code></td><td>不直接替换 QMT 中的加密入口脚本。</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </article>
+
+        <aside class="doc-toc" aria-label="本文目录">
+          <strong>本文目录</strong>
+          <a href="#scripts">启停脚本</a>
+          <a href="#logs">日志目录</a>
+          <a href="#runtime">运行数据目录</a>
+          <a href="#version">版本检查</a>
+          <a href="#update">更新策略</a>
+          <a href="/#docs">返回文档入口</a>
+        </aside>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
+
