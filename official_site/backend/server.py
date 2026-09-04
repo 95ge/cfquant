@@ -188,10 +188,10 @@ def inspect_project_package(path: Path) -> dict[str, Any]:
     try:
         with zipfile.ZipFile(path, "r") as zf:
             core_text = read_zip_text(zf, ["cfquant/version.py", "cfquant/__init__.py"])
-            web_text = read_zip_text(zf, ["cfquant_web_server.py"])
+            server_text = read_zip_text(zf, ["cfquant_web_server.py"])
             readme_text = read_zip_text(zf, ["README.md"])
         result["core_version"] = parse_assignment(core_text, "__version__")
-        result["web_version"] = parse_assignment(web_text, "WEB_VERSION")
+        result["web_version"] = parse_assignment(core_text, "WEB_VERSION") or parse_assignment(server_text, "WEB_VERSION")
         result["changelog"] = extract_latest_readme_changelog(readme_text)
     except Exception:
         pass
