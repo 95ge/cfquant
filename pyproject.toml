@@ -4,8 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfquant"
-version = "0.1.0"
+version = "0.2.1"
 description = "QMT local bridge and xtquant-compatible Python client."
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
@@ -23,7 +24,8 @@ dev = ["build>=1.0", "twine>=5.0"]
 zmq = ["pyzmq>=25"]
 
 [project.scripts]
-cfquant-web = "cfquant_web_server:main"
+cfquant = "cfquant.cli:main"
+cfquant-web = "cfquant.cli:web_main"
 cfquant-pipe-hub = "cfquant_pipe_hub:main"
 
 [tool.setuptools]

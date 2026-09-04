@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260903_04">
+  <link rel="stylesheet" href="/styles.css?v=web_20260904_09">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -104,105 +104,99 @@
   </div>
   <div id="setupOverlay" class="auth-overlay hidden" aria-live="polite">
     <div class="auth-card setup-card">
-      <h2>首次初始化</h2>
-      <div class="setup-primer" aria-label="部署前必读">
-        <div class="setup-primer-head">
-          <span class="setup-pulse" aria-hidden="true"></span>
-          <div>
-            <strong>部署前请先读这里</strong>
-            <span>cfquant 由本地 Web 服务负责账号路由，QMT 里只运行对应模式的桥接脚本。新用户默认按单账号、通用模式跑通。</span>
-          </div>
+      <div class="setup-head">
+        <div>
+          <span class="setup-kicker">第一次启动</span>
+          <h2>先连接 QMT</h2>
+          <p>填写账号和目录，保存后进入系统。</p>
         </div>
-        <div class="setup-flow" aria-label="cfquant 请求路径">
-          <div><strong>网页 / 外部程序</strong><span>HTTP、WebSocket</span></div>
-          <span>请求</span>
-          <div><strong>cfquant Web</strong><span>鉴权、账号路由</span></div>
-          <span>转发</span>
-          <div><strong>QMT 桥接脚本</strong><span>通用端或高级双端</span></div>
-          <span>执行</span>
-          <div><strong>QMT 终端</strong><span>查询、交易、回调</span></div>
-        </div>
-        <div class="setup-mode-compare">
-          <div>
-            <strong>通用模式（推荐）</strong>
-            <span>一个 QMT 加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code> 即可，行情、查询、下单、撤单和回调都走 ctypes 单文件桥。</span>
-          </div>
-          <div>
-            <strong>极致模式</strong>
-            <span>一个 QMT 只加载 <code>CFQUANT_LITE.py</code>，不依赖 <code>cfquant</code> 包导入，特别适合国泰君安君弘君智 QMT 这类白名单限制场景。</span>
-          </div>
-          <div class="important">
-            <strong>高级模式</strong>
-            <span>必须开两个 QMT：普通 QMT 加载 <code>CFQUANT.py</code>，另一个极速交易端 QMT 加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。不要把高级模式两个文件放在同一个 QMT 里同时运行。</span>
-          </div>
-        </div>
-        <p class="setup-primer-note">通用模式和高级模式里的普通 QMT 可以部署在同一个 QMT 里；只有高级模式的极速交易端需要单独打开另一个 QMT。</p>
+        <span class="setup-required">首次配置</span>
       </div>
       <ol class="setup-steps" id="setupSteps" aria-label="初始化步骤">
         <li class="active" data-setup-step="config">
-          <strong>注册管理员并配置默认账号</strong>
-          <span>创建网页登录账号，填写资金账号和 QMT 核心目录。</span>
+          <span class="setup-step-index">1</span>
+          <span class="setup-step-copy"><strong>填写</strong><em>账号与 QMT</em></span>
         </li>
         <li data-setup-step="identity">
-          <strong>写入通用端身份</strong>
-          <span>保存后写入 bin.x64\cfquant_bridge_config.json。</span>
+          <span class="setup-step-index">2</span>
+          <span class="setup-step-copy"><strong>保存</strong><em>写入本机配置</em></span>
         </li>
         <li data-setup-step="qmt">
-          <strong>启动 QMT 通用端</strong>
-          <span>在 QMT 中加载 CFQUANT_CTYPE_ALL_LOWLAT.py。</span>
-        </li>
-        <li data-setup-step="verify">
-          <strong>回网页验证</strong>
-          <span>刷新绑定状态，确认资产、持仓能返回。</span>
+          <span class="setup-step-index">3</span>
+          <span class="setup-step-copy"><strong>进入</strong><em>启动项目</em></span>
         </li>
       </ol>
       <form id="setupForm" class="auth-form">
-        <div id="setupAdminFields" class="setup-admin-fields">
-          <div class="setup-admin-head">
-            <strong>管理员账号</strong>
-            <span>首次使用先创建本机 Web 管理员。密码只保存加盐哈希，登录状态会记住用于自动登录。</span>
+        <section id="setupAdminFields" class="setup-section setup-admin-fields">
+          <div class="setup-section-head">
+            <strong>管理员</strong>
+            <span>创建登录账号</span>
           </div>
-          <label class="field wide">
-            <span>管理员账号</span>
-            <input id="setupAdminUsername" name="admin_username" autocomplete="username" placeholder="admin">
-          </label>
-          <label class="field wide">
-            <span>管理员密码</span>
-            <input id="setupAdminPassword" name="admin_password" type="password" autocomplete="new-password" placeholder="至少 6 位">
-          </label>
-          <label class="field wide">
-            <span>确认管理员密码</span>
-            <input id="setupAdminPasswordConfirm" name="admin_password_confirm" type="password" autocomplete="new-password">
-          </label>
+          <div class="setup-fields-grid">
+            <label class="field">
+              <span>管理员账号</span>
+              <input id="setupAdminUsername" name="admin_username" autocomplete="username" placeholder="admin">
+            </label>
+            <label class="field">
+              <span>管理员密码</span>
+              <input id="setupAdminPassword" name="admin_password" type="password" autocomplete="new-password" placeholder="至少 6 位">
+            </label>
+            <label class="field">
+              <span>确认密码</span>
+              <input id="setupAdminPasswordConfirm" name="admin_password_confirm" type="password" autocomplete="new-password">
+            </label>
+          </div>
+        </section>
+        <section class="setup-section">
+          <div class="setup-section-head">
+            <strong>交易账号</strong>
+            <span>默认账号</span>
+          </div>
+          <div class="setup-fields-grid">
+            <label class="field">
+              <span>账号</span>
+              <input id="setupAccountId" name="account_id" autocomplete="off" placeholder="请输入资金账号">
+            </label>
+            <label class="field">
+              <span>账户类型</span>
+              <select id="setupAccountType" name="account_type">
+                <option value="STOCK">普通证券账户</option>
+                <option value="CREDIT">信用账户</option>
+              </select>
+              <small>信用账户选择信用类型</small>
+            </label>
+          </div>
+        </section>
+        <section class="setup-section">
+          <div class="setup-section-head">
+            <strong>QMT 连接</strong>
+            <span>目录建议填写 <code>bin.x64</code></span>
+          </div>
+          <div class="setup-fields-grid">
+            <label class="field wide">
+              <span>普通端 QMT 核心目录</span>
+              <input id="setupQmtDir" name="qmt_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端\bin.x64">
+              <small>用于桥接和后续更新</small>
+            </label>
+            <label class="field wide">
+              <span>运行模式</span>
+              <select id="setupMode" name="mode">
+                <option value="ctypes">通用模式（推荐）</option>
+                <option value="lite">极致模式</option>
+                <option value="lttx">高级模式（两个 QMT）</option>
+              </select>
+            </label>
+            <label id="setupQmtTradeDirField" class="field wide hidden">
+              <span>极速交易端 QMT 核心目录</span>
+              <input id="setupQmtTradeDir" name="qmt_trade_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端\bin.x64">
+              <small>高级模式需填写另一个 QMT 目录</small>
+            </label>
+          </div>
+        </section>
+        <div class="setup-actions">
+          <button class="primary" type="submit">保存并进入</button>
+          <span id="setupStatus" class="metric-note"></span>
         </div>
-        <label class="field wide">
-          <span>账号</span>
-          <input id="setupAccountId" name="account_id" autocomplete="off" placeholder="2220009880">
-        </label>
-        <label class="field wide">
-          <span>账户类型</span>
-          <select id="setupAccountType" name="account_type">
-            <option value="STOCK">普通证券账户</option>
-            <option value="CREDIT">信用账户</option>
-          </select>
-          <small>信用账户一般有独立资金号；如果普通和信用资金号相同，系统会用账户类型继续区分。</small>
-        </label>
-        <label class="field wide">
-          <span>QMT 核心目录（可选）</span>
-          <input id="setupQmtDir" name="qmt_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端\bin.x64">
-          <small>建议填写 QMT 的 bin.x64 目录，用于后续自动更新和多账号部署定位；留空时自动更新不可用。</small>
-        </label>
-        <label class="field wide">
-          <span>运行模式</span>
-          <select id="setupMode" name="mode">
-            <option value="ctypes">通用模式（推荐，ctypes 单文件）</option>
-            <option value="lite">极致模式（纯 ctypes 自包含）</option>
-            <option value="lttx">高级模式（两个 QMT）</option>
-          </select>
-          <small>新用户建议先使用通用模式；QMT 限制导入外部包时使用极致模式；熟悉部署后，再为指定账号切换高级模式。</small>
-        </label>
-        <button class="primary wide" type="submit">保存并进入系统</button>
-        <span id="setupStatus" class="metric-note"></span>
       </form>
     </div>
   </div>
@@ -771,6 +765,11 @@
                   </div>
                   <div>
                     <h3>响应</h3>
+                    <div id="apiResponseLatency" class="api-response-latency hidden" aria-live="polite">
+                      <span id="apiResponseLatencyLabel" class="api-response-latency-label">接口耗时</span>
+                      <strong id="apiResponseLatencyValue">--</strong>
+                      <span id="apiResponseLatencyMeta" class="api-response-latency-meta"></span>
+                    </div>
                     <pre id="apiResponseBox" class="json-box small-json"></pre>
                   </div>
                 </div>
@@ -781,37 +780,37 @@
           <div class="panel span-12 view-panel view-settings settings-panel">
             <div class="panel-head">
               <h2>设置</h2>
-              <span class="metric-note">API Key / IP 访问策略</span>
+              <span class="metric-note">访问 / 日志 / 更新</span>
             </div>
             <div class="settings-layout">
               <aside class="settings-menu" aria-label="设置菜单">
                 <button class="settings-menu-item" type="button" data-settings-tab="profile">
                   <strong>个人资料</strong>
-                  <span>头像、昵称和内置头像</span>
+                  <span>头像和名称</span>
                 </button>
                 <button class="settings-menu-item active" type="button" data-settings-tab="api-key">
                   <strong>API Key</strong>
-                  <span>生成、显示和保存访问密钥</span>
+                  <span>访问密钥</span>
                 </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="web-access">
                   <strong>Web 访问</strong>
-                  <span>端口、登录和白名单</span>
+                  <span>端口和登录</span>
                 </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="log-cleanup">
                   <strong>日志清理</strong>
-                  <span>清理 QMT userdata/log 过期日志</span>
+                  <span>过期日志</span>
                 </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="qmt-log">
                   <strong>QMT 日志</strong>
-                  <span>切换 QMT 端日志显示语言</span>
+                  <span>显示开关</span>
                 </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="transport">
                   <strong>通信模式</strong>
-                  <span>通用模式 / 高级模式</span>
+                  <span>桥接模式</span>
                 </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="update">
                   <strong>系统更新</strong>
-                  <span>Web 项目 / QMT 核心</span>
+                  <span>Web / QMT</span>
                 </button>
               </aside>
               <section class="settings-section" data-settings-tab="profile">
@@ -897,10 +896,6 @@
                       <option value="lttx">高级模式（两个 QMT）</option>
                     </select>
                   </label>
-                  <div class="guide-callout wide">
-                    <strong>模式说明</strong>
-                    <span>通用模式只需要加载一个 ctypes 单文件桥；极致模式加载 <code>CFQUANT_LITE.py</code>，不导入 <code>cfquant</code> 包；高级模式需要两个 QMT：普通 QMT 跑查询桥，另一个极速交易端 QMT 跑交易桥。</span>
-                  </div>
                 </div>
               </div>
               <div class="server-settings-group">
@@ -1014,7 +1009,7 @@
                 <div class="settings-section-head">
                   <div>
                     <h3>系统更新</h3>
-                    <p class="settings-note">Web 项目和 QMT 核心分开更新。配置、数据库、日志、运行缓存和 LTtx 本地配置会保留。</p>
+                    <p class="settings-note">默认使用官网更新。GitHub、zip 和回滚放在高级选项里。</p>
                   </div>
                 </div>
                 <div class="update-workspace">
@@ -1023,39 +1018,46 @@
                       <div>
                         <span>Web 项目</span>
                         <strong>控制台与本地服务</strong>
-                        <small>更新成功后 Web 自动重启，LTtx 保持运行。</small>
                       </div>
-                      <button id="refreshProjectUpdateStatusBtn" type="button">刷新状态</button>
                     </div>
                     <div class="update-status-row">
                       <span id="projectUpdateStatus" class="metric-note">未加载项目更新状态</span>
                     </div>
                     <div id="projectUpdateVersionInfo" class="update-version-info"></div>
-                    <div class="update-action-grid">
-                      <label class="field">
-                        <span>GitHub 回退仓库</span>
-                        <input id="projectUpdateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
-                      </label>
-                      <label class="field compact">
-                        <span>分支 / 标签</span>
-                        <input id="projectUpdateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
-                      </label>
-                      <button id="runProjectGithubUpdateBtn" class="primary" type="button">官网优先更新 Web</button>
+                    <div class="update-primary-actions">
+                      <button id="runProjectGithubUpdateBtn" class="primary" type="button">更新 Web</button>
+                      <button id="refreshProjectUpdateStatusBtn" type="button">刷新</button>
                     </div>
-                    <div class="update-action-grid">
-                      <label class="field">
-                        <span>项目源码 zip</span>
-                        <input id="projectUpdateZipInput" type="file" accept=".zip,application/zip">
-                      </label>
-                      <button id="uploadProjectZipUpdateBtn" class="primary" type="button">上传 zip 更新 Web</button>
-                      <label class="field">
-                        <span>可回滚项目备份</span>
-                        <select id="projectRollbackBackupSelect"></select>
-                      </label>
-                      <button id="rollbackProjectUpdateBtn" class="danger" type="button">回滚 Web 并重启</button>
-                    </div>
+                    <details class="update-advanced">
+                      <summary>高级选项</summary>
+                      <div class="update-action-grid">
+                        <label class="field">
+                          <span>GitHub 回退仓库</span>
+                          <input id="projectUpdateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
+                        </label>
+                        <label class="field compact">
+                          <span>分支 / 标签</span>
+                          <input id="projectUpdateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
+                        </label>
+                      </div>
+                      <div class="update-action-grid">
+                        <label class="field">
+                          <span>项目源码 zip</span>
+                          <input id="projectUpdateZipInput" type="file" accept=".zip,application/zip">
+                        </label>
+                        <button id="uploadProjectZipUpdateBtn" class="primary" type="button">上传 zip 更新 Web</button>
+                        <label class="field">
+                          <span>可回滚项目备份</span>
+                          <select id="projectRollbackBackupSelect"></select>
+                        </label>
+                        <button id="rollbackProjectUpdateBtn" class="danger" type="button">回滚 Web 并重启</button>
+                      </div>
+                    </details>
                     <div id="projectUpdateNoticeBox" class="update-notice hidden"></div>
-                    <pre id="projectUpdateResultBox" class="json-box small-json update-result"></pre>
+                    <details class="update-result-details">
+                      <summary>执行结果</summary>
+                      <pre id="projectUpdateResultBox" class="json-box small-json update-result"></pre>
+                    </details>
                   </section>
 
                   <section class="update-lane qmt-update-lane">
@@ -1063,39 +1065,46 @@
                       <div>
                         <span>QMT 核心</span>
                         <strong>当前账号绑定目录</strong>
-                        <small>更新完成后需要重启对应 QMT 桥接脚本；入口文件变更时需手动替换加密入口。</small>
                       </div>
-                      <button id="refreshUpdateStatusBtn" type="button">刷新状态</button>
                     </div>
                     <div class="update-status-row">
                       <span id="updateStatus" class="metric-note">未加载更新状态</span>
                     </div>
                     <div id="updateVersionInfo" class="update-version-info qmt-version-info"></div>
-                    <div class="update-action-grid">
-                      <label class="field">
-                        <span>GitHub 回退仓库</span>
-                        <input id="updateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
-                      </label>
-                      <label class="field compact">
-                        <span>分支 / 标签</span>
-                        <input id="updateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
-                      </label>
-                      <button id="runGithubUpdateBtn" class="primary" type="button">官网优先更新 QMT</button>
+                    <div class="update-primary-actions">
+                      <button id="runGithubUpdateBtn" class="primary" type="button">更新 QMT</button>
+                      <button id="refreshUpdateStatusBtn" type="button">刷新</button>
                     </div>
-                    <div class="update-action-grid">
-                      <label class="field">
-                        <span>源码 zip</span>
-                        <input id="updateZipInput" type="file" accept=".zip,application/zip">
-                      </label>
-                      <button id="uploadZipUpdateBtn" class="primary" type="button">上传 zip 更新 QMT</button>
-                      <label class="field">
-                        <span>可回滚备份</span>
-                        <select id="rollbackBackupSelect"></select>
-                      </label>
-                      <button id="rollbackUpdateBtn" class="danger" type="button">回滚 QMT</button>
-                    </div>
+                    <details class="update-advanced">
+                      <summary>高级选项</summary>
+                      <div class="update-action-grid">
+                        <label class="field">
+                          <span>GitHub 回退仓库</span>
+                          <input id="updateRepoInput" type="text" autocomplete="off" value="https://github.com/95ge/cfquant.git" placeholder="owner/repo 或 https://github.com/owner/repo">
+                        </label>
+                        <label class="field compact">
+                          <span>分支 / 标签</span>
+                          <input id="updateRefInput" type="text" autocomplete="off" value="main" placeholder="main，可空">
+                        </label>
+                      </div>
+                      <div class="update-action-grid">
+                        <label class="field">
+                          <span>源码 zip</span>
+                          <input id="updateZipInput" type="file" accept=".zip,application/zip">
+                        </label>
+                        <button id="uploadZipUpdateBtn" class="primary" type="button">上传 zip 更新 QMT</button>
+                        <label class="field">
+                          <span>可回滚备份</span>
+                          <select id="rollbackBackupSelect"></select>
+                        </label>
+                        <button id="rollbackUpdateBtn" class="danger" type="button">回滚 QMT</button>
+                      </div>
+                    </details>
                     <div id="updateNoticeBox" class="update-notice hidden"></div>
-                    <pre id="updateResultBox" class="json-box small-json update-result"></pre>
+                    <details class="update-result-details">
+                      <summary>执行结果</summary>
+                      <pre id="updateResultBox" class="json-box small-json update-result"></pre>
+                    </details>
                   </section>
                 </div>
               </section>
@@ -1109,80 +1118,68 @@
             </div>
             <div class="tutorial-layout">
               <aside class="tutorial-menu" aria-label="教程菜单">
-                <button class="tutorial-menu-item recommended active" type="button" data-guide="onboarding">
-                  <strong>新手引导 <em>推荐</em></strong>
+                <button class="tutorial-menu-item recommended active" type="button" data-guide="deploy">
+                  <strong>QMT 部署教程 <em>推荐</em></strong>
+                  <span>通用、极致、高级三种模式</span>
+                </button>
+                <button class="tutorial-menu-item" type="button" data-guide="onboarding">
+                  <strong>新手引导</strong>
                   <span>单账号通用模式，最快跑通</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="project">
                   <strong>项目架构</strong>
-                  <span>组件、链路和回调</span>
+                  <span>架构、链路和运行目录</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="quickstart">
                   <strong>快速开始</strong>
-                  <span>从启动到完成连接验证</span>
+                  <span>启动、部署、验证</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="web_console">
                   <strong>网页端教程</strong>
-                  <span>首页、绑定、接口和回调</span>
+                  <span>页面分工和操作顺序</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="python">
                   <strong>Python 接入</strong>
-                  <span>pip 安装和 xtquant 平替</span>
-                </button>
-                <button class="tutorial-menu-item" type="button" data-guide="deploy">
-                  <strong>部署到 QMT</strong>
-                  <span>复制目录、加载桥接脚本</span>
-                </button>
-                <button class="tutorial-menu-item recommended" type="button" data-guide="deploy_guide">
-                  <strong>通用模式图文部署 <em>推荐</em></strong>
-                  <span>一个 QMT，按截图跑通</span>
-                </button>
-                <button class="tutorial-menu-item" type="button" data-guide="deploy_guide_lite">
-                  <strong>极致模式部署</strong>
-                  <span>君弘君智 QMT 等白名单限制场景</span>
-                </button>
-                <button class="tutorial-menu-item" type="button" data-guide="deploy_guide_advanced">
-                  <strong>高级模式图文部署</strong>
-                  <span>两个 QMT，普通桥和极速桥分开</span>
+                  <span>pip、auto 路由、xtquant 平替</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="same_account_market">
                   <strong>同账号独立市场</strong>
-                  <span>同一账号按 SH/SZ 自动选择交易端</span>
+                  <span>沪深两个交易端自动分流</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="bridge">
                   <strong>多账号通道</strong>
-                  <span>内部路由规则</span>
+                  <span>多 QMT 的内部路由</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="account">
                   <strong>账号绑定</strong>
-                  <span>账号如何自动路由</span>
+                  <span>多账号、信用账户、共享行情源</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="trade">
                   <strong>交易与回调</strong>
-                  <span>下单、撤单、委托状态</span>
+                  <span>下单、撤单、回调确认</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="latency">
                   <strong>实测延迟</strong>
-                  <span>交易时间与非交易时间对比</span>
+                  <span>链路量级和测试口径</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="api">
                   <strong>外部接口</strong>
-                  <span>HTTP、WebSocket 和 API Key</span>
+                  <span>HTTP、WebSocket、API Key</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="troubleshooting">
                   <strong>排查问题</strong>
-                  <span>常见状态和处理方法</span>
+                  <span>按层定位故障</span>
                 </button>
               </aside>
 
               <section class="tutorial-content">
-                <article class="tutorial-topic active" data-guide-panel="onboarding">
+                <article class="tutorial-topic" data-guide-panel="onboarding">
                   <div class="guide-section">
-                    <h3>按步骤完成初始化</h3>
-                    <p>新用户不需要先读完整文档。按下面四步填账号、保存配置、部署 QMT 脚本并验证数据；每一步完成后再进入下一步。</p>
+                    <h3>先把 cfquant 跑起来</h3>
+                    <p>按向导填账号、选模式、部署脚本、验证数据。其他说明以后再看。</p>
                     <div class="guide-callout">
-                      <strong>推荐默认方案</strong>
-                      <span>单账号 + 通用模式 + 填写 QMT 核心目录。QMT 核心目录通常是安装目录下的 <code>bin.x64</code>，保存后系统会写入通用端身份配置。</span>
+                      <strong>推荐</strong>
+                      <span>第一次用通用模式，QMT 目录填 <code>bin.x64</code>。</span>
                     </div>
                     <div class="onboarding-inline-actions">
                       <button id="openOnboardingInlineBtn" class="primary" type="button">开始初始化向导</button>
@@ -1192,107 +1189,63 @@
                       <div class="onboarding-modal-head">
                         <div>
                           <strong id="onboardingWizardTitle">新手初始化向导</strong>
-                          <span>按步骤完成账号配置、QMT 部署、通道检测和数据验证。</span>
+                          <span>只保留启动必需项。</span>
                         </div>
                         <button id="closeOnboardingBtn" type="button" aria-label="关闭新手初始化向导">关闭</button>
                       </div>
                       <div class="onboarding-progress" aria-label="新手初始化步骤">
-                        <button class="active" type="button" data-onboarding-step="intro"><span>1</span><strong>部署架构</strong></button>
-                        <button type="button" data-onboarding-step="config"><span>2</span><strong>账号配置</strong></button>
-                        <button type="button" data-onboarding-step="deploy"><span>3</span><strong>部署脚本</strong></button>
-                        <button type="button" data-onboarding-step="bridge"><span>4</span><strong>检测通道</strong></button>
-                        <button type="button" data-onboarding-step="data"><span>5</span><strong>验证数据</strong></button>
+                        <button class="active" type="button" data-onboarding-step="intro"><span>1</span><strong>开始</strong></button>
+                        <button type="button" data-onboarding-step="config"><span>2</span><strong>账号</strong></button>
+                        <button type="button" data-onboarding-step="deploy"><span>3</span><strong>脚本</strong></button>
+                        <button type="button" data-onboarding-step="bridge"><span>4</span><strong>通道</strong></button>
+                        <button type="button" data-onboarding-step="data"><span>5</span><strong>数据</strong></button>
                       </div>
 
                       <section class="onboarding-panel onboarding-panel-intro active" data-onboarding-panel="intro">
                         <div class="onboarding-panel-head">
-                          <strong>先读懂整体架构，再开始部署</strong>
-                          <span>这个页面会在首次部署时自动弹出，也可以随时从“新手引导”重新打开。请先确认通用模式和高级模式的通信链路、QMT 数量和适用场景，再继续保存账号。</span>
+                          <strong>先按默认路径跑通</strong>
+                          <span>第一次不用理解全部架构，完成这四步即可。</span>
                         </div>
-                        <div class="onboarding-intro-brief" aria-label="初始化向导说明">
-                          <div>
-                            <strong>推荐新用户从通用模式开始</strong>
-                            <span>一个 QMT 加载一个 ctypes 通用端文件。网页请求由 Web Server 路由到 PipeHub；外部 Python 默认通过 LTtx 发现 Web 路由，最终按账号配置落到 PipeHub，适合先把资金、持仓、行情和下单链路跑通。</span>
+                        <div class="onboarding-quick-list" aria-label="初始化步骤">
+                          <div class="onboarding-quick-item">
+                            <span>1</span>
+                            <strong>填资金账号</strong>
+                            <small>不要使用示例账号。</small>
                           </div>
-                          <div>
-                            <strong>高级模式用于追求交易端极限延迟</strong>
-                            <span>需要 LTtx 服务和两个 QMT：普通 QMT 承担查询/行情，极速交易端 QMT 承担下单/撤单。高级模式部署复杂，但交易端延迟更低。</span>
+                          <div class="onboarding-quick-item">
+                            <span>2</span>
+                            <strong>选择模式</strong>
+                            <small>不确定就选通用模式。</small>
                           </div>
-                        </div>
-                        <div class="onboarding-read-first">
-                          <span class="setup-pulse" aria-hidden="true"></span>
-                          <span>请仔细阅读：高级模式不是在同一个 QMT 里加载两个高级脚本，而是打开两个 QMT，分别承载普通查询桥和极速交易桥。</span>
-                        </div>
-                        <div class="onboarding-architecture-map" aria-label="通用模式和高级模式通信链路动画">
-                          <div class="onboarding-mode-flow universal">
-                            <div class="mode-flow-head">
-                              <strong>通用模式：ctypes + PipeHub</strong>
-                              <span>默认推荐，单账号/单 QMT 先用它</span>
-                            </div>
-                            <div class="mode-flow-track">
-                              <div class="flow-node source"><strong>网页 / Python</strong><span>HTTP、WS 或 cfquant 库</span></div>
-                              <div class="flow-link"><span></span><i></i></div>
-                              <div class="flow-node hub"><strong>PipeHub</strong><span>本机 named pipe 路由</span></div>
-                              <div class="flow-link"><span></span><i></i></div>
-                              <div class="flow-node qmt"><strong>一个 QMT</strong><span>CFQUANT_CTYPE_ALL_LOWLAT.py</span></div>
-                            </div>
-                            <div class="mode-flow-notes">
-                              <span>只部署一个 QMT 桥接文件</span>
-                              <span>QMT 落地不依赖 LTtx</span>
-                              <span>多账号可按账号配置区分 QMT 目录</span>
-                            </div>
+                          <div class="onboarding-quick-item">
+                            <span>3</span>
+                            <strong>部署脚本</strong>
+                            <small>按清单复制到 QMT。</small>
                           </div>
-                          <div class="onboarding-mode-flow advanced">
-                            <div class="mode-flow-head">
-                              <strong>高级模式：LTtx + 普通/极速双桥</strong>
-                              <span>适合已经跑通基础链路后再启用</span>
-                            </div>
-                            <div class="mode-flow-track advanced-track">
-                              <div class="flow-node source"><strong>网页 / Python</strong><span>交易和查询请求</span></div>
-                              <div class="flow-link"><span></span><i></i></div>
-                              <div class="flow-node lttx"><strong>LTtx</strong><span>socket 服务</span></div>
-                              <div class="flow-split">
-                                <span></span>
-                                <span></span>
-                              </div>
-                              <div class="flow-node qmt normal-qmt"><strong>普通 QMT</strong><span>CFQUANT.py</span></div>
-                              <div class="flow-node trade-qmt"><strong>极速交易端 QMT</strong><span>CFQUANT_TRADE_LOWLAT.py</span></div>
-                            </div>
-                            <div class="mode-flow-notes">
-                              <span>必须打开两个 QMT</span>
-                              <span>普通 QMT 和通用端可以同机共存</span>
-                              <span>极速交易端单独承载下单撤单</span>
-                            </div>
+                          <div class="onboarding-quick-item">
+                            <span>4</span>
+                            <strong>验证数据</strong>
+                            <small>能查资金或持仓即可。</small>
                           </div>
                         </div>
-                        <div class="onboarding-mode-rules detailed">
-                          <div>
-                            <strong>通用模式怎么通信</strong>
-                            <span>网页端请求先到 Web Server，再由 Web Server 路由到 <code>PipeHub</code>；外部 Python 的 <code>cfquant</code> 默认 <code>transport=auto</code>，会先通过 LTtx 读取 Web 路由，最终按账号通用模式落到 PipeHub。</span>
-                          </div>
-                          <div class="important">
-                            <strong>高级模式怎么通信</strong>
-                            <span>外部请求经 LTtx 分发到两个 QMT：普通 QMT 负责查询/行情，极速交易端负责下单/撤单。两个高级入口不要放在同一个 QMT 里同时运行。</span>
-                          </div>
-                          <div>
-                            <strong>如何选择</strong>
-                            <span>不确定时选通用模式。等资金、持仓、行情、委托和撤单都验证成功，再为低延迟交易切高级模式；高级模式异常时系统可回退到通用模式。</span>
-                          </div>
+                        <div class="guide-callout compact">
+                          <strong>高级模式</strong>
+                          <span>只有确认要双 QMT 低延迟交易时再选。</span>
                         </div>
                         <div class="onboarding-actions">
-                          <button id="onboardingStartConfigBtn" class="primary" type="button">我已阅读，继续配置账号</button>
+                          <button id="onboardingStartConfigBtn" class="primary" type="button">开始配置</button>
                         </div>
                       </section>
 
                       <form id="onboardingConfigForm" class="onboarding-panel" data-onboarding-panel="config">
                         <div class="onboarding-panel-head">
-                          <strong>填写默认账号和 QMT 目录</strong>
-                          <span>这一步会保存账号运行配置，并写入通用端身份文件。</span>
+                          <strong>账号配置</strong>
+                          <span>填资金账号、模式和 QMT 目录。</span>
                         </div>
                         <div class="onboarding-grid">
                           <label class="field">
                             <span>资金账号</span>
-                            <input id="onboardingAccountId" autocomplete="off" placeholder="2220009880">
+                            <input id="onboardingAccountId" autocomplete="off" placeholder="请输入资金账号">
                           </label>
                           <label class="field">
                             <span>账户类型</span>
@@ -1300,7 +1253,6 @@
                               <option value="STOCK">普通证券账户</option>
                               <option value="CREDIT">信用账户</option>
                             </select>
-                            <small>普通账户和信用账户资金号相同也可以区分。</small>
                           </label>
                           <label class="field">
                             <span>运行模式</span>
@@ -1309,12 +1261,17 @@
                               <option value="lite">极致模式</option>
                               <option value="lttx">高级模式</option>
                             </select>
-                            <small>高级模式需要两个 QMT 终端；此处目录用于该账号的通用端和普通 QMT。</small>
+                            <small>首次建议通用模式；高级模式会要求第二个 QMT 目录。</small>
                           </label>
                           <label class="field wide">
                             <span>QMT 核心目录</span>
                             <input id="onboardingQmtDir" autocomplete="off" placeholder="D:\国金证券QMT交易端\bin.x64">
-                            <small>建议填写实际登录该账号的 QMT <code>bin.x64</code> 目录；多 QMT 时每个账号填自己的目录。</small>
+                            <small>通常是 QMT 安装目录下的 <code>bin.x64</code>。</small>
+                          </label>
+                          <label id="onboardingQmtTradeDirField" class="field wide hidden">
+                            <span>第二个 QMT 核心目录</span>
+                            <input id="onboardingQmtTradeDir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端\bin.x64">
+                            <small>仅高级模式必填，且不能和上面的目录相同。</small>
                           </label>
                           <label class="toggle wide">
                             <input id="onboardingDataProvider" type="checkbox" checked>
@@ -1330,13 +1287,13 @@
 
                       <section class="onboarding-panel" data-onboarding-panel="deploy">
                         <div class="onboarding-panel-head">
-                          <strong>按目录放置 QMT 端文件</strong>
-                          <span>保存账号后，根据下面清单把通用端文件放到 QMT，再在 QMT 中加载脚本。</span>
+                          <strong>部署脚本</strong>
+                          <span>按清单复制文件，再在 QMT 里加载。</span>
                         </div>
                         <div id="onboardingDeployPaths" class="onboarding-deploy-list"></div>
                         <div id="onboardingDeployNotice" class="guide-callout">
-                          <strong>通用模式只加载一个脚本</strong>
-                          <span>在 QMT 模型研究中加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。通用模式不需要加载 <code>CFQUANT.py</code> 或 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>
+                          <strong>通用模式</strong>
+                          <span>只加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。</span>
                         </div>
                         <div class="onboarding-actions">
                           <button id="onboardingCopyDeployBtn" type="button">复制部署清单</button>
@@ -1347,8 +1304,8 @@
 
                       <section class="onboarding-panel" data-onboarding-panel="bridge">
                         <div class="onboarding-panel-head">
-                          <strong>检测 Web 和 QMT 通道</strong>
-                          <span>确认通用查询通道和交易通道已经在线；如果未在线，先回 QMT 检查脚本是否启动。</span>
+                          <strong>检测通道</strong>
+                          <span>启动 QMT 脚本后刷新状态。</span>
                         </div>
                         <div id="onboardingBridgeSummary" class="onboarding-summary"></div>
                         <div class="onboarding-actions">
@@ -1360,8 +1317,8 @@
 
                       <section class="onboarding-panel" data-onboarding-panel="data">
                         <div class="onboarding-panel-head">
-                          <strong>验证资金和持仓能返回</strong>
-                          <span>能查到资产或持仓后，基础初始化完成。之后再接外部程序或添加多账号。</span>
+                          <strong>验证数据</strong>
+                          <span>能查到资金或持仓，初始化就完成。</span>
                         </div>
                         <div id="onboardingDataSummary" class="onboarding-summary"></div>
                         <div class="onboarding-actions">
@@ -1387,425 +1344,58 @@
                   </div>
 
                   <div class="guide-section">
-                    <h3>熟悉后再添加多账号</h3>
-                    <ol class="guide-list detailed">
-                      <li><strong>同一个 QMT 多账号：</strong>在“绑定”继续添加资金账号，QMT 目录填写同一个 <code>bin.x64</code>，系统会共用同一个通用端，通过请求里的 <code>account_id</code> 区分交易账号。</li>
-                      <li><strong>多个 QMT 目录：</strong>每个账号填写实际登录它的 QMT <code>bin.x64</code>。系统会给不同目录分配不同内部通道，并写入各自的 <code>cfquant_bridge_config.json</code>。</li>
-                      <li><strong>高级模式：</strong>只有需要 LTtx 普通桥和极速交易端时再启用。高级模式要求普通 QMT 与极速交易端都在线，失败时可回退通用模式。</li>
-                    </ol>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>看到问题时先查这三处</h3>
+                    <h3>跑通后再看</h3>
                     <div class="guide-kv wide">
-                      <span>PipeHub</span>
-                      <strong>状态里是否出现 <code>cfquant.normal.request</code> 和 <code>cfquant.trade.request</code>，多 QMT 时会出现带 <code>bridge_id</code> 的独立频道。</strong>
-                      <span>QMT 日志</span>
-                      <strong>通用端应看到 ctypes / Pipe 相关日志；如果持续出现 LTtx 连接失败，通常是旧高级脚本仍在运行。</strong>
-                      <span>绑定状态</span>
-                      <strong>账号的首选模式、实际模式、QMT 目录是否符合当前部署。</strong>
+                      <span>多账号</span>
+                      <strong>在“绑定”继续添加账号，QMT 目录填实际登录该账号的 <code>bin.x64</code>。</strong>
+                      <span>高级模式</span>
+                      <strong>需要两个 QMT，普通端和极速交易端都在线后再使用。</strong>
+                      <span>排查</span>
+                      <strong>先看绑定状态和 QMT 日志，再看 PipeHub 是否在线。</strong>
                     </div>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="project">
                   <div class="guide-section">
-                    <h3>项目介绍</h3>
-                    <p>cfquant 是一个运行在本机的 QMT 交易桥接控制台。它把网页控制台、外部 Python 程序和 QMT 策略脚本连接起来，让外部程序可以通过统一接口完成资金查询、持仓查询、委托查询、下单、撤单和实时回调接收。</p>
-                    <div class="guide-callout">
-                      <strong>首次启动必须完成初始化</strong>
-                      <span>网页首次打开会要求输入默认账号和运行模式。QMT 核心目录建议填写，通常是 QMT 安装目录下的 bin.x64；留空不影响连接，但会导致自动更新和多 QMT 部署辅助不可用。默认是单账号；增加第二个账号时，继续在“绑定”页面添加账号配置即可。</span>
-                    </div>
-                    <div class="guide-callout">
-                      <strong>先选择通信模式</strong>
-                      <span>通用模式只需要加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code> 一个 QMT 文件，行情、查询、下单、撤单和回调统一通过 ctypes 单文件桥接入。高级模式需要两个 QMT 终端：普通 QMT 加载 <code>CFQUANT.py</code>，极速交易端 QMT 加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。不要在同一个 QMT 里同时运行高级模式两个入口。</span>
-                    </div>
-                    <p>系统里最重要的概念是账号配置。用户只需要关心资金账号、QMT 核心目录、首选模式和共享行情源；内部通道 ID 由服务端自动分配，用于在多账号、多 QMT 同时运行时把请求转发到正确终端。</p>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>总体架构</h3>
-                    <p>本文用于快速理解 cfquant 的整体架构、不同部署模式下的请求链路、回调链路，以及各代码模块的职责。更细的交易链路和回调机制说明见 <code>docs/cfquant_qmt_architecture_and_callbacks.md</code>。</p>
-                    <div class="guide-mermaid-card doc-wide" aria-label="cfquant 总体架构图">
-                      <pre class="mermaid">flowchart LR
-    User["外部 Python 调用者&lt;br/&gt;策略、测试脚本、业务程序"]
-
-    subgraph Api["cfquant 外部 API 层"]
-        XtTrader["xttrader.py&lt;br/&gt;交易、委托、成交、资金、持仓"]
-        XtData["xtdata.py&lt;br/&gt;行情查询、行情订阅、数据下载"]
-        XtType["xttype.py / xtconstant.py&lt;br/&gt;账号、对象模型、常量兼容"]
-    end
-
-    subgraph Client["RPC 客户端与协议层"]
-        Config["config.py&lt;br/&gt;运行配置"]
-        Channels["channels.py&lt;br/&gt;bridge_id 与频道命名"]
-        Protocol["protocol.py&lt;br/&gt;request / response / event 编解码"]
-        RpcClient["client.py&lt;br/&gt;auto 选择 WebLttx / Pipe / LTtx"]
-        PipeClient["pipe_client.py&lt;br/&gt;外部 named pipe 客户端"]
-        LttxClient["LTtxRpcClient / WebLttxRpcClient&lt;br/&gt;LTtx 客户端"]
-    end
-
-    subgraph LocalService["本地服务进程"]
-        Web["cfquant_web_server.py&lt;br/&gt;Web 控制台、统一路由、账号配置、回调转发"]
-        PipeHub["cfquant_pipe_hub.py&lt;br/&gt;named pipe 中转站"]
-        LttxServer["LTtx/tx/LTtx_server.py&lt;br/&gt;LTtx socket 发布订阅服务"]
-        Runtime["runtime/config&lt;br/&gt;账号、模式、bridge、市场路由配置"]
-    end
-
-    subgraph QmtEntry["大 QMT 内部入口脚本"]
-        CtypeEntry["CFQUANT_CTYPE_ALL_LOWLAT.py&lt;br/&gt;通用模式单文件双通道"]
-        NormalEntry["CFQUANT.py&lt;br/&gt;高级模式普通桥"]
-        TradeEntry["CFQUANT_TRADE_LOWLAT.py&lt;br/&gt;高级模式纯交易低延迟桥"]
-        LiteEntry["CFQUANT_LITE.py&lt;br/&gt;极致模式自包含入口"]
-        MarketEntry["同账号独立市场/*.py&lt;br/&gt;沪深完整市场入口"]
-    end
-
-    subgraph QmtBridge["大 QMT 内部桥"]
-        NormalBridge["NormalQmtBridge&lt;br/&gt;普通请求、行情订阅、回调发布"]
-        TradeBridge["TxTradeBridge&lt;br/&gt;下单、撤单、交易查询"]
-        PipeBridge["PipeNormalQmtBridge / PipeTradeBridge&lt;br/&gt;把 QMT 桥接到 PipeHub"]
-    end
-
-    QmtApi["大 QMT 原生能力&lt;br/&gt;ContextInfo、passorder、cancel、get_trade_detail_data、行情函数"]
-
-    User --> XtTrader
-    User --> XtData
-    XtTrader --> RpcClient
-    XtData --> RpcClient
-    XtType --> XtTrader
-    Config --> RpcClient
-    Channels --> RpcClient
-    Protocol --> RpcClient
-    RpcClient --> LttxClient
-    RpcClient --> PipeClient
-    LttxClient --> LttxServer
-    LttxClient --> Web
-    PipeClient --> PipeHub
-    Web --> Runtime
-    Web --> LttxServer
-    Web --> PipeHub
-    PipeHub --> PipeBridge
-    LttxServer --> NormalBridge
-    LttxServer --> TradeBridge
-    CtypeEntry --> PipeBridge
-    LiteEntry --> PipeBridge
-    NormalEntry --> NormalBridge
-    TradeEntry --> TradeBridge
-    MarketEntry --> CtypeEntry
-    MarketEntry --> TradeEntry
-    PipeBridge --> NormalBridge
-    PipeBridge --> TradeBridge
-    NormalBridge --> QmtApi
-    TradeBridge --> QmtApi</pre>
+                    <h3>项目架构</h3>
+                    <p>cfquant 是本机 QMT 桥接控制台。它把 Web 页面、外部 Python 和大 QMT 策略脚本连在一起，由 Web 统一管理账号、运行模式、回调和更新。</p>
+                    <div class="guide-kv wide">
+                      <span>用户侧</span>
+                      <strong>网页操作，或在外部 Python 中按 xtquant 习惯调用。</strong>
+                      <span>本地服务</span>
+                      <strong>Web Server 管账号路由；PipeHub 管通用/极致模式；LTtx 管高级模式和自动发现。</strong>
+                      <span>QMT 侧</span>
+                      <strong>根据模式加载一个或两个入口脚本，再调用 QMT 原生函数。</strong>
                     </div>
                   </div>
 
                   <div class="guide-section">
-                    <h3>请求链路</h3>
-                    <h4>默认 auto 链路</h4>
-                    <p>默认 <code>CFQUANT_TRANSPORT=auto</code>。如果 Web 服务在线并通过 LTtx 发布了 <code>cfquant.runtime</code>，外部 Python 会先连 LTtx，再进入 Web 统一路由。</p>
-                    <div class="guide-mermaid-card sequence" aria-label="默认 auto 请求链路">
-                      <pre class="mermaid">sequenceDiagram
-    participant User as 外部 Python
-    participant API as cfquant API
-    participant LTtx as LTtx
-    participant Web as Web 统一路由
-    participant PipeHub as PipeHub
-    participant QMT as 大 QMT 桥
-    participant Native as QMT 原生函数
-
-    User->>API: order_stock / query / xtdata
-    API->>LTtx: WebLttxRpcClient 发送 request
-    LTtx->>Web: cfquant.web.request
-    Web->>Web: 按 account_id、account_type、bridge_id 选择模式
-    alt 账号是通用或极致模式
-        Web->>PipeHub: PipeRpcClient 转发到 normal/trade
-        PipeHub->>QMT: 投递到 PipeNormalQmtBridge 或 PipeTradeBridge
-    else 账号是高级模式
-        Web->>LTtx: LTtxRpcClient 转发到 normal/trade
-        LTtx->>QMT: 投递到 NormalQmtBridge 或 TxTradeBridge
-    end
-    QMT->>Native: passorder / cancel / get_trade_detail_data / 行情函数
-    Native-->>QMT: 调用结果
-    QMT-->>Web: response
-    Web-->>LTtx: response
-    LTtx-->>API: 按 client_id 原路返回
-    API-->>User: 返回 Python 对象</pre>
-                    </div>
-                    <h4>强制 ctypes 链路</h4>
-                    <p>强制 <code>configure(transport="ctypes")</code> 时，外部 Python 不经过 LTtx 和 Web 统一路由，直接连接 PipeHub。</p>
-                    <div class="guide-mermaid-card compact" aria-label="强制 ctypes 请求链路">
-                      <pre class="mermaid">flowchart LR
-    User["外部 Python"] --> API["cfquant API"]
-    API --> PipeClient["PipeRpcClient"]
-    PipeClient --> PipeHub["cfquant_pipe_hub"]
-    PipeHub --> QmtPipe["QMT Pipe 桥"]
-    QmtPipe --> QmtApi["QMT 原生 API"]</pre>
-                    </div>
-                    <p>这条链路更短，但调用方需要自己处理账号、bridge、模式和市场路由配置。</p>
-                    <h4>强制 lttx 链路</h4>
-                    <p>强制 <code>configure(transport="lttx")</code> 时，外部 Python 直接连 LTtx 请求频道，绕过 Web 账号路由。</p>
-                    <div class="guide-mermaid-card compact" aria-label="强制 lttx 请求链路">
-                      <pre class="mermaid">flowchart LR
-    User["外部 Python"] --> API["cfquant API"]
-    API --> LttxClient["LTtxRpcClient"]
-    LttxClient --> LTtx["LTtx"]
-    LTtx --> QmtBridge["QMT LTtx 桥"]
-    QmtBridge --> QmtApi["QMT 原生 API"]</pre>
-                    </div>
-                    <p>这条链路适合固定高级模式和明确频道的场景，不具备 Web 的账号自动路由和 fallback。</p>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>回调链路</h3>
-                    <p>交易回调分为两类：账号级广播回调和请求级响应回调。</p>
-                    <h4>账号级广播回调</h4>
-                    <ul class="guide-list">
-                      <li><code>on_stock_order</code></li>
-                      <li><code>on_stock_trade</code></li>
-                      <li><code>on_stock_asset</code></li>
-                      <li><code>on_stock_position</code></li>
-                      <li><code>on_order_error</code></li>
-                      <li><code>on_cancel_error</code>，是否能被 QMT 触发取决于当前 QMT 是否绑定该原始回调名</li>
-                    </ul>
-                    <h4>请求级响应回调</h4>
-                    <ul class="guide-list">
-                      <li><code>on_order_stock_async_response</code></li>
-                      <li><code>on_cancel_order_stock_async_response</code></li>
-                      <li>数据下载进度 callback</li>
-                      <li>行情订阅的 <code>quote:&lt;subscribe_id&gt;</code></li>
-                    </ul>
-                    <div class="guide-mermaid-card sequence" aria-label="cfquant 回调广播链路">
-                      <pre class="mermaid">sequenceDiagram
-    participant Native as 大 QMT 原始回调
-    participant Entry as qmt_scripts 入口函数
-    participant Bridge as NormalQmtBridge
-    participant PipeHub as PipeHub
-    participant Web as Web CallbackEventStore / Web Route
-    participant LTtx as LTtx
-    participant Client as 外部 cfquant client
-    participant Callback as XtQuantTraderCallback
-
-    Native->>Entry: order_callback / deal_callback / account_callback
-    Entry->>Bridge: publish_callback_event("trader:on_*", data)
-    Bridge->>Bridge: 根据 account_id/account_type 查订阅者
-    alt 外部直连 ctypes
-        Bridge->>PipeHub: 推送 trader:on_* 到 client_id
-        PipeHub->>Client: delivery event
-    else 外部默认 auto 走 Web route
-        Bridge->>PipeHub: 推送 callback event
-        PipeHub->>Web: callback_event_channel
-        Web->>Web: 记录事件并匹配外部账号订阅者
-        Web->>LTtx: 推送 trader:on_* 到外部 client_id
-        LTtx->>Client: event
-    else 高级模式普通桥
-        Bridge->>LTtx: 推送 trader:on_* 或 callback event
-        LTtx->>Web: Web 监听并转发
-        Web->>LTtx: 推送到外部 client_id
-        LTtx->>Client: event
-    end
-    Client->>Callback: on_stock_order / on_stock_trade</pre>
-                    </div>
-                    <div class="guide-callout warning">
-                      <strong>关键规则</strong>
-                      <span>同步下单、撤单、查询的 <code>response</code> 只回给发起请求的 <code>client_id</code>；账号级交易回调按 <code>bridge_id + account_type + account_id</code> 广播给所有已 <code>subscribe(account)</code> 的客户端；高级模式中的 <code>CFQUANT_TRADE_LOWLAT.py</code> 是纯交易请求桥，不承接 QMT 原始账号回调，账号级回调由 <code>CFQUANT.py</code> 普通桥负责。</span>
-                    </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>模式架构图</h3>
-                    <p>不同部署模式的差别主要在 QMT 侧入口和本地传输层。普通多账号建议走默认 auto + Web 统一路由；固定低延迟链路再考虑强制直连。</p>
-                    <div class="guide-mermaid-card mode-map" aria-label="cfquant 模式架构图">
-                      <pre class="mermaid">flowchart TB
-    subgraph Common["通用模式 ctypes"]
-        C1["外部 auto/Web 或 direct ctypes"]
-        C2["PipeHub"]
-        C3["CFQUANT_CTYPE_ALL_LOWLAT.py"]
-        C4["PipeNormalQmtBridge&lt;br/&gt;normal: 行情、查询、回调"]
-        C5["PipeTradeBridge&lt;br/&gt;trade: 下单、撤单、交易查询"]
-        C1 --> C2 --> C3
-        C3 --> C4
-        C3 --> C5
-    end
-
-    subgraph Lite["极致模式 lite"]
-        L1["外部 auto/Web 或 direct lite"]
-        L2["PipeHub"]
-        L3["CFQUANT_LITE.py&lt;br/&gt;自包含"]
-        L1 --> L2 --> L3
-    end
-
-    subgraph Advanced["高级模式 lttx"]
-        A1["外部 auto/Web 或 direct lttx"]
-        A2["LTtx"]
-        A3["CFQUANT.py&lt;br/&gt;普通桥、行情、回调"]
-        A4["CFQUANT_TRADE_LOWLAT.py&lt;br/&gt;纯交易请求桥"]
-        A1 --> A2
-        A2 --> A3
-        A2 --> A4
-    end
-
-    subgraph Market["同账号独立市场"]
-        M1["Web 市场路由"]
-        M2["SH bridge"]
-        M3["SZ bridge"]
-        M1 --> M2
-        M1 --> M3
-    end</pre>
-                    </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>组件和模块职责</h3>
-                    <div class="guide-table-wrap architecture-table">
+                    <h3>三种运行链路</h3>
+                    <div class="guide-table-wrap">
                       <table>
                         <thead>
                           <tr>
-                            <th>模块或组件</th>
-                            <th>路径</th>
-                            <th>主要职责</th>
+                            <th>模式</th>
+                            <th>QMT 入口</th>
+                            <th>适合场景</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td>外部 API 总入口</td>
-                            <td><code>cfquant/__init__.py</code></td>
-                            <td>对外暴露 <code>xtdata</code>、<code>xttrader</code>、<code>xttype</code>、<code>configure</code> 等兼容入口。</td>
+                            <td>通用模式</td>
+                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
+                            <td>默认推荐。一个 QMT 即可跑通行情、查询、交易和回调。</td>
                           </tr>
                           <tr>
-                            <td>交易兼容层</td>
-                            <td><code>cfquant/xttrader.py</code></td>
-                            <td>模拟 <code>xtquant.xttrader</code>，负责 <code>XtQuantTrader</code>、账号订阅、下单、撤单、交易查询、交易回调派发。</td>
+                            <td>极致模式</td>
+                            <td><code>CFQUANT_LITE.py</code></td>
+                            <td>入口自包含，适合国泰君安、国泰海通等导入受限环境。</td>
                           </tr>
                           <tr>
-                            <td>行情兼容层</td>
-                            <td><code>cfquant/xtdata.py</code></td>
-                            <td>模拟 <code>xtquant.xtdata</code>，负责行情查询、行情订阅、数据下载、条件兼容接口。</td>
-                          </tr>
-                          <tr>
-                            <td>类型和常量</td>
-                            <td><code>cfquant/xttype.py</code>、<code>cfquant/xtconstant.py</code></td>
-                            <td>提供 <code>StockAccount</code>、资产、委托、成交、持仓对象和交易常量。</td>
-                          </tr>
-                          <tr>
-                            <td>全局配置</td>
-                            <td><code>cfquant/config.py</code></td>
-                            <td>读取和维护 host、port、token、transport、pipe name、bridge id 等客户端配置。</td>
-                          </tr>
-                          <tr>
-                            <td>频道命名</td>
-                            <td><code>cfquant/channels.py</code></td>
-                            <td>根据 <code>bridge_id</code> 生成 normal、trade、callback 频道。</td>
-                          </tr>
-                          <tr>
-                            <td>协议编解码</td>
-                            <td><code>cfquant/protocol.py</code></td>
-                            <td>统一封装 <code>request</code>、<code>response</code>、<code>event</code>，并处理对象、DataFrame、Series 的序列化。</td>
-                          </tr>
-                          <tr>
-                            <td>RPC 客户端选择</td>
-                            <td><code>cfquant/client.py</code></td>
-                            <td>根据 <code>transport=auto/ctypes/lttx/web_lttx</code> 创建 <code>PipeRpcClient</code>、<code>LTtxRpcClient</code> 或 <code>WebLttxRpcClient</code>。</td>
-                          </tr>
-                          <tr>
-                            <td>外部 Pipe 客户端</td>
-                            <td><code>cfquant/pipe_client.py</code></td>
-                            <td>外部 Python 直连 PipeHub 时使用，维护 <code>api_rx/api_tx</code> 两条 pipe 连接和事件分发线程。</td>
-                          </tr>
-                          <tr>
-                            <td>Pipe 底层传输</td>
-                            <td><code>cfquant/pipe_transport.py</code></td>
-                            <td>Windows named pipe 的创建、连接、frame 读写，以及 QMT 侧 <code>PipeTxClient</code> 适配器。</td>
-                          </tr>
-                          <tr>
-                            <td>PipeHub 核心</td>
-                            <td><code>cfquant/pipe_hub.py</code></td>
-                            <td>作为外部 Python/Web 和 QMT Pipe 桥之间的 named pipe 消息代理，负责请求转发、响应配对、事件投递和状态文件。</td>
-                          </tr>
-                          <tr>
-                            <td>PipeHub 启动入口</td>
-                            <td><code>cfquant_pipe_hub.py</code></td>
-                            <td>独立启动 PipeHub 的命令行入口，通常由 Web 服务自动维护。</td>
-                          </tr>
-                          <tr>
-                            <td>LTtx 客户端封装</td>
-                            <td><code>cfquant/tx.py</code>、<code>LTtx/tx/tx.py</code></td>
-                            <td>LTtx socket 客户端能力，提供 <code>start_tx</code>、<code>start_txg</code>、<code>push</code>、<code>put</code>、<code>get</code> 等。</td>
-                          </tr>
-                          <tr>
-                            <td>LTtx 服务端</td>
-                            <td><code>LTtx/tx/LTtx_server.py</code></td>
-                            <td>本机 LTtx 发布订阅服务，用于 Web route、运行时发现、高级模式直连。</td>
-                          </tr>
-                          <tr>
-                            <td>Web 服务</td>
-                            <td><code>cfquant_web_server.py</code></td>
-                            <td>Web 控制台、账号配置、运行时注册、统一路由、PipeHub 启停、LTtx 启停、callback 监听、WebSocket 推送。</td>
-                          </tr>
-                          <tr>
-                            <td>账号订阅表</td>
-                            <td><code>cfquant/account_routing.py</code></td>
-                            <td>维护 <code>bridge_id + account_type + account_id -&gt; client_id</code> 的订阅关系，辅助回调广播。</td>
-                          </tr>
-                          <tr>
-                            <td>交易桥基类</td>
-                            <td><code>cfquant/tx_trade_bridge.py</code></td>
-                            <td>QMT 侧交易请求分发，支持 <code>passorder</code>、<code>cancel</code>、交易查询、行情兼容查询、账号订阅和请求级事件。</td>
-                          </tr>
-                          <tr>
-                            <td>普通桥</td>
-                            <td><code>cfquant/normal_bridge.py</code></td>
-                            <td>在交易桥基础上增加普通请求队列、行情订阅转发、callback event 通道和 QMT 原始交易回调发布。</td>
-                          </tr>
-                          <tr>
-                            <td>Pipe 桥</td>
-                            <td><code>cfquant/pipe_bridge.py</code></td>
-                            <td>把 <code>NormalQmtBridge</code> 和 <code>TxTradeBridge</code> 包装成通过 PipeHub 通信的 QMT 侧桥。</td>
-                          </tr>
-                          <tr>
-                            <td>旧 LTtx 桥</td>
-                            <td><code>cfquant/qmt_bridge.py</code></td>
-                            <td>早期 QMT 侧 LTtx 桥兼容实现，保留部分旧部署兼容能力。</td>
-                          </tr>
-                          <tr>
-                            <td>通用模式 QMT 入口</td>
-                            <td><code>qmt_scripts/CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
-                            <td>单个 QMT 策略内启动 normal/trade 两个 Pipe 通道，支持请求、行情和账号级回调。</td>
-                          </tr>
-                          <tr>
-                            <td>高级模式普通桥入口</td>
-                            <td><code>qmt_scripts/CFQUANT.py</code></td>
-                            <td>高级模式普通 QMT 入口，负责普通查询、行情和账号级交易回调。</td>
-                          </tr>
-                          <tr>
-                            <td>高级模式交易桥入口</td>
-                            <td><code>qmt_scripts/CFQUANT_TRADE_LOWLAT.py</code></td>
-                            <td>高级模式低延迟交易入口，只处理下单、撤单、交易查询，不承接 QMT 原始账号回调。</td>
-                          </tr>
-                          <tr>
-                            <td>极致模式入口</td>
-                            <td><code>qmt_scripts/CFQUANT_LITE.py</code></td>
-                            <td>自包含 QMT 入口，适配无法正常导入项目 <code>cfquant</code> 包的 QMT 环境。</td>
-                          </tr>
-                          <tr>
-                            <td>独立市场入口</td>
-                            <td><code>qmt_scripts/同账号独立市场/*.py</code></td>
-                            <td>内置对应主入口代码并设置沪/深市场配置，让 Web 可把同一账号不同市场拆到不同 bridge。</td>
-                          </tr>
-                          <tr>
-                            <td>测试脚本</td>
-                            <td><code>cfquant/tests/*.py</code></td>
-                            <td>覆盖行情接收、数据获取、数据下载、交易查询、真实下单、回调监听等场景。</td>
-                          </tr>
-                          <tr>
-                            <td>运行时目录</td>
-                            <td><code>runtime/</code></td>
-                            <td>保存配置、状态、缓存、报告、截图、LTtx 临时数据等运行时文件。</td>
-                          </tr>
-                          <tr>
-                            <td>Web 前端</td>
-                            <td><code>web_dashboard/</code></td>
-                            <td>本地控制台页面，展示账号、桥状态、版本、配置和回调事件。</td>
+                            <td>高级模式</td>
+                            <td><code>CFQUANT.py</code> + <code>CFQUANT_TRADE_LOWLAT.py</code></td>
+                            <td>两个 QMT，普通端做查询和回调，极速交易端做低延迟交易请求。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -1813,793 +1403,610 @@
                   </div>
 
                   <div class="guide-section">
-                    <h3>关键运行数据</h3>
-                    <div class="guide-table-wrap runtime-table">
+                    <h3>关键文件</h3>
+                    <div class="guide-table-wrap">
                       <table>
                         <thead>
                           <tr>
-                            <th>数据</th>
-                            <th>默认位置或名称</th>
+                            <th>位置</th>
                             <th>作用</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td>Web 配置</td>
                             <td><code>runtime/config/cfquant_web_config.json</code></td>
-                            <td>保存账号、账号类型、bridge、运行模式、市场路由、Web 端口等配置。</td>
+                            <td>保存账号、QMT 目录、运行模式、共享行情源和市场路由。</td>
                           </tr>
                           <tr>
-                            <td>Pipe 名称</td>
-                            <td><code>\\.\pipe\cfquant_pipe_hub</code></td>
-                            <td>外部 Pipe 客户端、Web 和 QMT Pipe 桥连接的 named pipe。</td>
+                            <td><code>qmt_scripts/</code></td>
+                            <td>放给 QMT 加载的入口脚本。</td>
                           </tr>
                           <tr>
-                            <td>LTtx host/port</td>
-                            <td><code>127.0.0.1:2049</code></td>
-                            <td>Web route、高级模式和运行时发现使用。</td>
+                            <td><code>bin.x64/cfquant_bridge_config.json</code></td>
+                            <td>Web 为 QMT 写入的身份文件，用于区分不同 QMT 终端。</td>
                           </tr>
                           <tr>
-                            <td>Web route 频道</td>
-                            <td><code>cfquant.web.request</code></td>
-                            <td>外部 <code>auto</code> 命中 Web 路由后的统一请求入口。</td>
-                          </tr>
-                          <tr>
-                            <td>默认 normal 频道</td>
-                            <td><code>cfquant.normal.request</code></td>
-                            <td>普通查询、行情、普通桥请求。</td>
-                          </tr>
-                          <tr>
-                            <td>默认 trade 频道</td>
-                            <td><code>cfquant.trade.request</code></td>
-                            <td>下单、撤单、低延迟交易查询。</td>
-                          </tr>
-                          <tr>
-                            <td>默认 callback 频道</td>
-                            <td><code>cfquant.callback.event</code></td>
-                            <td>QMT 原始交易回调发布给 Web 监听器的事件通道。</td>
-                          </tr>
-                          <tr>
-                            <td>运行时发现 key</td>
-                            <td><code>cfquant.runtime</code></td>
-                            <td>Web 写入 LTtx，外部 <code>auto</code> 读取后决定是否走 Web route。</td>
+                            <td><code>log/</code></td>
+                            <td>Web、PipeHub、LTtx 和 QMT 桥接日志。</td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>连接生命周期</h3>
-                    <div class="guide-mermaid-card compact" aria-label="cfquant 连接生命周期">
-                      <pre class="mermaid">stateDiagram-v2
-    [*] --> Imported: import cfquant
-    Imported --> ObjectCreated: 创建 StockAccount / XtQuantTrader
-    ObjectCreated --> Connected: start / connect / subscribe / request
-    Imported --> Connected: xtdata 首次 request
-    Connected --> WebLttx: auto 发现 Web route
-    Connected --> Pipe: transport=ctypes 或 auto fallback
-    Connected --> DirectLttx: transport=lttx
-    WebLttx --> Running: 持续 LTtx 连接和接收线程
-    DirectLttx --> Running: 持续 LTtx 连接和接收线程
-    Pipe --> Running: 持续 named pipe 连接和接收线程
-    Running --> Closed: stop / disconnect / close / configure 重置 / 进程退出
-    Closed --> [*]</pre>
-                    </div>
-                    <h4>要点</h4>
-                    <ul class="guide-list">
-                      <li><code>import cfquant</code> 不会连接 LTtx。</li>
-                      <li>默认 <code>auto + Web 在线</code> 时，第一次请求后外部调用者会持续连接 LTtx 的 Web route。</li>
-                      <li>强制 <code>ctypes/lite</code> 时，外部调用者持续连接 PipeHub，不直接连接 LTtx。</li>
-                      <li>Web 服务自身会维护 LTtx 和必要的 PipeHub，这和外部调用者是否直连 LTtx 是两个不同概念。</li>
-                    </ul>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>推荐使用方式</h3>
-                    <p>普通用户和多账号部署建议保持默认：</p>
-                    <pre class="guide-code">外部 cfquant -&gt; LTtx -&gt; Web 统一路由 -&gt; 账号对应桥 -&gt; 大 QMT</pre>
-                    <p>这样 Web 统一管理账号、模式、bridge、市场路由、fallback 和回调转发。</p>
-                    <p>固定单账号、明确只走通用模式并追求更短链路时，可以使用：</p>
-                    <pre class="guide-code">from cfquant import configure
-
-configure(transport="ctypes")</pre>
-                    <p>但这种方式会绕过 Web 统一路由，调用方需要自行维护账号和 bridge 关系。</p>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="quickstart">
                   <div class="guide-section">
                     <h3>快速开始</h3>
-                    <p>README 会先帮助你启动本地服务；网页首次打开时必须先完成初始化。真正接入 QMT 时，按每个账号配置的模式加载对应入口。通用模式只加载一个 ctypes 文件和核心包；高级模式需要两个 QMT，普通 QMT 加载普通桥，极速交易端 QMT 加载极速交易桥。</p>
                     <ol class="guide-list detailed">
-                      <li><strong>启动 Web：</strong>双击 <code>cfquant\start_cfquant.bat</code>，打开 <code>http://127.0.0.1:8765/</code>。</li>
-                      <li><strong>完成初始化：</strong>输入默认账号，选择通用模式或高级模式；QMT 核心目录建议填写为 bin.x64，留空会使自动更新不可用。</li>
-                      <li><strong>部署到 QMT：</strong>按左侧“部署到 QMT”章节，把核心包放到 bin.x64，把桥接脚本放到相邻的 python 目录。</li>
-                      <li><strong>加载桥接脚本：</strong>通用模式加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>；高级模式打开两个 QMT，普通 QMT 加载 <code>CFQUANT.py</code>，极速交易端 QMT 加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。</li>
-                      <li><strong>配置多账号：</strong>进入“绑定”页面继续添加账号，为每个账号填写 QMT 目录和模式；可指定一个账号作为共享行情数据源。</li>
-                      <li><strong>验证连接：</strong>刷新状态和资产持仓；高级模式不可用时，账号状态应显示已回退到通用模式。</li>
+                      <li><strong>启动服务。</strong>运行 <code>启动cfquant.bat</code>，或执行 <code>cfquant --open-browser</code>。</li>
+                      <li><strong>完成初始化。</strong>填写资金账号、账户类型、QMT <code>bin.x64</code> 目录和运行模式。</li>
+                      <li><strong>部署 QMT。</strong>按“QMT 部署教程”复制核心包和入口脚本。</li>
+                      <li><strong>启动脚本。</strong>通用模式启动一个入口；高级模式分别启动普通端和极速交易端。</li>
+                      <li><strong>验证账号。</strong>回到“绑定”页刷新状态，再查资金、持仓。</li>
+                      <li><strong>接入外部程序。</strong>先在“接口”页调通参数，再改外部 Python 代码。</li>
                     </ol>
                   </div>
 
                   <div class="guide-section">
-                    <h3>启动后先看哪里</h3>
+                    <h3>启动后看哪里</h3>
                     <div class="guide-kv wide">
                       <span>首页</span>
-                      <strong>确认资产、持仓、实时委托和绑定实时状态是否有数据。</strong>
-                      <span>状态</span>
-                      <strong>查看当前模式对应的通信通道是否在线，以及最近一次检测时间。</strong>
+                      <strong>看当前账号资金、持仓和实时委托。</strong>
                       <span>绑定</span>
-                      <strong>维护账号配置和共享行情源，适合排查账号请求路由问题。</strong>
+                      <strong>维护账号、QMT 目录、模式和共享行情源。</strong>
+                      <span>状态</span>
+                      <strong>确认 Web、PipeHub、LTtx 和 QMT 入口是否在线。</strong>
                       <span>接口</span>
-                      <strong>给外部程序接入前，先在这里调试 HTTP 和 WebSocket 参数。</strong>
+                      <strong>调试 HTTP、WebSocket、行情下载和回调。</strong>
                     </div>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="web_console">
                   <div class="guide-section">
-                    <h3>网页端教程</h3>
-                    <p>网页端用于初始化、账号绑定、交易验证、接口调试和运行状态排查。建议先按“新手引导”完成单账号通用模式，再逐步使用交易、接口和多账号能力。</p>
+                    <h3>网页端</h3>
+                    <p>网页端负责配置、验证和排查。外部策略接入前，先用网页确认账号和 QMT 链路是通的。</p>
                     <div class="web-tutorial-grid">
-                      <div class="web-tutorial-card">
-                        <strong>首页</strong>
-                        <span>查看当前账号资产、持仓、实时委托和基础操作。首页不会主动展示全量行情推送，避免浏览器长时间占用过高。</span>
-                      </div>
-                      <div class="web-tutorial-card">
-                        <strong>绑定</strong>
-                        <span>新增普通或信用账号，填写 QMT 核心目录、账户类型、运行模式和是否作为共享行情数据源。</span>
-                      </div>
-                      <div class="web-tutorial-card">
-                        <strong>交易</strong>
-                        <span>先用小数量验证下单、撤单和委托刷新。高级模式不可用时，系统会按账号配置回退到通用模式。</span>
-                      </div>
-                      <div class="web-tutorial-card">
-                        <strong>状态</strong>
-                        <span>检查 LTtx、PipeHub、通用端、高级端和各账号在线情况。遇到连接失败先看这里。</span>
-                      </div>
-                      <div class="web-tutorial-card">
-                        <strong>回调</strong>
-                        <span>查看委托、成交、下单错误、撤单错误和订阅回调。只有进入回调页或主动订阅时才会持续加载回调列表。</span>
-                      </div>
-                      <div class="web-tutorial-card">
-                        <strong>接口</strong>
-                        <span>在线调试 HTTP API、下载数据、订阅行情和 WebSocket 回调。外部程序接入前先在这里跑通参数。</span>
-                      </div>
-                      <div class="web-tutorial-card">
-                        <strong>设置</strong>
-                        <span>管理 API Key、远程访问、日志保留、核心更新、Web 项目更新和版本检查。</span>
-                      </div>
+                      <div class="web-tutorial-card"><strong>首页</strong><span>当前账号的资产、持仓、委托和基础状态。</span></div>
+                      <div class="web-tutorial-card"><strong>绑定</strong><span>账号、账户类型、QMT 目录、运行模式、共享行情源。</span></div>
+                      <div class="web-tutorial-card"><strong>交易</strong><span>单笔下单、批量下单、撤单和委托刷新。</span></div>
+                      <div class="web-tutorial-card"><strong>状态</strong><span>查看普通端、交易端、PipeHub、LTtx 是否在线。</span></div>
+                      <div class="web-tutorial-card"><strong>回调</strong><span>查看委托、成交、下单错误、撤单错误事件。</span></div>
+                      <div class="web-tutorial-card"><strong>接口</strong><span>在线调试行情、交易、下载和 WebSocket。</span></div>
+                      <div class="web-tutorial-card"><strong>设置</strong><span>API Key、远程访问、日志、版本检查和更新。</span></div>
                     </div>
                   </div>
 
                   <div class="guide-section">
-                    <h3>推荐操作顺序</h3>
+                    <h3>推荐顺序</h3>
                     <ol class="guide-list detailed">
-                      <li><strong>首次打开：</strong>完成新手引导，保存默认账号和 QMT 目录，优先选择通用模式。</li>
-                      <li><strong>加载 QMT 端：</strong>把页面提示的核心文件和入口脚本部署到 QMT 目录，启动 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。</li>
-                      <li><strong>回到网页验证：</strong>刷新首页资产和持仓；如果能返回数据，说明 Web 到 QMT 的查询链路已经跑通。</li>
-                      <li><strong>验证交易：</strong>进入交易页，用小数量委托和撤单确认下单、撤单和交易回调。</li>
-                      <li><strong>接外部程序：</strong>进入接口页复制 API 示例，使用同一个账号参数调用 cfquant；多账号时必须传入明确的 <code>account_id</code> 和账户类型。</li>
+                      <li>先在“绑定”保存账号配置。</li>
+                      <li>再在 QMT 启动对应入口脚本。</li>
+                      <li>回网页刷新绑定状态，确认实际模式在线。</li>
+                      <li>查资金和持仓，确认账号没有串。</li>
+                      <li>最后再测试下单、撤单和外部接口。</li>
                     </ol>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>页面功能对照</h3>
-                    <div class="guide-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>页面</th>
-                            <th>适合做什么</th>
-                            <th>注意事项</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>首页</td>
-                            <td>日常查看资产、持仓、委托和当前账号。</td>
-                            <td>首页保持轻量，不在未订阅时主动推送全量 Tick 到浏览器。</td>
-                          </tr>
-                          <tr>
-                            <td>绑定</td>
-                            <td>配置单账号、多账号、普通账户和信用账户。</td>
-                            <td>同一个 QMT 多账号可复用同一个 QMT 目录；多个 QMT 目录会自动分配不同内部通道。</td>
-                          </tr>
-                          <tr>
-                            <td>接口</td>
-                            <td>调试资金、持仓、行情下载、订阅和交易 API。</td>
-                            <td>下载历史数据时，如果 QMT 只提供旧接口，网页只能显示请求生命周期，不能保证底层逐笔进度。</td>
-                          </tr>
-                          <tr>
-                            <td>设置</td>
-                            <td>配置访问、安全、日志、版本检测和在线更新。</td>
-                            <td>内网无法访问 GitHub 时，版本探测失败不会影响交易和行情功能。</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="python">
                   <div class="guide-section">
-                    <h3>Python 接入前提</h3>
-                    <p>外部 Python 程序可以把 cfquant 当作 <code>xtquant</code> 兼容层使用。使用前需要先启动本地 <code>start_cfquant.bat</code>，并按当前模式加载 QMT 入口：通用模式加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>；高级模式打开两个 QMT，分别加载 <code>CFQUANT.py</code> 和 <code>CFQUANT_TRADE_LOWLAT.py</code>。Web 控制台里也要先完成资金账号配置。</p>
-                    <div class="guide-callout">
-                      <strong>cfquant 不是直接连接柜台的独立交易客户端</strong>
-                      <span>外部 Python 请求会先连接本机 Web 通信层，再由当前模式的 QMT 桥接脚本调用 QMT 原生能力。因此 QMT 必须登录账号并保持对应入口脚本运行。</span>
-                    </div>
+                    <h3>外部 Python</h3>
+                    <p>外部程序优先使用默认 <code>auto</code> 路由。Web 在线时请求进入 Web 统一路由，再按账号配置选择通用、极致或高级模式。</p>
+                    <pre class="guide-code">pip install cfquant
+pip install "cfquant[zmq]"   # 需要 ZMQ 能力时再安装</pre>
+                    <pre class="guide-code">cfquant --open-browser
+cfquant qmt-scripts --output D:\QMT\cfquant</pre>
                   </div>
 
                   <div class="guide-section">
-                    <h3>安装方式</h3>
-                    <p>cfquant 暂未发布到 PyPI，因此暂不支持 <code>pip install cfquant</code>。当前只支持从本地源码目录安装。</p>
-                    <pre class="guide-code">cd D:\cfquant
-pip install -e .
-
-# 或安装当前源码版本
-pip install .</pre>
-                    <p>如果不想使用 pip，也可以把源码里的 <code>cfquant\</code> 和 <code>LTtx\</code> 两个目录复制到你的 Python 项目根目录，或复制到当前 Python 环境的 <code>site-packages</code> 目录。</p>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>替代 xtquant 导入</h3>
-                    <p>原来使用原生 <code>xtquant</code> 的代码：</p>
-                    <pre class="guide-code">from xtquant import xtdata
-from xtquant.xttrader import XtQuantTrader
-from xtquant.xttype import StockAccount</pre>
-                    <p>可以改成：</p>
+                    <h3>xtquant 平替写法</h3>
                     <pre class="guide-code">from cfquant import xtdata
 from cfquant.xttrader import XtQuantTrader
-from cfquant.xttype import StockAccount</pre>
-                    <p>如果原项目里大量使用 <code>import xtquant</code>，可以用别名方式减少改动：</p>
-                    <pre class="guide-code">import cfquant as xtquant
-
-data = xtquant.xtdata.get_full_tick(["000001.SZ"])</pre>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>连接配置</h3>
-                    <p>默认使用通用模式的 ctypes 单文件桥。单 QMT 场景通常不需要手动调用 <code>configure</code>；只要 <code>start_cfquant.bat</code> 已启动、QMT 侧已加载当前模式对应的桥接脚本，<code>xtdata</code> 就可以像原生 <code>xtquant.xtdata</code> 一样直接使用。</p>
-                    <p>只有需要修改 LTtx 地址、端口、token、超时时间，或给没有账号映射的请求指定默认内部通道时，才需要调用 <code>configure</code>：</p>
-                    <pre class="guide-code">from cfquant import configure
-
-configure(
-    host="127.0.0.1",
-    port=2049,
-    token="LTtx",
-    timeout=15,
-)</pre>
-                    <p>也可以通过环境变量配置：</p>
-                    <pre class="guide-code">CFQUANT_LTTX_HOST=127.0.0.1
-CFQUANT_LTTX_PORT=2049
-CFQUANT_LTTX_TOKEN=LTtx
-CFQUANT_TIMEOUT=15</pre>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>行情与交易查询示例</h3>
-                    <pre class="guide-code">from cfquant import xtdata
-
-tick = xtdata.get_full_tick(["000001.SZ", "600000.SH"])
-bars = xtdata.get_market_data(
-    field_list=["open", "high", "low", "close", "volume"],
-    stock_list=["000001.SZ"],
-    period="1d",
-    count=5,
-)</pre>
-                    <pre class="guide-code">from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
 
-account = StockAccount("2220009880")
+account = StockAccount("YOUR_ACCOUNT_ID")
 trader = XtQuantTrader("", 0, account=account)
 trader.start()
 
-asset = trader.query_stock_asset(account)
-positions = trader.query_stock_positions(account)</pre>
-                    <p>交易侧按资金账号路由：外部 Python 会优先读取 <code>runtime/config/cfquant_web_config.json</code> 或 <code>CFQUANT_WEB_CONFIG_FILE</code> 指向的配置，如果里面已有 Web 控制台保存的账号配置，只需要传同一个资金账号；如果不使用这份 Web 配置，也可以在高级场景中显式指定内部通道：</p>
-                    <pre class="guide-code">account = StockAccount("2220009880", bridge_id="qmt2")</pre>
+print(xtdata.get_full_tick(["000001.SZ"]))
+print(trader.query_stock_asset(account))</pre>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>什么时候手动配置</h3>
+                    <p>正常多账号部署不用写 <code>configure()</code>。只有固定走某条链路、改 LTtx 端口、改 Pipe 名称或排查连接问题时再手动指定。</p>
+                    <pre class="guide-code">from cfquant import configure
+
+configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
+# 或：configure(transport="web_lttx", host="127.0.0.1", port=2049, token="LTtx")</pre>
                   </div>
                 </article>
 
-                <article class="tutorial-topic" data-guide-panel="deploy">
+                <article class="tutorial-topic active" data-guide-panel="deploy">
                   <div class="guide-section">
-                    <h3>部署到 QMT</h3>
-                    <div class="guide-callout">
-                      <strong>按当前模式部署 QMT</strong>
-                      <span>本地服务需要运行 <code>start_cfquant.bat</code>。通用模式加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code> 一个文件即可；高级模式需要两个 QMT，普通 QMT 运行 <code>CFQUANT.py</code>，极速交易端 QMT 运行 <code>CFQUANT_TRADE_LOWLAT.py</code>，缺少任一桥时高级模式不会启用。</span>
+                    <h3>【cfquant】QMT 部署教程</h3>
+                    <p>本教程介绍如何在大 QMT 中部署 cfquant，并通过本地 Web 控制台或外部 Python 调用行情、查询、交易和回调能力。</p>
+                    <div class="guide-recommend">
+                      <strong>建议先部署通用模式</strong>
+                      <span>通用模式只需要一个 QMT 和一个入口脚本，最适合首次验证。国泰君安和国泰海通的 QMT 建议直接使用极致模式；国泰海通无法部署高级模式。</span>
                     </div>
-                    <p>QMT 策略入口脚本通常放在安装目录下的 <code>python</code> 文件夹，核心包放在同级的 <code>bin.x64</code> 文件夹。入口脚本已兼容从相邻的 <code>bin.x64</code> 导入 <code>cfquant</code>。</p>
-                    <p>发布包的外层 <code>cfquant</code> 目录用于启动 Web；其中 <code>cfquant\cfquant\</code> 是要复制到 QMT 的核心包，<code>cfquant\qmt_scripts\</code> 是要放进 QMT <code>python</code> 目录并加载运行的入口脚本。</p>
-                    <p>例如 QMT 安装在 <code>D:\国金证券QMT交易端</code> 时，核心目录是 <code>D:\国金证券QMT交易端\bin.x64</code>，入口脚本目录是 <code>D:\国金证券QMT交易端\python</code>。</p>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>QMT 文件放置位置</h3>
+                    <div class="deploy-primer-grid">
+                      <div>
+                        <strong>1. 先启动本地服务</strong>
+                        <span>通过 <code>启动cfquant.bat</code> 或 <code>cfquant --open-browser</code> 打开 Web 控制台，默认地址是 <code>http://127.0.0.1:8765/</code>。</span>
+                      </div>
+                      <div>
+                        <strong>2. 再准备 QMT 环境</strong>
+                        <span>登录 QMT，并确认“模型研究”或“模型交易”里的 Python 环境已经安装可用。</span>
+                      </div>
+                      <div>
+                        <strong>3. 最后绑定账号验证</strong>
+                        <span>在网页“绑定”页填写资金账号、QMT 核心目录和运行模式，能查到资产、持仓或行情即部署成功。</span>
+                      </div>
+                    </div>
                     <div class="guide-table-wrap">
                       <table>
                         <thead>
                           <tr>
-                            <th>项目文件</th>
-                            <th>放置位置</th>
-                            <th>用途</th>
+                            <th>模式</th>
+                            <th>入口脚本</th>
+                            <th>QMT 数量</th>
+                            <th>说明</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td><code>cfquant\cfquant\</code> 目录</td>
-                            <td>复制到 QMT 的 <code>bin.x64\cfquant\</code></td>
-                            <td>两种模式都需要的桥接核心包，包含 ctypes、普通桥、极速交易桥、频道规则和协议解析。</td>
+                            <td>通用模式</td>
+                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
+                            <td>1 个</td>
+                            <td>默认推荐，适合大多数行情、查询、下单、撤单和回调场景。</td>
                           </tr>
                           <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
-                            <td>通用模式复制到 QMT 的 <code>python\</code> 根目录</td>
-                            <td>单文件 ctypes 通用桥，同时注册查询、交易和回调通道；不需要 tx.py。</td>
+                            <td>极致模式</td>
+                            <td><code>CFQUANT_LITE.py</code></td>
+                            <td>1 个</td>
+                            <td>适合 QMT 对 Python 包导入有限制，或国泰君安、国泰海通等环境。</td>
                           </tr>
                           <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT_LITE.py</code></td>
-                            <td>极致模式复制到 QMT 的 <code>python\</code> 根目录</td>
-                            <td>纯 ctypes 自包含入口，不需要在 QMT 中导入 <code>cfquant</code> 包。</td>
-                          </tr>
-                          <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT.py</code></td>
-                            <td>复制到普通 QMT 的 <code>python\</code> 根目录</td>
-                            <td>普通 QMT 桥入口，负责资金、持仓、委托、成交和状态查询。</td>
-                          </tr>
-                          <tr>
-                            <td><code>cfquant\qmt_scripts\CFQUANT_TRADE_LOWLAT.py</code></td>
-                            <td>复制到极速交易端 QMT 的 <code>python\</code> 根目录</td>
-                            <td>极速交易桥入口，负责低延迟下单、撤单和交易回调。</td>
+                            <td>高级模式</td>
+                            <td><code>CFQUANT.py</code> + <code>CFQUANT_TRADE_LOWLAT.py</code></td>
+                            <td>2 个</td>
+                            <td>部署复杂，但外部程序到 QMT 内部的下单链路延迟更低。</td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
-                    <div class="guide-callout">
-                      <strong>保持目录层级不变</strong>
-                      <span>通用模式的目标 QMT 应能看到 <code>bin.x64\cfquant\__init__.py</code> 和 <code>python\CFQUANT_CTYPE_ALL_LOWLAT.py</code>。高级模式的普通 QMT 放 <code>CFQUANT.py</code>，极速交易端 QMT 放 <code>CFQUANT_TRADE_LOWLAT.py</code>；LTtx 客户端已内置在 <code>bin.x64\cfquant\tx.py</code>。</span>
-                    </div>
-                    <div class="guide-callout">
-                      <strong>目标目录示例</strong>
-                      <span>如果 QMT 安装在 <code>D:\兴业证券SMT-Q</code>，核心目录通常是 <code>D:\兴业证券SMT-Q\bin.x64</code>；如果安装在 <code>D:\国金证券QMT交易端</code>，核心目录通常是 <code>D:\国金证券QMT交易端\bin.x64</code>。</span>
-                    </div>
                   </div>
 
-                  <div class="guide-section">
-                    <h3>部署步骤</h3>
+                  <div class="deploy-mode-tabs" role="tablist" aria-label="QMT 部署模式">
+                    <button id="deployModeCtypes" class="active" type="button" role="tab" aria-selected="true" aria-controls="deployModePanelCtypes" data-deploy-mode="ctypes">
+                      <strong>通用模式</strong>
+                      <span>一个 QMT，默认推荐</span>
+                    </button>
+                    <button id="deployModeLite" type="button" role="tab" aria-selected="false" aria-controls="deployModePanelLite" data-deploy-mode="lite">
+                      <strong>极致模式</strong>
+                      <span>国泰君安、国泰海通等场景</span>
+                    </button>
+                    <button id="deployModeAdvanced" type="button" role="tab" aria-selected="false" aria-controls="deployModePanelAdvanced" data-deploy-mode="advanced">
+                      <strong>高级模式</strong>
+                      <span>两个 QMT，低延迟链路</span>
+                    </button>
+                  </div>
+
+                  <div class="deploy-mode-panels">
+                    <section id="deployModePanelCtypes" class="deploy-mode-panel active" role="tabpanel" aria-labelledby="deployModeCtypes" data-deploy-mode-panel="ctypes">
+                      <div class="guide-section">
+                        <h3>一、通用模式部署教程</h3>
+                    <div class="guide-callout warning">
+                      <strong>特别提醒</strong>
+                      <span>国泰君安和国泰海通的 QMT，需要走【极致模式】。其他券商 QMT 建议先按通用模式部署。</span>
+                    </div>
                     <ol class="guide-list detailed">
-                      <li><strong>关闭或停止旧桥接脚本：</strong>如果 QMT 里已经加载过旧版 <code>CFQUANT.py</code> 或 <code>CFQUANT_TRADE_LOWLAT.py</code>，先停止旧策略，避免多个旧实例抢同一频道。</li>
-                      <li><strong>复制依赖包：</strong>把发布包里的 <code>cfquant\cfquant\</code> 整个目录复制到目标 QMT 的 <code>bin.x64\cfquant\</code>。</li>
-                      <li><strong>复制入口脚本：</strong>通用模式复制 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code> 到目标 QMT。高级模式把 <code>CFQUANT.py</code> 放到普通 QMT，把 <code>CFQUANT_TRADE_LOWLAT.py</code> 放到另一个极速交易端 QMT；不需要再单独复制 <code>tx.py</code>。</li>
-                      <li><strong>确认本机服务已启动：</strong>在发布包外层 <code>cfquant</code> 目录运行 <code>start_cfquant.bat</code>，Web 服务默认启动 PipeHub 和 LTtx 服务端。</li>
-                      <li><strong>在 QMT 加载入口：</strong>通用模式在一个 QMT 里加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>；高级模式在普通 QMT 加载 <code>CFQUANT.py</code>，在另一个极速交易端 QMT 加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。</li>
-                      <li><strong>回到网页验证：</strong>进入“绑定”页面保存账号配置，再刷新状态和资产持仓。</li>
+                      <li><strong>下载项目解压，或通过 pip 安装后找到安装目录。</strong>下面以下载解压项目、国金证券 QMT 为例，其他证券公司的 QMT 按相同方式处理。</li>
+                      <li><strong>复制核心目录。</strong>将项目中的 <code>cfquant</code> 目录复制到你的 QMT 安装目录。</li>
                     </ol>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>多 QMT 部署</h3>
-                    <p>如果一台机器上同时运行多个 QMT，每个 QMT 都要有自己的 <code>bin.x64\cfquant\</code> 核心包和 <code>python</code> 桥接入口脚本。网页侧只添加账号配置，不需要手动选择桥接端；填写 QMT 核心目录后，服务端会在对应 <code>bin.x64</code> 写入 <code>cfquant_bridge_config.json</code>，通用端启动时按这个身份注册到独立频道。</p>
-                    <pre class="guide-code"># 示例：第二组 QMT 终端使用独立 bridge_id
-USER_BRIDGE_ID = "qmt2"</pre>
-                    <p>高级模式下，同一账号的普通 QMT 和极速交易端 QMT 应使用同一个 <code>bridge_id</code>；不同账号或不同 QMT 部署组再使用不同 <code>bridge_id</code>。</p>
-                  </div>
-                </article>
-
-                <article class="tutorial-topic" data-guide-panel="deploy_guide">
-                  <div class="guide-section">
-                    <h3>通用模式图文部署指南</h3>
-                    <div class="guide-recommend">
-                      <strong>推荐先按通用模式跑通</strong>
-                      <span>通用模式只需要一个 QMT，在 QMT 中加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>，行情、查询、下单、撤单和回调都通过 ctypes 单文件桥接入。</span>
-                    </div>
-                    <p>先确认本地服务已通过 <code>start_cfquant.bat</code> 启动，并把 <code>cfquant\cfquant\</code> 核心包复制到目标 QMT 的 <code>bin.x64\cfquant\</code>。然后按下面截图在 QMT 中创建、部署并启动通用模式策略。</p>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>一、下载 Python 库</h3>
-                    <p>打开 QMT 的“模型研究”或“模型交易”，点击下载 Python 库，让 QMT 准备好 Python 策略运行环境。</p>
                     <figure class="guide-image-card">
-                      <img src="/image/部署指南/1783479325179.png" alt="通用模式下载 Python 库">
-                      <figcaption>在 QMT 中下载 Python 库。</figcaption>
+                      <img src="/image/qmt_deploy/image-4.png" alt="将 cfquant 目录复制到 QMT 安装目录">
+                      <figcaption>将项目中的 cfquant 目录复制到 QMT 安装目录。</figcaption>
                     </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>二、导入通用模式脚本</h3>
-                    <p>在 QMT 里创建对应的 Python 策略，将 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code> 的代码复制进去。这个脚本是通用模式唯一需要加载的 QMT 入口。</p>
+                    <ol class="guide-list detailed" start="3">
+                      <li><strong>打开 QMT。</strong>完成登录，并安装相应 Python 环境；如果已经安装，可以忽略。</li>
+                    </ol>
                     <figure class="guide-image-card">
-                      <img src="/image/通用模式部署指南/image.png" alt="导入通用模式脚本">
-                      <figcaption>创建策略并导入通用模式脚本。</figcaption>
+                      <img src="/image/qmt_deploy/image-5.png" alt="QMT 登录并安装 Python 环境">
+                      <figcaption>打开 QMT，登录账号并确认 Python 环境可用。</figcaption>
                     </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>三、部署策略</h3>
-                    <p>按截图在 QMT 中部署刚创建的通用模式策略，确保策略文件保存后再进入启动步骤。</p>
+                    <ol class="guide-list detailed" start="4">
+                      <li><strong>新建 Python 策略。</strong>打开大 QMT 的“模型研究”界面，进入“新建策略”，选择“新建 Python 策略”。</li>
+                    </ol>
                     <figure class="guide-image-card">
-                      <img src="/image/通用模式部署指南/image-1.png" alt="部署通用模式策略">
-                      <figcaption>部署通用模式策略。</figcaption>
+                      <img src="/image/qmt_deploy/image-6.png" alt="QMT 模型研究中新建 Python 策略">
+                      <figcaption>在模型研究中新建 Python 策略。</figcaption>
                     </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>四、启动策略</h3>
-                    <p>启动通用模式策略后，它会连接本地 PipeHub，并注册普通请求通道、交易请求通道和回调通道。</p>
+                    <ol class="guide-list detailed" start="5">
+                      <li><strong>启动策略。</strong>在通用模式中加载并启动 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。</li>
+                    </ol>
                     <figure class="guide-image-card">
-                      <img src="/image/通用模式部署指南/image-2.png" alt="启动通用模式策略">
+                      <img src="/image/qmt_deploy/image-7.png" alt="启动通用模式策略">
                       <figcaption>启动通用模式策略。</figcaption>
                     </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>五、成功示例</h3>
-                    <p>成功后，Web 控制台的 PipeHub 状态应能看到 QMT 通道在线。随后在“绑定”页面保存资金账号和 QMT 核心目录，再刷新资产、持仓或行情验证。</p>
+                    <ol class="guide-list detailed" start="6">
+                      <li><strong>重启 QMT。</strong>首次部署或替换脚本后，建议重启 QMT，再重新启动策略。</li>
+                    </ol>
                     <figure class="guide-image-card">
-                      <img src="/image/通用模式部署指南/image-3.png" alt="通用模式部署成功示例">
-                      <figcaption>通用模式策略启动成功后的状态示例。</figcaption>
+                      <img src="/image/qmt_deploy/image-9.png" alt="重启 QMT">
+                      <figcaption>重启 QMT 后重新启动策略。</figcaption>
                     </figure>
-                  </div>
-                </article>
+                    <ol class="guide-list detailed" start="7">
+                      <li><strong>网页端绑定账号。</strong>回到 Web 控制台，在“绑定”页面填写资金账号、QMT 目录，并选择通用模式。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-10.png" alt="通用模式网页端账号绑定">
+                      <figcaption>在网页端完成通用模式账号绑定。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="8">
+                      <li><strong>确认部署成功。</strong>网页端能看到对应通道在线，并能读取资产、持仓、委托或行情数据。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-8.png" alt="通用模式部署成功提示">
+                      <figcaption>部署成功后的网页状态提示。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="9">
+                      <li><strong>接口调用测试。</strong>进入“接口调试”，执行一次查询或交易测试，确认调用链路可用。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-14.png" alt="通用模式接口调用测试">
+                      <figcaption>使用网页接口进行调用测试。</figcaption>
+                    </figure>
+                      </div>
+                    </section>
 
-                <article class="tutorial-topic" data-guide-panel="deploy_guide_lite">
-                  <div class="guide-section">
-                    <h3>极致模式部署指南</h3>
-                    <div class="guide-recommend">
-                      <strong>只在 QMT 侧加载一个自包含脚本</strong>
-                      <span>极致模式使用 <code>CFQUANT_LITE.py</code>，脚本内部自带 PipeHub 协议、双通道桥和 ctypes 调用逻辑，不需要在 QMT 中导入 <code>cfquant</code> 包，特别适合国泰君安君弘君智 QMT。</span>
+                    <section id="deployModePanelLite" class="deploy-mode-panel" role="tabpanel" aria-labelledby="deployModeLite" data-deploy-mode-panel="lite">
+                      <div class="guide-section">
+                        <h3>二、极致模式部署教程</h3>
+                    <div class="guide-callout warning">
+                      <strong>特别提醒</strong>
+                      <span>国泰君安和国泰海通的 QMT，需要走【极致模式】。极致模式在 QMT 中加载 <code>CFQUANT_LITE.py</code>。</span>
                     </div>
-                    <p>这个模式特别适合国泰君安君弘君智 QMT 等有白名单限制、无法正常导入项目核心包的环境。本机仍然需要先运行 <code>start_cfquant.bat</code>，让 Web 服务和 PipeHub 保持在线。</p>
-                  </div>
+                    <ol class="guide-list detailed">
+                      <li><strong>准备项目目录。</strong>下载项目解压，或通过 pip 安装后找到对应安装目录。</li>
+                      <li><strong>按图放置项目目录。</strong>可将项目中的 <code>cfquant</code> 目录放到 QMT 安装目录；极致模式核心运行入口是 <code>CFQUANT_LITE.py</code>。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-4.png" alt="极致模式放置项目目录">
+                      <figcaption>将项目目录放到 QMT 安装目录。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="3">
+                      <li><strong>打开 QMT。</strong>完成登录，并安装相应 Python 环境；如果已经安装，可以忽略。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-5.png" alt="极致模式确认 QMT Python 环境">
+                      <figcaption>确认 QMT Python 环境可用。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="4">
+                      <li><strong>新建 Python 策略。</strong>打开大 QMT 的“模型研究”界面，进入“新建策略”，选择“新建 Python 策略”。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-11.png" alt="创建极致模式 Python 策略">
+                      <figcaption>创建极致模式 Python 策略。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="5">
+                      <li><strong>启动策略。</strong>在 QMT 中加载并启动 <code>CFQUANT_LITE.py</code>。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-12.png" alt="启动极致模式策略">
+                      <figcaption>启动极致模式策略。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="6">
+                      <li><strong>重启 QMT。</strong>首次部署或更新入口脚本后，重启 QMT 并重新启动策略。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-9.png" alt="极致模式重启 QMT">
+                      <figcaption>重启 QMT 后重新启动极致模式策略。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="7">
+                      <li><strong>网页端绑定账号。</strong>在 Web 控制台“绑定”页面选择极致模式，填写账号和 QMT 目录后保存。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-13.png" alt="极致模式网页端账号绑定">
+                      <figcaption>在网页端完成极致模式账号绑定。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="8">
+                      <li><strong>接口调用测试。</strong>部署成功后，可以在网页端的“接口调试”中进行调用测试。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-15.png" alt="极致模式接口调用测试">
+                      <figcaption>极致模式部署成功后的接口调用测试。</figcaption>
+                    </figure>
+                      </div>
+                    </section>
 
-                  <div class="guide-section">
-                    <h3>一、网页端选择极致模式</h3>
-                    <p>进入“绑定”页面，点击添加或编辑绑定，将账号运行模式选择为“极致模式”，填写资金账号、账号类型和 QMT 核心目录后保存。保存后，网页端会按极致模式路由到 PipeHub。</p>
-                    <pre class="guide-code">运行模式：极致模式
-QMT 入口脚本：CFQUANT_LITE.py
-通信链路：Web Server -> PipeHub -> 纯 ctypes 自包含桥 -> QMT
-外部 Python：默认 auto 先经 LTtx 发现 Web 路由；强制 ctypes 时可直连 PipeHub</pre>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>二、QMT 侧加载 CFQUANT_LITE.py</h3>
-                    <p>将项目里的 <code>qmt_scripts/CFQUANT_LITE.py</code> 复制到 QMT 可加载的 Python 脚本目录，在 QMT 中创建策略并导入这个文件。极致模式不需要复制 <code>cfquant\cfquant\</code> 核心包到 QMT 的 <code>bin.x64</code>。</p>
-                    <pre class="guide-code">需要复制：qmt_scripts/CFQUANT_LITE.py
-不需要复制：cfquant 核心包
-更新后操作：重新复制 CFQUANT_LITE.py 并重启 QMT 脚本</pre>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>三、确认版本上报</h3>
-                    <p>启动 QMT 脚本后，日志应优先显示中文，并出现极致模式入口版本。回到网页左上角版本弹窗，确认 QMT 运行时显示核心版本、入口脚本和入口版本。</p>
-                    <pre class="guide-code">cfquant 极致模式入口版本：lite_20260828_01
-cfquant 极致模式运行版本已上报
-版本弹窗：QMT core_20260828_01 / 入口 CFQUANT_LITE.py lite_20260828_01</pre>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>四、常见状态</h3>
-                    <p>如果版本弹窗暂时显示未上报，先确认 Web 服务已经启动，再重启 QMT 脚本。短暂的命名管道连接中断通常会自动重连；如果持续反复，检查是否有多个 QMT 脚本使用同一个 <code>bridge_id</code>。</p>
-                  </div>
-                </article>
-
-                <article class="tutorial-topic" data-guide-panel="deploy_guide_advanced">
-                  <div class="guide-section">
-                    <h3>高级模式图文部署指南</h3>
+                    <section id="deployModePanelAdvanced" class="deploy-mode-panel" role="tabpanel" aria-labelledby="deployModeAdvanced" data-deploy-mode-panel="advanced">
+                      <div class="guide-section">
+                        <h3>三、高级模式部署教程</h3>
                     <div class="guide-recommend warning">
-                      <strong>高级模式必须准备两个 QMT</strong>
-                      <span>普通 QMT 加载 <code>CFQUANT.py</code>，负责资金、持仓、委托、成交和状态查询；另一个极速交易端 QMT 加载 <code>CFQUANT_TRADE_LOWLAT.py</code>，负责低延迟下单、撤单和交易回调。</span>
+                      <strong>高级模式部署比较复杂</strong>
+                      <span>建议先跑通通用模式后再尝试高级模式。高级模式下单延迟约 4ms，这里的延迟是指外部程序到 QMT 内部，不是到交易所；QMT 到交易所的延迟不在本项目控制范围内。</span>
                     </div>
-                    <p>高级模式请求通过 LTtx 双桥转发。两个 QMT 都要复制完整 <code>cfquant\cfquant\</code> 核心包到各自的 <code>bin.x64\cfquant\</code>，但不再需要手动复制 <code>tx.py</code>，它已经随核心包内置为 <code>cfquant.tx</code>。</p>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>一、下载 Python 库</h3>
-                    <p>分别在普通 QMT 和极速交易端 QMT 中确认 Python 库已下载，保证两个终端都能运行 Python 策略。</p>
-                    <figure class="guide-image-card">
-                      <img src="/image/部署指南/1783479325179.png" alt="高级模式下载 Python 库">
-                      <figcaption>在 QMT 中下载 Python 库。</figcaption>
-                    </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>二、创建两个 Python 策略</h3>
-                    <p>在普通 QMT 中创建策略并导入 <code>CFQUANT.py</code>；在极速交易端 QMT 中创建策略并导入 <code>CFQUANT_TRADE_LOWLAT.py</code>。两个高级入口不要放在同一个 QMT 里同时运行。</p>
-                    <figure class="guide-image-card">
-                      <img src="/image/部署指南/1783479745262.png" alt="高级模式新建 Python 策略">
-                      <figcaption>在模型研究中创建 Python 策略。</figcaption>
-                    </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>三、启动本地服务</h3>
-                    <p>在本项目目录运行 <code>start_cfquant.bat</code>，启动 LTtx 服务和 Web 控制台。高级模式下，网页会检查普通 QMT 桥和极速交易桥是否都在线。</p>
-                    <figure class="guide-image-card">
-                      <img src="/image/部署指南/1783480178700.png" alt="启动 cfquant 本地服务">
-                      <figcaption>启动 cfquant 本地服务。</figcaption>
-                    </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>四、确认两个桥接策略在线</h3>
-                    <p>分别启动普通 QMT 的 <code>CFQUANT.py</code> 和极速交易端 QMT 的 <code>CFQUANT_TRADE_LOWLAT.py</code>。两个桥都在线后，高级模式才会被启用。</p>
-                    <figure class="guide-image-card">
-                      <img src="/image/部署指南/1783480428759.png" alt="高级模式桥接策略在线">
-                      <figcaption>确认普通桥和极速交易桥状态。</figcaption>
-                    </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>五、网页端绑定高级模式账号</h3>
-                    <p>打开 <code>http://127.0.0.1:8765/</code>，在“绑定”页面添加资金账号，模式选择高级模式，并填写对应 QMT 核心目录。保存后刷新状态、资产和持仓进行验证。</p>
-                    <figure class="guide-image-card">
-                      <img src="/image/部署指南/1783490503491.png" alt="高级模式网页端绑定账号">
-                      <figcaption>在 Web 控制台保存账号配置。</figcaption>
-                    </figure>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>后续支持</h3>
-                    <div class="guide-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>项目</th>
-                            <th>信息</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>远程部署</td>
-                            <td>如仍不清楚，可联系远程有偿部署服务，100 元/次。请提前下载向日葵或 ToDesk 并准备远程连接码。</td>
-                          </tr>
-                          <tr>
-                            <td>QQ</td>
-                            <td><code>445646258</code></td>
-                          </tr>
-                          <tr>
-                            <td>微信号</td>
-                            <td><code>shcfquant</code></td>
-                          </tr>
-                          <tr>
-                            <td>交流群</td>
-                            <td>请添加微信号后进入。</td>
-                          </tr>
-                        </tbody>
-                      </table>
+                    <div class="guide-callout warning">
+                      <strong>部署规则</strong>
+                      <span>高级模式需要两个 QMT。一般将 <code>qmt_scripts/CFQUANT.py</code> 放到第一个 QMT，将 <code>qmt_scripts/CFQUANT_TRADE_LOWLAT.py</code> 放到第二个安装的 QMT。不要在同一个 QMT 里同时运行这两个脚本；国泰海通无法部署高级模式。</span>
                     </div>
+                    <ol class="guide-list detailed">
+                      <li><strong>准备两个 QMT。</strong>一个作为普通端，一个作为极速交易端。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-16.png" alt="高级模式准备两个 QMT">
+                      <figcaption>高级模式需要准备两个 QMT。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="2">
+                      <li><strong>准备项目安装目录。</strong>下载项目解压，或通过 pip 安装后找到安装目录。下面以下载解压项目、国金证券 QMT 为例。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-17.png" alt="高级模式项目文件准备">
+                      <figcaption>准备高级模式所需项目文件。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="3">
+                      <li><strong>复制核心目录。</strong>将项目中的 <code>cfquant</code> 目录复制到 QMT 安装目录。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-4.png" alt="高级模式复制 cfquant 目录">
+                      <figcaption>复制 cfquant 核心目录。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="4">
+                      <li><strong>打开两个 QMT。</strong>登录并安装相应 Python 环境；如果已经安装，可以忽略。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-5.png" alt="高级模式确认两个 QMT Python 环境">
+                      <figcaption>确认两个 QMT 的 Python 环境可用。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="5">
+                      <li><strong>新建 Python 策略。</strong>分别在两个 QMT 的“模型研究”界面中新建 Python 策略。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-18.png" alt="高级模式创建 Python 策略">
+                      <figcaption>高级模式创建 Python 策略。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="6">
+                      <li><strong>启动两个策略。</strong>第一个 QMT 启动 <code>CFQUANT.py</code>，第二个 QMT 启动 <code>CFQUANT_TRADE_LOWLAT.py</code>。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-7.png" alt="高级模式启动两个策略">
+                      <figcaption>启动两个 QMT 里的策略。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="7">
+                      <li><strong>重启 QMT。</strong>首次部署或替换脚本后，建议重启两个 QMT，再重新启动策略。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-9.png" alt="高级模式重启 QMT">
+                      <figcaption>重启两个 QMT 后重新启动策略。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="8">
+                      <li><strong>网页端绑定账号。</strong>在 Web 控制台“绑定”页面选择高级模式，并填写普通端和极速交易端 QMT 目录。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-19.png" alt="高级模式网页端账号绑定">
+                      <figcaption>在网页端完成高级模式账号绑定。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="9">
+                      <li><strong>确认部署成功。</strong>网页端应能看到普通端和极速交易端都在线。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-8.png" alt="高级模式部署成功提示">
+                      <figcaption>高级模式部署成功后的状态提示。</figcaption>
+                    </figure>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-20.png" alt="高级模式双端状态">
+                      <figcaption>高级模式普通端和极速交易端状态。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="10">
+                      <li><strong>接口调用测试。</strong>用网页端“接口调试”执行一次调用测试。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-14.png" alt="高级模式接口调用测试">
+                      <figcaption>高级模式接口调用测试。</figcaption>
+                    </figure>
+                    <ol class="guide-list detailed" start="11">
+                      <li><strong>非开盘时间低延迟测试。</strong>可用低延迟测试结果作为链路参考，但真实表现会受 QMT、机器负载和券商环境影响。</li>
+                    </ol>
+                    <figure class="guide-image-card">
+                      <img src="/image/qmt_deploy/image-21.png" alt="高级模式非开盘时间低延迟测试结果">
+                      <figcaption>非开盘时间下的低延迟测试结果。</figcaption>
+                    </figure>
+                      </div>
+                    </section>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>四、写在最后</h3>
+                    <ul class="guide-list detailed">
+                      <li>部署相对复杂一些，但延迟确实是做得比较低。</li>
+                      <li>有不清楚的可以通过首页加入项目交流群。</li>
+                      <li>如有远程帮忙部署指导需求，可以添加微信 <code>13696119612</code>，服务费 100 元/次。</li>
+                      <li>如有其他二次开发需求、整体系统架构方案、多账号交易矩阵、低延迟链路需求，敬请联系。</li>
+                    </ul>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="same_account_market">
                   <div class="guide-section">
-                    <h3>同账号独立市场部署说明</h3>
-                    <div class="guide-recommend">
-                      <strong>适用于同一资金账号拆成上海、深圳两个大 QMT 交易端的场景</strong>
-                      <span>网页端保存一份账号绑定，系统内部按标的代码后缀自动选择 SH 或 SZ 子交易桥。查询和默认账号配置仍保留在主账号绑定上，交易请求按市场分流。</span>
+                    <h3>同账号独立市场</h3>
+                    <p>适合同一资金账号拆成上海、深圳两个 QMT 交易端的场景。网页保存一个主账号，交易请求按证券后缀自动分流。</p>
+                    <div class="guide-kv wide">
+                      <span><code>*.SH</code></span>
+                      <strong>走上海 QMT 子桥。</strong>
+                      <span><code>*.SZ</code></span>
+                      <strong>走深圳 QMT 子桥。</strong>
+                      <span>批量下单</span>
+                      <strong>自动拆成 SH、SZ 两组请求，再合并返回。</strong>
                     </div>
-                    <p>例如 <code>000001.SZ</code> 会发送到深圳交易端，<code>601222.SH</code> 会发送到上海交易端。批量下单里同时包含 SH 和 SZ 标的时，系统会自动拆成两组请求分别发送，再合并返回结果。</p>
                   </div>
 
                   <div class="guide-section">
-                    <h3>一、网页端开启市场路由</h3>
+                    <h3>配置步骤</h3>
                     <ol class="guide-list detailed">
-                      <li><strong>进入绑定页面</strong><span>在账号绑定列表里点击“添加绑定”或对应账号的“编辑”。</span></li>
-                      <li><strong>开启选项</strong><span>在弹窗的“账号模式”下面勾选 <code>开启同账号独立市场路由</code>。如果没有看到，先重启 Web 服务并用 <code>Ctrl + F5</code> 强制刷新浏览器。</span></li>
-                      <li><strong>填写两个 QMT 目录</strong><span>上海交易端目录填写上海大 QMT 的 <code>bin.x64</code>，深圳交易端目录填写深圳大 QMT 的 <code>bin.x64</code>。</span></li>
-                      <li><strong>保存绑定</strong><span><code>bridge_id</code> 可以留空，系统会自动生成类似 <code>acct_xxx_sh</code> 和 <code>acct_xxx_sz</code> 的子桥接 ID。</span></li>
+                      <li>在“绑定”页编辑账号，打开“同账号独立市场路由”。</li>
+                      <li>分别填写上海、深圳 QMT 的 <code>bin.x64</code> 目录。</li>
+                      <li>保存后确认两个目录生成市场身份文件。</li>
+                      <li>上海 QMT 加载 <code>_SH.py</code>，深圳 QMT 加载 <code>_SZ.py</code>。</li>
                     </ol>
-                    <pre class="guide-code">保存后自动写入：
-上海交易端：cfquant_bridge_config_SH.json
-深圳交易端：cfquant_bridge_config_SZ.json</pre>
                   </div>
 
                   <div class="guide-section">
-                    <h3>二、QMT 端选择对应脚本</h3>
+                    <h3>入口文件</h3>
                     <div class="guide-table-wrap">
                       <table>
                         <thead>
                           <tr>
-                            <th>运行模式</th>
-                            <th>上海 QMT</th>
-                            <th>深圳 QMT</th>
+                            <th>模式</th>
+                            <th>上海</th>
+                            <th>深圳</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td>通用 ctypes / 单文件低延迟</td>
-                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_CTYPE_ALL_LOWLAT_SH.py</code></td>
-                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_CTYPE_ALL_LOWLAT_SZ.py</code></td>
+                            <td>通用</td>
+                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT_SH.py</code></td>
+                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT_SZ.py</code></td>
                           </tr>
                           <tr>
-                            <td>高级模式 LTtx 交易端</td>
-                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_TRADE_LOWLAT_SH.py</code></td>
-                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_TRADE_LOWLAT_SZ.py</code></td>
+                            <td>极致</td>
+                            <td><code>CFQUANT_LITE_SH.py</code></td>
+                            <td><code>CFQUANT_LITE_SZ.py</code></td>
                           </tr>
                           <tr>
-                            <td>极致模式</td>
-                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_LITE_SH.py</code></td>
-                            <td><code>qmt_scripts/同账号独立市场/CFQUANT_LITE_SZ.py</code></td>
+                            <td>高级交易端</td>
+                            <td><code>CFQUANT_TRADE_LOWLAT_SH.py</code></td>
+                            <td><code>CFQUANT_TRADE_LOWLAT_SZ.py</code></td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
-                    <p>这些 <code>_SH</code> / <code>_SZ</code> 文件已经内置对应主入口代码，QMT 运行时不会再读取上层目录里的原始入口脚本。手工复制时，只需要复制当前模式对应的市场入口文件。</p>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>三、手工复制文件要求</h3>
-                    <div class="guide-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>市场入口</th>
-                            <th>复制要求</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT_SH.py</code> / <code>CFQUANT_CTYPE_ALL_LOWLAT_SZ.py</code></td>
-                            <td>复制对应市场完整入口；按通用模式要求部署 <code>cfquant</code> 核心包。</td>
-                          </tr>
-                          <tr>
-                            <td><code>CFQUANT_TRADE_LOWLAT_SH.py</code> / <code>CFQUANT_TRADE_LOWLAT_SZ.py</code></td>
-                            <td>复制对应市场完整入口；按高级模式交易端要求部署 <code>cfquant</code> 核心包。</td>
-                          </tr>
-                          <tr>
-                            <td><code>CFQUANT_LITE_SH.py</code> / <code>CFQUANT_LITE_SZ.py</code></td>
-                            <td>复制对应市场完整入口；不需要复制 <code>cfquant</code> 核心包。</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div class="guide-callout">
-                      <strong>推荐方式</strong>
-                      <span>只复制 <code>qmt_scripts/同账号独立市场</code> 中当前模式对应的 SH/SZ 完整入口文件；项目更新后重新复制这两个市场文件。</span>
-                    </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>四、路由规则</h3>
-                    <ul class="guide-list detailed">
-                      <li><strong>完整后缀优先</strong><span><code>.SH</code> 走上海交易端，<code>.SZ</code> 走深圳交易端。</span></li>
-                      <li><strong>无后缀时按代码推断</strong><span><code>5</code>、<code>6</code>、<code>9</code> 开头默认上海；<code>0</code>、<code>1</code>、<code>2</code>、<code>3</code> 开头默认深圳。</span></li>
-                      <li><strong>批量下单自动拆分</strong><span>同一批委托里同时有 SH 和 SZ 时，系统会拆成两组发送到对应交易端。</span></li>
-                      <li><strong>账号数据聚合</strong><span>持仓、委托、成交分别查询 SH/SZ 子桥后合并；资金不做两边相加，取第一个成功子桥结果并保留分市场明细。</span></li>
-                      <li><strong>回调按账号汇总</strong><span>SH/SZ 子桥分别上报交易回调，网页按主账号订阅时会同时接收两个子桥事件。</span></li>
-                    </ul>
-                    <pre class="guide-code">000001.SZ -> 深圳交易端 bridge_id=acct_xxx_sz
-601222.SH -> 上海交易端 bridge_id=acct_xxx_sh</pre>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>五、常见排查</h3>
-                    <div class="guide-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>现象</th>
-                            <th>检查项</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>QMT 日志仍显示 <code>bridge_id=default</code></td>
-                            <td>确认网页已保存市场路由，且对应 <code>bin.x64</code> 目录里生成了 <code>cfquant_bridge_config_SH.json</code> 或 <code>cfquant_bridge_config_SZ.json</code>。</td>
-                          </tr>
-                          <tr>
-                            <td>网页绑定弹窗里看不到开关</td>
-                            <td>确认运行的是新代码，重启 <code>cfquant.bat</code>，浏览器用 <code>Ctrl + F5</code> 强制刷新。</td>
-                          </tr>
-                          <tr>
-                            <td>SH/SZ 其中一个离线</td>
-                            <td>确认上海 QMT 运行 <code>_SH.py</code>，深圳 QMT 运行 <code>_SZ.py</code>，并且两个交易端目录没有填反。</td>
-                          </tr>
-                          <tr>
-                            <td>主桥离线但 SH/SZ 在线</td>
-                            <td>同账号独立市场下这是允许的；主桥可只作为账号路由身份存在，资金、持仓、委托、成交会从 SH/SZ 子桥查询。</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    <pre class="guide-code">正常日志示例：
-cfquant ctypes market route market:SH bridge_id:acct_xxx_sh
-cfquant lowlat market route market:SZ bridge_id:acct_xxx_sz</pre>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="bridge">
                   <div class="guide-section">
                     <h3>多账号通道</h3>
-                    <p>内部通道 ID 是 Web Server 识别 QMT 终端的实现字段。普通用户不需要在网页里选择它；单 QMT、单账号默认使用 <code>default</code>，继续添加账号时服务端会按账号配置自动路由。</p>
-                    <p>如果同时运行多个 QMT，例如一个负责实盘账号、一个负责测试账号，建议在账号配置中填写各自 QMT 核心目录。系统会按目录复用或分配内部通道，并把通用端身份写入各自目录下的 <code>cfquant_bridge_config.json</code>。</p>
-                    <pre class="guide-code"># 示例：第二个 QMT 终端使用 qmt2
-USER_BRIDGE_ID = "qmt2"</pre>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>推荐配置方式</h3>
+                    <p><code>bridge_id</code> 是内部路由标识。普通用户只需要填写账号和 QMT 目录，Web 会按目录复用或分配通道。</p>
                     <div class="guide-table-wrap">
                       <table>
                         <thead>
                           <tr>
                             <th>场景</th>
-                            <th>内部通道</th>
-                            <th>说明</th>
+                            <th>建议</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td>单 QMT、单账号</td>
-                            <td><code>default</code></td>
-                            <td>最简单场景，不需要额外区分终端。</td>
+                            <td>单 QMT 单账号</td>
+                            <td>使用默认通道 <code>default</code>。</td>
                           </tr>
                           <tr>
-                            <td>单 QMT、多账号</td>
-                            <td><code>default</code></td>
-                            <td>多个账号共用默认内部通道，由账号字段区分。</td>
+                            <td>单 QMT 多账号</td>
+                            <td>多个账号可共用同一个 QMT 目录。</td>
                           </tr>
                           <tr>
-                            <td>多 QMT、多账号</td>
-                            <td><code>qmt1</code>、<code>qmt2</code></td>
-                            <td>每个 QMT 使用不同内部通道，每个账号配置到实际登录它的终端。</td>
+                            <td>多 QMT 多账号</td>
+                            <td>每个账号填写实际登录它的 QMT <code>bin.x64</code> 目录。</td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
+                  </div>
+
+                  <div class="guide-section">
+                    <h3>排查要点</h3>
+                    <ul class="guide-list detailed">
+                      <li>QMT 日志里的 <code>bridge_id</code> 要和网页绑定状态一致。</li>
+                      <li>目录填错时，Web 可能把身份文件写到另一个 QMT。</li>
+                      <li>外部程序优先传 <code>account_id</code>，不要手动写死 <code>bridge_id</code>。</li>
+                    </ul>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="account">
                   <div class="guide-section">
                     <h3>账号绑定</h3>
-                    <p>账号绑定是一个完整的运行配置。每个账号保存自己的 QMT 核心目录、首选模式、共享行情源和启用状态；网页和外部程序携带账号后，服务端会自动决定内部通道和实际路由。</p>
-                    <ol class="guide-list detailed">
-                      <li>进入“绑定”页面，在“账号配置”里填写资金账号。</li>
-                      <li>填写 QMT 核心目录并选择通用模式或高级模式；目录可留空，但自动更新不可用。</li>
-                      <li>在“绑定状态”里刷新状态，确认当前账号实际模式在线。</li>
-                      <li>点击验证按钮，检查资金和持仓是否来自预期账号。</li>
-                    </ol>
+                    <p>账号绑定是运行配置的核心。每个账号保存自己的账户类型、QMT 目录、首选模式、启用状态和共享行情源标记。</p>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>字段</th>
+                            <th>说明</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>资金账号</td>
+                            <td>外部请求按它路由，普通和信用账户要区分账户类型。</td>
+                          </tr>
+                          <tr>
+                            <td>QMT 核心目录</td>
+                            <td>填写对应 QMT 的 <code>bin.x64</code>，用于身份文件和核心更新。</td>
+                          </tr>
+                          <tr>
+                            <td>运行模式</td>
+                            <td><code>ctypes</code>、<code>lite</code>、<code>lttx</code> 三选一。</td>
+                          </tr>
+                          <tr>
+                            <td>高级模式第二目录</td>
+                            <td>选择高级模式时必须填写另一个 QMT 的 <code>bin.x64</code>。</td>
+                          </tr>
+                          <tr>
+                            <td>共享行情源</td>
+                            <td>多账号时只选一个稳定账号，避免重复订阅全推行情。</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
                   <div class="guide-section">
-                    <h3>绑定规则</h3>
-                    <div class="guide-callout">
-                      <strong>高级模式不可用时自动回退通用模式</strong>
-                      <span>账号首选高级模式时，系统优先使用 LTtx；如果 LTtx、普通桥或极速交易桥不可用，该账号的查询、行情和交易请求会自动切换到 ctypes 通用桥。高级模式恢复后，后续请求重新优先使用高级模式。</span>
-                    </div>
-                    <p>默认是单账号和单数据源。多账号时，每个账号可以使用不同 QMT 安装目录和不同模式；建议指定一个稳定账号作为共享行情数据源，系统会避免重复订阅。数据源账号掉线或请求失败时，服务端会尝试其他已启用账号作为备用数据源。</p>
+                    <h3>保存后怎么验证</h3>
+                    <ol class="guide-list detailed">
+                      <li>刷新“绑定状态”，看首选模式和实际模式。</li>
+                      <li>点击“验证”，确认资金和持仓来自正确账号。</li>
+                      <li>高级模式离线时会自动回退通用模式，状态里会显示回退原因。</li>
+                    </ol>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="trade">
                   <div class="guide-section">
                     <h3>交易与回调</h3>
-                    <p>交易页把下单、批量下单、撤单、持仓、委托和成交放在同一个工作区。通用模式由 ctypes 单桥自动路由；高级模式下可以分别选择普通 QMT 或极速交易端。</p>
+                    <p>交易页适合做实盘前验证：先查资金和持仓，再用小数量测试下单、撤单和回调。</p>
                     <div class="guide-table-wrap">
                       <table>
                         <thead>
                           <tr>
-                            <th>操作</th>
-                            <th>关键点</th>
+                            <th>能力</th>
+                            <th>说明</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td>提交委托</td>
-                            <td>填写代码、价格、数量，确认文本必须与页面提示完全一致，避免误操作。</td>
+                            <td>单笔下单</td>
+                            <td><code>POST /api/order</code>，对应 <code>order_stock</code>。</td>
                           </tr>
                           <tr>
-                            <td>批量买入</td>
-                            <td>每行一笔委托，格式为 <code>代码,价格,数量</code>，确认文本使用 <code>BATCH 数量</code>。</td>
+                            <td>批量下单</td>
+                            <td><code>POST /api/orders/batch</code>，逐笔提交并合并结果。</td>
                           </tr>
                           <tr>
                             <td>撤单</td>
-                            <td>实时委托表会标记可撤委托，可以选择后批量撤单，也可以双击可撤行触发撤单确认。</td>
+                            <td><code>POST /api/cancel</code>，委托状态仍以 QMT 和回调为准。</td>
+                          </tr>
+                          <tr>
+                            <td>信用查询</td>
+                            <td>支持信用资产、标的、担保品、合约等只读探测。</td>
                           </tr>
                           <tr>
                             <td>回调</td>
-                            <td>委托、成交、下单错误、撤单错误会进入“回调”页，也可以通过 WebSocket 推给外部程序。</td>
+                            <td><code>GET /api/callbacks</code> 或 <code>WS /ws/callbacks</code> 接收委托、成交和错误事件。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -2607,117 +2014,56 @@ USER_BRIDGE_ID = "qmt2"</pre>
                   </div>
 
                   <div class="guide-section">
-                    <h3>实盘操作建议</h3>
-                    <p>实盘前先用小数量验证账号、价格和撤单链路。确认回调能返回后，再把外部程序接入自动交易流程。</p>
-                    <p>如果委托提交后页面没有立即变化，先看“回调”页和“日志”，再刷新“委托”。柜台状态、QMT 本地缓存和网络延迟都可能造成短暂不同步。</p>
+                    <h3>实盘前检查</h3>
+                    <ul class="guide-list detailed">
+                      <li>确认页面当前账号就是要交易的资金账号。</li>
+                      <li>确认下单确认文本、价格、数量和买卖方向。</li>
+                      <li>确认回调页能收到委托或错误事件。</li>
+                      <li>自动化程序不要只看请求返回，还要结合回调或后续查询确认最终状态。</li>
+                    </ul>
                   </div>
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="latency">
                   <div class="guide-section">
-                    <h3>实测延迟参考</h3>
-                    <p>下面数据来自同一台本地机器、同一套 QMT 环境的实际测试，用于帮助判断不同部署方式的大致量级。结果会受券商柜台、QMT 版本、网络、账号权限、行情活跃度、机器负载和桥接脚本版本影响，不能作为固定承诺值。</p>
+                    <h3>延迟参考</h3>
+                    <p>延迟只表示本机程序到 QMT 脚本的链路量级，不代表券商柜台或交易所确认速度。实际结果会受 QMT 版本、券商环境、机器负载和交易时段影响。</p>
                     <div class="guide-callout">
-                      <strong>读表口径</strong>
-                      <span>行情快照是请求/响应式 <code>get_full_tick</code>，不等同于全推行情回调延迟；真实下单撤单的总耗时包含脚本主动等待的 3 秒，重点看下单请求、定位真实委托号和撤单请求三列。</span>
+                      <strong>推荐读法</strong>
+                      <span>普通用户优先看稳定性；低延迟交易再比较极速交易端和 ctypes 交易通道。</span>
                     </div>
                   </div>
 
                   <div class="guide-section">
-                    <h3>非交易时间初测</h3>
-                    <p>测试时间为 <code>2026-08-13 12:57-12:59</code>，处于 A 股午间非连续竞价时段。本轮 ctypes 通用版仍在早期调试状态，交易通道尚未完全稳定。</p>
-                    <div class="guide-table-wrap latency-table">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>测试项</th>
-                            <th>成功率</th>
-                            <th>平均耗时</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>ctypes 普通通道 ping</td>
-                            <td>10/10</td>
-                            <td>958.694 ms</td>
-                          </tr>
-                          <tr>
-                            <td>ctypes 普通通道 status</td>
-                            <td>10/10</td>
-                            <td>880.483 ms</td>
-                          </tr>
-                          <tr>
-                            <td>ctypes 普通通道 full_tick</td>
-                            <td>10/10</td>
-                            <td>2581.678 ms</td>
-                          </tr>
-                          <tr>
-                            <td>ctypes 交易通道 ping</td>
-                            <td>3/5</td>
-                            <td>3796.454 ms</td>
-                          </tr>
-                          <tr>
-                            <td>ctypes 交易通道 status</td>
-                            <td>0/5</td>
-                            <td>超时</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>交易时间稳定版</h3>
-                    <p>测试时间为 <code>2026-08-13 13:50</code> 至 <code>14:06</code>。修复 ctypes 交易查询兼容问题后，普通 QMT、极速交易端和 ctypes 通用版均可稳定返回。</p>
+                    <h3>当前测试量级</h3>
                     <div class="guide-table-wrap latency-table wide">
                       <table>
                         <thead>
                           <tr>
-                            <th>方案</th>
-                            <th>心跳 avg</th>
-                            <th>行情快照 avg</th>
-                            <th>资产查询 avg</th>
-                            <th>持仓查询 avg</th>
-                            <th>委托查询 avg</th>
-                            <th>成交查询 avg</th>
+                            <th>链路</th>
+                            <th>查询量级</th>
+                            <th>下单请求样本</th>
+                            <th>适合场景</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
-                            <td>普通 QMT / LTtx 普通通道</td>
-                            <td>69.936 ms</td>
-                            <td>102.775 ms</td>
-                            <td>255.245 ms</td>
-                            <td>269.079 ms</td>
-                            <td>259.459 ms</td>
-                            <td>252.517 ms</td>
+                            <td>通用 ctypes</td>
+                            <td>约 180-260 ms</td>
+                            <td>约 20 ms</td>
+                            <td>部署简单、功能验证、多账号日常使用。</td>
                           </tr>
                           <tr>
-                            <td>极速交易端 / LTtx 交易通道</td>
-                            <td>2.137 ms</td>
-                            <td>1.344 ms</td>
-                            <td>1.789 ms</td>
-                            <td>2.708 ms</td>
-                            <td>3.585 ms</td>
-                            <td>2.362 ms</td>
+                            <td>高级普通端</td>
+                            <td>约 250 ms</td>
+                            <td>约 176 ms</td>
+                            <td>查询、行情、账号级回调。</td>
                           </tr>
                           <tr>
-                            <td>ctypes 普通通道</td>
-                            <td>39.515 ms</td>
-                            <td>78.952 ms</td>
-                            <td>240.572 ms</td>
-                            <td>239.195 ms</td>
-                            <td>256.987 ms</td>
-                            <td>249.913 ms</td>
-                          </tr>
-                          <tr>
-                            <td>ctypes 交易通道</td>
-                            <td>35.659 ms</td>
-                            <td>42.791 ms</td>
-                            <td>186.919 ms</td>
-                            <td>181.021 ms</td>
-                            <td>182.323 ms</td>
-                            <td>181.959 ms</td>
+                            <td>高级极速交易端</td>
+                            <td>约 1-4 ms</td>
+                            <td>约 1 ms</td>
+                            <td>追求更低本机到 QMT 下单链路。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -2725,61 +2071,11 @@ USER_BRIDGE_ID = "qmt2"</pre>
                   </div>
 
                   <div class="guide-section">
-                    <h3>真实下单撤单样本</h3>
-                    <p>测试时间为 <code>2026-08-13 14:40</code>。参数为 <code>000001.SZ</code> 买入 <code>100</code> 股、限价 <code>11.1</code>，下单后等待 <code>3</code> 秒再撤单。</p>
-                    <div class="guide-table-wrap latency-table wide">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>方案</th>
-                            <th>下单请求</th>
-                            <th>定位真实委托号</th>
-                            <th>撤单请求</th>
-                            <th>撤单后立即回查</th>
-                            <th>总耗时</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>普通 QMT</td>
-                            <td>175.897 ms</td>
-                            <td>326.104 ms</td>
-                            <td>128.918 ms</td>
-                            <td>已撤</td>
-                            <td>4185.284 ms</td>
-                          </tr>
-                          <tr>
-                            <td>极速交易端</td>
-                            <td>1.026 ms</td>
-                            <td>57.016 ms</td>
-                            <td>1.290 ms</td>
-                            <td>已报，未立即确认已撤</td>
-                            <td>3066.115 ms</td>
-                          </tr>
-                          <tr>
-                            <td>ctypes 交易通道</td>
-                            <td>20.147 ms</td>
-                            <td>201.088 ms</td>
-                            <td>24.098 ms</td>
-                            <td>已报，未立即确认已撤</td>
-                            <td>3516.778 ms</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                    <div class="guide-callout">
-                      <strong>撤单请求和状态确认是两个时点</strong>
-                      <span>极速交易端和 ctypes 的撤单请求已经返回，但立即查询时 QMT 委托状态仍显示“已报”。这说明请求返回、柜台处理、QMT 本地委托状态刷新可能不是同步完成，自动化程序应结合委托回调或后续轮询确认最终状态。</span>
-                    </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>为什么交易时间更快</h3>
+                    <h3>注意事项</h3>
                     <ul class="guide-list detailed">
-                      <li>非交易时间或午间休市时，行情源、QMT 本地缓存、柜台连接状态和脚本回调节奏可能进入低活跃或重置状态，首次请求更容易变慢或超时。</li>
-                      <li>交易时间内行情和交易链路持续活跃，连接更热，QMT 返回行情快照和交易查询通常更稳定。</li>
-                      <li>本次非交易时间数据还叠加了 ctypes 早期版本问题；后续在交易时间修复后，ping/status 降到约 <code>40ms</code>，交易查询恢复到约 <code>173-176ms</code>。</li>
-                      <li>极速交易端适合低延迟下单和交易查询；ctypes 通用版部署更简单，但当前交易查询为保证单文件稳定性，会走转发路径，所以查询延迟高于极速交易端。</li>
+                      <li>撤单请求返回和委托状态变成“已撤”不是同一个时点。</li>
+                      <li>午间、收盘后和首次请求通常比交易时段更不稳定。</li>
+                      <li>需要严肃评估时，用自己的券商、账号、机器和目标时间段重新测。</li>
                     </ul>
                   </div>
                 </article>
@@ -2787,10 +2083,10 @@ USER_BRIDGE_ID = "qmt2"</pre>
                 <article class="tutorial-topic" data-guide-panel="api">
                   <div class="guide-section">
                     <h3>外部接口</h3>
-                    <p>“接口”页面提供在线调试。外部程序接入前，建议先在网页里选中同一个接口，填写参数并发送请求，确认返回结构和错误信息符合预期。</p>
-                    <p>启用 API Key 后，HTTP 请求需要携带 <code>X-API-Key</code> 请求头；WebSocket 可以通过查询参数 <code>apikey</code> 传入。</p>
+                    <p>“接口”页就是在线调试台。外部程序接入前，先在这里跑通同一个账号和参数。</p>
                     <pre class="guide-code">curl -H "X-API-Key: your-api-key" ^
-  "http://127.0.0.1:8765/api/account?account_id=2220009880&sections=asset,positions&force=1"</pre>
+  "http://127.0.0.1:8765/api/account?account_id=YOUR_ACCOUNT_ID&sections=asset,positions&force=1"</pre>
+                    <p>启用 API Key 后，HTTP 使用 <code>X-API-Key</code> 请求头；WebSocket 使用 <code>apikey</code> 查询参数。</p>
                   </div>
 
                   <div class="guide-section">
@@ -2804,26 +2100,17 @@ USER_BRIDGE_ID = "qmt2"</pre>
                           </tr>
                         </thead>
                         <tbody>
-                          <tr>
-                            <td><code>GET /api/account</code></td>
-                            <td>查询资金、持仓、委托、成交，使用 <code>sections</code> 控制返回内容。</td>
-                          </tr>
-                          <tr>
-                            <td><code>POST /api/order</code></td>
-                            <td>提交单笔买入或卖出委托。</td>
-                          </tr>
-                          <tr>
-                            <td><code>POST /api/orders/batch</code></td>
-                            <td>一次提交多笔委托，适合外部策略批量执行。</td>
-                          </tr>
-                          <tr>
-                            <td><code>POST /api/cancel</code></td>
-                            <td>按委托编号撤单。</td>
-                          </tr>
-                          <tr>
-                            <td><code>WS /ws/callbacks</code></td>
-                            <td>实时接收委托、成交和错误回调。</td>
-                          </tr>
+                          <tr><td><code>GET /api/account</code></td><td>资金、持仓、委托、成交。</td></tr>
+                          <tr><td><code>POST /api/order</code></td><td>单笔下单。</td></tr>
+                          <tr><td><code>POST /api/orders/batch</code></td><td>批量下单。</td></tr>
+                          <tr><td><code>POST /api/cancel</code></td><td>撤单。</td></tr>
+                          <tr><td><code>POST /api/data/full-tick</code></td><td>实时 Tick。</td></tr>
+                          <tr><td><code>POST /api/data/market</code></td><td>K 线和行情数据。</td></tr>
+                          <tr><td><code>POST /api/data/history/download</code></td><td>历史行情下载。</td></tr>
+                          <tr><td><code>POST /api/data/financial</code></td><td>财务数据读取。</td></tr>
+                          <tr><td><code>GET /api/callbacks</code></td><td>读取交易回调。</td></tr>
+                          <tr><td><code>WS /ws/callbacks</code></td><td>实时交易回调。</td></tr>
+                          <tr><td><code>WS /ws/quotes</code></td><td>实时行情事件。</td></tr>
                         </tbody>
                       </table>
                     </div>
@@ -2833,41 +2120,46 @@ USER_BRIDGE_ID = "qmt2"</pre>
                 <article class="tutorial-topic" data-guide-panel="troubleshooting">
                   <div class="guide-section">
                     <h3>排查问题</h3>
-                    <p>排查时先判断是哪一层断了：网页是否能访问，本地服务是否启动，LTtx 是否在线，QMT 脚本是否在线，账号配置是否正确。</p>
+                    <p>按层排查最快：先确认 Web 能访问，再看本地服务，再看 QMT 脚本，最后看账号和权限。</p>
                     <div class="guide-table-wrap">
                       <table>
                         <thead>
                           <tr>
                             <th>现象</th>
                             <th>优先检查</th>
-                            <th>处理方式</th>
+                            <th>处理</th>
                           </tr>
                         </thead>
                         <tbody>
                           <tr>
                             <td>网页打不开</td>
-                            <td>Web Server 是否启动，端口是否被占用。</td>
-                            <td>重新运行启动脚本，检查控制台日志和端口配置。</td>
+                            <td>Web 端口、启动日志</td>
+                            <td>重启服务，查看 <code>log/cfquant_web_server.stderr.log</code>。</td>
                           </tr>
                           <tr>
-                            <td>LTtx 离线</td>
-                            <td>LTtx 进程是否运行，本地通信端口是否正常。</td>
-                            <td>在“首页”或“状态”页点击启动 LTtx，再刷新状态。</td>
+                            <td>QMT 离线</td>
+                            <td>入口脚本、QMT 登录、<code>bridge_id</code></td>
+                            <td>重启 QMT 入口，确认加载了当前模式对应脚本。</td>
                           </tr>
                           <tr>
-                            <td>普通在线、极速离线</td>
-                            <td><code>CFQUANT_TRADE_LOWLAT.py</code> 是否在 QMT 中加载。</td>
-                            <td>重新加载极速交易桥，确认 <code>bridge_id</code> 与普通桥一致。</td>
+                            <td>高级模式缺交易端</td>
+                            <td>第二个 QMT 目录、<code>CFQUANT_TRADE_LOWLAT.py</code></td>
+                            <td>在绑定页补充极速交易端目录并重新保存。</td>
                           </tr>
                           <tr>
                             <td>查不到账号数据</td>
-                            <td>账号配置是否对应正确 QMT，QMT 是否登录该账号。</td>
-                            <td>在“绑定”页重新保存账号绑定，并用验证功能检查资金和持仓。</td>
+                            <td>账号类型、QMT 登录账号、绑定目录</td>
+                            <td>在绑定页点击验证，确认资金和持仓来自预期账号。</td>
                           </tr>
                           <tr>
                             <td>下单失败</td>
-                            <td>确认文本、交易权限、价格数量、交易通道。</td>
-                            <td>查看日志和回调错误，先用小数量再次验证。</td>
+                            <td>确认文本、价格数量、权限、回调错误</td>
+                            <td>先小数量测试，再查看回调页和 QMT 日志。</td>
+                          </tr>
+                          <tr>
+                            <td>版本或缓存异常</td>
+                            <td>前端版本、浏览器缓存</td>
+                            <td>重启 Web 后用 <code>Ctrl + F5</code> 强制刷新。</td>
                           </tr>
                         </tbody>
                       </table>
@@ -2906,7 +2198,7 @@ USER_BRIDGE_ID = "qmt2"</pre>
         </label>
         <label class="field">
           <span>账号</span>
-          <input id="bindingAccountId" name="account_id" placeholder="2220009880" autocomplete="off">
+          <input id="bindingAccountId" name="account_id" placeholder="请输入资金账号" autocomplete="off">
         </label>
         <label class="field">
           <span>账户类型</span>
@@ -2927,6 +2219,11 @@ USER_BRIDGE_ID = "qmt2"</pre>
             <option value="lite">极致模式（纯 ctypes 自包含）</option>
             <option value="lttx">高级模式（两个 QMT）</option>
           </select>
+        </label>
+        <label id="bindingQmtTradeDirField" class="field wide hidden">
+          <span>高级模式极速交易端 QMT 核心目录</span>
+          <input id="bindingQmtTradeDir" name="qmt_trade_dir" placeholder="D:\国金证券QMT交易端-交易端\bin.x64" autocomplete="off">
+          <small>高级模式必须填写与普通端不同的第二个 QMT <code>bin.x64</code> 目录，用于交易端脚本更新和身份配置。</small>
         </label>
         <div class="market-routing-panel wide">
           <label class="toggle binding-dialog-toggle">
@@ -3015,6 +2312,6 @@ USER_BRIDGE_ID = "qmt2"</pre>
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260903_07"></script>
+  <script src="/app.js?v=web_20260904_09"></script>
 </body>
 </html>

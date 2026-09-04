@@ -25,7 +25,7 @@ Web 服务启动后，第一次访问控制台会显示初始化窗口。需要�
 - QMT 落地链路走 PipeHub，不走高级模式的 LTtx 普通/极速双桥；多账号也通过 PipeHub 通道和请求中的 `account_id` 路由；
 - 适合快速部署、功能验证和不优先追求极限延迟的场景。
 
-本地 Web 服务启动时会先检查并预启动 `LTtx_server.py`，保存通用、极致或高级模式配置时也会补充检查，确保 `cfquant` Python 库自动发现、高级模式切换和旧 LTtx 客户端随时可接入。这个预启动不改变通用模式的请求路由；通用账号的查询、交易和状态探测仍然走 ctypes/PipeHub。Web 重启、项目更新重载和定时重启会保留 LTtx；只有执行 `stop_cfquant.bat` / `停止cfquant.bat` 完整退出时才停止 LTtx。
+本地 Web 服务启动时会先检查并预启动 `LTtx_server.py`，保存通用、极致或高级模式配置时也会补充检查，确保 `cfquant` Python 库自动发现、高级模式切换和旧 LTtx 客户端随时可接入。这个预启动不改变通用模式的请求路由；通用账号的查询、交易和状态探测仍然走 ctypes/PipeHub。Web 重启、项目更新重载和定时重启会保留 LTtx；只有执行 `停止cfquant.bat` 完整退出时才停止 LTtx。
 
 如果 QMT 中仍保留并运行 `CFQUANT.py`、`CFQUANT_TRADE_LOWLAT.py` 等高级模式入口，它们会继续尝试连接 LTtx 并输出 LTtx 相关错误。通用或极致模式排查时应先停止这些旧高级脚本，只保留当前模式对应的 `CFQUANT_CTYPE_ALL_LOWLAT.py` 或 `CFQUANT_LITE.py`。
 

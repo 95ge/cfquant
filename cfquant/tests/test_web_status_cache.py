@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import json
+import time
 from types import SimpleNamespace
 
 import cfquant_web_server as web
@@ -21,6 +23,48 @@ def test_channel_status_monitor_keeps_ctypes_and_lttx_snapshots_separate():
 
     assert monitor.latest("default", mode="ctypes")["normal"]["online"] is True
     assert monitor.latest("default", mode="lttx")["normal"]["online"] is False
+
+
+def test_runtime_version_registry_keeps_newer_lttx_report_for_same_channel(tmp_path):
+    now = time.time()
+    persist_file = tmp_path / "qmt_runtime_versions.json"
+    current = {
+        "bridge_id": "default",
+        "channel_key": "trade",
+        "version": "core_20260904_01",
+        "core_version": "core_20260904_01",
+        "mode": "lttx",
+        "transport": "lttx",
+        "reported_at": now - 5,
+        "reported_at_text": "2026-09-04 10:28:31",
+    }
+    old = {
+        "bridge_id": "default",
+        "channel_key": "trade",
+        "version": "core_20260903_04",
+        "core_version": "core_20260903_04",
+        "mode": "ctypes",
+        "transport": "pipe",
+        "reported_at": now - 86400,
+        "reported_at_text": "2026-09-03 16:07:18",
+    }
+    persist_file.write_text(
+        json.dumps({"reports": [current, old]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    registry = web.RuntimeVersionRegistry(ttl_seconds=120, persist_file=str(persist_file))
+    registry.update_from_event({
+        "event": "cfquant.runtime",
+        "bridge_id": "default",
+        "data": old,
+        "meta": {"source": "qmt_runtime_marker"},
+    })
+
+    report = registry.latest("default")
+    trade_report = next(item for item in report["reports"] if item["channel_key"] == "trade")
+    assert trade_report["mode"] == "lttx"
+    assert trade_report["version"] == "core_20260904_01"
 
 
 def test_account_route_status_reads_monitor_cache_without_sync_probe(monkeypatch):
@@ -72,6 +116,73 @@ def test_account_route_status_reads_monitor_cache_without_sync_probe(monkeypatch
     assert ("default", "lttx") in calls
 
 
+def test_lttx_routes_xttrader_queries_to_trade_channel():
+    assert web.route_channel_for_account(
+        "8885060548",
+        requested_channel="normal",
+        default="normal",
+        mode="lttx",
+        action="xttrader.query_stock_positions",
+    ) == "trade"
+    assert web.route_channel_for_account(
+        "8885060548",
+        requested_channel="trade",
+        default="trade",
+        mode="lttx",
+        action="xtdata.download_history_data2",
+    ) == "normal"
+
+
+def test_account_request_forces_trade_channel_for_lttx_queries(monkeypatch):
+    calls = []
+
+    class FakeClients(object):
+        def request(self, bridge_id, channel, action, params=None, **kwargs):
+            calls.append({
+                "bridge_id": bridge_id,
+                "channel": channel,
+                "action": action,
+                "mode": kwargs.get("mode"),
+            })
+            return {"ok": True}
+
+    fake_config = SimpleNamespace(account_config=lambda **kwargs: {"account_key": "default:STOCK:8885060548"})
+    monkeypatch.setattr(web, "WEB_CONFIG", fake_config)
+    monkeypatch.setattr(web, "CLIENTS", FakeClients())
+    monkeypatch.setattr(web, "resolve_bridge_id", lambda **kwargs: kwargs.get("bridge_id") or "default")
+    monkeypatch.setattr(web, "resolve_market_route_for_request", lambda **kwargs: (kwargs["bridge_id"], {}))
+    monkeypatch.setattr(web, "resolve_account_mode", lambda *args, **kwargs: "lttx")
+
+    route = web.account_request(
+        "8885060548",
+        "default",
+        "normal",
+        "xttrader.query_stock_orders",
+        {"account": {"account_id": "8885060548", "account_type": "STOCK"}},
+        default_channel="normal",
+        account_type="STOCK",
+        account_key="default:STOCK:8885060548",
+    )
+
+    assert route["channel"] == "trade"
+    assert calls == [{
+        "bridge_id": "default",
+        "channel": "trade",
+        "action": "xttrader.query_stock_orders",
+        "mode": "lttx",
+    }]
+
+
+def test_account_cache_channel_uses_trade_for_lttx_account_sections():
+    assert web.account_cache_channel_for_sections(
+        "8885060548",
+        requested_channel="normal",
+        default="normal",
+        mode="lttx",
+        sections=["asset", "positions"],
+    ) == "trade"
+
+
 def test_account_data_cache_prewarm_tracks_configured_accounts_separately(monkeypatch):
     cache = web.AccountDataCache(interval=5, background_timeout=2)
     stale_key = ("old", "normal", "old:STOCK:000001", "000001", "STOCK")
@@ -88,6 +199,7 @@ def test_account_data_cache_prewarm_tracks_configured_accounts_separately(monkey
                 "account_type": "STOCK",
                 "bridge_id": "default",
                 "enabled": True,
+                "mode": "ctypes",
             },
         },
     )
@@ -105,6 +217,36 @@ def test_account_data_cache_prewarm_tracks_configured_accounts_separately(monkey
     assert cache._prewarm_subscriptions[key] == {"asset", "positions"}
     assert stale_key not in cache._prewarm_subscriptions
     assert cache._subscriptions[page_key] == {"orders"}
+
+
+def test_account_data_cache_prewarm_uses_trade_for_lttx_accounts(monkeypatch):
+    cache = web.AccountDataCache(interval=5, background_timeout=2)
+    monkeypatch.setattr(
+        web,
+        "enabled_account_configs",
+        lambda: {
+            "default:STOCK:8885060548": {
+                "account_key": "default:STOCK:8885060548",
+                "account_id": "8885060548",
+                "account_type": "STOCK",
+                "bridge_id": "default",
+                "enabled": True,
+                "mode": "lttx",
+            },
+        },
+    )
+    monkeypatch.setattr(web, "bridge_config", lambda bridge_id: {"name": bridge_id})
+    monkeypatch.setattr(web, "account_market_route_entries", lambda **kwargs: ({}, []))
+
+    result = cache.prime_configured_accounts(sections=["asset", "positions"])
+    key = ("default", "trade", "default:STOCK:8885060548", "8885060548", "STOCK")
+
+    assert result == {
+        "account_count": 1,
+        "subscription_count": 1,
+        "sections": ["asset", "positions"],
+    }
+    assert cache._prewarm_subscriptions[key] == {"asset", "positions"}
 
 
 def test_account_data_cache_uses_short_background_timeout(monkeypatch):

@@ -71,11 +71,10 @@ from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
-from cfquant.version import __version__ as CORE_VERSION
+from cfquant.version import WEB_VERSION, __version__ as CORE_VERSION
 from tx import txl
 
 
-WEB_VERSION = "web_20260903_07"
 BASE_DIR = os.path.abspath(os.environ.get("CFQUANT_BASE_DIR") or _SOURCE_ROOT)
 CORE_VERSION_PATH = os.path.join(BASE_DIR, "cfquant", "version.py")
 STATIC_DIR = os.environ.get("CFQUANT_WEB_STATIC_DIR") or os.path.join(BASE_DIR, "web_dashboard")
@@ -315,7 +314,7 @@ try:
         sys.stderr = _LOG_FP
 except Exception:
     _LOG_FP = None
-DEFAULT_ACCOUNT_ID = os.environ.get("CFQUANT_ACCOUNT_ID", "2220009880")
+DEFAULT_ACCOUNT_ID = os.environ.get("CFQUANT_ACCOUNT_ID", "").strip()
 WEB_CONFIG_FILE = os.environ.get("CFQUANT_WEB_CONFIG_FILE") or os.path.join(
     RUNTIME_CONFIG_DIR,
     "cfquant_web_config.json",
@@ -410,6 +409,15 @@ ACCOUNT_ACTIONS = {
     "positions": "xttrader.query_stock_positions",
     "orders": "xttrader.query_stock_orders",
     "trades": "xttrader.query_stock_trades",
+}
+NORMAL_QMT_ACTIONS = {
+    "xtdata.subscribe_quote",
+    "xtdata.subscribe_whole_quote",
+    "xtdata.unsubscribe_quote",
+    "xtdata.download_history_data",
+    "xtdata.download_history_data2",
+    "xtdata.download_financial_data",
+    "xtdata.download_financial_data2",
 }
 MARKET_ACCOUNT_ROW_SECTIONS = {"positions", "orders", "trades"}
 CREDIT_ACTIONS = {
@@ -1213,6 +1221,34 @@ class WebRuntimeConfig(object):
             value = (self._data.get("account_configs") or {}).get(account_key)
             return json.loads(json.dumps(value, ensure_ascii=False)) if value else None
 
+    def _runtime_trade_qmt_dir(self, bridge_id):
+        registry = globals().get("RUNTIME_VERSIONS")
+        if registry is None:
+            return ""
+        bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+        try:
+            report = registry.latest(bridge_id)
+        except Exception:
+            return ""
+        rows = report.get("reports") if isinstance(report, dict) else []
+        if not isinstance(rows, list):
+            return ""
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            channel_key = str(row.get("channel_key") or "").strip().lower()
+            runtime_mode = str(row.get("runtime_mode") or row.get("bridge") or "").strip().lower()
+            if channel_key != "trade" and "txtradebridge" not in runtime_mode:
+                continue
+            core_dir = normalize_optional_path(row.get("core_dir") or "")
+            if not core_dir:
+                version_file = normalize_optional_path(row.get("version_file") or "")
+                core_dir = os.path.dirname(version_file) if version_file else ""
+            if os.path.basename(core_dir).lower() == "cfquant":
+                core_dir = os.path.dirname(core_dir)
+            return normalize_optional_path(core_dir)
+        return ""
+
     def _find_account_configs_locked(self, account_id=None, account_type=None, bridge_id=None):
         account_id = str(account_id or "").strip()
         account_type = normalize_account_type(account_type) if account_type not in (None, "") else ""
@@ -1337,6 +1373,14 @@ class WebRuntimeConfig(object):
             provider_key = str(self._data.get("data_provider_account_key") or "").strip()
             initialized = bool(self._data.get("initialized"))
         default_config = configs.get(default_account_key) or {}
+        default_mode = normalize_transport_mode(
+            default_config.get("mode") or self.transport_mode()
+        )
+        default_qmt_trade_dir = default_config.get("qmt_trade_dir") or ""
+        if not default_qmt_trade_dir and default_mode == "lttx":
+            default_qmt_trade_dir = self._runtime_trade_qmt_dir(
+                default_config.get("bridge_id") or DEFAULT_BRIDGE_ID
+            )
         return {
             "initialized": initialized,
             "setup_required": not initialized,
@@ -1344,9 +1388,8 @@ class WebRuntimeConfig(object):
             "default_account_type": default_account_type,
             "default_account_key": default_account_key,
             "default_qmt_dir": default_config.get("qmt_dir") or "",
-            "default_mode": normalize_transport_mode(
-                default_config.get("mode") or self.transport_mode()
-            ),
+            "default_qmt_trade_dir": default_qmt_trade_dir,
+            "default_mode": default_mode,
             "data_provider_account_id": provider,
             "data_provider_account_type": provider_type,
             "data_provider_account_key": provider_key,
@@ -1360,6 +1403,7 @@ class WebRuntimeConfig(object):
         bridge_id=None,
         display_name=None,
         qmt_dir=None,
+        qmt_trade_dir=None,
         mode="ctypes",
         data_provider=False,
         enabled=True,
@@ -1372,7 +1416,17 @@ class WebRuntimeConfig(object):
         account_type = normalize_account_type(account_type)
         display_name = None if display_name is None else str(display_name).strip()
         qmt_dir = normalize_optional_path(qmt_dir)
+        qmt_trade_dir = normalize_optional_path(qmt_trade_dir)
         mode = normalize_transport_mode(mode)
+        if mode == "lttx":
+            if not qmt_dir:
+                raise ValueError("高级模式需要填写普通 QMT 核心目录")
+            if not qmt_trade_dir:
+                raise ValueError("高级模式需要填写极速交易端 QMT 核心目录")
+            if os.path.normcase(os.path.normpath(qmt_dir)) == os.path.normcase(os.path.normpath(qmt_trade_dir)):
+                raise ValueError("高级模式的两个 QMT 核心目录必须不同")
+        else:
+            qmt_trade_dir = ""
         now = time.time()
         with self._lock:
             configs = self._data.setdefault("account_configs", {})
@@ -1439,6 +1493,7 @@ class WebRuntimeConfig(object):
                 "display_name": display_name,
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
+                "qmt_trade_dir": qmt_trade_dir,
                 "mode": mode,
                 "data_provider": bool(data_provider),
                 "enabled": bool(enabled),
@@ -1463,6 +1518,8 @@ class WebRuntimeConfig(object):
                 "account_type": account_type,
                 "bridge_id": bridge_id,
                 "display_name": display_name,
+                "qmt_dir": qmt_dir,
+                "qmt_trade_dir": qmt_trade_dir,
                 "market_routing_enabled": market_routing_enabled,
                 "market_bridges": market_routes if market_routing_enabled else {},
                 "updated_at": now,
@@ -2130,6 +2187,13 @@ class WebRuntimeConfig(object):
                     "account_type": account_type,
                     "bridge_id": bridge_id,
                     "display_name": str(item.get("display_name") or item.get("account_name") or ""),
+                    "qmt_dir": normalize_optional_path(item.get("qmt_dir") or item.get("python_dir")),
+                    "qmt_trade_dir": normalize_optional_path(
+                        item.get("qmt_trade_dir")
+                        or item.get("trade_qmt_dir")
+                        or item.get("advanced_qmt_dir")
+                        or item.get("qmt_trade_core_dir")
+                    ),
                     "market_routing_enabled": parse_config_bool(item.get("market_routing_enabled"), False),
                     "market_bridges": normalize_market_bridge_config(
                         item.get("market_bridges") or {},
@@ -2164,6 +2228,12 @@ class WebRuntimeConfig(object):
             account_type = normalize_account_type(item.get("account_type") or "STOCK")
             bridge_id = normalize_bridge_id(item.get("bridge_id") or DEFAULT_BRIDGE_ID)
             qmt_dir = normalize_optional_path(item.get("qmt_dir") or item.get("python_dir"))
+            qmt_trade_dir = normalize_optional_path(
+                item.get("qmt_trade_dir")
+                or item.get("trade_qmt_dir")
+                or item.get("advanced_qmt_dir")
+                or item.get("qmt_trade_core_dir")
+            )
             account_key = str(item.get("account_key") or "").strip() or account_key_for(account_id, account_type, bridge_id)
             result[account_key] = {
                 "account_key": account_key,
@@ -2173,6 +2243,7 @@ class WebRuntimeConfig(object):
                 "display_name": str(item.get("display_name") or item.get("account_name") or ""),
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
+                "qmt_trade_dir": qmt_trade_dir,
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
                 "data_provider": bool(item.get("data_provider")),
                 "enabled": item.get("enabled", True) is not False,
@@ -2613,9 +2684,44 @@ def default_runtime_client_mode():
     return "ctypes"
 
 
-def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None, account_type=None, bridge_id=None, account_key=None):
+def forced_channel_for_action(action, mode=None):
+    action = str(action or "")
+    mode = normalize_transport_mode(mode or default_runtime_client_mode())
+    if action in NORMAL_QMT_ACTIONS:
+        return "normal"
+    if mode == "lttx" and action.startswith("xttrader."):
+        return "trade"
+    return None
+
+
+def account_cache_channel_for_sections(
+    account_id,
+    requested_channel=None,
+    default="normal",
+    mode=None,
+    account_type=None,
+    bridge_id=None,
+    account_key=None,
+    sections=None,
+):
+    sections = sections or []
+    mode = normalize_transport_mode(mode or resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key))
+    for section in sections:
+        action = ACCOUNT_ACTIONS.get(str(section or "").strip().lower())
+        forced = forced_channel_for_action(action, mode=mode)
+        if forced:
+            return forced
+    if is_ctypes_transport_mode(mode):
+        return normalize_channel(default, "normal")
+    return normalize_channel(requested_channel, default)
+
+
+def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None, account_type=None, bridge_id=None, account_key=None, action=None):
     default = normalize_channel(default, "normal")
     mode = normalize_transport_mode(mode or resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key))
+    forced = forced_channel_for_action(action, mode=mode)
+    if forced:
+        return forced
     if is_ctypes_transport_mode(mode):
         return default
     return normalize_channel(requested_channel, default)
@@ -2852,6 +2958,7 @@ def account_request(
             account_type=account_type,
             bridge_id=bridge_id,
             account_key=resolved_account_key,
+            action=action,
         )
         started = time.perf_counter()
         try:
@@ -3045,12 +3152,14 @@ def data_provider_candidates():
         if config.get("enabled", True) and account_key not in [row.get("account_key") for row in result]:
             result.append(config)
     if not result:
-        result.append({
-            "account_key": account_key_for(configured_default_account_id(), configured_default_account_type(), DEFAULT_BRIDGE_ID),
-            "account_id": configured_default_account_id(),
-            "account_type": configured_default_account_type(),
-            "bridge_id": DEFAULT_BRIDGE_ID,
-        })
+        default_account_id = configured_default_account_id()
+        if default_account_id:
+            result.append({
+                "account_key": account_key_for(default_account_id, configured_default_account_type(), DEFAULT_BRIDGE_ID),
+                "account_id": default_account_id,
+                "account_type": configured_default_account_type(),
+                "bridge_id": DEFAULT_BRIDGE_ID,
+            })
     return result
 
 
@@ -3697,18 +3806,10 @@ def _external_default_channel(action):
         "xttrader.cancel_order_stock_sysid_async",
     }:
         return "trade"
-    if action in {
-        "xtdata.subscribe_quote",
-        "xtdata.subscribe_whole_quote",
-        "xtdata.unsubscribe_quote",
-        "xtdata.download_history_data",
-        "xtdata.download_history_data2",
-        "xtdata.download_financial_data",
-        "xtdata.download_financial_data2",
-    }:
+    if action in NORMAL_QMT_ACTIONS:
         return "normal"
     if action.startswith("xttrader."):
-        return "normal"
+        return "trade"
     return "trade"
 
 
@@ -4172,6 +4273,11 @@ class RuntimeVersionRegistry(object):
         report["bridge_id"] = bridge_id
         report["channel_key"] = channel_key
         with self._lock:
+            existing = self._reports.get((bridge_id, channel_key))
+            if existing and self._report_timestamp(report) <= self._report_timestamp(existing):
+                # Marker files remain on disk after QMT restarts. Do not let
+                # an older process report replace the active channel report.
+                return dict(existing)
             self._reports[(bridge_id, channel_key)] = dict(report)
             self._persist_locked()
         return dict(report)
@@ -4195,7 +4301,9 @@ class RuntimeVersionRegistry(object):
                     item["bridge_id"] = bridge_id
                     item["channel_key"] = channel_key
                     item["loaded_from_disk"] = True
-                    self._reports[(bridge_id, channel_key)] = item
+                    existing = self._reports.get((bridge_id, channel_key))
+                    if not existing or self._report_timestamp(item) > self._report_timestamp(existing):
+                        self._reports[(bridge_id, channel_key)] = item
         except Exception as e:
             safe_print("qmt runtime version persistence load failed: %s" % e)
 
@@ -4331,6 +4439,13 @@ class RuntimeVersionRegistry(object):
                 except Exception:
                     continue
         return 0.0
+
+    @staticmethod
+    def _report_timestamp(report):
+        try:
+            return float((report or {}).get("reported_at") or 0)
+        except Exception:
+            return 0.0
 
 
 RUNTIME_VERSIONS = RuntimeVersionRegistry()
@@ -5560,17 +5675,25 @@ class CfquantUpdater(object):
         bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
         bridge = bridge_config(bridge_id)
         python_dir = normalize_optional_path(bridge.get("python_dir"))
+        _bridge, target_specs, missing_trade = self._configured_target_specs(bridge_id)
+        qmt_trade_dir = next(
+            (spec.get("python_dir") for spec in target_specs if spec.get("role") == "trade"),
+            "",
+        )
         repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
         ref = str(ref or DEFAULT_UPDATE_REF).strip()
         result = {
             "bridge_id": bridge_id,
             "bridge_name": bridge.get("name") or bridge_id,
             "python_dir": python_dir,
+            "qmt_trade_dir": qmt_trade_dir,
+            "advanced_mode": bool(qmt_trade_dir or missing_trade),
             "configured": bool(python_dir),
             "ready": False,
             "errors": [],
             "warnings": [],
             "targets": {},
+            "secondary_targets": [],
             "backups": [],
             "current_version": "",
             "runtime_version": "",
@@ -5631,6 +5754,45 @@ class CfquantUpdater(object):
                 result["entry_file"] = target["entry_file"]
             else:
                 result["warnings"].append("未找到 QMT 入口脚本 CFQUANT.py，核心包更新仍可继续")
+            for spec in target_specs[1:]:
+                secondary_dir = normalize_optional_path(spec.get("python_dir"))
+                secondary_status = {
+                    "role": spec.get("role") or "trade",
+                    "python_dir": secondary_dir,
+                    "account_keys": list(spec.get("account_keys") or []),
+                    "ready": False,
+                    "errors": [],
+                }
+                if not secondary_dir:
+                    secondary_status["errors"].append("高级模式未设置极速交易端 QMT 核心目录")
+                else:
+                    secondary_target = self._target_paths(secondary_dir)
+                    secondary_status.update({
+                        "configured_dir": secondary_target.get("configured_dir"),
+                        "resolved_python_dir": secondary_target.get("python_dir"),
+                        "project_dir": secondary_target.get("project_dir"),
+                        "current_core": secondary_target.get("current_core"),
+                    })
+                    if not os.path.isdir(secondary_target["python_dir"]):
+                        secondary_status["errors"].append(
+                            "极速交易端 QMT 核心目录不存在: %s" % secondary_target["python_dir"]
+                        )
+                    if not os.path.isdir(secondary_target["project_dir"]):
+                        secondary_status["errors"].append(
+                            "极速交易端项目目录不存在: %s" % secondary_target["project_dir"]
+                        )
+                    if not os.path.isdir(secondary_target["current_core"]):
+                        secondary_status["errors"].append(
+                            "极速交易端核心代码目录不存在: %s" % secondary_target["current_core"]
+                        )
+                secondary_status["ready"] = not secondary_status["errors"]
+                result["secondary_targets"].append(secondary_status)
+                result["errors"].extend(secondary_status["errors"])
+            for item in missing_trade:
+                result["errors"].append(
+                    "高级模式账号 %s 未设置极速交易端 QMT 核心目录"
+                    % (item.get("account_id") or item.get("account_key") or "unknown")
+                )
             result["ready"] = not result["errors"]
         except Exception as e:
             result["errors"].append(str(e))
@@ -5699,7 +5861,7 @@ class CfquantUpdater(object):
                     "size": len(content),
                 })
 
-    def rollback(self, bridge_id, backup_name=None):
+    def _rollback_legacy(self, bridge_id, backup_name=None):
         with self._lock:
             target = self._require_ready_target(bridge_id)
             backups = self._list_backups(target["backup_dir"])
@@ -5734,6 +5896,101 @@ class CfquantUpdater(object):
                 "removed_backups": removed,
                 "current_version": self._read_version(current),
                 "backups": self._list_backups(target["backup_dir"]),
+                "qmt_restart_required": qmt_restart_required_info(
+                    reason="QMT 核心包已回滚",
+                    entry_info=entry_info,
+                ),
+                "entry_manual_update": entry_info,
+            }
+
+    def rollback(self, bridge_id, backup_name=None):
+        with self._lock:
+            targets = self._require_ready_targets(bridge_id)
+            selected_name = os.path.basename(str(backup_name)) if backup_name else ""
+            primary_backups = self._list_backups(targets[0]["backup_dir"])
+            if not primary_backups:
+                raise RuntimeError("没有可回滚的备份: %s" % targets[0]["python_dir"])
+            primary_selected = next(
+                (row for row in primary_backups if row["name"] == selected_name),
+                None,
+            ) if selected_name else primary_backups[0]
+            if primary_selected is None:
+                raise RuntimeError("backup not found: %s" % selected_name)
+            primary_index = primary_backups.index(primary_selected)
+            selected_rows = []
+            for index, target in enumerate(targets):
+                backups = self._list_backups(target["backup_dir"])
+                if not backups:
+                    raise RuntimeError("没有可回滚的备份: %s" % target["python_dir"])
+                if index == 0:
+                    selected = primary_selected
+                elif selected_name:
+                    selected = next(
+                        (row for row in backups if row["name"] == selected_name),
+                        None,
+                    )
+                    if selected is None and primary_index < len(backups):
+                        selected = backups[primary_index]
+                else:
+                    selected = backups[0]
+                if selected is None:
+                    raise RuntimeError(
+                        "backup not found for %s: %s" % (target["python_dir"], selected_name)
+                    )
+                selected_rows.append((target, selected))
+            rollback_rows = []
+            try:
+                for target, selected in selected_rows:
+                    current = target["current_core"]
+                    rollback_backup = self._backup_current_core(target, label="rollback")
+                    try:
+                        if os.path.isdir(current):
+                            self._remove_tree(current)
+                        shutil.copytree(
+                            selected["path"],
+                            current,
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                        )
+                        rollback_rows.append((target, selected, rollback_backup))
+                    except Exception:
+                        self._restore_backup_dir(rollback_backup, current)
+                        raise
+            except Exception:
+                for target, _selected, rollback_backup in reversed(rollback_rows):
+                    self._restore_backup_dir(rollback_backup, target["current_core"])
+                raise
+            primary_target, primary_selected, primary_rollback = rollback_rows[0]
+            target_results = [
+                {
+                    "qmt_role": target.get("qmt_role") or "normal",
+                    "account_keys": list(target.get("account_keys") or []),
+                    "python_dir": target["python_dir"],
+                    "configured_dir": target.get("configured_dir"),
+                    "restored_backup": selected,
+                    "rollback_backup": rollback_backup,
+                    "current_version": self._read_version(target["current_core"]),
+                    "backups": self._list_backups(target["backup_dir"]),
+                }
+                for target, selected, rollback_backup in rollback_rows
+            ]
+            removed = []
+            for target, _selected, _rollback_backup in rollback_rows:
+                removed.extend(self._prune_backups(target["backup_dir"]))
+            entry_info = qmt_entry_manual_update_info(
+                reason="QMT 核心包回滚未检测入口脚本变更"
+            )
+            return {
+                "bridge_id": primary_target["bridge_id"],
+                "python_dir": primary_target["python_dir"],
+                "qmt_trade_dir": (
+                    targets[1].get("configured_dir") if len(targets) > 1 else ""
+                ),
+                "restored_backup": primary_selected,
+                "rollback_backup": primary_rollback,
+                "removed_backups": removed,
+                "current_version": self._read_version(primary_target["current_core"]),
+                "backups": self._list_backups(primary_target["backup_dir"]),
+                "target_results": target_results,
                 "qmt_restart_required": qmt_restart_required_info(
                     reason="QMT 核心包已回滚",
                     entry_info=entry_info,
@@ -5805,7 +6062,99 @@ class CfquantUpdater(object):
             return child_python
         return configured_dir
 
+    def _path_key(self, path):
+        path = normalize_optional_path(path)
+        if not path:
+            return ""
+        return os.path.normcase(os.path.abspath(os.path.normpath(path)))
+
+    def _configured_target_specs(self, bridge_id):
+        bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+        bridge = bridge_config(bridge_id)
+        primary_dir = normalize_optional_path(bridge.get("python_dir"))
+        specs = [{
+            "role": "normal",
+            "python_dir": primary_dir,
+            "account_keys": [],
+        }]
+        missing_trade = []
+        configs = self.config.account_configs() if self.config is not None else {}
+        seen_dirs = {self._path_key(primary_dir)} if primary_dir else set()
+        for account_key, row in configs.items():
+            if not isinstance(row, dict):
+                continue
+            if normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID) != bridge_id:
+                continue
+            if row.get("enabled", True) is False:
+                continue
+            if normalize_transport_mode(row.get("mode") or "ctypes") != "lttx":
+                continue
+            trade_dir = normalize_optional_path(
+                row.get("qmt_trade_dir")
+                or row.get("trade_qmt_dir")
+                or row.get("advanced_qmt_dir")
+                or row.get("qmt_trade_core_dir")
+            )
+            if not trade_dir:
+                missing_trade.append({
+                    "account_key": str(account_key or ""),
+                    "account_id": str(row.get("account_id") or ""),
+                })
+                continue
+            trade_key = self._path_key(trade_dir)
+            if trade_key in seen_dirs:
+                if trade_key == self._path_key(primary_dir):
+                    missing_trade.append({
+                        "account_key": str(account_key or ""),
+                        "account_id": str(row.get("account_id") or ""),
+                        "reason": "trade directory is the same as normal directory",
+                    })
+                else:
+                    for spec in specs:
+                        if self._path_key(spec.get("python_dir")) == trade_key:
+                            spec.setdefault("account_keys", []).append(str(account_key or ""))
+                            break
+                continue
+            seen_dirs.add(trade_key)
+            specs.append({
+                "role": "trade",
+                "python_dir": trade_dir,
+                "account_keys": [str(account_key or "")],
+                "account_id": str(row.get("account_id") or ""),
+            })
+        return bridge, specs, missing_trade
+
+    def _require_ready_targets(self, bridge_id):
+        bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+        _bridge, specs, missing_trade = self._configured_target_specs(bridge_id)
+        if not specs or not specs[0].get("python_dir"):
+            raise RuntimeError("桥接端未设置 QMT 核心目录")
+        if missing_trade:
+            accounts = ", ".join(
+                item.get("account_id") or item.get("account_key") or "unknown"
+                for item in missing_trade
+            )
+            raise RuntimeError("高级模式需要设置独立的极速交易端 QMT 核心目录: %s" % accounts)
+        targets = []
+        for spec in specs:
+            target = self._target_paths(spec.get("python_dir"))
+            target["bridge_id"] = bridge_id
+            target["qmt_role"] = spec.get("role") or "normal"
+            target["account_keys"] = list(spec.get("account_keys") or [])
+            target["account_id"] = spec.get("account_id") or ""
+            if not os.path.isdir(target["python_dir"]):
+                raise RuntimeError("QMT 核心目录不存在: %s" % target["python_dir"])
+            if not os.path.isdir(target["project_dir"]):
+                raise RuntimeError("项目目录不存在: %s" % target["project_dir"])
+            if not os.path.isdir(target["current_core"]):
+                raise RuntimeError("核心代码目录不存在: %s" % target["current_core"])
+            targets.append(target)
+        return targets
+
     def _require_ready_target(self, bridge_id):
+        return self._require_ready_targets(bridge_id)[0]
+
+    def _require_ready_target_legacy(self, bridge_id):
         bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
         bridge = bridge_config(bridge_id)
         python_dir = normalize_optional_path(bridge.get("python_dir"))
@@ -5821,7 +6170,7 @@ class CfquantUpdater(object):
             raise RuntimeError("核心代码目录不存在: %s" % target["current_core"])
         return target
 
-    def _install_source(self, bridge_id, source_dir, meta):
+    def _install_source_legacy(self, bridge_id, source_dir, meta):
         target = self._require_ready_target(bridge_id)
         source_core = self._find_source_core(source_dir)
         if not source_core:
@@ -5865,6 +6214,80 @@ class CfquantUpdater(object):
                 self._remove_tree(temp_new)
             self._restore_backup_dir(backup, current)
             raise
+
+    def _install_source(self, bridge_id, source_dir, meta):
+        targets = self._require_ready_targets(bridge_id)
+        source_core = self._find_source_core(source_dir)
+        if not source_core:
+            raise RuntimeError("源码中未找到 cfquant 核心目录")
+        self._validate_core_dir(source_core)
+        entry_info = self._entry_update_info(source_dir)
+        target_results = []
+        completed = []
+        try:
+            for target in targets:
+                os.makedirs(target["backup_dir"], exist_ok=True)
+                backup = self._backup_current_core(target)
+                temp_new = os.path.join(
+                    target["updates_dir"],
+                    "new_core_%s_%s" % (self._timestamp(), target.get("qmt_role") or "normal"),
+                )
+                current = target["current_core"]
+                try:
+                    self._copy_core(source_core, temp_new)
+                    if os.path.isdir(current):
+                        self._remove_tree(current)
+                    os.replace(temp_new, current)
+                    self._write_install_meta(target, meta, source_core, backup)
+                    removed = self._prune_backups(target["backup_dir"])
+                    result = {
+                        "qmt_role": target.get("qmt_role") or "normal",
+                        "account_keys": list(target.get("account_keys") or []),
+                        "bridge_id": target["bridge_id"],
+                        "layout": target.get("layout"),
+                        "python_dir": target["python_dir"],
+                        "configured_dir": target.get("configured_dir"),
+                        "updated": True,
+                        "source": meta,
+                        "source_core": source_core,
+                        "backup": backup,
+                        "removed_backups": removed,
+                        "current_version": self._read_version(current),
+                        "backups": self._list_backups(target["backup_dir"]),
+                    }
+                    target_results.append(result)
+                    completed.append((target, backup))
+                except Exception:
+                    self._remove_tree(temp_new)
+                    self._restore_backup_dir(backup, current)
+                    raise
+        except Exception:
+            for target, backup in reversed(completed):
+                self._restore_backup_dir(backup, target["current_core"])
+            raise
+        primary = target_results[0]
+        return {
+            "bridge_id": primary["bridge_id"],
+            "layout": primary.get("layout"),
+            "python_dir": primary["python_dir"],
+            "qmt_trade_dir": (
+                targets[1].get("configured_dir") if len(targets) > 1 else ""
+            ),
+            "updated": True,
+            "updated_targets": [row.get("python_dir") for row in target_results],
+            "target_results": target_results,
+            "source": meta,
+            "source_core": source_core,
+            "backup": primary["backup"],
+            "removed_backups": primary["removed_backups"],
+            "current_version": primary["current_version"],
+            "backups": primary["backups"],
+            "qmt_restart_required": qmt_restart_required_info(
+                reason="QMT 核心包已更新",
+                entry_info=entry_info,
+            ),
+            "entry_manual_update": entry_info,
+        }
 
     def _build_version_status(self, target, current_version, last_update, repo_url, ref, runtime_report=None, file_version=""):
         current = self._current_version_info(target, current_version, last_update, runtime_report=runtime_report, file_version=file_version)
@@ -6975,13 +7398,16 @@ UPDATER = CfquantUpdater(WEB_CONFIG)
 PROJECT_UPDATER = CfquantProjectUpdater()
 
 
-def write_qmt_bridge_identity(row):
+def _write_qmt_bridge_identity_for_dir(row, qmt_dir_override=None, qmt_role="normal"):
     row = row or {}
     bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
-    qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
+    qmt_dir = normalize_optional_path(
+        qmt_dir_override if qmt_dir_override is not None else row.get("qmt_dir") or row.get("python_dir")
+    )
     account_type = normalize_account_type(row.get("account_type") or "STOCK")
     result = {
         "written": False,
+        "qmt_role": qmt_role,
         "bridge_id": bridge_id,
         "account_id": str(row.get("account_id") or ""),
         "account_type": account_type,
@@ -7039,6 +7465,8 @@ def write_qmt_bridge_identity(row):
             "account_key": str(row.get("account_key") or account_key_for(row.get("account_id"), account_type, bridge_id)),
             "accounts": accounts,
             "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
+            "qmt_role": qmt_role,
+            "qmt_trade_dir": normalize_optional_path(row.get("qmt_trade_dir")),
             "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),
             "channels": channels,
             "runtime_dir": RUNTIME_DIR,
@@ -7068,6 +7496,26 @@ def write_qmt_bridge_identity(row):
         result["error"] = str(e)
         safe_print("cfquant QMT bridge identity write failed bridge_id=%s qmt_dir=%s error=%s" % (bridge_id, qmt_dir, e))
         return result
+
+
+def write_qmt_bridge_identity(row):
+    row = row or {}
+    result = _write_qmt_bridge_identity_for_dir(row)
+    if normalize_transport_mode(row.get("mode") or "ctypes") != "lttx":
+        return result
+    trade_dir = normalize_optional_path(
+        row.get("qmt_trade_dir")
+        or row.get("trade_qmt_dir")
+        or row.get("advanced_qmt_dir")
+        or row.get("qmt_trade_core_dir")
+    )
+    trade_result = _write_qmt_bridge_identity_for_dir(row, trade_dir, qmt_role="trade")
+    result["trade_identity"] = trade_result
+    if trade_result.get("error") and not result.get("error"):
+        result["error"] = "极速交易端 QMT 身份配置写入失败: %s" % trade_result.get("error")
+    elif trade_result.get("warning") and not result.get("warning"):
+        result["warning"] = "极速交易端 QMT 身份配置未写入: %s" % trade_result.get("warning")
+    return result
 
 
 def write_qmt_market_bridge_identities(row):
@@ -7544,7 +7992,7 @@ def stop_lttx_server(full_exit=False):
         return {
             "stopped": False,
             "blocked": True,
-            "reason": "LTtx 会在 Web 重启和定时重启期间保持运行；请使用 stop_cfquant.bat 完整退出时再停止 LTtx。",
+            "reason": "LTtx 会在 Web 重启和定时重启期间保持运行；请使用 停止cfquant.bat 完整退出时再停止 LTtx。",
             "status": before,
         }
     if not before["running"]:
@@ -8051,6 +8499,7 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 account_key=account_key,
             )
             data = route["result"]
+            refresh_latency_ms = round((time.perf_counter() - started) * 1000, 2)
             result[section] = {
                 "ok": True,
                 "data": data,
@@ -8058,13 +8507,19 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 "channel": route["channel"],
                 "fallback": route["fallback"],
                 "fallback_reason": route["fallback_reason"],
-                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                # latency_ms is retained for compatibility. It measures the
+                # background QMT refresh, not a later cache-hit HTTP response.
+                "latency_ms": refresh_latency_ms,
+                "refresh_latency_ms": refresh_latency_ms,
+                "transport_attempts": route.get("attempts") or [],
             }
         except Exception as e:
+            refresh_latency_ms = round((time.perf_counter() - started) * 1000, 2)
             result[section] = {
                 "ok": False,
                 "error": str(e),
-                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                "latency_ms": refresh_latency_ms,
+                "refresh_latency_ms": refresh_latency_ms,
             }
     return result
 
@@ -8167,6 +8622,7 @@ def merge_market_account_section(section, child_results, started_at):
         "market_counts": market_counts,
         "latency_ms": round(max(max_latency, (time.perf_counter() - started_at) * 1000), 2),
     }
+    base["refresh_latency_ms"] = base["latency_ms"]
     if section == "asset":
         chosen = None
         for item in successes:
@@ -8429,6 +8885,15 @@ class AccountDataCache(object):
         )
         account_key = account_key or (base_config or {}).get("account_key") or account_key_for(account_id, account_type, base_bridge_id)
         sections = [section for section in sections if section in ACCOUNT_ACTIONS]
+        channel = account_cache_channel_for_sections(
+            account_id,
+            requested_channel=channel,
+            default=channel,
+            account_type=account_type,
+            bridge_id=base_bridge_id,
+            account_key=account_key,
+            sections=sections,
+        )
         if not entries or not sections:
             return self.get(
                 base_bridge_id,
@@ -8583,7 +9048,19 @@ class AccountDataCache(object):
                     if route_bridge_id:
                         targets.append((route_bridge_id, "trade"))
             if not targets:
-                targets.append((bridge_id, "normal"))
+                targets.append((
+                    bridge_id,
+                    account_cache_channel_for_sections(
+                        account_id,
+                        requested_channel="normal",
+                        default="normal",
+                        mode=config.get("mode") or None,
+                        account_type=account_type,
+                        bridge_id=bridge_id,
+                        account_key=account_key,
+                        sections=sections,
+                    ),
+                ))
 
             account_count += 1
             for target_bridge_id, channel in targets:
@@ -8684,6 +9161,7 @@ class AccountDataCache(object):
                 ages.append(age)
                 row = dict(entry)
                 row["cached"] = True
+                row.setdefault("refresh_latency_ms", row.get("latency_ms"))
                 row["cache_age_ms"] = round(age * 1000, 2)
                 result[section] = row
         if ages:
@@ -9004,6 +9482,12 @@ def save_account_runtime_config(body):
     bridge_id = body.get("bridge_id")
     display_name = body.get("display_name") if "display_name" in body else body.get("account_name")
     qmt_dir = body.get("qmt_dir") or body.get("python_dir")
+    qmt_trade_dir = (
+        body.get("qmt_trade_dir")
+        or body.get("trade_qmt_dir")
+        or body.get("advanced_qmt_dir")
+        or body.get("qmt_trade_core_dir")
+    )
     mode = body.get("mode") or body.get("transport_mode") or "ctypes"
     market_bridges = body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None
     market_routing_enabled = body.get("market_routing_enabled") if "market_routing_enabled" in body else None
@@ -9013,6 +9497,7 @@ def save_account_runtime_config(body):
         bridge_id=bridge_id,
         display_name=display_name,
         qmt_dir=qmt_dir,
+        qmt_trade_dir=qmt_trade_dir,
         mode=mode,
         data_provider=parse_bool(body.get("data_provider")),
         enabled=body.get("enabled", True) is not False,
@@ -9115,6 +9600,12 @@ def initialize_web_setup(body):
         bridge_id=body.get("bridge_id"),
         display_name=display_name,
         qmt_dir=body.get("qmt_dir") or body.get("python_dir"),
+        qmt_trade_dir=(
+            body.get("qmt_trade_dir")
+            or body.get("trade_qmt_dir")
+            or body.get("advanced_qmt_dir")
+            or body.get("qmt_trade_core_dir")
+        ),
         mode=body.get("mode") or "ctypes",
         data_provider=True,
         enabled=True,
@@ -9796,18 +10287,18 @@ def _read_text_file(path):
         return ""
 
 
-def _extract_latest_changelog(readme_text):
+def _extract_latest_changelog(changelog_text):
     result = {
         "version": "",
         "body": "",
         "items": [],
     }
-    if not readme_text:
+    if not changelog_text:
         return result
-    match = re.search(r"(?m)^##\s+版本日志\s*$", readme_text)
+    match = re.search(r"(?m)^##\s+版本日志\s*$", changelog_text)
     if not match:
         return result
-    section = readme_text[match.end():]
+    section = changelog_text[match.end():]
     next_section = re.search(r"(?m)^##\s+", section)
     if next_section:
         section = section[:next_section.start()]
@@ -9826,7 +10317,9 @@ def _extract_latest_changelog(readme_text):
         if text.startswith("- "):
             text = text[2:].strip()
         items.append(text)
-    result["version"] = heading.group(1).strip()
+    heading_text = heading.group(1).strip()
+    version_match = re.search(r"\b(?:core|web)_\d{8}(?:[_-]\d+)?\b", heading_text)
+    result["version"] = version_match.group(0) if version_match else heading_text
     result["body"] = body.strip()
     result["items"] = items[:12]
     return result
@@ -9846,12 +10339,21 @@ def _parse_github_repo_name(repo_url):
     raise ValueError("无法识别 GitHub 仓库地址: %s" % repo_url)
 
 
-def _github_raw_readme_url(repo_url, ref):
+def _github_raw_file_url(repo_url, ref, path):
     owner, repo = _parse_github_repo_name(repo_url)
     owner_q = urllib.parse.quote(owner, safe="")
     repo_q = urllib.parse.quote(repo, safe="")
     ref_q = urllib.parse.quote(str(ref or "main").strip() or "main", safe="/")
-    return "https://raw.githubusercontent.com/%s/%s/%s/README.md" % (owner_q, repo_q, ref_q)
+    path_q = "/".join(urllib.parse.quote(part, safe="") for part in str(path or "").replace("\\", "/").split("/") if part)
+    return "https://raw.githubusercontent.com/%s/%s/%s/%s" % (owner_q, repo_q, ref_q, path_q)
+
+
+def _github_raw_readme_url(repo_url, ref):
+    return _github_raw_file_url(repo_url, ref, "README.md")
+
+
+def _github_raw_changelog_url(repo_url, ref):
+    return _github_raw_file_url(repo_url, ref, "docs/版本日志.md")
 
 
 def _version_sort_key(version):
@@ -9879,13 +10381,17 @@ def _compare_project_versions(current_version, remote_version):
 
 
 def _local_project_version_info():
-    readme_path = os.path.join(BASE_DIR, "README.md")
-    changelog = _extract_latest_changelog(_read_text_file(readme_path))
+    changelog_path = os.path.join(BASE_DIR, "docs", "版本日志.md")
+    changelog_text = _read_text_file(changelog_path)
+    if not changelog_text:
+        changelog_path = os.path.join(BASE_DIR, "README.md")
+        changelog_text = _read_text_file(changelog_path)
+    changelog = _extract_latest_changelog(changelog_text)
     core_info = current_core_version_info()
     version = core_info["version"]
     return {
         "version": version,
-        "readme_version": changelog.get("version") or "",
+        "changelog_version": changelog.get("version") or "",
         "source": core_info["source"],
         "version_path": core_info["path"],
         "file_version": core_info["file_version"],
@@ -9893,8 +10399,8 @@ def _local_project_version_info():
         "import_stale": core_info["import_stale"],
         "checked_at": core_info["checked_at"],
         "checked_at_text": core_info["checked_at_text"],
-        "readme_path": readme_path,
-        "matches_readme": (changelog.get("version") or "") == version if changelog.get("version") else None,
+        "changelog_path": changelog_path,
+        "matches_changelog": (changelog.get("version") or "") == version if changelog.get("version") else None,
         "changelog": changelog,
     }
 
@@ -9917,7 +10423,7 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
         "official_site_url": DEFAULT_OFFICIAL_SITE_URL,
         "ref": ref,
         "site_url": site_url,
-        "readme_url": "",
+        "changelog_url": "",
         "version": "",
         "core_version": "",
         "web_version": "",
@@ -9961,22 +10467,33 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
         if not repo_url:
             result["error"] = "官网不可用且未配置 GitHub 仓库: %s" % (result.get("fallback_error") or "")
             return result
-        try:
-            result["readme_url"] = _github_raw_readme_url(repo_url, ref)
-            request = urllib.request.Request(
-                result["readme_url"],
-                headers={"User-Agent": "cfquant-web/%s" % current_core_version()},
-            )
-            with urllib.request.urlopen(request, timeout=UPDATE_REMOTE_TIMEOUT_SECONDS) as response:
-                raw = response.read(512 * 1024)
-            text = raw.decode("utf-8", errors="replace")
-            result["changelog"] = _extract_latest_changelog(text)
-            result["version"] = result["changelog"].get("version") or ""
-            result["source"] = "github"
-            if not result["version"]:
-                result["error"] = "远端 README 未解析到版本日志"
-        except Exception as e:
-            result["error"] = str(e) or repr(e)
+        errors = []
+        for path, url_factory in (
+            ("docs/版本日志.md", _github_raw_changelog_url),
+            ("README.md", _github_raw_readme_url),
+        ):
+            try:
+                url = url_factory(repo_url, ref)
+                request = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "cfquant-web/%s" % current_core_version()},
+                )
+                with urllib.request.urlopen(request, timeout=UPDATE_REMOTE_TIMEOUT_SECONDS) as response:
+                    raw = response.read(512 * 1024)
+                text = raw.decode("utf-8", errors="replace")
+                changelog = _extract_latest_changelog(text)
+                if not changelog.get("version"):
+                    errors.append("%s 未解析到版本日志" % path)
+                    continue
+                result["changelog_url"] = url
+                result["changelog"] = changelog
+                result["version"] = changelog.get("version") or ""
+                result["source"] = "github"
+                break
+            except Exception as e:
+                errors.append("%s: %s" % (path, str(e) or repr(e)))
+        if not result["version"]:
+            result["error"] = "远端未解析到版本日志：%s" % "; ".join(errors)
     with _PROJECT_VERSION_LOCK:
         _PROJECT_VERSION_CACHE[cache_key] = dict(result)
     return result
@@ -11184,6 +11701,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     ),
                 }))
             elif parsed.path == "/api/account":
+                account_request_started = time.perf_counter()
                 account_id = (query.get("account_id") or [configured_default_account_id()])[0]
                 account_type = normalize_account_type((query.get("account_type") or [configured_default_account_type()])[0])
                 account_key = str((query.get("account_key") or [""])[0] or "").strip()
@@ -11203,7 +11721,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     default=ACCOUNT_QUERY_TIMEOUT_SECONDS,
                     maximum=max(ACCOUNT_QUERY_TIMEOUT_SECONDS, 180.0),
                 )
-                self._write_json(ok(ACCOUNT_CACHE.get_market_routed(
+                account_result = ACCOUNT_CACHE.get_market_routed(
                     bridge_id,
                     channel,
                     account_id,
@@ -11213,7 +11731,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     account_type=account_type,
                     account_key=account_key,
                     timeout=timeout,
-                )))
+                )
+                cache_meta = account_result.setdefault("cache", {})
+                cache_meta["response_latency_ms"] = round(
+                    (time.perf_counter() - account_request_started) * 1000,
+                    2,
+                )
+                self._write_json(ok(account_result))
             else:
                 self._write_json(fail("not found", 404), status=404)
         except Exception as e:

@@ -22,7 +22,22 @@ cd D:\cfquant
 pip install -e .
 ```
 
-安装后会提供两个命令行入口：
+安装后可直接启动本地控制台：
+
+```powershell
+cfquant --help
+cfquant --host 127.0.0.1 --port 8765 --open-browser
+```
+
+使用 `--home D:\cfquant-data` 可固定配置、SQLite 数据库、日志和运行状态目录。pip 安装后，QMT 加载脚本位于当前 Python 环境的 `site-packages/qmt_scripts/` 目录，可用命令查看、打开或导出：
+
+```powershell
+cfquant qmt-scripts
+cfquant qmt-scripts --open
+cfquant qmt-scripts --output D:\QMT\cfquant
+```
+
+兼容入口仍可使用：
 
 ```powershell
 cfquant-web
