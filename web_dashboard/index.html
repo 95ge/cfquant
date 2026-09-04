@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260904_09">
+  <link rel="stylesheet" href="/styles.css?v=web_20260904_10">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -1439,7 +1439,7 @@
                   <div class="guide-section">
                     <h3>快速开始</h3>
                     <ol class="guide-list detailed">
-                      <li><strong>启动服务。</strong>运行 <code>启动cfquant.bat</code>，或执行 <code>cfquant --open-browser</code>。</li>
+                      <li><strong>启动服务。</strong>运行 <code>start_cfquant.bat</code>，或执行 <code>cfquant --open-browser</code>。</li>
                       <li><strong>完成初始化。</strong>填写资金账号、账户类型、QMT <code>bin.x64</code> 目录和运行模式。</li>
                       <li><strong>部署 QMT。</strong>按“QMT 部署教程”复制核心包和入口脚本。</li>
                       <li><strong>启动脚本。</strong>通用模式启动一个入口；高级模式分别启动普通端和极速交易端。</li>
@@ -1535,7 +1535,7 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                     <div class="deploy-primer-grid">
                       <div>
                         <strong>1. 先启动本地服务</strong>
-                        <span>通过 <code>启动cfquant.bat</code> 或 <code>cfquant --open-browser</code> 打开 Web 控制台，默认地址是 <code>http://127.0.0.1:8765/</code>。</span>
+                        <span>通过 <code>start_cfquant.bat</code> 或 <code>cfquant --open-browser</code> 打开 Web 控制台，默认地址是 <code>http://127.0.0.1:8765/</code>。</span>
                       </div>
                       <div>
                         <strong>2. 再准备 QMT 环境</strong>
@@ -2312,6 +2312,6 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260904_09"></script>
+  <script src="/app.js?v=web_20260904_10"></script>
 </body>
 </html>

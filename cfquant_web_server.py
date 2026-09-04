@@ -7992,7 +7992,7 @@ def stop_lttx_server(full_exit=False):
         return {
             "stopped": False,
             "blocked": True,
-            "reason": "LTtx 会在 Web 重启和定时重启期间保持运行；请使用 停止cfquant.bat 完整退出时再停止 LTtx。",
+            "reason": "LTtx 会在 Web 重启和定时重启期间保持运行；请使用 stop_cfquant.bat 完整退出时再停止 LTtx。",
             "status": before,
         }
     if not before["running"]:

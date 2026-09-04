@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260904_09';
+const FRONTEND_VERSION = 'web_20260904_10';
 
 const state = {
   accountId: '',
@@ -6851,7 +6851,7 @@ function renderLttxStatus(data) {
   } else if (!data) {
     runtime.textContent = 'LTtx 状态未知';
   } else {
-    runtime.textContent = `LTtx 未运行，cfquant Python 库自动发现不可用；可通过网页或 cfquant\\启动cfquant.bat 启动。`;
+    runtime.textContent = `LTtx 未运行，cfquant Python 库自动发现不可用；可通过网页或 cfquant\\start_cfquant.bat 启动。`;
   }
 }
 

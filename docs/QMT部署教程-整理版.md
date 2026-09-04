@@ -32,7 +32,7 @@
 cfquant --open-browser
 
 # 源码部署
-启动cfquant.bat
+start_cfquant.bat
 ```
 
 服务启动后，打开本地 Web 控制台：
