@@ -130,7 +130,12 @@ class NormalQmtBridge(TxTradeBridge):
             try:
                 raw = self.tx.Q.get()
                 if raw is None:
-                    break
+                    # None 是"唤醒信号"而不是"退出信号": 让循环回到 `while self.running`
+                    # 去做退出判断。原来的 break 会在**非关闭**场景下永久杀死接收线程 ——
+                    # PipeTxClient.close() 里的 Q.put_nowait(None) 一旦在 bridge.running
+                    # 仍为 True 时触发, 普通桥就变成"running=True 但再也收不到请求",
+                    # PipeHub 侧随即摘掉 normal 通道, 而交易桥(对 None 用 continue)不受影响。
+                    continue
                 self._handle_raw_from_thread(raw)
             except Exception as e:
                 if self.running:
