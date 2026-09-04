@@ -72,7 +72,8 @@ runtime/cli-qmt-export/
 .pytest_cache/
 .mypy_cache/
 
-# Official website source is versioned; runtime data and local release payloads stay out of Git.
+# Official website source is local/internal only and must not be published to GitHub.
+official_site/
 official_site/data/
 official_site/uploads/
 official_site/temp/
