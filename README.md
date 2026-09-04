@@ -44,7 +44,7 @@
    python -m pip install -r requirements.txt
    ```
 
-3. 运行 `启动cfquant.bat`。
+3. 运行 `start_cfquant.bat`。
 
 启动后打开 <http://127.0.0.1:8765/>，按网页中的“新手初始化向导”完成账号、模式和 QMT 目录配置。然后在 QMT 中加载对应的入口脚本，回到网页验证资金、持仓、委托和行情。
 
@@ -65,7 +65,7 @@ PyPI 适合外部 Python 策略只安装 `cfquant` 库，或者临时体验命�
 python -m pip install -U cfquant
 ```
 
-安装完成后可以启动本地 Web 控制台：
+After installation, you can start the local Web Console:
 
 ```powershell
 cfquant --open-browser
@@ -133,16 +133,16 @@ print(tick)
 
 `cfquant` 默认使用 `transport=auto`，通常不需要手动配置通信通道。完整导入方式、路由规则和特殊部署方式见[外部 Python 接入](docs/外部Python接入.md)。
 
-## Web 控制台
+## Web Console
 
-Web 控制台提供账号绑定、资金持仓、委托成交、下单撤单、行情订阅、接口调试、部署教程和更新管理。
+The Web Console provides account binding, cash and positions, order fills, order placement and cancellation, market subscriptions, API debugging, deployment guides, and update management.
 
-常用脚本：
+Common scripts:
 
 ```text
-启动cfquant.bat        启动
-停止cfquant.bat        停止
-重启cfquant.bat        重启
+start_cfquant.bat       Start
+stop_cfquant.bat        Stop
+restart_cfquant.bat     Restart
 ```
 
 ## 文档
@@ -161,7 +161,7 @@ Web 控制台提供账号绑定、资金持仓、委托成交、下单撤单、�
 | 日志、更新和回滚 | [运维与更新](docs/运维与更新.md) |
 | 版本变化 | [版本日志](docs/版本日志.md) |
 
-更详细的图文教程也可以直接在 Web 控制台的“教程”页面查看。
+More detailed tutorials are also available on the Web Console "Tutorials" page.
 
 ## Star History
 

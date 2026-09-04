@@ -109,7 +109,7 @@ QMT 侧需要两个入口：
 
 ```powershell
 cd D:\cfquant
-启动cfquant.bat
+start_cfquant.bat
 ```
 
 打开 Web 控制台：
