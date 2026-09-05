@@ -10,6 +10,8 @@ _client_accounts = {}
 def _account_type(account_type):
     value = str(account_type or "STOCK").strip().upper()
     mapping = {
+        "1": "FUTURE",
+        "FUTURE_ACCOUNT": "FUTURE",
         "2": "STOCK",
         "SECURITY": "STOCK",
         "SECURITY_ACCOUNT": "STOCK",
@@ -17,6 +19,13 @@ def _account_type(account_type):
         "3": "CREDIT",
         "CREDIT_ACCOUNT": "CREDIT",
         "MARGIN": "CREDIT",
+        "5": "FUTURE_OPTION",
+        "FUTURE_OPTION_ACCOUNT": "FUTURE_OPTION",
+        "FUTUREOPTION": "FUTURE_OPTION",
+        "6": "STOCK_OPTION",
+        "STOCK_OPTION_ACCOUNT": "STOCK_OPTION",
+        "STOCKOPTION": "STOCK_OPTION",
+        "OPTION": "STOCK_OPTION",
     }
     return mapping.get(value, value or "STOCK")
 

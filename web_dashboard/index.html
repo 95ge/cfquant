@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260904_11">
+  <link rel="stylesheet" href="/styles.css?v=web_20260905_13">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -162,21 +162,24 @@
               <select id="setupAccountType" name="account_type">
                 <option value="STOCK">普通证券账户</option>
                 <option value="CREDIT">信用账户</option>
+                <option value="FUTURE">期货账户</option>
+                <option value="FUTURE_OPTION">期货期权账户</option>
+                <option value="STOCK_OPTION">股票期权账户</option>
               </select>
-              <small>信用账户选择信用类型</small>
+              <small>按 QMT 账户类别选择，期货和期权账户需在 QMT 侧具备对应权限</small>
             </label>
           </div>
         </section>
         <section class="setup-section">
           <div class="setup-section-head">
             <strong>QMT 连接</strong>
-            <span>目录建议填写 <code>bin.x64</code></span>
+            <span>填写安装目录或 <code>bin.x64</code></span>
           </div>
           <div class="setup-fields-grid">
             <label class="field wide">
-              <span>普通端 QMT 核心目录</span>
-              <input id="setupQmtDir" name="qmt_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端\bin.x64">
-              <small>用于桥接和后续更新</small>
+              <span>普通端 QMT 安装目录或核心目录</span>
+              <input id="setupQmtDir" name="qmt_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64">
+              <small>保存后会自动将 cfquant 核心包复制到对应的 bin.x64\cfquant</small>
             </label>
             <label class="field wide">
               <span>运行模式</span>
@@ -187,9 +190,9 @@
               </select>
             </label>
             <label id="setupQmtTradeDirField" class="field wide hidden">
-              <span>极速交易端 QMT 核心目录</span>
-              <input id="setupQmtTradeDir" name="qmt_trade_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端\bin.x64">
-              <small>高级模式需填写另一个 QMT 目录</small>
+              <span>极速交易端 QMT 安装目录或核心目录</span>
+              <input id="setupQmtTradeDir" name="qmt_trade_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64">
+              <small>高级模式需填写另一个 QMT，保存后同样自动复制核心包</small>
             </label>
           </div>
         </section>
@@ -457,9 +460,25 @@
                 <button class="trade-tab" type="button" data-side="sell">卖出</button>
               </div>
               <input name="side" type="hidden" value="buy">
+              <label id="creditOrderActionField" class="field wide hidden">
+                <span>信用业务</span>
+                <select name="credit_action"></select>
+              </label>
+              <label id="derivativeOrderActionField" class="field wide hidden">
+                <span>交易业务</span>
+                <select name="order_action"></select>
+              </label>
               <label class="field">
                 <span>代码</span>
                 <input name="stock_code" placeholder="000001.SZ" autocomplete="off">
+              </label>
+              <label class="field">
+                <span>报价类型</span>
+                <select name="price_type">
+                  <option value="11">FIX_PRICE 11</option>
+                  <option value="5">LATEST_PRICE 5</option>
+                  <option value="12">PRTP_MARKET 12</option>
+                </select>
               </label>
               <label class="field">
                 <span>价格</span>
@@ -483,6 +502,22 @@
               <span id="batchOrderHint" class="metric-note"></span>
             </div>
             <form id="batchOrderForm" class="form-grid">
+              <label id="batchCreditOrderActionField" class="field wide hidden">
+                <span>默认信用业务</span>
+                <select name="credit_action"></select>
+              </label>
+              <label id="batchDerivativeOrderActionField" class="field wide hidden">
+                <span>默认交易业务</span>
+                <select name="order_action"></select>
+              </label>
+              <label class="field wide">
+                <span>默认报价类型</span>
+                <select name="price_type">
+                  <option value="11">FIX_PRICE 11</option>
+                  <option value="5">LATEST_PRICE 5</option>
+                  <option value="12">PRTP_MARKET 12</option>
+                </select>
+              </label>
               <label class="field wide">
                 <span>委托列表</span>
                 <textarea name="orders_text" class="code-textarea" placeholder="000001.SZ,10.000,100&#10;600000.SH,8.500,200"></textarea>
@@ -590,6 +625,21 @@
               </div>
               <div id="bindingPageNotice" class="binding-page-notice hidden" role="status" aria-live="polite"></div>
             </div>
+          </div>
+
+          <div class="panel span-12 view-panel view-bindings binding-script-panel binding-script-panel-hidden">
+            <div class="panel-head bindings-head">
+              <div class="panel-title-stack">
+                <h2>QMT 内部代码</h2>
+                <span id="bindingQmtScriptSummary" class="metric-note">保存绑定后按当前模式显示</span>
+              </div>
+              <div class="panel-actions">
+                <button id="refreshBindingQmtScriptBtn" type="button">刷新代码</button>
+                <button id="copyBindingQmtScriptBtn" type="button">复制当前代码</button>
+              </div>
+            </div>
+            <div id="bindingQmtScriptGuide" class="binding-script-guide"></div>
+            <div id="bindingQmtScriptList" class="binding-script-list"></div>
           </div>
 
           <div class="panel span-12 view-panel view-bindings bindings-panel">
@@ -1189,7 +1239,7 @@
                       <div class="onboarding-modal-head">
                         <div>
                           <strong id="onboardingWizardTitle">新手初始化向导</strong>
-                          <span>只保留启动必需项。</span>
+                          <span id="onboardingWizardSubtitle">只保留启动必需项。</span>
                         </div>
                         <button id="closeOnboardingBtn" type="button" aria-label="关闭新手初始化向导">关闭</button>
                       </div>
@@ -1198,7 +1248,7 @@
                         <button type="button" data-onboarding-step="config"><span>2</span><strong>账号</strong></button>
                         <button type="button" data-onboarding-step="deploy"><span>3</span><strong>脚本</strong></button>
                         <button type="button" data-onboarding-step="bridge"><span>4</span><strong>通道</strong></button>
-                        <button type="button" data-onboarding-step="data"><span>5</span><strong>数据</strong></button>
+                        <button type="button" data-onboarding-step="data"><span>5</span><strong>接口</strong></button>
                       </div>
 
                       <section class="onboarding-panel onboarding-panel-intro active" data-onboarding-panel="intro">
@@ -1252,6 +1302,9 @@
                             <select id="onboardingAccountType">
                               <option value="STOCK">普通证券账户</option>
                               <option value="CREDIT">信用账户</option>
+                              <option value="FUTURE">期货账户</option>
+                              <option value="FUTURE_OPTION">期货期权账户</option>
+                              <option value="STOCK_OPTION">股票期权账户</option>
                             </select>
                           </label>
                           <label class="field">
@@ -1264,14 +1317,14 @@
                             <small>首次建议通用模式；高级模式会要求第二个 QMT 目录。</small>
                           </label>
                           <label class="field wide">
-                            <span>QMT 核心目录</span>
-                            <input id="onboardingQmtDir" autocomplete="off" placeholder="D:\国金证券QMT交易端\bin.x64">
-                            <small>通常是 QMT 安装目录下的 <code>bin.x64</code>。</small>
+                            <span>QMT 安装目录或核心目录</span>
+                            <input id="onboardingQmtDir" autocomplete="off" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64">
+                            <small>保存后系统会自动复制核心包到 <code>bin.x64\cfquant</code>。</small>
                           </label>
                           <label id="onboardingQmtTradeDirField" class="field wide hidden">
-                            <span>第二个 QMT 核心目录</span>
-                            <input id="onboardingQmtTradeDir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端\bin.x64">
-                            <small>仅高级模式必填，且不能和上面的目录相同。</small>
+                            <span>第二个 QMT 安装目录或核心目录</span>
+                            <input id="onboardingQmtTradeDir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64">
+                            <small>仅高级模式必填，保存后同样自动复制核心包。</small>
                           </label>
                           <label class="toggle wide">
                             <input id="onboardingDataProvider" type="checkbox" checked>
@@ -1279,6 +1332,7 @@
                           </label>
                         </div>
                         <div class="onboarding-actions">
+                          <button id="onboardingBackConfigBtn" class="onboarding-back-step" type="button">返回上一步</button>
                           <button id="onboardingUseCurrentBtn" type="button">读取当前配置</button>
                           <button id="onboardingSaveConfigBtn" class="primary" type="submit">保存账号配置</button>
                           <span id="onboardingConfigStatus" class="metric-note"></span>
@@ -1291,40 +1345,59 @@
                           <span>按清单复制文件，再在 QMT 里加载。</span>
                         </div>
                         <div id="onboardingDeployPaths" class="onboarding-deploy-list"></div>
-                        <div id="onboardingDeployNotice" class="guide-callout">
-                          <strong>通用模式</strong>
-                          <span>只加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。</span>
-                        </div>
-                        <div class="onboarding-actions">
-                          <button id="onboardingCopyDeployBtn" type="button">复制部署清单</button>
-                          <button id="onboardingGoBridgeBtn" class="primary" type="button">我已部署，开始检测</button>
+                          <div id="onboardingDeployNotice" class="guide-callout">
+                            <strong>通用模式</strong>
+                            <span>只加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。</span>
+                          </div>
+                          <div id="onboardingQmtScriptGuide" class="binding-script-guide"></div>
+                          <div id="onboardingQmtScriptSummary" class="metric-note"></div>
+                          <div id="onboardingQmtScriptList" class="binding-script-list"></div>
+                           <div class="onboarding-actions">
+                             <button id="onboardingBackDeployBtn" class="onboarding-back-step" type="button">返回上一步</button>
+                             <button id="onboardingCopyDeployBtn" type="button">复制部署清单</button>
+                            <button id="onboardingCopyQmtScriptBtn" type="button">复制 QMT 代码</button>
+                            <button id="onboardingGoBridgeBtn" class="primary" type="button">我已部署，开始检测</button>
                           <span id="onboardingDeployStatus" class="metric-note"></span>
                         </div>
                       </section>
 
                       <section class="onboarding-panel" data-onboarding-panel="bridge">
                         <div class="onboarding-panel-head">
-                          <strong>检测通道</strong>
-                          <span>启动 QMT 脚本后刷新状态。</span>
+                          <strong>重启 QMT 并运行策略</strong>
+                          <span>重启对应的 QMT，在策略列表中运行刚刚粘贴并保存的策略，然后开始在线检测。</span>
+                        </div>
+                        <div id="onboardingRestartChecklist" class="onboarding-restart-checklist"></div>
+                        <div id="onboardingBridgeWaiting" class="onboarding-bridge-waiting hidden" aria-live="polite">
+                          <span class="onboarding-bridge-spinner" aria-hidden="true"></span>
+                          <div>
+                            <strong>正在等待 QMT 策略上线</strong>
+                            <span id="onboardingBridgeWaitingText">系统将持续检测，请保持本页面打开。</span>
+                          </div>
                         </div>
                         <div id="onboardingBridgeSummary" class="onboarding-summary"></div>
                         <div class="onboarding-actions">
-                          <button id="onboardingRefreshBridgeBtn" class="primary" type="button">刷新通道状态</button>
-                          <button id="onboardingOpenBindingsBtn" type="button">打开绑定页</button>
+                          <button id="onboardingBackBridgeBtn" class="onboarding-back-step" type="button">返回上一步</button>
+                          <button id="onboardingRefreshBridgeBtn" class="primary" type="button">我已重启并运行，开始检测</button>
+                          <button id="onboardingForceCloseBtn" class="onboarding-force-close" type="button">强制关闭本次绑定流程</button>
                           <span id="onboardingBridgeStatus" class="metric-note"></span>
                         </div>
                       </section>
 
                       <section class="onboarding-panel" data-onboarding-panel="data">
                         <div class="onboarding-panel-head">
-                          <strong>验证数据</strong>
-                          <span>能查到资金或持仓，初始化就完成。</span>
+                          <strong>QMT 已在线，完成接口测试</strong>
+                          <span>可以直接验证资金和持仓，也可以进入接口调试页测试具体接口。</span>
+                        </div>
+                        <div class="onboarding-api-ready">
+                          <strong>下一步：测试“查资金”接口</strong>
+                          <span>进入接口调试后，账号参数会使用当前绑定账号。点击“发送请求”，能够返回资金数据即表示配置完成。</span>
                         </div>
                         <div id="onboardingDataSummary" class="onboarding-summary"></div>
                         <div class="onboarding-actions">
-                          <button id="onboardingVerifyDataBtn" class="primary" type="button">查询资金/持仓</button>
-                          <button id="onboardingOpenHomeBtn" type="button">回首页</button>
-                          <button id="onboardingOpenApiBtn" type="button">打开接口调试</button>
+                          <button id="onboardingBackDataBtn" class="onboarding-back-step" type="button">返回上一步</button>
+                          <button id="onboardingOpenApiBtn" class="primary" type="button">打开“查资金”接口</button>
+                          <button id="onboardingVerifyDataBtn" type="button">直接验证资金/持仓</button>
+                          <button id="onboardingOpenHomeBtn" type="button">稍后测试，进入首页</button>
                           <span id="onboardingDataStatus" class="metric-note"></span>
                         </div>
                       </section>
@@ -1440,8 +1513,8 @@
                     <h3>快速开始</h3>
                     <ol class="guide-list detailed">
                       <li><strong>启动服务。</strong>运行 <code>start_cfquant.bat</code>，或执行 <code>cfquant --open-browser</code>。</li>
-                      <li><strong>完成初始化。</strong>填写资金账号、账户类型、QMT <code>bin.x64</code> 目录和运行模式。</li>
-                      <li><strong>部署 QMT。</strong>按“QMT 部署教程”复制核心包和入口脚本。</li>
+                      <li><strong>完成初始化。</strong>填写资金账号、账户类型、QMT 安装目录或 <code>bin.x64</code> 目录和运行模式。</li>
+                      <li><strong>部署 QMT。</strong>系统会自动复制核心包；仍需按“QMT 部署教程”创建或更新入口脚本。</li>
                       <li><strong>启动脚本。</strong>通用模式启动一个入口；高级模式分别启动普通端和极速交易端。</li>
                       <li><strong>验证账号。</strong>回到“绑定”页刷新状态，再查资金、持仓。</li>
                       <li><strong>接入外部程序。</strong>先在“接口”页调通参数，再改外部 Python 代码。</li>
@@ -1543,7 +1616,7 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                       </div>
                       <div>
                         <strong>3. 最后绑定账号验证</strong>
-                        <span>在网页“绑定”页填写资金账号、QMT 核心目录和运行模式，能查到资产、持仓或行情即部署成功。</span>
+                        <span>在网页“绑定”页填写资金账号、QMT 安装目录或 <code>bin.x64</code> 和运行模式，能查到资产、持仓或行情即部署成功。</span>
                       </div>
                     </div>
                     <div class="guide-table-wrap">
@@ -1605,11 +1678,11 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                     </div>
                     <ol class="guide-list detailed">
                       <li><strong>下载项目解压，或通过 pip 安装后找到安装目录。</strong>下面以下载解压项目、国金证券 QMT 为例，其他证券公司的 QMT 按相同方式处理。</li>
-                      <li><strong>复制核心目录。</strong>将项目中的 <code>cfquant</code> 目录复制到你的 QMT 安装目录。</li>
+                      <li><strong>填写 QMT 目录。</strong>在初始化或绑定页填写 QMT 安装目录或 <code>bin.x64</code>，系统会自动复制 <code>cfquant</code> 核心包。</li>
                     </ol>
                     <figure class="guide-image-card">
                       <img src="/image/qmt_deploy/image-4.png" alt="将 cfquant 目录复制到 QMT 安装目录">
-                      <figcaption>将项目中的 cfquant 目录复制到 QMT 安装目录。</figcaption>
+                      <figcaption>历史手动复制位置；新版可由 Web 在保存账号配置时自动复制。</figcaption>
                     </figure>
                     <ol class="guide-list detailed" start="3">
                       <li><strong>打开 QMT。</strong>完成登录，并安装相应 Python 环境；如果已经安装，可以忽略。</li>
@@ -1672,11 +1745,11 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                     </div>
                     <ol class="guide-list detailed">
                       <li><strong>准备项目目录。</strong>下载项目解压，或通过 pip 安装后找到对应安装目录。</li>
-                      <li><strong>按图放置项目目录。</strong>可将项目中的 <code>cfquant</code> 目录放到 QMT 安装目录；极致模式核心运行入口是 <code>CFQUANT_LITE.py</code>。</li>
+                      <li><strong>确认入口脚本。</strong>极致模式核心运行入口是 <code>CFQUANT_LITE.py</code>，不要求 QMT 侧导入 <code>cfquant</code> 包。</li>
                     </ol>
                     <figure class="guide-image-card">
                       <img src="/image/qmt_deploy/image-4.png" alt="极致模式放置项目目录">
-                      <figcaption>将项目目录放到 QMT 安装目录。</figcaption>
+                      <figcaption>传统目录位置；极致模式主要加载自包含入口脚本。</figcaption>
                     </figure>
                     <ol class="guide-list detailed" start="3">
                       <li><strong>打开 QMT。</strong>完成登录，并安装相应 Python 环境；如果已经安装，可以忽略。</li>
@@ -1749,11 +1822,11 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                       <figcaption>准备高级模式所需项目文件。</figcaption>
                     </figure>
                     <ol class="guide-list detailed" start="3">
-                      <li><strong>复制核心目录。</strong>将项目中的 <code>cfquant</code> 目录复制到 QMT 安装目录。</li>
+                      <li><strong>填写两个 QMT 目录。</strong>在绑定页分别填写普通端和极速交易端的 QMT 安装目录或 <code>bin.x64</code>，系统会自动复制 <code>cfquant</code> 核心包。</li>
                     </ol>
                     <figure class="guide-image-card">
                       <img src="/image/qmt_deploy/image-4.png" alt="高级模式复制 cfquant 目录">
-                      <figcaption>复制 cfquant 核心目录。</figcaption>
+                      <figcaption>历史手动复制位置；新版可由 Web 在保存高级模式账号配置时自动复制。</figcaption>
                     </figure>
                     <ol class="guide-list detailed" start="4">
                       <li><strong>打开两个 QMT。</strong>登录并安装相应 Python 环境；如果已经安装，可以忽略。</li>
@@ -1784,7 +1857,7 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                       <figcaption>重启两个 QMT 后重新启动策略。</figcaption>
                     </figure>
                     <ol class="guide-list detailed" start="8">
-                      <li><strong>网页端绑定账号。</strong>在 Web 控制台“绑定”页面选择高级模式，并填写普通端和极速交易端 QMT 目录。</li>
+                      <li><strong>网页端绑定账号。</strong>在 Web 控制台“绑定”页面选择高级模式，填写普通端和极速交易端 QMT 目录，并确认自动复制提示无异常。</li>
                     </ol>
                     <figure class="guide-image-card">
                       <img src="/image/qmt_deploy/image-19.png" alt="高级模式网页端账号绑定">
@@ -1945,8 +2018,8 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                             <td>外部请求按它路由，普通和信用账户要区分账户类型。</td>
                           </tr>
                           <tr>
-                            <td>QMT 核心目录</td>
-                            <td>填写对应 QMT 的 <code>bin.x64</code>，用于身份文件和核心更新。</td>
+                            <td>QMT 目录</td>
+                            <td>填写对应 QMT 的安装目录或 <code>bin.x64</code>，用于自动复制核心包、身份文件和后续更新。</td>
                           </tr>
                           <tr>
                             <td>运行模式</td>
@@ -1954,7 +2027,7 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                           </tr>
                           <tr>
                             <td>高级模式第二目录</td>
-                            <td>选择高级模式时必须填写另一个 QMT 的 <code>bin.x64</code>。</td>
+                            <td>选择高级模式时必须填写另一个 QMT 的安装目录或 <code>bin.x64</code>。</td>
                           </tr>
                           <tr>
                             <td>共享行情源</td>
@@ -2205,12 +2278,15 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
           <select id="bindingAccountType" name="account_type">
             <option value="STOCK">普通证券账户</option>
             <option value="CREDIT">信用账户</option>
+            <option value="FUTURE">期货账户</option>
+            <option value="FUTURE_OPTION">期货期权账户</option>
+            <option value="STOCK_OPTION">股票期权账户</option>
           </select>
         </label>
         <label class="field wide">
-          <span>QMT 核心目录（可选）</span>
-          <input id="bindingQmtDir" name="qmt_dir" placeholder="D:\国金证券QMT交易端\bin.x64" autocomplete="off">
-          <small>建议填写 QMT 的 bin.x64 目录。留空时该账号仍可运行，但自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
+          <span>QMT 安装目录或核心目录（可选）</span>
+          <input id="bindingQmtDir" name="qmt_dir" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64" autocomplete="off">
+          <small>保存后会自动复制 cfquant 到 bin.x64\cfquant。留空时该账号仍可运行，但自动复制、自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
         </label>
         <label class="field">
           <span>账号模式</span>
@@ -2221,9 +2297,9 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
           </select>
         </label>
         <label id="bindingQmtTradeDirField" class="field wide hidden">
-          <span>高级模式极速交易端 QMT 核心目录</span>
-          <input id="bindingQmtTradeDir" name="qmt_trade_dir" placeholder="D:\国金证券QMT交易端-交易端\bin.x64" autocomplete="off">
-          <small>高级模式必须填写与普通端不同的第二个 QMT <code>bin.x64</code> 目录，用于交易端脚本更新和身份配置。</small>
+          <span>高级模式极速交易端 QMT 安装目录或核心目录</span>
+          <input id="bindingQmtTradeDir" name="qmt_trade_dir" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64" autocomplete="off">
+          <small>高级模式必须填写与普通端不同的第二个 QMT，保存后会自动复制核心包并写入身份配置。</small>
         </label>
         <div class="market-routing-panel wide">
           <label class="toggle binding-dialog-toggle">
@@ -2233,7 +2309,7 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
           <div class="market-routing-grid">
             <label class="field">
               <span>上海交易端目录</span>
-              <input id="bindingMarketShQmtDir" name="market_sh_qmt_dir" placeholder="D:\上海QMT交易端\bin.x64" autocomplete="off">
+              <input id="bindingMarketShQmtDir" name="market_sh_qmt_dir" placeholder="D:\上海QMT交易端 或 D:\上海QMT交易端\bin.x64" autocomplete="off">
             </label>
             <label class="field">
               <span>上海 bridge_id（可选）</span>
@@ -2241,13 +2317,18 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
             </label>
             <label class="field">
               <span>深圳交易端目录</span>
-              <input id="bindingMarketSzQmtDir" name="market_sz_qmt_dir" placeholder="D:\深圳QMT交易端\bin.x64" autocomplete="off">
+              <input id="bindingMarketSzQmtDir" name="market_sz_qmt_dir" placeholder="D:\深圳QMT交易端 或 D:\深圳QMT交易端\bin.x64" autocomplete="off">
             </label>
             <label class="field">
               <span>深圳 bridge_id（可选）</span>
               <input id="bindingMarketSzBridgeId" name="market_sz_bridge_id" placeholder="自动生成" autocomplete="off">
             </label>
           </div>
+        </div>
+        <div class="binding-script-preview wide">
+          <div id="bindingDialogQmtScriptGuide" class="binding-script-guide"></div>
+          <div id="bindingDialogQmtScriptSummary" class="metric-note"></div>
+          <div id="bindingDialogQmtScriptList" class="binding-script-list compact"></div>
         </div>
         <label class="toggle binding-dialog-toggle">
           <input id="bindingDataProvider" name="data_provider" type="checkbox">
@@ -2261,6 +2342,42 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
           <button class="primary" type="submit">保存绑定</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <div id="bindingQmtGuideOverlay" class="binding-dialog-overlay binding-qmt-guide-overlay hidden" aria-hidden="true">
+    <div class="binding-dialog binding-qmt-guide-dialog" role="dialog" aria-modal="true" aria-labelledby="bindingQmtGuideTitle">
+      <div class="binding-dialog-head">
+        <div>
+          <strong id="bindingQmtGuideTitle">绑定已保存，完成 QMT 策略加载</strong>
+          <span id="bindingQmtGuideSubtitle">请在对应 QMT 中新建策略并保存运行。</span>
+        </div>
+        <button id="closeBindingQmtGuideBtn" type="button" aria-label="关闭 QMT 策略指引">关闭</button>
+      </div>
+      <div class="binding-qmt-guide-body">
+        <div id="bindingQmtGuideInstruction" class="binding-qmt-guide-instruction"></div>
+        <div>
+          <div class="binding-qmt-guide-section-head">
+            <strong>自动复制状态</strong>
+            <span>核心包已自动处理；下面的策略文件需要在 QMT 中手工新建。</span>
+          </div>
+          <div id="bindingQmtGuideStatus" class="binding-qmt-guide-status"></div>
+        </div>
+        <div>
+          <div class="binding-qmt-guide-section-head">
+            <strong>手工加载策略文件</strong>
+            <span id="bindingQmtGuideModeNotice">按当前模式显示对应文件。</span>
+          </div>
+          <div id="bindingQmtGuideSummary" class="metric-note"></div>
+          <div id="bindingQmtGuideScriptList" class="binding-script-list"></div>
+        </div>
+      </div>
+      <div class="binding-qmt-guide-actions">
+        <span class="metric-note">操作顺序：新建策略 → 粘贴代码 → 保存 → 运行</span>
+        <button id="backBindingQmtGuideBtn" type="button">返回上一步</button>
+        <button id="copyBindingQmtGuideBtn" type="button">复制全部策略代码</button>
+        <button id="closeBindingQmtGuideBottomBtn" class="primary" type="button">我已完成，关闭指引</button>
+      </div>
     </div>
   </div>
 
@@ -2312,6 +2429,6 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260904_11"></script>
+  <script src="/app.js?v=web_20260905_13"></script>
 </body>
 </html>

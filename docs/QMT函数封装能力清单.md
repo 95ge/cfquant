@@ -1,6 +1,6 @@
 # cfquant 大 QMT 函数封装能力清单
 
-更新时间：2026-08-18
+更新时间：2026-09-05
 
 ## 定位说明
 
@@ -33,7 +33,7 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 桥接状态查询 | `cfquant.status` / `GET /api/status` | 返回 context、tx、通道、队列等状态。 |
 | 通信模式切换 | `GET /api/transport` / `POST /api/transport` | 支持通用模式 `ctypes` 和高级模式 `lttx`；高级模式要求普通 QMT、极速交易端同时在线。 |
 | PipeHub 状态 | `GET /api/pipe-hub` / `POST /api/pipe-hub/start` / `POST /api/pipe-hub/stop` | 通用模式使用；负责单文件 ctypes 双通道的请求、响应和回调转发。 |
-| 多账号路由 | Web 账号绑定 / `account_key` | 同一 QMT 的多个普通/信用账户共用一个 `bridge_id`，请求按 `bridge_id:account_type:account_id` 路由；多个 QMT 使用不同 `bridge_id` 和对应频道。 |
+| 多账号路由 | Web 账号绑定 / `account_key` | 同一 QMT 的多个普通、信用、期货、期货期权、股票期权账户共用一个 `bridge_id`，请求按 `bridge_id:account_type:account_id` 路由；多个 QMT 使用不同 `bridge_id` 和对应频道。 |
 | QMT 日志语言设置 | `cfquant.set_log_language` | 用于桥接脚本日志中英文切换。 |
 | QMT userdata/log 清理 | `cfquant.cleanup_qmt_logs` | 清理 QMT 用户日志目录的过期日志。 |
 
@@ -49,6 +49,9 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 查成交 | `query_stock_trades` / `/api/account?sections=trades` | `get_trade_detail_data(..., "deal")` | 已实现。 |
 | 股票下单 | `order_stock` / `POST /api/order` | `passorder` | 已实现；通用模式走 ctypes 交易通道，高级模式默认走极速交易端。 |
 | 批量下单 | `order_stock_batch` / `POST /api/orders/batch` | `passorder` | 已实现，逐笔提交。 |
+| 信用委托 | `order_stock` / `POST /api/credit/order` / `POST /api/credit/orders/batch` / `GET /api/credit/actions` | `passorder` | 已实现；支持担保品买卖、融资买入、融券卖出、买券还券、直接还券、卖券还款、直接还款及专项动作，并把 MiniQMT 信用常量映射到大 QMT opType。 |
+| 期货/期货期权委托 | `order_stock` / `POST /api/future/order` / `POST /api/future-option/order` / 对应批量接口 | `passorder` | 已实现；输入保持 MiniQMT `FUTURE_*` 常量语义，期货期权额外支持 `OPTION_FUTURE_OPTION_EXERCISE=100`。 |
+| 股票期权委托 | `order_stock` / `POST /api/stock-option/order` / `POST /api/stock-option/orders/batch` | `passorder` | 已实现；输入保持 MiniQMT `STOCK_OPTION_*` 常量 48-57，桥接到大 QMT ETF 期权 opType 50-59。 |
 | 股票撤单 | `cancel_order_stock` / `POST /api/cancel` | `cancel` | 已实现。 |
 | 异步下单响应 | `order_stock_async` | `passorder` + 本地事件转发 | 已实现为桥接事件。 |
 | 异步撤单响应 | `cancel_order_stock_async` | `cancel` + 本地事件转发 | 已实现为桥接事件。 |
@@ -134,6 +137,13 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | `GET /api/account` | 已实现 | 资金、持仓、委托、成交。 |
 | `POST /api/order` | 已实现 | 单笔下单。 |
 | `POST /api/orders/batch` | 已实现 | 批量下单。 |
+| `GET /api/order/actions` | 已实现 | 返回信用、期货、期货期权、股票期权委托动作和别名。 |
+| `GET /api/credit/actions` | 已实现 | 返回信用查询动作、信用委托动作和别名。 |
+| `POST /api/credit/order` | 已实现 | 信用账户单笔业务委托，确认文本使用 `CREDIT_* 代码 数量 @ 价格`。 |
+| `POST /api/credit/orders/batch` | 已实现 | 信用账户批量业务委托；每行可单独携带 `credit_action`。 |
+| `POST /api/future/order` / `POST /api/future/orders/batch` | 已实现 | 期货账户单笔/批量业务委托；每笔可携带 `order_action`。 |
+| `POST /api/future-option/order` / `POST /api/future-option/orders/batch` | 已实现 | 期货期权账户单笔/批量业务委托；每笔可携带 `order_action`。 |
+| `POST /api/stock-option/order` / `POST /api/stock-option/orders/batch` | 已实现 | 股票期权账户单笔/批量业务委托；MiniQMT order_type 自动映射到大 QMT opType。 |
 | `POST /api/cancel` | 已实现 | 撤单。 |
 | `GET /api/callbacks` / `WS /ws/callbacks` | 已实现 | 交易回调事件。 |
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "cfquant QMT"
+  short_description: "Public docs for cfquant QMT APIs and migration"
+  default_prompt: "Use $cfquant-qmt to answer a cfquant Python SDK, Web API, deployment, or xtquant migration question from the public docs."

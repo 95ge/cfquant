@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import subprocess
 import time
 from types import SimpleNamespace
 
@@ -65,6 +66,118 @@ def test_runtime_version_registry_keeps_newer_lttx_report_for_same_channel(tmp_p
     trade_report = next(item for item in report["reports"] if item["channel_key"] == "trade")
     assert trade_report["mode"] == "lttx"
     assert trade_report["version"] == "core_20260904_01"
+
+
+def test_auto_deploy_local_core_resolves_qmt_install_dir(tmp_path):
+    source = tmp_path / "source"
+    source_core = source / "cfquant"
+    source_core.mkdir(parents=True)
+    (source_core / "__init__.py").write_text("__version__ = 'test_auto'\n", encoding="utf-8")
+    (source_core / "client.py").write_text("# client\n", encoding="utf-8")
+    (source_core / "protocol.py").write_text("# protocol\n", encoding="utf-8")
+    (source_core / "extra.py").write_text("VALUE = 1\n", encoding="utf-8")
+    qmt_root = tmp_path / "QMT"
+    bin_dir = qmt_root / "bin.x64"
+    bin_dir.mkdir(parents=True)
+
+    updater = web.CfquantUpdater(None)
+    result = updater.install_local_core_to_qmt_dir(
+        str(qmt_root),
+        bridge_id="demo",
+        source_dir=str(source),
+    )
+
+    assert result["updated"] is True
+    assert result["python_dir"] == str(bin_dir)
+    assert (bin_dir / "cfquant" / "extra.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert result["current_version"] == "test_auto"
+
+
+def test_auto_deploy_local_core_skips_when_target_matches(tmp_path):
+    source = tmp_path / "source"
+    source_core = source / "cfquant"
+    target_core = tmp_path / "QMT" / "bin.x64" / "cfquant"
+    source_core.mkdir(parents=True)
+    target_core.mkdir(parents=True)
+    for root in (source_core, target_core):
+        (root / "__init__.py").write_text("__version__ = 'same'\n", encoding="utf-8")
+        (root / "client.py").write_text("# client\n", encoding="utf-8")
+        (root / "protocol.py").write_text("# protocol\n", encoding="utf-8")
+
+    updater = web.CfquantUpdater(None)
+    result = updater.install_local_core_to_qmt_dir(
+        str(tmp_path / "QMT" / "bin.x64"),
+        bridge_id="demo",
+        source_dir=str(source),
+    )
+
+    assert result["skipped"] is True
+    assert result["updated"] is False
+    assert result["current_version"] == "same"
+    assert not (tmp_path / "QMT" / "bin.x64" / ".cfquant_updates").exists()
+
+
+def test_powershell_process_detail_timeout_is_nonfatal(monkeypatch):
+    monkeypatch.setattr(web.os, "name", "nt")
+    monkeypatch.setattr(web, "psutil", None)
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(web.subprocess, "run", fake_run)
+
+    assert web.run_powershell_json('"[]"', timeout=0.01) == []
+    assert web.process_details_by_pid([15792]) == {}
+
+
+def test_process_details_by_pid_uses_psutil_before_powershell(monkeypatch):
+    monkeypatch.setattr(web.os, "name", "nt")
+
+    class FakeProcess(object):
+        def __init__(self, pid):
+            self.pid = pid
+
+        def oneshot(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def name(self):
+            return "python.exe"
+
+        def cmdline(self):
+            return ["python", "LTtx_server.py"]
+
+        def exe(self):
+            return r"D:\Python\python.exe"
+
+    class FakePsutil(object):
+        NoSuchProcess = RuntimeError
+        AccessDenied = PermissionError
+        ZombieProcess = RuntimeError
+
+        @staticmethod
+        def Process(pid):
+            return FakeProcess(pid)
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("PowerShell fallback should not be used")
+
+    monkeypatch.setattr(web, "psutil", FakePsutil)
+    monkeypatch.setattr(web.subprocess, "run", fail_run)
+
+    assert web.process_details_by_pid([15792]) == {
+        15792: {
+            "pid": 15792,
+            "name": "python.exe",
+            "command_line": "python LTtx_server.py",
+            "executable_path": r"D:\Python\python.exe",
+        }
+    }
 
 
 def test_account_route_status_reads_monitor_cache_without_sync_probe(monkeypatch):

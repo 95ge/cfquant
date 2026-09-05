@@ -101,6 +101,20 @@ def test_query_stock_orders_treats_string_false_as_not_cancelable_only(monkeypat
     assert calls[0][1]["cancelable_only"] is False
 
 
+def test_xtquanttrader_auto_assigns_session_id_when_omitted_or_zero():
+    account = StockAccount("A123")
+
+    trader_default = XtQuantTrader(account=account)
+    trader_zero = XtQuantTrader("", 0, account=account)
+    trader_explicit = XtQuantTrader("", 10001, account=account)
+
+    assert isinstance(trader_default.session_id, int)
+    assert trader_default.session_id > 0
+    assert trader_zero.session_id > 0
+    assert trader_default.session_id != trader_zero.session_id
+    assert trader_explicit.session_id == 10001
+
+
 def test_tx_trade_bridge_filters_cancelable_order_query():
     rows = [
         {"m_nOrderID": "can-cancel", "m_nOrderStatus": xtconstant.ORDER_REPORTED},

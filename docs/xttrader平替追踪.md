@@ -1,6 +1,6 @@
 # xtquant.xttrader 平替追踪
 
-更新时间：2026-07-08
+更新时间：2026-09-05
 
 ## 总体结论
 
@@ -8,8 +8,8 @@
 - `cfquant.cfquant.xttrader.XtQuantTrader` 已补齐这 75 个同名方法，签名已对齐。
 - 原版 `XtQuantTraderCallback` 当前检测到 14 个公开回调方法，`cfquant` 已全部补齐。
 - `cfquant` 额外保留了 `disconnect()`，方便外部程序主动关闭本地桥接连接。
-- 股票交易、撤单、资产、委托、成交、持仓和交易回调已走现有 QMT 桥接实装。
-- 银行、信用、期权/期货划转、SMT、数据导出等接口已提供兼容入口，但实际可用性依赖 QMT 策略上下文中是否存在对应 callable；缺失时会返回明确的未实现错误。
+- 股票交易、信用交易、期货、期货期权、股票期权、撤单、资产、委托、成交、持仓和交易回调已走现有 QMT 桥接实装。
+- 银行、信用专项查询、期权/期货划转、SMT、数据导出等接口已提供兼容入口，但实际可用性依赖 QMT 策略上下文中是否存在对应 callable；缺失时会返回明确的未实现错误。
 
 ## 状态定义
 
@@ -28,14 +28,14 @@
 | `register_callback` | 注册回调对象，并把 QMT 桥接事件映射到 `XtQuantTraderCallback`。 |
 | `XtQuantTraderCallback` | 已补齐原版 14 个公开回调方法；股票、下单、撤单、银行划转、CTP 内转和 SMT async 兼容入口会触发对应回调。 |
 | `subscribe` / `unsubscribe` | 订阅或取消账号级交易回调转发。 |
-| `order_stock` | 通过 QMT `passorder` 下单，返回 `order_id`。 |
-| `order_stock_async` | 通过 QMT `passorder` 下单，并向客户端推送异步下单响应事件。 |
-| `cancel_order_stock` | 通过 QMT `cancel` 撤单，返回 `cancel_result`。 |
+| `order_stock` | 通过 QMT `passorder` 下单，返回 `order_id`；保持 MiniQMT 签名，支持普通、信用、期货、期货期权、股票期权账号。信用支持 `credit_action`，派生品支持 `order_action`/`future_action`/`option_action`，股票期权 MiniQMT 常量 48-57 会映射到大 QMT opType 50-59。 |
+| `order_stock_async` | 通过 QMT `passorder` 下单，并向客户端推送异步下单响应事件；返回最终使用的 `order_type` 和账号类型。 |
+| `cancel_order_stock` | 通过 QMT `cancel` 撤单，按传入账号类型路由，支持普通、信用、期货、期货期权、股票期权账号。 |
 | `cancel_order_stock_async` | 执行撤单，并向客户端推送异步撤单响应事件。 |
 | `query_stock_asset` | 读取 QMT `account` 交易明细并转为 `XtAsset`。 |
-| `query_stock_orders` / `query_stock_order` | 读取 QMT `order` 交易明细并转为 `XtOrder`，单笔查询在列表中匹配。 |
-| `query_stock_trades` | 读取 QMT `deal` 交易明细并转为 `XtTrade`。 |
-| `query_stock_positions` / `query_stock_position` | 读取 QMT `position` 交易明细并转为 `XtPosition`，单持仓查询在列表中匹配。 |
+| `query_stock_orders` / `query_stock_order` | 读取 QMT `order` 交易明细并转为 `XtOrder`，保留 `direction`、`offset_flag`、`price_type`、`order_type` 等 MiniQMT 常见字段。 |
+| `query_stock_trades` | 读取 QMT `deal` 交易明细并转为 `XtTrade`，保留方向、开平标志、手续费和证券/合约账号字段。 |
+| `query_stock_positions` / `query_stock_position` | 读取 QMT `position` 交易明细并转为 `XtPosition`，保留冻结、在途、昨仓、最新价、收益率等字段，单持仓查询在列表中匹配。 |
 | `query_stock_asset_async` / `query_stock_orders_async` / `query_stock_trades_async` / `query_stock_positions_async` | 复用同步查询并调用传入 callback，返回本地 seq。 |
 | `set_timeout` | 设置兼容对象超时时间，并同步到当前 RPC 客户端。 |
 | `set_relaxed_response_order_enabled` | 保存兼容标志，当前桥接无需额外排序处理。 |

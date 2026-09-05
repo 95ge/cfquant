@@ -75,7 +75,7 @@ import uuid
 import ctypes
 from ctypes import wintypes
 
-CORE_VERSION = "core_20260903_03"
+CORE_VERSION = "core_20260905_01"
 LITE_ENTRY_VERSION = "lite_20260828_01"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -1427,17 +1427,271 @@ class TxTradeBridge(object):
         )
         return result
 
+    def _passorder_optype(self, params, account_type):
+        qmt_optype = self._first_param(params, ("qmt_optype", "passorder_optype"))
+        if qmt_optype is not None:
+            return self._coerce_optype(qmt_optype)
+        account_type_text = str(account_type or "").strip().upper()
+        credit_action_names = ("credit_action", "credit_business")
+        if account_type_text == "CREDIT":
+            credit_action_names += ("order_action", "business_type", "action")
+        credit_action = self._first_param(params, credit_action_names)
+        if credit_action is not None:
+            return self._credit_action_optype(credit_action)
+        derivative_action = self._first_param(params, (
+            "future_action",
+            "future_business",
+            "stock_option_action",
+            "future_option_action",
+            "option_action",
+            "option_business",
+            "derivative_action",
+            "business_type",
+            "order_action",
+            "action",
+        ))
+        if derivative_action is not None:
+            return self._derivative_action_optype(account_type_text, derivative_action)
+        order_type = params.get("optype", params.get("order_type"))
+        if isinstance(order_type, str):
+            text = order_type.strip().lower()
+            if text in ("buy", "stock_buy"):
+                return 33 if account_type_text == "CREDIT" else 23
+            if text in ("sell", "stock_sell"):
+                return 34 if account_type_text == "CREDIT" else 24
+            if text in self._credit_action_optype_map():
+                return self._credit_action_optype(text)
+            if account_type_text in ("FUTURE", "FUTURE_OPTION", "STOCK_OPTION"):
+                return self._derivative_action_optype(account_type_text, text)
+        order_type = self._coerce_optype(order_type)
+        if order_type is None:
+            raise ValueError("order_type is required")
+        return self._qmt_account_optype(order_type, account_type_text)
+
+    def _coerce_optype(self, value):
+        if isinstance(value, str):
+            text = value.strip()
+            if text.lstrip("+-").isdigit():
+                return int(text)
+        return value
+
+    def _credit_action_optype(self, value):
+        text = str(value or "").strip().lower()
+        key = text if text.startswith("credit_") else self._credit_action_aliases().get(text) or "credit_%s" % text
+        actions = self._credit_action_optype_map()
+        if key not in actions:
+            raise ValueError("unknown credit order action: %s" % value)
+        return actions[key]
+
+    def _qmt_credit_optype(self, order_type):
+        mapping = {
+            23: 33,
+            24: 34,
+            40: 70,
+            41: 71,
+            42: 72,
+            43: 73,
+            44: 74,
+            45: 75,
+        }
+        return mapping.get(order_type, order_type)
+
+    def _qmt_stock_option_optype(self, order_type):
+        mapping = {
+            48: 50,
+            49: 51,
+            50: 52,
+            51: 53,
+            52: 54,
+            53: 55,
+            54: 56,
+            55: 57,
+            56: 58,
+            57: 59,
+        }
+        return mapping.get(order_type, order_type)
+
+    def _qmt_account_optype(self, order_type, account_type):
+        account_type = str(account_type or "").strip().upper()
+        if account_type == "CREDIT":
+            return self._qmt_credit_optype(order_type)
+        if account_type == "STOCK_OPTION":
+            return self._qmt_stock_option_optype(order_type)
+        return order_type
+
+    def _derivative_action_optype(self, account_type, value):
+        account_type = str(account_type or "").strip().upper()
+        coerced = self._coerce_optype(value)
+        if isinstance(coerced, int):
+            return self._qmt_account_optype(coerced, account_type)
+        text = str(value or "").strip().lower()
+        if account_type in ("FUTURE", "FUTURE_OPTION"):
+            aliases = self._future_action_aliases()
+            actions = self._future_action_optype_map()
+            if account_type == "FUTURE_OPTION":
+                actions = dict(actions, **self._future_option_action_optype_map())
+            key = text if text in actions else aliases.get(text)
+            if key is None and not text.startswith("future_") and ("future_%s" % text) in actions:
+                key = "future_%s" % text
+            if key in actions:
+                return actions[key]
+        if account_type == "STOCK_OPTION":
+            aliases = self._stock_option_action_aliases()
+            actions = self._stock_option_action_optype_map()
+            key = text if text in actions else aliases.get(text)
+            if key is None and not text.startswith("stock_option_") and ("stock_option_%s" % text) in actions:
+                key = "stock_option_%s" % text
+            if key in actions:
+                return actions[key]
+        raise ValueError("unknown %s order action: %s" % (account_type or "derivative", value))
+
+    def _credit_action_aliases(self):
+        return {
+            "buy": "credit_buy",
+            "collateral_buy": "credit_buy",
+            "assure_buy": "credit_buy",
+            "sell": "credit_sell",
+            "collateral_sell": "credit_sell",
+            "assure_sell": "credit_sell",
+            "fin_buy": "credit_fin_buy",
+            "finance_buy": "credit_fin_buy",
+            "margin_buy": "credit_fin_buy",
+            "slo_sell": "credit_slo_sell",
+            "short_sell": "credit_slo_sell",
+            "buy_secu_repay": "credit_buy_secu_repay",
+            "buy_security_repay": "credit_buy_secu_repay",
+            "direct_secu_repay": "credit_direct_secu_repay",
+            "direct_security_repay": "credit_direct_secu_repay",
+            "sell_secu_repay": "credit_sell_secu_repay",
+            "sell_security_repay": "credit_sell_secu_repay",
+            "direct_cash_repay": "credit_direct_cash_repay",
+            "cash_repay": "credit_direct_cash_repay",
+            "fin_buy_special": "credit_fin_buy_special",
+            "finance_buy_special": "credit_fin_buy_special",
+            "margin_buy_special": "credit_fin_buy_special",
+            "slo_sell_special": "credit_slo_sell_special",
+            "short_sell_special": "credit_slo_sell_special",
+            "buy_secu_repay_special": "credit_buy_secu_repay_special",
+            "direct_secu_repay_special": "credit_direct_secu_repay_special",
+            "sell_secu_repay_special": "credit_sell_secu_repay_special",
+            "direct_cash_repay_special": "credit_direct_cash_repay_special",
+        }
+
+    def _credit_action_optype_map(self):
+        return {
+            "credit_buy": 33,
+            "credit_sell": 34,
+            "credit_fin_buy": 27,
+            "credit_slo_sell": 28,
+            "credit_buy_secu_repay": 29,
+            "credit_direct_secu_repay": 30,
+            "credit_sell_secu_repay": 31,
+            "credit_direct_cash_repay": 32,
+            "credit_fin_buy_special": 70,
+            "credit_slo_sell_special": 71,
+            "credit_buy_secu_repay_special": 72,
+            "credit_direct_secu_repay_special": 73,
+            "credit_sell_secu_repay_special": 74,
+            "credit_direct_cash_repay_special": 75,
+        }
+
+    def _future_action_aliases(self):
+        return {
+            "open_long": "future_open_long",
+            "buy_open": "future_open_long",
+            "close_long": "future_close_long_history_first",
+            "sell_close": "future_close_long_history_first",
+            "close_long_history": "future_close_long_history",
+            "close_long_today": "future_close_long_today",
+            "open_short": "future_open_short",
+            "sell_open": "future_open_short",
+            "close_short": "future_close_short_history_first",
+            "buy_close": "future_close_short_history_first",
+            "close_short_history": "future_close_short_history",
+            "close_short_today": "future_close_short_today",
+            "open": "future_open",
+            "close": "future_close",
+            "exercise": "future_option_exercise",
+            "future_option_exercise": "future_option_exercise",
+            "option_future_option_exercise": "future_option_exercise",
+        }
+
+    def _future_action_optype_map(self):
+        return {
+            "future_open_long": 0,
+            "future_close_long_history": 1,
+            "future_close_long_today": 2,
+            "future_open_short": 3,
+            "future_close_short_history": 4,
+            "future_close_short_today": 5,
+            "future_close_long_today_first": 6,
+            "future_close_long_history_first": 7,
+            "future_close_short_today_first": 8,
+            "future_close_short_history_first": 9,
+            "future_close_long_today_history_then_open_short": 10,
+            "future_close_long_history_today_then_open_short": 11,
+            "future_close_short_today_history_then_open_long": 12,
+            "future_close_short_history_today_then_open_long": 13,
+            "future_open": 14,
+            "future_close": 15,
+            "future_arbitrage_open": 16,
+            "future_arbitrage_close_history_first": 17,
+            "future_arbitrage_close_today_first": 18,
+            "future_renew_long_close_history_first": 19,
+            "future_renew_long_close_today_first": 20,
+            "future_renew_short_close_history_first": 21,
+            "future_renew_short_close_today_first": 22,
+            "future_hedge": 400,
+        }
+
+    def _future_option_action_optype_map(self):
+        return {
+            "future_option_exercise": 100,
+        }
+
+    def _stock_option_action_aliases(self):
+        return {
+            "buy_open": "stock_option_buy_open",
+            "open_long": "stock_option_buy_open",
+            "sell_close": "stock_option_sell_close",
+            "close_long": "stock_option_sell_close",
+            "sell_open": "stock_option_sell_open",
+            "open_short": "stock_option_sell_open",
+            "buy_close": "stock_option_buy_close",
+            "close_short": "stock_option_buy_close",
+            "covered_open": "stock_option_covered_open",
+            "covered_close": "stock_option_covered_close",
+            "call_exercise": "stock_option_call_exercise",
+            "put_exercise": "stock_option_put_exercise",
+            "secu_lock": "stock_option_secu_lock",
+            "secu_unlock": "stock_option_secu_unlock",
+            "lock": "stock_option_secu_lock",
+            "unlock": "stock_option_secu_unlock",
+        }
+
+    def _stock_option_action_optype_map(self):
+        return {
+            "stock_option_buy_open": 50,
+            "stock_option_sell_close": 51,
+            "stock_option_sell_open": 52,
+            "stock_option_buy_close": 53,
+            "stock_option_covered_open": 54,
+            "stock_option_covered_close": 55,
+            "stock_option_call_exercise": 56,
+            "stock_option_put_exercise": 57,
+            "stock_option_secu_lock": 58,
+            "stock_option_secu_unlock": 59,
+        }
     def _order_stock(self, params, msg):
         passorder = self._get_callable("passorder")
         if not passorder:
             raise NotImplementedError("passorder not found")
         account = params.get("account") or {}
         account_id = account.get("account_id") or params.get("account_id") or self.account_id
-        order_type = params.get("optype", params.get("order_type"))
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        order_type = self._passorder_optype(params, account_type)
         if not account_id:
             raise ValueError("account_id is required")
-        if isinstance(order_type, str):
-            order_type = 23 if order_type.lower() == "buy" else 24
         price_type = params.get("price_type", 11)
         order_remark = self._first_param(
             params,
@@ -1457,7 +1711,13 @@ class TxTradeBridge(object):
             order_remark,
             self.context,
         )
-        return {"request_result": result, "order_id": result, "order_remark": order_remark}
+        return {
+            "request_result": result,
+            "order_id": result,
+            "order_remark": order_remark,
+            "order_type": order_type,
+            "account_type": str(account_type or "").upper(),
+        }
 
     def _order_stock_async(self, params, msg):
         result = self._order_stock(params, msg)
@@ -1467,6 +1727,7 @@ class TxTradeBridge(object):
             "account_type": self._account_type_name((params.get("account") or {}).get("account_type") or params.get("account_type")).upper(),
             "order_id": result.get("order_id", -1) if isinstance(result, dict) else result,
             "order_remark": result.get("order_remark", params.get("order_remark", "")) if isinstance(result, dict) else params.get("order_remark", ""),
+            "order_type": result.get("order_type", params.get("order_type", params.get("optype"))) if isinstance(result, dict) else params.get("order_type", params.get("optype")),
         }
         self._send_trader_event(msg.get("client_id"), "on_order_stock_async_response", data)
         return result
@@ -2318,6 +2579,7 @@ class TxTradeBridge(object):
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
                 "order_source": self._order_source(obj),
+                "order_type": self._first_value(obj, ("m_nOrderType", "m_nBusinessType")),
                 "order_time": self._first_value(obj, (
                     "order_time",
                     "entrust_time",
@@ -2338,8 +2600,11 @@ class TxTradeBridge(object):
                     "m_nOrderDate",
                     "m_nEntrustDate",
                 )),
+                "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "order_volume": self._get_value(obj, "m_nVolumeTotalOriginal"),
+                "price_type": self._first_value(obj, ("m_nPriceType", "m_nOrderPriceType")),
+                "price": self._first_value(obj, ("m_dLimitPrice", "m_dOrderPrice", "m_dPrice")),
                 "traded_price": self._get_value(obj, "m_dTradedPrice"),
                 "traded_volume": self._get_value(obj, "m_nVolumeTraded"),
                 "trade_amount": self._get_value(obj, "m_dTradeAmount"),
@@ -2347,8 +2612,16 @@ class TxTradeBridge(object):
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
+                "m_nOrderType": self._get_value(obj, "m_nOrderType"),
+                "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
+                "m_nDirection": self._get_value(obj, "m_nDirection"),
                 "m_nOffsetFlag": self._get_value(obj, "m_nOffsetFlag"),
                 "m_nVolumeTotalOriginal": self._get_value(obj, "m_nVolumeTotalOriginal"),
+                "m_nPriceType": self._get_value(obj, "m_nPriceType"),
+                "m_nOrderPriceType": self._get_value(obj, "m_nOrderPriceType"),
+                "m_dLimitPrice": self._get_value(obj, "m_dLimitPrice"),
+                "m_dOrderPrice": self._get_value(obj, "m_dOrderPrice"),
+                "m_dPrice": self._get_value(obj, "m_dPrice"),
                 "m_dTradedPrice": self._get_value(obj, "m_dTradedPrice"),
                 "m_nVolumeTraded": self._get_value(obj, "m_nVolumeTraded"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
@@ -2376,6 +2649,7 @@ class TxTradeBridge(object):
                 "stock_code": self._stock_code(obj),
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
+                "order_type": self._first_value(obj, ("m_nOrderType", "m_nBusinessType")),
                 "trade_time": self._first_value(obj, (
                     "trade_time",
                     "deal_time",
@@ -2393,17 +2667,23 @@ class TxTradeBridge(object):
                     "m_nTradeDate",
                     "m_nDealDate",
                 )),
+                "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "price": self._get_value(obj, "m_dPrice"),
                 "volume": self._get_value(obj, "m_nVolume"),
                 "trade_amount": self._get_value(obj, "m_dTradeAmount"),
+                "commission": self._get_value(obj, "m_dCommission"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
+                "m_nOrderType": self._get_value(obj, "m_nOrderType"),
+                "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
+                "m_nDirection": self._get_value(obj, "m_nDirection"),
                 "m_nOffsetFlag": self._get_value(obj, "m_nOffsetFlag"),
                 "m_dPrice": self._get_value(obj, "m_dPrice"),
                 "m_nVolume": self._get_value(obj, "m_nVolume"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
+                "m_dCommission": self._get_value(obj, "m_dCommission"),
                 "m_strTradeTime": self._get_value(obj, "m_strTradeTime"),
                 "m_strDealTime": self._get_value(obj, "m_strDealTime"),
                 "m_nTradeTime": self._get_value(obj, "m_nTradeTime"),
@@ -2423,15 +2703,29 @@ class TxTradeBridge(object):
                 "market_value": self._get_value(obj, "m_dInstrumentValue"),
                 "position_cost": self._get_value(obj, "m_dPositionCost"),
                 "position_profit": self._get_value(obj, "m_dPositionProfit"),
+                "direction": self._get_value(obj, "m_nDirection"),
+                "frozen_volume": self._get_value(obj, "m_nFrozenVolume"),
+                "on_road_volume": self._get_value(obj, "m_nOnRoadVolume"),
+                "yesterday_volume": self._get_value(obj, "m_nYesterdayVolume"),
+                "last_price": self._get_value(obj, "m_dLastPrice"),
+                "profit_rate": self._get_value(obj, "m_dProfitRate"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
+                "m_nOrderType": self._get_value(obj, "m_nOrderType"),
+                "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
+                "m_nDirection": self._get_value(obj, "m_nDirection"),
                 "m_nVolume": self._get_value(obj, "m_nVolume"),
                 "m_nCanUseVolume": self._get_value(obj, "m_nCanUseVolume"),
+                "m_nFrozenVolume": self._get_value(obj, "m_nFrozenVolume"),
+                "m_nOnRoadVolume": self._get_value(obj, "m_nOnRoadVolume"),
+                "m_nYesterdayVolume": self._get_value(obj, "m_nYesterdayVolume"),
                 "m_dOpenPrice": self._get_value(obj, "m_dOpenPrice"),
                 "m_dInstrumentValue": self._get_value(obj, "m_dInstrumentValue"),
                 "m_dPositionCost": self._get_value(obj, "m_dPositionCost"),
                 "m_dPositionProfit": self._get_value(obj, "m_dPositionProfit"),
+                "m_dLastPrice": self._get_value(obj, "m_dLastPrice"),
+                "m_dProfitRate": self._get_value(obj, "m_dProfitRate"),
             }
         if detail_type == "account":
             return {
@@ -2447,6 +2741,8 @@ class TxTradeBridge(object):
                 "m_dTotalDebit": self._get_value(obj, "m_dTotalDebit"),
                 "m_dAvailable": self._get_value(obj, "m_dAvailable"),
                 "m_dPositionProfit": self._get_value(obj, "m_dPositionProfit"),
+                "m_dLastPrice": self._get_value(obj, "m_dLastPrice"),
+                "m_dProfitRate": self._get_value(obj, "m_dProfitRate"),
             }
         return {"value": str(obj)}
 
@@ -2461,9 +2757,25 @@ class TxTradeBridge(object):
         instrument_id = self._get_value(obj, "m_strInstrumentID")
         exchange_id = self._get_value(obj, "m_strExchangeID")
         if instrument_id and exchange_id:
-            return "%s.%s" % (instrument_id, exchange_id)
+            return "%s.%s" % (instrument_id, self._market_suffix(exchange_id))
         return instrument_id
 
+    def _market_suffix(self, value):
+        text = str(value or "").strip().upper()
+        aliases = {
+            "0": "SH", "SH": "SH", "SSE": "SH", "SHSE": "SH",
+            "1": "SZ", "SZ": "SZ", "SZSE": "SZ",
+            "70": "BJ", "BJ": "BJ", "BSE": "BJ",
+            "3": "SF", "SF": "SF", "SHFE": "SF", "SHF": "SF",
+            "4": "DF", "DF": "DF", "DCE": "DF", "DLCE": "DF",
+            "5": "ZF", "ZF": "ZF", "CZCE": "ZF", "ZCE": "ZF",
+            "2": "IF", "IF": "IF", "CFFEX": "IF", "CFX": "IF",
+            "6": "INE", "INE": "INE",
+            "75": "GF", "GF": "GF", "GFEX": "GF",
+            "7": "SHO", "SHO": "SHO", "SSEOPTION": "SHO", "SSE_OPTION": "SHO",
+            "67": "SZO", "SZO": "SZO", "SZSEOPTION": "SZO", "SZSE_OPTION": "SZO",
+        }
+        return aliases.get(text, text)
     def _order_source(self, obj):
         values = [
             self._get_value(obj, name)
@@ -3234,20 +3546,33 @@ class NormalQmtBridge(TxTradeBridge):
             "m_strInstrumentID",
             "m_strExchangeID",
             "m_strInstrumentName",
+            "m_nOrderType",
+            "m_nBusinessType",
+            "m_nDirection",
             "m_nOffsetFlag",
             "m_nVolumeTotalOriginal",
             "m_nVolumeTraded",
             "m_nVolume",
             "m_nCanUseVolume",
+            "m_nFrozenVolume",
+            "m_nOnRoadVolume",
+            "m_nYesterdayVolume",
+            "m_nPriceType",
+            "m_nOrderPriceType",
+            "m_dLimitPrice",
+            "m_dOrderPrice",
             "m_dPrice",
             "m_dTradedPrice",
             "m_dTradeAmount",
+            "m_dCommission",
             "m_dBalance",
             "m_dAssureAsset",
             "m_dInstrumentValue",
             "m_dTotalDebit",
             "m_dAvailable",
             "m_dPositionProfit",
+            "m_dLastPrice",
+            "m_dProfitRate",
             "m_dOpenPrice",
             "m_dPositionCost",
             "m_strRemark",
@@ -3278,7 +3603,7 @@ class NormalQmtBridge(TxTradeBridge):
         code = data.get("m_strInstrumentID")
         market = data.get("m_strExchangeID")
         if code and market:
-            data["stock_code"] = "%s.%s" % (code, market)
+            data["stock_code"] = "%s.%s" % (code, self._callback_market_suffix(market))
         source_text = " ".join(str(item or "") for item in (
             data.get("order_source"),
             data.get("source"),
@@ -3291,6 +3616,22 @@ class NormalQmtBridge(TxTradeBridge):
         data["order_source"] = "cfquant" if "cfquant" in source_text else "other"
         return data
 
+    def _callback_market_suffix(self, value):
+        text = str(value or "").strip().upper()
+        aliases = {
+            "0": "SH", "SH": "SH", "SSE": "SH", "SHSE": "SH",
+            "1": "SZ", "SZ": "SZ", "SZSE": "SZ",
+            "70": "BJ", "BJ": "BJ", "BSE": "BJ",
+            "3": "SF", "SF": "SF", "SHFE": "SF", "SHF": "SF",
+            "4": "DF", "DF": "DF", "DCE": "DF", "DLCE": "DF",
+            "5": "ZF", "ZF": "ZF", "CZCE": "ZF", "ZCE": "ZF",
+            "2": "IF", "IF": "IF", "CFFEX": "IF", "CFX": "IF",
+            "6": "INE", "INE": "INE",
+            "75": "GF", "GF": "GF", "GFEX": "GF",
+            "7": "SHO", "SHO": "SHO", "SSEOPTION": "SHO", "SSE_OPTION": "SHO",
+            "67": "SZO", "SZO": "SZO", "SZSEOPTION": "SZO", "SZSE_OPTION": "SZO",
+        }
+        return aliases.get(text, text)
     def _callback_account_id(self, obj, data):
         for key in ("account_id", "m_strAccountID", "m_strAccountId", "m_strAccount", "m_accountID"):
             value = data.get(key)
@@ -3319,6 +3660,12 @@ class NormalQmtBridge(TxTradeBridge):
                 return "STOCK"
             if text in ("3", "CREDIT_ACCOUNT", "MARGIN"):
                 return "CREDIT"
+            if text in ("1", "FUTURE_ACCOUNT"):
+                return "FUTURE"
+            if text in ("5", "FUTURE_OPTION_ACCOUNT"):
+                return "FUTURE_OPTION"
+            if text in ("6", "STOCK_OPTION_ACCOUNT", "OPTION"):
+                return "STOCK_OPTION"
             return text
         return ""
 

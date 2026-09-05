@@ -31,6 +31,8 @@ _trade_client = None
 _trade_client_lock = threading.Lock()
 _account_bridge_cache = {}
 _account_bridge_lock = threading.RLock()
+_session_id_seq = itertools.count(1)
+_session_id_lock = threading.Lock()
 
 
 def get_trade_client():
@@ -83,11 +85,20 @@ def _account_type_value(account_type):
         if text.isdigit():
             return int(text)
         aliases = {
+            "FUTURE": xtconstant.FUTURE_ACCOUNT,
+            "FUTURE_ACCOUNT": xtconstant.FUTURE_ACCOUNT,
             "SECURITY": xtconstant.SECURITY_ACCOUNT,
             "SECURITY_ACCOUNT": xtconstant.SECURITY_ACCOUNT,
             "STOCK_ACCOUNT": xtconstant.SECURITY_ACCOUNT,
             "MARGIN": xtconstant.CREDIT_ACCOUNT,
             "CREDIT_ACCOUNT": xtconstant.CREDIT_ACCOUNT,
+            "FUTURE_OPTION": xtconstant.FUTURE_OPTION_ACCOUNT,
+            "FUTURE_OPTION_ACCOUNT": xtconstant.FUTURE_OPTION_ACCOUNT,
+            "FUTUREOPTION": xtconstant.FUTURE_OPTION_ACCOUNT,
+            "STOCK_OPTION": xtconstant.STOCK_OPTION_ACCOUNT,
+            "STOCK_OPTION_ACCOUNT": xtconstant.STOCK_OPTION_ACCOUNT,
+            "STOCKOPTION": xtconstant.STOCK_OPTION_ACCOUNT,
+            "OPTION": xtconstant.STOCK_OPTION_ACCOUNT,
         }
         if text in aliases:
             return aliases[text]
@@ -112,6 +123,29 @@ def _attach_account_fields(value, account):
         setattr(value, "account_id", "")
     setattr(value, "account_type", _account_type_value(payload.get("account_type", xtconstant.SECURITY_ACCOUNT)))
     return value
+
+
+def _next_session_id():
+    with _session_id_lock:
+        return os.getpid() * 1000000 + next(_session_id_seq)
+
+
+def _normalize_session_id(session_id):
+    if session_id is None:
+        return _next_session_id()
+    if isinstance(session_id, str):
+        text = session_id.strip()
+        if not text:
+            return _next_session_id()
+        try:
+            session_id = int(text)
+        except Exception:
+            return _next_session_id()
+    try:
+        session_id = int(session_id)
+    except Exception:
+        return _next_session_id()
+    return session_id if session_id > 0 else _next_session_id()
 
 
 def _new_trade_client(client_id=None, bridge_id=None):
@@ -194,7 +228,8 @@ class XtQuantTrader(object):
 
     def __init__(self, path="", session_id=0, callback=None, account=None):
         self.path = path
-        self.session_id = session_id
+        # 兼容 miniQMT：未显式传 session_id 或传 0 时，自动分配一个正整数标识。
+        self.session_id = _normalize_session_id(session_id)
         self.callback = callback or XtQuantTraderCallback()
         self.account = account
         self.account_id = _account_id(account)
@@ -918,6 +953,8 @@ def _account_type_name(account_type):
     if isinstance(account_type, str):
         text = account_type.strip().upper()
         aliases = {
+            "1": "FUTURE",
+            "FUTURE_ACCOUNT": "FUTURE",
             "2": "STOCK",
             "SECURITY": "STOCK",
             "SECURITY_ACCOUNT": "STOCK",
@@ -925,6 +962,13 @@ def _account_type_name(account_type):
             "3": "CREDIT",
             "CREDIT_ACCOUNT": "CREDIT",
             "MARGIN": "CREDIT",
+            "5": "FUTURE_OPTION",
+            "FUTURE_OPTION_ACCOUNT": "FUTURE_OPTION",
+            "FUTUREOPTION": "FUTURE_OPTION",
+            "6": "STOCK_OPTION",
+            "STOCK_OPTION_ACCOUNT": "STOCK_OPTION",
+            "STOCKOPTION": "STOCK_OPTION",
+            "OPTION": "STOCK_OPTION",
         }
         return aliases.get(text, text or "STOCK")
     return mapping.get(account_type, "STOCK")

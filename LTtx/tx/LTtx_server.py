@@ -1157,7 +1157,8 @@ dict_client_status = {}
 dict_var = load_dict_var()#保存云变量
 
 if __name__ == '__main__':
-    threading.Thread(target = main_control).start()
+    if os.environ.get("CFQUANT_LTTX_BACKGROUND") != "1":
+        threading.Thread(target = main_control).start()
     main()
     # threading.Thread(target = main).start()
 

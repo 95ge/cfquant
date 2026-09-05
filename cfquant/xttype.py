@@ -144,11 +144,20 @@ def _normalize_account_type(value):
         if text.isdigit():
             return int(text)
         aliases = {
+            "FUTURE": xtconstant.FUTURE_ACCOUNT,
+            "FUTURE_ACCOUNT": xtconstant.FUTURE_ACCOUNT,
             "SECURITY": xtconstant.SECURITY_ACCOUNT,
             "SECURITY_ACCOUNT": xtconstant.SECURITY_ACCOUNT,
             "STOCK_ACCOUNT": xtconstant.SECURITY_ACCOUNT,
             "MARGIN": xtconstant.CREDIT_ACCOUNT,
             "CREDIT_ACCOUNT": xtconstant.CREDIT_ACCOUNT,
+            "FUTURE_OPTION": xtconstant.FUTURE_OPTION_ACCOUNT,
+            "FUTURE_OPTION_ACCOUNT": xtconstant.FUTURE_OPTION_ACCOUNT,
+            "FUTUREOPTION": xtconstant.FUTURE_OPTION_ACCOUNT,
+            "STOCK_OPTION": xtconstant.STOCK_OPTION_ACCOUNT,
+            "STOCK_OPTION_ACCOUNT": xtconstant.STOCK_OPTION_ACCOUNT,
+            "STOCKOPTION": xtconstant.STOCK_OPTION_ACCOUNT,
+            "OPTION": xtconstant.STOCK_OPTION_ACCOUNT,
         }
         if text in aliases:
             return aliases[text]
@@ -191,6 +200,35 @@ def _exchange_suffix(value):
         "70": "BJ",
         "BJ": "BJ",
         "BSE": "BJ",
+        "3": "SF",
+        "SF": "SF",
+        "SHFE": "SF",
+        "SHF": "SF",
+        "4": "DF",
+        "DF": "DF",
+        "DCE": "DF",
+        "DLCE": "DF",
+        "5": "ZF",
+        "ZF": "ZF",
+        "CZCE": "ZF",
+        "ZCE": "ZF",
+        "2": "IF",
+        "IF": "IF",
+        "CFFEX": "IF",
+        "CFX": "IF",
+        "6": "INE",
+        "INE": "INE",
+        "75": "GF",
+        "GF": "GF",
+        "GFEX": "GF",
+        "7": "SHO",
+        "SHO": "SHO",
+        "SSEOPTION": "SHO",
+        "SSE_OPTION": "SHO",
+        "67": "SZO",
+        "SZO": "SZO",
+        "SZSEOPTION": "SZO",
+        "SZSE_OPTION": "SZO",
     }
     return aliases.get(text, text)
 

@@ -24,11 +24,16 @@ import subprocess
 import tempfile
 import threading
 import time
+import tokenize
 import urllib.parse
 import urllib.request
 import zipfile
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+try:
+    import psutil
+except Exception:
+    psutil = None
 try:
     from importlib import resources as importlib_resources
     if not hasattr(importlib_resources, "files"):
@@ -65,6 +70,7 @@ _prepend_import_path(_PROJECT_DIR)
 _prepend_import_path(_LTTX_TX_DIR)
 
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
+from cfquant import xtconstant as cf_xtconstant
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
@@ -404,6 +410,54 @@ AVATAR_UPLOAD_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 STOCK_BUY = 23
 STOCK_SELL = 24
 FIX_PRICE = 11
+CREDIT_BUY = 33
+CREDIT_SELL = 34
+CREDIT_FIN_BUY = 27
+CREDIT_SLO_SELL = 28
+CREDIT_BUY_SECU_REPAY = 29
+CREDIT_DIRECT_SECU_REPAY = 30
+CREDIT_SELL_SECU_REPAY = 31
+CREDIT_DIRECT_CASH_REPAY = 32
+CREDIT_FIN_BUY_SPECIAL = 70
+CREDIT_SLO_SELL_SPECIAL = 71
+CREDIT_BUY_SECU_REPAY_SPECIAL = 72
+CREDIT_DIRECT_SECU_REPAY_SPECIAL = 73
+CREDIT_SELL_SECU_REPAY_SPECIAL = 74
+CREDIT_DIRECT_CASH_REPAY_SPECIAL = 75
+FUTURE_OPEN_LONG = cf_xtconstant.FUTURE_OPEN_LONG
+FUTURE_CLOSE_LONG_HISTORY = cf_xtconstant.FUTURE_CLOSE_LONG_HISTORY
+FUTURE_CLOSE_LONG_TODAY = cf_xtconstant.FUTURE_CLOSE_LONG_TODAY
+FUTURE_OPEN_SHORT = cf_xtconstant.FUTURE_OPEN_SHORT
+FUTURE_CLOSE_SHORT_HISTORY = cf_xtconstant.FUTURE_CLOSE_SHORT_HISTORY
+FUTURE_CLOSE_SHORT_TODAY = cf_xtconstant.FUTURE_CLOSE_SHORT_TODAY
+FUTURE_CLOSE_LONG_TODAY_FIRST = cf_xtconstant.FUTURE_CLOSE_LONG_TODAY_FIRST
+FUTURE_CLOSE_LONG_HISTORY_FIRST = cf_xtconstant.FUTURE_CLOSE_LONG_HISTORY_FIRST
+FUTURE_CLOSE_SHORT_TODAY_FIRST = cf_xtconstant.FUTURE_CLOSE_SHORT_TODAY_FIRST
+FUTURE_CLOSE_SHORT_HISTORY_FIRST = cf_xtconstant.FUTURE_CLOSE_SHORT_HISTORY_FIRST
+FUTURE_CLOSE_LONG_TODAY_HISTORY_THEN_OPEN_SHORT = cf_xtconstant.FUTURE_CLOSE_LONG_TODAY_HISTORY_THEN_OPEN_SHORT
+FUTURE_CLOSE_LONG_HISTORY_TODAY_THEN_OPEN_SHORT = cf_xtconstant.FUTURE_CLOSE_LONG_HISTORY_TODAY_THEN_OPEN_SHORT
+FUTURE_CLOSE_SHORT_TODAY_HISTORY_THEN_OPEN_LONG = cf_xtconstant.FUTURE_CLOSE_SHORT_TODAY_HISTORY_THEN_OPEN_LONG
+FUTURE_CLOSE_SHORT_HISTORY_TODAY_THEN_OPEN_LONG = cf_xtconstant.FUTURE_CLOSE_SHORT_HISTORY_TODAY_THEN_OPEN_LONG
+FUTURE_OPEN = cf_xtconstant.FUTURE_OPEN
+FUTURE_CLOSE = cf_xtconstant.FUTURE_CLOSE
+FUTURE_ARBITRAGE_OPEN = cf_xtconstant.FUTURE_ARBITRAGE_OPEN
+FUTURE_ARBITRAGE_CLOSE_HISTORY_FIRST = cf_xtconstant.FUTURE_ARBITRAGE_CLOSE_HISTORY_FIRST
+FUTURE_ARBITRAGE_CLOSE_TODAY_FIRST = cf_xtconstant.FUTURE_ARBITRAGE_CLOSE_TODAY_FIRST
+FUTURE_RENEW_LONG_CLOSE_HISTORY_FIRST = cf_xtconstant.FUTURE_RENEW_LONG_CLOSE_HISTORY_FIRST
+FUTURE_RENEW_LONG_CLOSE_TODAY_FIRST = cf_xtconstant.FUTURE_RENEW_LONG_CLOSE_TODAY_FIRST
+FUTURE_RENEW_SHORT_CLOSE_HISTORY_FIRST = cf_xtconstant.FUTURE_RENEW_SHORT_CLOSE_HISTORY_FIRST
+FUTURE_RENEW_SHORT_CLOSE_TODAY_FIRST = cf_xtconstant.FUTURE_RENEW_SHORT_CLOSE_TODAY_FIRST
+STOCK_OPTION_BUY_OPEN = cf_xtconstant.STOCK_OPTION_BUY_OPEN
+STOCK_OPTION_SELL_CLOSE = cf_xtconstant.STOCK_OPTION_SELL_CLOSE
+STOCK_OPTION_SELL_OPEN = cf_xtconstant.STOCK_OPTION_SELL_OPEN
+STOCK_OPTION_BUY_CLOSE = cf_xtconstant.STOCK_OPTION_BUY_CLOSE
+STOCK_OPTION_COVERED_OPEN = cf_xtconstant.STOCK_OPTION_COVERED_OPEN
+STOCK_OPTION_COVERED_CLOSE = cf_xtconstant.STOCK_OPTION_COVERED_CLOSE
+STOCK_OPTION_CALL_EXERCISE = cf_xtconstant.STOCK_OPTION_CALL_EXERCISE
+STOCK_OPTION_PUT_EXERCISE = cf_xtconstant.STOCK_OPTION_PUT_EXERCISE
+STOCK_OPTION_SECU_LOCK = cf_xtconstant.STOCK_OPTION_SECU_LOCK
+STOCK_OPTION_SECU_UNLOCK = cf_xtconstant.STOCK_OPTION_SECU_UNLOCK
+OPTION_FUTURE_OPTION_EXERCISE = cf_xtconstant.OPTION_FUTURE_OPTION_EXERCISE
 ACCOUNT_ACTIONS = {
     "asset": "xttrader.query_stock_asset",
     "positions": "xttrader.query_stock_positions",
@@ -432,6 +486,292 @@ CREDIT_ACTIONS = {
     "compacts": "xttrader.query_stk_compacts",
     "stk_compacts": "xttrader.query_stk_compacts",
 }
+CREDIT_ORDER_ACTIONS = {
+    "credit_buy": {
+        "order_type": CREDIT_BUY,
+        "side": "buy",
+        "label": "担保品买入",
+        "description": "信用账户担保品买入，对应大 QMT passorder opType=33。",
+    },
+    "credit_sell": {
+        "order_type": CREDIT_SELL,
+        "side": "sell",
+        "label": "担保品卖出",
+        "description": "信用账户担保品卖出，对应大 QMT passorder opType=34。",
+    },
+    "credit_fin_buy": {
+        "order_type": CREDIT_FIN_BUY,
+        "side": "buy",
+        "label": "融资买入",
+        "description": "信用账户融资买入，对应大 QMT passorder opType=27。",
+    },
+    "credit_slo_sell": {
+        "order_type": CREDIT_SLO_SELL,
+        "side": "sell",
+        "label": "融券卖出",
+        "description": "信用账户融券卖出，对应大 QMT passorder opType=28。",
+    },
+    "credit_buy_secu_repay": {
+        "order_type": CREDIT_BUY_SECU_REPAY,
+        "side": "buy",
+        "label": "买券还券",
+        "description": "信用账户买券还券，对应大 QMT passorder opType=29。",
+    },
+    "credit_direct_secu_repay": {
+        "order_type": CREDIT_DIRECT_SECU_REPAY,
+        "side": "buy",
+        "label": "直接还券",
+        "description": "信用账户直接还券，对应大 QMT passorder opType=30。",
+    },
+    "credit_sell_secu_repay": {
+        "order_type": CREDIT_SELL_SECU_REPAY,
+        "side": "sell",
+        "label": "卖券还款",
+        "description": "信用账户卖券还款，对应大 QMT passorder opType=31。",
+    },
+    "credit_direct_cash_repay": {
+        "order_type": CREDIT_DIRECT_CASH_REPAY,
+        "side": "sell",
+        "label": "直接还款",
+        "description": "信用账户直接还款，对应大 QMT passorder opType=32。",
+    },
+    "credit_fin_buy_special": {
+        "order_type": CREDIT_FIN_BUY_SPECIAL,
+        "side": "buy",
+        "label": "专项融资买入",
+        "description": "信用账户专项融资买入，对应大 QMT passorder opType=70。",
+    },
+    "credit_slo_sell_special": {
+        "order_type": CREDIT_SLO_SELL_SPECIAL,
+        "side": "sell",
+        "label": "专项融券卖出",
+        "description": "信用账户专项融券卖出，对应大 QMT passorder opType=71。",
+    },
+    "credit_buy_secu_repay_special": {
+        "order_type": CREDIT_BUY_SECU_REPAY_SPECIAL,
+        "side": "buy",
+        "label": "专项买券还券",
+        "description": "信用账户专项买券还券，对应大 QMT passorder opType=72。",
+    },
+    "credit_direct_secu_repay_special": {
+        "order_type": CREDIT_DIRECT_SECU_REPAY_SPECIAL,
+        "side": "buy",
+        "label": "专项直接还券",
+        "description": "信用账户专项直接还券，对应大 QMT passorder opType=73。",
+    },
+    "credit_sell_secu_repay_special": {
+        "order_type": CREDIT_SELL_SECU_REPAY_SPECIAL,
+        "side": "sell",
+        "label": "专项卖券还款",
+        "description": "信用账户专项卖券还款，对应大 QMT passorder opType=74。",
+    },
+    "credit_direct_cash_repay_special": {
+        "order_type": CREDIT_DIRECT_CASH_REPAY_SPECIAL,
+        "side": "sell",
+        "label": "专项直接还款",
+        "description": "信用账户专项直接还款，对应大 QMT passorder opType=75。",
+    },
+}
+CREDIT_ORDER_ACTION_ALIASES = {
+    "buy": "credit_buy",
+    "collateral_buy": "credit_buy",
+    "assure_buy": "credit_buy",
+    "担保品买入": "credit_buy",
+    "sell": "credit_sell",
+    "collateral_sell": "credit_sell",
+    "assure_sell": "credit_sell",
+    "担保品卖出": "credit_sell",
+    "fin_buy": "credit_fin_buy",
+    "finance_buy": "credit_fin_buy",
+    "margin_buy": "credit_fin_buy",
+    "融资买入": "credit_fin_buy",
+    "slo_sell": "credit_slo_sell",
+    "short_sell": "credit_slo_sell",
+    "融券卖出": "credit_slo_sell",
+    "buy_secu_repay": "credit_buy_secu_repay",
+    "buy_security_repay": "credit_buy_secu_repay",
+    "买券还券": "credit_buy_secu_repay",
+    "direct_secu_repay": "credit_direct_secu_repay",
+    "direct_security_repay": "credit_direct_secu_repay",
+    "直接还券": "credit_direct_secu_repay",
+    "sell_secu_repay": "credit_sell_secu_repay",
+    "sell_security_repay": "credit_sell_secu_repay",
+    "卖券还款": "credit_sell_secu_repay",
+    "direct_cash_repay": "credit_direct_cash_repay",
+    "cash_repay": "credit_direct_cash_repay",
+    "直接还款": "credit_direct_cash_repay",
+    "fin_buy_special": "credit_fin_buy_special",
+    "finance_buy_special": "credit_fin_buy_special",
+    "margin_buy_special": "credit_fin_buy_special",
+    "专项融资买入": "credit_fin_buy_special",
+    "slo_sell_special": "credit_slo_sell_special",
+    "short_sell_special": "credit_slo_sell_special",
+    "专项融券卖出": "credit_slo_sell_special",
+    "buy_secu_repay_special": "credit_buy_secu_repay_special",
+    "专项买券还券": "credit_buy_secu_repay_special",
+    "direct_secu_repay_special": "credit_direct_secu_repay_special",
+    "专项直接还券": "credit_direct_secu_repay_special",
+    "sell_secu_repay_special": "credit_sell_secu_repay_special",
+    "专项卖券还款": "credit_sell_secu_repay_special",
+    "direct_cash_repay_special": "credit_direct_cash_repay_special",
+    "专项直接还款": "credit_direct_cash_repay_special",
+}
+CREDIT_ORDER_TYPE_ACTIONS = dict(
+    (int(info["order_type"]), action)
+    for action, info in CREDIT_ORDER_ACTIONS.items()
+)
+QMT_ENTRY_SCRIPT_NAME_SET = {
+    name.replace("\\", "/")
+    for name in QMT_ENTRY_SCRIPT_NAMES
+}
+
+
+def _qmt_entry_script_roots():
+    roots = []
+    for base in (BASE_DIR, _SOURCE_ROOT):
+        root = os.path.abspath(os.path.join(base, "qmt_scripts"))
+        if root not in roots and os.path.isdir(root):
+            roots.append(root)
+    return roots
+
+
+def _normalize_qmt_entry_script_name(value):
+    name = str(value or "").strip().replace("\\", "/")
+    name = posixpath.normpath(name).lstrip("/")
+    if not name or name == "." or ".." in name.split("/"):
+        raise ValueError("invalid QMT script name")
+    if name not in QMT_ENTRY_SCRIPT_NAME_SET:
+        raise ValueError("unsupported QMT script: %s" % name)
+    return name
+
+
+def qmt_entry_script_sources(names):
+    result = []
+    seen = set()
+    for raw_name in names or []:
+        name = _normalize_qmt_entry_script_name(raw_name)
+        if name in seen:
+            continue
+        seen.add(name)
+        source_path = None
+        for root in _qmt_entry_script_roots():
+            candidate = os.path.abspath(os.path.join(root, *name.split("/")))
+            try:
+                inside_root = os.path.commonpath([root, candidate]) == root
+            except ValueError:
+                inside_root = False
+            if inside_root and os.path.isfile(candidate):
+                source_path = candidate
+                break
+        if not source_path:
+            raise FileNotFoundError("QMT script not found: %s" % name)
+        try:
+            with tokenize.open(source_path) as source_file:
+                source = source_file.read()
+        except Exception:
+            with open(source_path, "r", encoding="utf-8", errors="replace") as source_file:
+                source = source_file.read()
+        result.append({
+            "name": os.path.basename(name),
+            "path": name,
+            "source": source,
+            "line_count": len(source.splitlines()),
+        })
+    return result
+CREDIT_LEGACY_ORDER_TYPE_MAP = {
+    STOCK_BUY: CREDIT_BUY,
+    STOCK_SELL: CREDIT_SELL,
+    40: CREDIT_FIN_BUY_SPECIAL,
+    41: CREDIT_SLO_SELL_SPECIAL,
+    42: CREDIT_BUY_SECU_REPAY_SPECIAL,
+    43: CREDIT_DIRECT_SECU_REPAY_SPECIAL,
+    44: CREDIT_SELL_SECU_REPAY_SPECIAL,
+    45: CREDIT_DIRECT_CASH_REPAY_SPECIAL,
+}
+FUTURE_ORDER_ACTIONS = {
+    "future_open_long": {"order_type": FUTURE_OPEN_LONG, "side": "buy", "label": "期货开多", "description": "MiniQMT FUTURE_OPEN_LONG，大 QMT passorder opType=0。"},
+    "future_close_long_history": {"order_type": FUTURE_CLOSE_LONG_HISTORY, "side": "sell", "label": "期货平昨多", "description": "MiniQMT FUTURE_CLOSE_LONG_HISTORY，大 QMT passorder opType=1。"},
+    "future_close_long_today": {"order_type": FUTURE_CLOSE_LONG_TODAY, "side": "sell", "label": "期货平今多", "description": "MiniQMT FUTURE_CLOSE_LONG_TODAY，大 QMT passorder opType=2。"},
+    "future_open_short": {"order_type": FUTURE_OPEN_SHORT, "side": "sell", "label": "期货开空", "description": "MiniQMT FUTURE_OPEN_SHORT，大 QMT passorder opType=3。"},
+    "future_close_short_history": {"order_type": FUTURE_CLOSE_SHORT_HISTORY, "side": "buy", "label": "期货平昨空", "description": "MiniQMT FUTURE_CLOSE_SHORT_HISTORY，大 QMT passorder opType=4。"},
+    "future_close_short_today": {"order_type": FUTURE_CLOSE_SHORT_TODAY, "side": "buy", "label": "期货平今空", "description": "MiniQMT FUTURE_CLOSE_SHORT_TODAY，大 QMT passorder opType=5。"},
+    "future_close_long_today_first": {"order_type": FUTURE_CLOSE_LONG_TODAY_FIRST, "side": "sell", "label": "期货平多今优先", "description": "MiniQMT FUTURE_CLOSE_LONG_TODAY_FIRST，大 QMT passorder opType=6。"},
+    "future_close_long_history_first": {"order_type": FUTURE_CLOSE_LONG_HISTORY_FIRST, "side": "sell", "label": "期货平多昨优先", "description": "MiniQMT FUTURE_CLOSE_LONG_HISTORY_FIRST，大 QMT passorder opType=7。"},
+    "future_close_short_today_first": {"order_type": FUTURE_CLOSE_SHORT_TODAY_FIRST, "side": "buy", "label": "期货平空今优先", "description": "MiniQMT FUTURE_CLOSE_SHORT_TODAY_FIRST，大 QMT passorder opType=8。"},
+    "future_close_short_history_first": {"order_type": FUTURE_CLOSE_SHORT_HISTORY_FIRST, "side": "buy", "label": "期货平空昨优先", "description": "MiniQMT FUTURE_CLOSE_SHORT_HISTORY_FIRST，大 QMT passorder opType=9。"},
+    "future_close_long_today_history_then_open_short": {"order_type": FUTURE_CLOSE_LONG_TODAY_HISTORY_THEN_OPEN_SHORT, "side": "sell", "label": "平多今昨后开空", "description": "MiniQMT FUTURE_CLOSE_LONG_TODAY_HISTORY_THEN_OPEN_SHORT，大 QMT passorder opType=10。"},
+    "future_close_long_history_today_then_open_short": {"order_type": FUTURE_CLOSE_LONG_HISTORY_TODAY_THEN_OPEN_SHORT, "side": "sell", "label": "平多昨今后开空", "description": "MiniQMT FUTURE_CLOSE_LONG_HISTORY_TODAY_THEN_OPEN_SHORT，大 QMT passorder opType=11。"},
+    "future_close_short_today_history_then_open_long": {"order_type": FUTURE_CLOSE_SHORT_TODAY_HISTORY_THEN_OPEN_LONG, "side": "buy", "label": "平空今昨后开多", "description": "MiniQMT FUTURE_CLOSE_SHORT_TODAY_HISTORY_THEN_OPEN_LONG，大 QMT passorder opType=12。"},
+    "future_close_short_history_today_then_open_long": {"order_type": FUTURE_CLOSE_SHORT_HISTORY_TODAY_THEN_OPEN_LONG, "side": "buy", "label": "平空昨今后开多", "description": "MiniQMT FUTURE_CLOSE_SHORT_HISTORY_TODAY_THEN_OPEN_LONG，大 QMT passorder opType=13。"},
+    "future_open": {"order_type": FUTURE_OPEN, "side": "", "label": "期货开仓", "description": "MiniQMT FUTURE_OPEN，大 QMT passorder opType=14。"},
+    "future_close": {"order_type": FUTURE_CLOSE, "side": "", "label": "期货平仓", "description": "MiniQMT FUTURE_CLOSE，大 QMT passorder opType=15。"},
+    "future_arbitrage_open": {"order_type": FUTURE_ARBITRAGE_OPEN, "side": "", "label": "期货套利开仓", "description": "MiniQMT FUTURE_ARBITRAGE_OPEN，大 QMT passorder opType=16。"},
+    "future_arbitrage_close_history_first": {"order_type": FUTURE_ARBITRAGE_CLOSE_HISTORY_FIRST, "side": "", "label": "套利平仓昨优先", "description": "MiniQMT FUTURE_ARBITRAGE_CLOSE_HISTORY_FIRST，大 QMT passorder opType=17。"},
+    "future_arbitrage_close_today_first": {"order_type": FUTURE_ARBITRAGE_CLOSE_TODAY_FIRST, "side": "", "label": "套利平仓今优先", "description": "MiniQMT FUTURE_ARBITRAGE_CLOSE_TODAY_FIRST，大 QMT passorder opType=18。"},
+    "future_renew_long_close_history_first": {"order_type": FUTURE_RENEW_LONG_CLOSE_HISTORY_FIRST, "side": "sell", "label": "多头换月平昨优先", "description": "MiniQMT FUTURE_RENEW_LONG_CLOSE_HISTORY_FIRST，大 QMT passorder opType=19。"},
+    "future_renew_long_close_today_first": {"order_type": FUTURE_RENEW_LONG_CLOSE_TODAY_FIRST, "side": "sell", "label": "多头换月平今优先", "description": "MiniQMT FUTURE_RENEW_LONG_CLOSE_TODAY_FIRST，大 QMT passorder opType=20。"},
+    "future_renew_short_close_history_first": {"order_type": FUTURE_RENEW_SHORT_CLOSE_HISTORY_FIRST, "side": "buy", "label": "空头换月平昨优先", "description": "MiniQMT FUTURE_RENEW_SHORT_CLOSE_HISTORY_FIRST，大 QMT passorder opType=21。"},
+    "future_renew_short_close_today_first": {"order_type": FUTURE_RENEW_SHORT_CLOSE_TODAY_FIRST, "side": "buy", "label": "空头换月平今优先", "description": "MiniQMT FUTURE_RENEW_SHORT_CLOSE_TODAY_FIRST，大 QMT passorder opType=22。"},
+}
+FUTURE_OPTION_ORDER_ACTIONS = dict(FUTURE_ORDER_ACTIONS)
+FUTURE_OPTION_ORDER_ACTIONS["future_option_exercise"] = {
+    "order_type": OPTION_FUTURE_OPTION_EXERCISE,
+    "side": "",
+    "label": "期货期权行权",
+    "description": "MiniQMT OPTION_FUTURE_OPTION_EXERCISE，按大 QMT passorder opType=100 透传。",
+}
+STOCK_OPTION_ORDER_ACTIONS = {
+    "stock_option_buy_open": {"order_type": STOCK_OPTION_BUY_OPEN, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_BUY_OPEN, "side": "buy", "label": "股票期权买入开仓", "description": "MiniQMT STOCK_OPTION_BUY_OPEN=48，桥接到大 QMT opType=50。"},
+    "stock_option_sell_close": {"order_type": STOCK_OPTION_SELL_CLOSE, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_SELL_CLOSE, "side": "sell", "label": "股票期权卖出平仓", "description": "MiniQMT STOCK_OPTION_SELL_CLOSE=49，桥接到大 QMT opType=51。"},
+    "stock_option_sell_open": {"order_type": STOCK_OPTION_SELL_OPEN, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_SELL_OPEN, "side": "sell", "label": "股票期权卖出开仓", "description": "MiniQMT STOCK_OPTION_SELL_OPEN=50，桥接到大 QMT opType=52。"},
+    "stock_option_buy_close": {"order_type": STOCK_OPTION_BUY_CLOSE, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_BUY_CLOSE, "side": "buy", "label": "股票期权买入平仓", "description": "MiniQMT STOCK_OPTION_BUY_CLOSE=51，桥接到大 QMT opType=53。"},
+    "stock_option_covered_open": {"order_type": STOCK_OPTION_COVERED_OPEN, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_COVERED_OPEN, "side": "sell", "label": "股票期权备兑开仓", "description": "MiniQMT STOCK_OPTION_COVERED_OPEN=52，桥接到大 QMT opType=54。"},
+    "stock_option_covered_close": {"order_type": STOCK_OPTION_COVERED_CLOSE, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_COVERED_CLOSE, "side": "buy", "label": "股票期权备兑平仓", "description": "MiniQMT STOCK_OPTION_COVERED_CLOSE=53，桥接到大 QMT opType=55。"},
+    "stock_option_call_exercise": {"order_type": STOCK_OPTION_CALL_EXERCISE, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_CALL_EXERCISE, "side": "", "label": "股票期权认购行权", "description": "MiniQMT STOCK_OPTION_CALL_EXERCISE=54，桥接到大 QMT opType=56。"},
+    "stock_option_put_exercise": {"order_type": STOCK_OPTION_PUT_EXERCISE, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_PUT_EXERCISE, "side": "", "label": "股票期权认沽行权", "description": "MiniQMT STOCK_OPTION_PUT_EXERCISE=55，桥接到大 QMT opType=57。"},
+    "stock_option_secu_lock": {"order_type": STOCK_OPTION_SECU_LOCK, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_SECU_LOCK, "side": "", "label": "股票期权证券锁定", "description": "MiniQMT STOCK_OPTION_SECU_LOCK=56，桥接到大 QMT opType=58。"},
+    "stock_option_secu_unlock": {"order_type": STOCK_OPTION_SECU_UNLOCK, "qmt_order_type": cf_xtconstant.QMT_STOCK_OPTION_SECU_UNLOCK, "side": "", "label": "股票期权证券解锁", "description": "MiniQMT STOCK_OPTION_SECU_UNLOCK=57，桥接到大 QMT opType=59。"},
+}
+ORDER_ACTIONS_BY_ACCOUNT_TYPE = {
+    "FUTURE": FUTURE_ORDER_ACTIONS,
+    "FUTURE_OPTION": FUTURE_OPTION_ORDER_ACTIONS,
+    "STOCK_OPTION": STOCK_OPTION_ORDER_ACTIONS,
+}
+DERIVATIVE_ACCOUNT_TYPES = set(ORDER_ACTIONS_BY_ACCOUNT_TYPE)
+ORDER_ACTION_ALIASES = {
+    "open_long": "future_open_long",
+    "buy_open": "future_open_long",
+    "close_long": "future_close_long_history_first",
+    "sell_close": "future_close_long_history_first",
+    "close_long_history": "future_close_long_history",
+    "close_long_today": "future_close_long_today",
+    "open_short": "future_open_short",
+    "sell_open": "future_open_short",
+    "close_short": "future_close_short_history_first",
+    "buy_close": "future_close_short_history_first",
+    "close_short_history": "future_close_short_history",
+    "close_short_today": "future_close_short_today",
+    "open": "future_open",
+    "close": "future_close",
+    "exercise": "future_option_exercise",
+    "option_future_option_exercise": "future_option_exercise",
+    "stock_option_buy_open": "stock_option_buy_open",
+    "stock_option_sell_close": "stock_option_sell_close",
+    "stock_option_sell_open": "stock_option_sell_open",
+    "stock_option_buy_close": "stock_option_buy_close",
+    "covered_open": "stock_option_covered_open",
+    "covered_close": "stock_option_covered_close",
+    "call_exercise": "stock_option_call_exercise",
+    "put_exercise": "stock_option_put_exercise",
+    "secu_lock": "stock_option_secu_lock",
+    "secu_unlock": "stock_option_secu_unlock",
+    "lock": "stock_option_secu_lock",
+    "unlock": "stock_option_secu_unlock",
+}
+ORDER_TYPE_ACTIONS_BY_ACCOUNT_TYPE = {
+    account_type: dict((int(info["order_type"]), action) for action, info in actions.items())
+    for account_type, actions in ORDER_ACTIONS_BY_ACCOUNT_TYPE.items()
+}
 CREDIT_PROBE_ACTIONS = [
     ("asset", "xttrader.query_stock_asset"),
     ("positions", "xttrader.query_stock_positions"),
@@ -446,6 +786,9 @@ CREDIT_PROBE_ACTIONS = [
 ACCOUNT_TYPE_LABELS = {
     "STOCK": "普通",
     "CREDIT": "信用",
+    "FUTURE": "期货",
+    "FUTURE_OPTION": "期货期权",
+    "STOCK_OPTION": "股票期权",
 }
 DOWNLOAD_CALLBACK_EVENT = "xtdata:download_progress"
 DOWNLOAD_EVENT_PREFIX = "xtdata:download"
@@ -478,6 +821,11 @@ def normalize_account_type(value=None, default="STOCK"):
         "普通": "STOCK",
         "普通账户": "STOCK",
         "普通证券账户": "STOCK",
+        "1": "FUTURE",
+        "FUTURE": "FUTURE",
+        "FUTURE_ACCOUNT": "FUTURE",
+        "期货": "FUTURE",
+        "期货账户": "FUTURE",
         "3": "CREDIT",
         "CREDIT": "CREDIT",
         "MARGIN": "CREDIT",
@@ -486,15 +834,289 @@ def normalize_account_type(value=None, default="STOCK"):
         "信用": "CREDIT",
         "信用账户": "CREDIT",
         "融资融券": "CREDIT",
+        "5": "FUTURE_OPTION",
+        "FUTURE_OPTION": "FUTURE_OPTION",
+        "FUTURE_OPTION_ACCOUNT": "FUTURE_OPTION",
+        "FUTUREOPTION": "FUTURE_OPTION",
+        "期货期权": "FUTURE_OPTION",
+        "期货期权账户": "FUTURE_OPTION",
+        "6": "STOCK_OPTION",
+        "STOCK_OPTION": "STOCK_OPTION",
+        "STOCK_OPTION_ACCOUNT": "STOCK_OPTION",
+        "STOCKOPTION": "STOCK_OPTION",
+        "OPTION": "STOCK_OPTION",
+        "股票期权": "STOCK_OPTION",
+        "股票期权账户": "STOCK_OPTION",
     }
     account_type = aliases.get(upper) or aliases.get(text) or upper
-    if account_type not in ("STOCK", "CREDIT"):
+    if account_type not in ("STOCK", "CREDIT", "FUTURE", "FUTURE_OPTION", "STOCK_OPTION"):
         raise ValueError("unsupported account_type: %s" % text)
     return account_type
 
 
 def account_type_label(account_type):
     return ACCOUNT_TYPE_LABELS.get(normalize_account_type(account_type), normalize_account_type(account_type))
+
+
+def normalize_credit_order_action(value=None, side=None):
+    text = str(value or "").strip()
+    if not text:
+        side_text = str(side or "").strip().lower()
+        return "credit_sell" if side_text == "sell" else "credit_buy"
+    lowered = text.lower()
+    normalized = CREDIT_ORDER_ACTION_ALIASES.get(lowered) or CREDIT_ORDER_ACTION_ALIASES.get(text)
+    if normalized:
+        return normalized
+    normalized = lowered if lowered.startswith("credit_") else "credit_%s" % lowered
+    if normalized in CREDIT_ORDER_ACTIONS:
+        return normalized
+    raise ValueError("unknown credit order action: %s" % text)
+
+
+def credit_order_action_info(value=None, side=None):
+    action = normalize_credit_order_action(value, side=side)
+    info = dict(CREDIT_ORDER_ACTIONS[action])
+    info["action"] = action
+    return info
+
+
+def credit_actions_info():
+    return {
+        "queries": [
+            {"action": key, "xttrader_action": action}
+            for key, action in sorted(CREDIT_ACTIONS.items())
+        ],
+        "orders": [
+            dict({"action": action}, **CREDIT_ORDER_ACTIONS[action])
+            for action in CREDIT_ORDER_ACTIONS
+        ],
+        "aliases": dict(CREDIT_ORDER_ACTION_ALIASES),
+    }
+
+
+def derivative_order_action_candidates(account_type, text):
+    account_type = normalize_account_type(account_type)
+    text = str(text or "").strip().lower()
+    if not text:
+        return []
+    if account_type == "STOCK_OPTION":
+        aliases = {
+            "buy_open": "stock_option_buy_open",
+            "open_long": "stock_option_buy_open",
+            "sell_close": "stock_option_sell_close",
+            "close_long": "stock_option_sell_close",
+            "sell_open": "stock_option_sell_open",
+            "open_short": "stock_option_sell_open",
+            "buy_close": "stock_option_buy_close",
+            "close_short": "stock_option_buy_close",
+            "covered_open": "stock_option_covered_open",
+            "covered_close": "stock_option_covered_close",
+            "call_exercise": "stock_option_call_exercise",
+            "put_exercise": "stock_option_put_exercise",
+            "secu_lock": "stock_option_secu_lock",
+            "secu_unlock": "stock_option_secu_unlock",
+            "lock": "stock_option_secu_lock",
+            "unlock": "stock_option_secu_unlock",
+        }
+        return [
+            text,
+            aliases.get(text, ""),
+            "stock_option_%s" % text,
+            "stock_%s" % text,
+            "option_%s" % text,
+        ]
+    aliases = {
+        "open_long": "future_open_long",
+        "buy_open": "future_open_long",
+        "close_long": "future_close_long_history_first",
+        "sell_close": "future_close_long_history_first",
+        "close_long_history": "future_close_long_history",
+        "close_long_today": "future_close_long_today",
+        "open_short": "future_open_short",
+        "sell_open": "future_open_short",
+        "close_short": "future_close_short_history_first",
+        "buy_close": "future_close_short_history_first",
+        "close_short_history": "future_close_short_history",
+        "close_short_today": "future_close_short_today",
+        "open": "future_open",
+        "close": "future_close",
+        "exercise": "future_option_exercise",
+        "option_future_option_exercise": "future_option_exercise",
+    }
+    return [
+        text,
+        aliases.get(text, ""),
+        "future_%s" % text,
+    ]
+
+
+def normalize_derivative_order_action(account_type, value=None, side=None):
+    account_type = normalize_account_type(account_type)
+    actions = ORDER_ACTIONS_BY_ACCOUNT_TYPE.get(account_type)
+    if not actions:
+        raise ValueError("unsupported derivative account_type: %s" % account_type)
+    text = str(value or "").strip()
+    if not text:
+        side_text = str(side or "").strip().lower()
+        if account_type == "STOCK_OPTION":
+            return "stock_option_sell_open" if side_text == "sell" else "stock_option_buy_open"
+        return "future_open_short" if side_text == "sell" else "future_open_long"
+    if text.lstrip("+-").isdigit():
+        action = ORDER_TYPE_ACTIONS_BY_ACCOUNT_TYPE.get(account_type, {}).get(int(text))
+        if action:
+            return action
+    for candidate in derivative_order_action_candidates(account_type, text):
+        if candidate and candidate in actions:
+            return candidate
+    raise ValueError("unknown %s order action: %s" % (account_type, text))
+
+
+def derivative_order_action_info(account_type, value=None, side=None):
+    account_type = normalize_account_type(account_type)
+    action = normalize_derivative_order_action(account_type, value, side=side)
+    info = dict(ORDER_ACTIONS_BY_ACCOUNT_TYPE[account_type][action])
+    info["action"] = action
+    return info
+
+
+def derivative_order_type_info(account_type, order_type):
+    account_type = normalize_account_type(account_type)
+    order_type = int(order_type)
+    action = ORDER_TYPE_ACTIONS_BY_ACCOUNT_TYPE.get(account_type, {}).get(order_type, "")
+    info = dict(ORDER_ACTIONS_BY_ACCOUNT_TYPE.get(account_type, {}).get(action) or {})
+    if not info:
+        info = {"order_type": order_type, "side": "", "label": "", "description": ""}
+    info["action"] = action
+    info["order_type"] = order_type
+    return info
+
+
+def order_actions_info():
+    return {
+        "credit": [
+            dict({"action": action}, **CREDIT_ORDER_ACTIONS[action])
+            for action in CREDIT_ORDER_ACTIONS
+        ],
+        "future": [
+            dict({"action": action}, **FUTURE_ORDER_ACTIONS[action])
+            for action in FUTURE_ORDER_ACTIONS
+        ],
+        "future_option": [
+            dict({"action": action}, **FUTURE_OPTION_ORDER_ACTIONS[action])
+            for action in FUTURE_OPTION_ORDER_ACTIONS
+        ],
+        "stock_option": [
+            dict({"action": action}, **STOCK_OPTION_ORDER_ACTIONS[action])
+            for action in STOCK_OPTION_ORDER_ACTIONS
+        ],
+        "aliases": dict(ORDER_ACTION_ALIASES),
+        "credit_aliases": dict(CREDIT_ORDER_ACTION_ALIASES),
+    }
+
+
+def order_confirmation_text(action, stock_code, volume, price):
+    return "%s %s %s @ %.3f" % (
+        str(action or "").strip().upper(),
+        normalize_stock_code(stock_code),
+        int(volume),
+        float(price),
+    )
+
+
+def order_confirmation_options(
+    account_type,
+    side,
+    stock_code,
+    volume,
+    price,
+    credit_action=None,
+    order_action=None,
+    order_type=None,
+    allow_legacy_side=False,
+):
+    account_type = normalize_account_type(account_type)
+    side = str(side or "").strip().lower()
+    if account_type == "CREDIT":
+        info = credit_order_action_info(credit_action, side=side)
+        primary = order_confirmation_text(info["action"], stock_code, volume, price)
+        legacy = order_confirmation_text(side, stock_code, volume, price)
+        return [primary, legacy] if allow_legacy_side and legacy != primary else [primary]
+    if account_type in DERIVATIVE_ACCOUNT_TYPES:
+        if order_action not in (None, ""):
+            info = derivative_order_action_info(account_type, order_action, side=side)
+        elif order_type not in (None, ""):
+            info = derivative_order_type_info(account_type, order_type)
+        else:
+            info = derivative_order_action_info(account_type, None, side=side)
+        action = info.get("action") or "ORDER_TYPE_%s" % info.get("order_type")
+        return [order_confirmation_text(action, stock_code, volume, price)]
+    return [order_confirmation_text(side, stock_code, volume, price)]
+
+
+def resolve_order_action(account_type, side, credit_action=None, order_action=None, explicit_order_type=None):
+    account_type = normalize_account_type(account_type)
+    if account_type == "CREDIT":
+        if credit_action not in (None, ""):
+            info = credit_order_action_info(credit_action, side=side)
+            return {
+                "side": info["side"],
+                "order_type": int(info["order_type"]),
+                "credit_action": info["action"],
+                "credit_action_label": info["label"],
+                "order_action": "",
+                "order_action_label": "",
+            }
+        if explicit_order_type not in (None, ""):
+            order_type = int(explicit_order_type)
+            order_type = CREDIT_LEGACY_ORDER_TYPE_MAP.get(order_type, order_type)
+            action = CREDIT_ORDER_TYPE_ACTIONS.get(order_type, "")
+            info = CREDIT_ORDER_ACTIONS.get(action) or {}
+            return {
+                "side": info.get("side") or str(side or "").strip().lower(),
+                "order_type": order_type,
+                "credit_action": action,
+                "credit_action_label": info.get("label", ""),
+                "order_action": "",
+                "order_action_label": "",
+            }
+        info = credit_order_action_info(None, side=side)
+        return {
+            "side": info["side"],
+            "order_type": int(info["order_type"]),
+            "credit_action": info["action"],
+            "credit_action_label": info["label"],
+            "order_action": "",
+            "order_action_label": "",
+        }
+    if account_type in DERIVATIVE_ACCOUNT_TYPES:
+        if order_action not in (None, ""):
+            info = derivative_order_action_info(account_type, order_action, side=side)
+        elif explicit_order_type not in (None, ""):
+            info = derivative_order_type_info(account_type, explicit_order_type)
+        else:
+            info = derivative_order_action_info(account_type, None, side=side)
+        return {
+            "side": info.get("side") or str(side or "").strip().lower(),
+            "order_type": int(info["order_type"]),
+            "credit_action": "",
+            "credit_action_label": "",
+            "order_action": info.get("action", ""),
+            "order_action_label": info.get("label", ""),
+        }
+    order_type = explicit_order_type
+    if order_type in (None, ""):
+        side = str(side or "").strip().lower()
+        if side not in ("buy", "sell"):
+            raise ValueError("side must be buy or sell")
+        order_type = STOCK_BUY if side == "buy" else STOCK_SELL
+    return {
+        "side": str(side or "").strip().lower(),
+        "order_type": int(order_type),
+        "credit_action": "",
+        "credit_action_label": "",
+        "order_action": "",
+        "order_action_label": "",
+    }
 
 
 def account_key_for(account_id, account_type=None, bridge_id=None):
@@ -5861,6 +6483,150 @@ class CfquantUpdater(object):
                     "size": len(content),
                 })
 
+    def install_local_core_to_qmt_dir(
+        self,
+        qmt_dir,
+        bridge_id=None,
+        qmt_role="normal",
+        account_keys=None,
+        source_dir=None,
+    ):
+        configured_dir = normalize_optional_path(qmt_dir)
+        bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
+        result = {
+            "bridge_id": bridge_id,
+            "qmt_role": str(qmt_role or "normal"),
+            "account_keys": list(account_keys or []),
+            "configured_dir": configured_dir,
+            "qmt_dir": configured_dir,
+            "python_dir": "",
+            "project_dir": "",
+            "current_core": "",
+            "source_core": "",
+            "updated": False,
+            "skipped": False,
+            "backup": None,
+            "removed_backups": [],
+            "current_version": "",
+            "qmt_restart_required": qmt_restart_not_required_info(
+                reason="尚未执行 QMT 核心包自动复制"
+            ),
+            "error": "",
+            "warning": "",
+            "message": "",
+        }
+        if not configured_dir:
+            result.update({
+                "skipped": True,
+                "warning": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
+                "message": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
+            })
+            return result
+
+        target = None
+        current = ""
+        temp_new = ""
+        backup = None
+        installed = False
+        try:
+            with self._lock:
+                target = self._target_paths(configured_dir)
+                target["bridge_id"] = bridge_id
+                target["qmt_role"] = str(qmt_role or "normal")
+                target["account_keys"] = list(account_keys or [])
+                result.update({
+                    "python_dir": target.get("python_dir") or "",
+                    "project_dir": target.get("project_dir") or "",
+                    "current_core": target.get("current_core") or "",
+                    "script_dir": target.get("script_dir") or "",
+                    "layout": target.get("layout") or "",
+                })
+                python_dir = normalize_optional_path(target.get("python_dir"))
+                if not python_dir or not os.path.isdir(python_dir):
+                    raise RuntimeError("QMT 核心目录不存在: %s" % (python_dir or configured_dir))
+                if os.path.basename(os.path.normpath(python_dir)).lower() != "bin.x64":
+                    raise RuntimeError(
+                        "自动复制仅支持 QMT 的 bin.x64 目录，请填写 QMT 安装目录或 bin.x64: %s"
+                        % python_dir
+                    )
+
+                source_root = normalize_optional_path(source_dir or BASE_DIR)
+                source_core = self._find_source_core(source_root)
+                if not source_core:
+                    raise RuntimeError("本地项目中未找到 cfquant 核心目录: %s" % source_root)
+                self._validate_core_dir(source_core)
+                result["source_core"] = source_core
+
+                current = target["current_core"]
+                if os.path.isfile(current):
+                    raise RuntimeError("目标路径已存在但不是目录: %s" % current)
+                if self._core_content_equal(source_core, current):
+                    result.update({
+                        "skipped": True,
+                        "current_version": self._read_version(current),
+                        "qmt_restart_required": qmt_restart_not_required_info(
+                            reason="QMT 核心包已是当前项目版本"
+                        ),
+                        "message": "QMT 核心包已是当前项目版本，无需重复复制",
+                    })
+                    return result
+
+                os.makedirs(target["updates_dir"], exist_ok=True)
+                os.makedirs(target["backup_dir"], exist_ok=True)
+                if os.path.isdir(current):
+                    backup = self._backup_current_core(target, label="auto")
+                temp_new = os.path.join(
+                    target["updates_dir"],
+                    "new_core_%s_%s" % (self._timestamp(), str(qmt_role or "normal")),
+                )
+                self._copy_core(source_core, temp_new)
+                if os.path.isdir(current):
+                    self._remove_tree(current)
+                os.replace(temp_new, current)
+                installed = True
+                meta = {
+                    "source": "local_account_binding",
+                    "reason": "保存账号配置时自动复制 cfquant 核心包",
+                    "bridge_id": bridge_id,
+                    "qmt_role": str(qmt_role or "normal"),
+                }
+                self._write_install_meta(target, meta, source_core, backup)
+                removed = self._prune_backups(target["backup_dir"])
+                result.update({
+                    "updated": True,
+                    "backup": backup,
+                    "removed_backups": removed,
+                    "current_version": self._read_version(current),
+                    "qmt_restart_required": qmt_restart_required_info(
+                        reason="QMT 核心包自动复制完成",
+                        entry_info=qmt_entry_manual_update_info(
+                            reason="账号保存只自动复制 cfquant 核心包，不会覆盖 QMT 入口策略文件"
+                        ),
+                    ),
+                    "message": "cfquant 核心包已自动复制到 %s" % current,
+                })
+                return result
+        except Exception as e:
+            try:
+                if temp_new:
+                    self._remove_tree(temp_new)
+                if backup:
+                    self._restore_backup_dir(backup, current)
+                elif installed and not backup and current:
+                    self._remove_tree(current)
+            except Exception as restore_error:
+                safe_print("cfquant auto deploy cleanup failed: %s" % restore_error)
+            result["error"] = str(e)
+            result["qmt_restart_required"] = qmt_restart_not_required_info(
+                reason="QMT 核心包自动复制失败"
+            )
+            result["message"] = "cfquant 核心包自动复制失败: %s" % e
+            safe_print(
+                "cfquant QMT core auto deploy failed bridge_id=%s role=%s qmt_dir=%s error=%s"
+                % (bridge_id, qmt_role, configured_dir, e)
+            )
+            return result
+
     def _rollback_legacy(self, bridge_id, backup_name=None):
         with self._lock:
             target = self._require_ready_target(bridge_id)
@@ -6773,6 +7539,36 @@ class CfquantUpdater(object):
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache", ".mypy_cache"),
         )
 
+    def _core_content_equal(self, source_core, target_core):
+        if not self._looks_like_core(source_core) or not self._looks_like_core(target_core):
+            return False
+        ignored_dirs = {"__pycache__", ".pytest_cache", ".mypy_cache"}
+        ignored_suffixes = (".pyc", ".pyo")
+
+        def walk_files(root):
+            rows = []
+            for current_root, dirs, files in os.walk(root):
+                dirs[:] = [name for name in dirs if name not in ignored_dirs]
+                for name in files:
+                    if name.endswith(ignored_suffixes):
+                        continue
+                    path = os.path.join(current_root, name)
+                    rows.append(os.path.relpath(path, root).replace("\\", "/"))
+            rows.sort()
+            return rows
+
+        source_files = walk_files(source_core)
+        target_files = walk_files(target_core)
+        if source_files != target_files:
+            return False
+        for rel_path in source_files:
+            if not file_content_equal(
+                os.path.join(source_core, rel_path.replace("/", os.sep)),
+                os.path.join(target_core, rel_path.replace("/", os.sep)),
+            ):
+                return False
+        return True
+
     def _backup_current_core(self, target, label="backup"):
         os.makedirs(target["backup_dir"], exist_ok=True)
         name = "%s_%s" % (self._timestamp(), label)
@@ -7623,6 +8419,160 @@ def write_qmt_market_bridge_identities(row):
     return results
 
 
+def _auto_deploy_qmt_core_result_summary(results):
+    results = [item for item in (results or []) if isinstance(item, dict)]
+    updated = [item for item in results if item.get("updated")]
+    skipped = [item for item in results if item.get("skipped")]
+    errors = [item for item in results if item.get("error")]
+    warnings = [item for item in results if item.get("warning")]
+    restart_required = any(
+        isinstance(item.get("qmt_restart_required"), dict)
+        and item["qmt_restart_required"].get("required")
+        for item in results
+    )
+    if errors:
+        message = "cfquant 核心包自动复制部分失败：%s" % "；".join(
+            "%s(%s)" % (item.get("qmt_role") or item.get("market") or "QMT", item.get("error"))
+            for item in errors[:3]
+        )
+    elif updated:
+        message = "cfquant 核心包已自动复制到 %d 个 QMT 目录" % len(updated)
+    elif skipped:
+        message = "cfquant 核心包无需复制或已跳过"
+    elif warnings:
+        message = "cfquant 核心包自动复制有提示：%s" % "；".join(
+            item.get("warning") or item.get("message") or ""
+            for item in warnings[:3]
+        )
+    else:
+        message = "没有可自动复制的 QMT 目录"
+    return {
+        "ok": not errors,
+        "updated_count": len(updated),
+        "skipped_count": len(skipped),
+        "error_count": len(errors),
+        "warning_count": len(warnings),
+        "restart_required": restart_required,
+        "message": message,
+    }
+
+
+def auto_deploy_qmt_core_for_account(row, enabled=True):
+    row = row or {}
+    enabled = parse_config_bool(enabled, True)
+    targets = []
+
+    def add_target(qmt_dir, qmt_role, bridge_id=None, account_keys=None, market=""):
+        qmt_dir = normalize_optional_path(qmt_dir)
+        if not qmt_dir:
+            return
+        resolved_dir = qmt_dir
+        try:
+            if UPDATER is not None:
+                target = UPDATER._target_paths(qmt_dir)
+                resolved_dir = normalize_optional_path(target.get("python_dir") or qmt_dir)
+        except Exception:
+            resolved_dir = qmt_dir
+        key = os.path.normcase(os.path.abspath(os.path.normpath(resolved_dir)))
+        for target in targets:
+            if target["key"] == key:
+                if account_keys:
+                    target.setdefault("account_keys", []).extend(
+                        item for item in account_keys if item not in target.setdefault("account_keys", [])
+                    )
+                return
+        targets.append({
+            "key": key,
+            "qmt_dir": qmt_dir,
+            "qmt_role": qmt_role,
+            "bridge_id": normalize_bridge_id(bridge_id or row.get("bridge_id") or DEFAULT_BRIDGE_ID),
+            "account_keys": list(account_keys or []),
+            "market": market,
+        })
+
+    account_key = str(row.get("account_key") or "").strip()
+    account_keys = [account_key] if account_key else []
+    add_target(row.get("qmt_dir") or row.get("python_dir"), "normal", row.get("bridge_id"), account_keys)
+    if normalize_transport_mode(row.get("mode") or "ctypes") == "lttx":
+        add_target(
+            row.get("qmt_trade_dir")
+            or row.get("trade_qmt_dir")
+            or row.get("advanced_qmt_dir")
+            or row.get("qmt_trade_core_dir"),
+            "trade",
+            row.get("bridge_id"),
+            account_keys,
+        )
+    if parse_config_bool(row.get("market_routing_enabled"), False):
+        routes = normalize_market_bridge_config(
+            row.get("market_bridges") or {},
+            account_id=row.get("account_id"),
+            account_type=row.get("account_type") or "STOCK",
+            parent_bridge_id=row.get("bridge_id") or DEFAULT_BRIDGE_ID,
+            enabled=True,
+        )
+        for market, route in routes.items():
+            if route.get("enabled", True) is False:
+                continue
+            add_target(
+                route.get("qmt_dir"),
+                "market_%s" % market,
+                route.get("bridge_id") or row.get("bridge_id"),
+                account_keys,
+                market=market,
+            )
+
+    if not enabled:
+        results = [{
+            "updated": False,
+            "skipped": True,
+            "warning": "已按请求跳过 cfquant 核心包自动复制",
+            "message": "已按请求跳过 cfquant 核心包自动复制",
+        }]
+        return {
+            "enabled": False,
+            "results": results,
+            "summary": _auto_deploy_qmt_core_result_summary(results),
+        }
+
+    results = []
+    if not targets:
+        result = {
+            "updated": False,
+            "skipped": True,
+            "warning": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
+            "message": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
+        }
+        results.append(result)
+    else:
+        for target in targets:
+            if UPDATER is None:
+                results.append({
+                    "updated": False,
+                    "skipped": False,
+                    "qmt_role": target.get("qmt_role") or "normal",
+                    "bridge_id": target.get("bridge_id") or DEFAULT_BRIDGE_ID,
+                    "qmt_dir": target.get("qmt_dir") or "",
+                    "error": "更新器未初始化，无法自动复制 cfquant 核心包",
+                    "message": "更新器未初始化，无法自动复制 cfquant 核心包",
+                })
+                continue
+            result = UPDATER.install_local_core_to_qmt_dir(
+                target.get("qmt_dir"),
+                bridge_id=target.get("bridge_id"),
+                qmt_role=target.get("qmt_role") or "normal",
+                account_keys=target.get("account_keys") or [],
+            )
+            if target.get("market"):
+                result["market"] = target.get("market")
+            results.append(result)
+    return {
+        "enabled": True,
+        "results": results,
+        "summary": _auto_deploy_qmt_core_result_summary(results),
+    }
+
+
 def sync_qmt_bridge_identities():
     results = []
     try:
@@ -7715,16 +8665,23 @@ def run_powershell_json(script, timeout=3.0):
         "-Command",
         "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; " + script,
     ]
-    completed = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=float(timeout),
-        **_hidden_subprocess_kwargs()
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=float(timeout),
+            **_hidden_subprocess_kwargs()
+        )
+    except subprocess.TimeoutExpired:
+        safe_print("powershell query timed out after %.1fs" % float(timeout))
+        return []
+    except Exception as e:
+        safe_print("powershell query failed: %s" % e)
+        return []
     if completed.returncode != 0:
         safe_print("powershell query failed: %s" % completed.stderr.strip())
         return []
@@ -7789,10 +8746,57 @@ def netstat_port_processes(port):
 
 
 def process_details_by_pid(pids):
-    pids = [int(pid) for pid in pids if int(pid) > 0]
-    if not pids:
+    normalized_pids = []
+    for pid in pids:
+        try:
+            pid_int = int(pid)
+        except Exception:
+            continue
+        if pid_int > 0 and pid_int not in normalized_pids:
+            normalized_pids.append(pid_int)
+    if not normalized_pids:
         return {}
-    ids = ",".join(str(pid) for pid in pids)
+
+    details = {}
+    if psutil is not None:
+        for pid in normalized_pids:
+            try:
+                proc = psutil.Process(pid)
+                with proc.oneshot():
+                    try:
+                        name = proc.name() or ""
+                    except Exception:
+                        name = ""
+                    try:
+                        command_line = " ".join(str(part) for part in (proc.cmdline() or []))
+                    except Exception:
+                        command_line = ""
+                    try:
+                        executable_path = proc.exe() or ""
+                    except Exception:
+                        executable_path = ""
+                if name or command_line or executable_path:
+                    details[pid] = {
+                        "pid": pid,
+                        "name": name,
+                        "command_line": command_line,
+                        "executable_path": executable_path,
+                    }
+            except (
+                getattr(psutil, "NoSuchProcess", Exception),
+                getattr(psutil, "AccessDenied", Exception),
+                getattr(psutil, "ZombieProcess", Exception),
+            ):
+                continue
+            except Exception as e:
+                safe_print("psutil process detail query failed pid=%s: %s" % (pid, e))
+        if len(details) == len(normalized_pids):
+            return details
+
+    fallback_pids = [pid for pid in normalized_pids if pid not in details]
+    if not fallback_pids:
+        return details
+    ids = ",".join(str(pid) for pid in fallback_pids)
     script = r"""
 $ids = @(%s)
 $rows = foreach ($id in $ids) {
@@ -7808,8 +8812,7 @@ $rows = foreach ($id in $ids) {
 }
 if ($null -eq $rows) { "[]" } else { @($rows) | ConvertTo-Json -Compress }
 """ % ids
-    rows = run_powershell_json(script, timeout=5.0)
-    details = {}
+    rows = run_powershell_json(script, timeout=1.0)
     for row in rows:
         try:
             pid = int(row.get("pid") or 0)
@@ -7919,6 +8922,7 @@ def start_lttx_server():
     env.setdefault("CFQUANT_LOG_RETENTION_DAYS", str(LOG_RETENTION_DAYS))
     env.setdefault("CFQUANT_RUNTIME_DIR", RUNTIME_DIR)
     env.setdefault("CFQUANT_LTTX_RUNTIME_DIR", RUNTIME_LTTX_DIR)
+    env.setdefault("CFQUANT_LTTX_BACKGROUND", "1")
     stdout = open(LTTX_STDOUT_LOG, "a", encoding="utf-8", buffering=1)
     stderr = open(LTTX_STDERR_LOG, "a", encoding="utf-8", buffering=1)
     try:
@@ -8051,14 +9055,21 @@ def normalize_stock_code(stock_code):
         code = value
         market = "SH" if value.startswith("6") else "SZ"
     code = code.strip()
-    if not code.isdigit():
-        raise ValueError("stock_code must be numeric before market suffix")
-    number = int(code)
-    if number < 0 or number > 999999:
-        raise ValueError("stock_code numeric part is out of range: %s" % code)
-    if market not in ("SH", "SZ"):
-        raise ValueError("market suffix must be SH or SZ")
-    return "%06d.%s" % (number, market)
+    if not code:
+        raise ValueError("stock_code is required")
+    if code.isdigit() and len(code) <= 6:
+        number = int(code)
+        if number < 0 or number > 999999:
+            raise ValueError("stock_code numeric part is out of range: %s" % code)
+        if market not in ("SH", "SZ", "BJ"):
+            raise ValueError("market suffix must be SH, SZ or BJ")
+        return "%06d.%s" % (number, market)
+    allowed_markets = ("SH", "SZ", "SHO", "SZO", "SF", "DF", "ZF", "IF", "INE", "GF")
+    if market not in allowed_markets:
+        raise ValueError("market suffix must be SH, SZ, SHO, SZO, SF, DF, ZF, IF, INE or GF")
+    if not re.match(r"^[A-Z0-9_-]+$", code):
+        raise ValueError("stock_code contains unsupported characters before market suffix")
+    return "%s.%s" % (code, market)
 
 
 def normalize_channel(value, default="normal"):
@@ -9216,31 +10227,71 @@ class AccountDataCache(object):
 ACCOUNT_CACHE = AccountDataCache()
 
 
-def submit_order(body):
+def submit_order(body, credit_only=False):
     account_id = str(body.get("account_id") or "").strip()
-    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_type = normalize_account_type(body.get("account_type") or ("CREDIT" if credit_only else "STOCK"))
+    if credit_only and account_type != "CREDIT":
+        raise ValueError("credit order requires account_type=CREDIT")
     account_key = str(body.get("account_key") or "").strip()
     bridge_id = resolve_bridge_id(account_id=account_id, account_type=account_type, account_key=account_key, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
     stock_code = normalize_stock_code(body.get("stock_code"))
     side = str(body.get("side") or "").strip().lower()
+    credit_action = body.get("credit_action") or body.get("credit_business") or body.get("action")
+    order_action = (
+        body.get("order_action")
+        or body.get("future_action")
+        or body.get("future_business")
+        or body.get("stock_option_action")
+        or body.get("future_option_action")
+        or body.get("option_action")
+        or body.get("option_business")
+        or body.get("derivative_action")
+        or (body.get("business_type") if account_type in DERIVATIVE_ACCOUNT_TYPES else None)
+        or (body.get("action") if account_type in DERIVATIVE_ACCOUNT_TYPES else None)
+    )
     price = float(body.get("price"))
     volume = int(body.get("volume"))
+    price_type = int(body.get("price_type") or FIX_PRICE)
     confirm_text = str(body.get("confirm_text") or "").strip()
-    if side not in ("buy", "sell"):
+    if account_type == "STOCK" and side not in ("buy", "sell"):
         raise ValueError("side must be buy or sell")
     if not stock_code:
         raise ValueError("stock_code is required")
     if volume <= 0:
         raise ValueError("volume must be positive")
-    if price <= 0:
+    if price < 0:
+        raise ValueError("price must be non-negative")
+    if price_type == FIX_PRICE and price <= 0:
         raise ValueError("price must be positive")
 
-    expected = "%s %s %s @ %.3f" % (side.upper(), stock_code, volume, price)
-    if confirm_text != expected:
-        raise ValueError("confirmation mismatch, expected: %s" % expected)
+    action_info = resolve_order_action(
+        account_type,
+        side,
+        credit_action=credit_action,
+        order_action=order_action,
+        explicit_order_type=body.get("order_type", body.get("optype")),
+    )
+    side = action_info["side"] or side
+    allow_legacy_credit_confirmation = (
+        account_type == "CREDIT"
+        and credit_action in (None, "")
+        and action_info["credit_action"] in ("credit_buy", "credit_sell")
+    )
+    expected_values = order_confirmation_options(
+        account_type,
+        side,
+        stock_code,
+        volume,
+        price,
+        credit_action=action_info["credit_action"],
+        order_action=action_info["order_action"],
+        order_type=action_info["order_type"],
+        allow_legacy_side=allow_legacy_credit_confirmation,
+    )
+    if confirm_text not in expected_values:
+        raise ValueError("confirmation mismatch, expected: %s" % " or ".join(expected_values))
 
-    order_type = STOCK_BUY if side == "buy" else STOCK_SELL
     remark = (
         body.get("order_remark")
         or body.get("remark")
@@ -9250,15 +10301,19 @@ def submit_order(body):
     params = {
         "account": {"account_id": account_id, "account_type": account_type},
         "stock_code": stock_code,
-        "order_type": order_type,
+        "order_type": action_info["order_type"],
         "order_volume": volume,
-        "price_type": int(body.get("price_type") or FIX_PRICE),
+        "price_type": price_type,
         "price": price,
         "qmt_order_type": int(body.get("qmt_order_type") or 1101),
         "quick_trade": int(body.get("quick_trade") or 2),
         "strategy_name": body.get("strategy_name") or "cfquant_web",
         "order_remark": remark,
     }
+    if action_info["credit_action"]:
+        params["credit_action"] = action_info["credit_action"]
+    if action_info["order_action"]:
+        params["order_action"] = action_info["order_action"]
     started = time.perf_counter()
     timeout = request_timeout_value(body.get("timeout"), default=12.0, maximum=60.0)
     route = account_request(
@@ -9282,15 +10337,51 @@ def submit_order(body):
         "fallback": route["fallback"],
         "fallback_reason": route["fallback_reason"],
         "market_route": route.get("market_route") or {},
+        "side": side,
+        "order_type": action_info["order_type"],
+        "credit_action": action_info["credit_action"],
+        "credit_action_label": action_info["credit_action_label"],
+        "order_action": action_info["order_action"],
+        "order_action_label": action_info["order_action_label"],
+        "confirm_text_options": expected_values,
         "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         "order_remark": remark,
     }
 
 
-def submit_batch_orders(body):
+def submit_credit_order(body):
+    body = dict(body or {})
+    body.setdefault("account_type", "CREDIT")
+    return submit_order(body, credit_only=True)
+
+
+def submit_typed_order(body, account_type):
+    body = dict(body or {})
+    expected = normalize_account_type(account_type)
+    if body.get("account_type") not in (None, "") and normalize_account_type(body.get("account_type")) != expected:
+        raise ValueError("%s order requires account_type=%s" % (expected.lower(), expected))
+    body["account_type"] = expected
+    return submit_order(body)
+
+
+def submit_future_order(body):
+    return submit_typed_order(body, "FUTURE")
+
+
+def submit_future_option_order(body):
+    return submit_typed_order(body, "FUTURE_OPTION")
+
+
+def submit_stock_option_order(body):
+    return submit_typed_order(body, "STOCK_OPTION")
+
+
+def submit_batch_orders(body, credit_only=False):
     account_id = str(body.get("account_id") or "").strip()
-    account_type = normalize_account_type(body.get("account_type") or "STOCK")
+    account_type = normalize_account_type(body.get("account_type") or ("CREDIT" if credit_only else "STOCK"))
+    if credit_only and account_type != "CREDIT":
+        raise ValueError("credit batch order requires account_type=CREDIT")
     account_key = str(body.get("account_key") or "").strip()
     bridge_id = resolve_bridge_id(account_id=account_id, account_type=account_type, account_key=account_key, bridge_id=body.get("bridge_id"))
     bridge_config(bridge_id)
@@ -9301,29 +10392,77 @@ def submit_batch_orders(body):
     expected = "BATCH %s" % len(raw_orders)
     if confirm_text != expected:
         raise ValueError("confirmation mismatch, expected: %s" % expected)
+    body_order_action = (
+        body.get("order_action")
+        or body.get("future_action")
+        or body.get("future_business")
+        or body.get("stock_option_action")
+        or body.get("future_option_action")
+        or body.get("option_action")
+        or body.get("option_business")
+        or body.get("derivative_action")
+        or (body.get("business_type") if account_type in DERIVATIVE_ACCOUNT_TYPES else None)
+        or (body.get("action") if account_type in DERIVATIVE_ACCOUNT_TYPES else None)
+    )
     orders = []
     for index, row in enumerate(raw_orders):
         if not isinstance(row, dict):
             raise ValueError("orders[%s] must be an object" % index)
-        side = str(row.get("side") or body.get("side") or "buy").strip().lower()
-        if side not in ("buy", "sell"):
+        row_credit_action = (
+            row.get("credit_action")
+            or row.get("credit_business")
+            or row.get("action")
+            or body.get("credit_action")
+            or body.get("credit_business")
+            or body.get("action")
+        )
+        row_order_action = (
+            row.get("order_action")
+            or row.get("future_action")
+            or row.get("future_business")
+            or row.get("stock_option_action")
+            or row.get("future_option_action")
+            or row.get("option_action")
+            or row.get("option_business")
+            or row.get("derivative_action")
+            or (row.get("business_type") if account_type in DERIVATIVE_ACCOUNT_TYPES else None)
+            or (row.get("action") if account_type in DERIVATIVE_ACCOUNT_TYPES else None)
+            or body_order_action
+        )
+        side = str(row.get("side") or body.get("side") or ("buy" if account_type != "CREDIT" else "")).strip().lower()
+        if account_type == "STOCK" and side not in ("buy", "sell"):
             raise ValueError("orders[%s].side must be buy or sell" % index)
         price = float(row.get("price"))
+        price_type = int(row.get("price_type") or body.get("price_type") or FIX_PRICE)
         volume = int(row.get("volume") or row.get("order_volume"))
-        if price <= 0:
+        if price < 0:
+            raise ValueError("orders[%s].price must be non-negative" % index)
+        if price_type == FIX_PRICE and price <= 0:
             raise ValueError("orders[%s].price must be positive" % index)
         if volume <= 0:
             raise ValueError("orders[%s].volume must be positive" % index)
+        action_info = resolve_order_action(
+            account_type,
+            side,
+            credit_action=row_credit_action,
+            order_action=row_order_action,
+            explicit_order_type=row.get("order_type", row.get("optype")),
+        )
         orders.append({
             "stock_code": normalize_stock_code(row.get("stock_code") or row.get("code")),
-            "order_type": STOCK_BUY if side == "buy" else STOCK_SELL,
+            "side": action_info["side"] or side,
+            "order_type": action_info["order_type"],
             "order_volume": volume,
-            "price_type": int(row.get("price_type") or body.get("price_type") or FIX_PRICE),
+            "price_type": price_type,
             "price": price,
             "qmt_order_type": int(row.get("qmt_order_type") or body.get("qmt_order_type") or 1101),
             "quick_trade": int(row.get("quick_trade") or body.get("quick_trade") or 2),
             "strategy_name": row.get("strategy_name") or body.get("strategy_name") or "cfquant_web_batch",
             "order_remark": row.get("order_remark") or "cfquant_batch_%s_%s" % (int(time.time() * 1000), index + 1),
+            "credit_action": action_info["credit_action"],
+            "credit_action_label": action_info["credit_action_label"],
+            "order_action": action_info["order_action"],
+            "order_action_label": action_info["order_action_label"],
         })
     params = {
         "account": {"account_id": account_id, "account_type": account_type},
@@ -9360,6 +10499,33 @@ def submit_batch_orders(body):
         "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
     }
+
+
+def submit_credit_batch_orders(body):
+    body = dict(body or {})
+    body.setdefault("account_type", "CREDIT")
+    return submit_batch_orders(body, credit_only=True)
+
+
+def submit_typed_batch_orders(body, account_type):
+    body = dict(body or {})
+    expected = normalize_account_type(account_type)
+    if body.get("account_type") not in (None, "") and normalize_account_type(body.get("account_type")) != expected:
+        raise ValueError("%s batch order requires account_type=%s" % (expected.lower(), expected))
+    body["account_type"] = expected
+    return submit_batch_orders(body)
+
+
+def submit_future_batch_orders(body):
+    return submit_typed_batch_orders(body, "FUTURE")
+
+
+def submit_future_option_batch_orders(body):
+    return submit_typed_batch_orders(body, "FUTURE_OPTION")
+
+
+def submit_stock_option_batch_orders(body):
+    return submit_typed_batch_orders(body, "STOCK_OPTION")
 
 
 def cancel_order(body):
@@ -9504,6 +10670,10 @@ def save_account_runtime_config(body):
         market_routing_enabled=market_routing_enabled,
         market_bridges=market_bridges,
     )
+    qmt_core_deploy = auto_deploy_qmt_core_for_account(
+        row,
+        enabled=body.get("auto_deploy_qmt_core", True),
+    )
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
     runtime = ensure_account_runtime(row["mode"])
@@ -9512,6 +10682,7 @@ def save_account_runtime_config(body):
     CALLBACKS.refresh_channels(callback_channels())
     return {
         "account": row,
+        "qmt_core_deploy": qmt_core_deploy,
         "qmt_bridge_identity": identity,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
@@ -9612,6 +10783,10 @@ def initialize_web_setup(body):
         market_routing_enabled=body.get("market_routing_enabled") if "market_routing_enabled" in body else None,
         market_bridges=body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None,
     )
+    qmt_core_deploy = auto_deploy_qmt_core_for_account(
+        row,
+        enabled=body.get("auto_deploy_qmt_core", True),
+    )
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
     runtime = ensure_account_runtime(row["mode"])
@@ -9630,6 +10805,7 @@ def initialize_web_setup(body):
     return {
         "initialized": True,
         "account": row,
+        "qmt_core_deploy": qmt_core_deploy,
         "qmt_bridge_identity": identity,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
@@ -11212,8 +12388,24 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/order":
                 self._write_json(ok(submit_order(body)))
+            elif parsed.path == "/api/credit/order":
+                self._write_json(ok(submit_credit_order(body)))
+            elif parsed.path == "/api/future/order":
+                self._write_json(ok(submit_future_order(body)))
+            elif parsed.path == "/api/future-option/order":
+                self._write_json(ok(submit_future_option_order(body)))
+            elif parsed.path == "/api/stock-option/order":
+                self._write_json(ok(submit_stock_option_order(body)))
             elif parsed.path == "/api/orders/batch":
                 self._write_json(ok(submit_batch_orders(body)))
+            elif parsed.path == "/api/credit/orders/batch":
+                self._write_json(ok(submit_credit_batch_orders(body)))
+            elif parsed.path == "/api/future/orders/batch":
+                self._write_json(ok(submit_future_batch_orders(body)))
+            elif parsed.path == "/api/future-option/orders/batch":
+                self._write_json(ok(submit_future_option_batch_orders(body)))
+            elif parsed.path == "/api/stock-option/orders/batch":
+                self._write_json(ok(submit_stock_option_batch_orders(body)))
             elif parsed.path == "/api/cancel":
                 self._write_json(ok(cancel_order(body)))
             elif parsed.path == "/api/credit/query":
@@ -11601,12 +12793,24 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(transport_info()))
             elif parsed.path == "/api/pipe-hub":
                 self._write_json(ok(pipe_hub_info()))
+            elif parsed.path == "/api/credit/actions":
+                self._write_json(ok(credit_actions_info()))
+            elif parsed.path == "/api/order/actions":
+                self._write_json(ok(order_actions_info()))
             elif parsed.path == "/api/web-auth/status":
                 self._write_json(ok(web_auth_status(self._provided_web_token(parsed))))
             elif parsed.path == "/api/log-cleanup":
                 self._write_json(ok(log_cleanup_info()))
             elif parsed.path == "/api/qmt-log-language":
                 self._write_json(ok(qmt_log_language_info()))
+            elif parsed.path == "/api/qmt-scripts/source":
+                raw_names = []
+                for key in ("name", "names", "script"):
+                    for value in query.get(key) or []:
+                        raw_names.extend(part.strip() for part in str(value).split(",") if part.strip())
+                if not raw_names:
+                    raise ValueError("QMT script name is required")
+                self._write_json(ok({"scripts": qmt_entry_script_sources(raw_names)}))
             elif parsed.path == "/api/updates/status":
                 bridge_id = normalize_bridge_id((query.get("bridge_id") or [DEFAULT_BRIDGE_ID])[0])
                 repo_url = (query.get("repo_url") or query.get("url") or [""])[0]

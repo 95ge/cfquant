@@ -35,6 +35,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+call :ensure_cfquant_package
+if errorlevel 1 (
+    echo [ERROR] cfquant package is not installed and automatic installation failed.
+    call :show_logs
+    call :pause_on_error
+    endlocal
+    exit /b 1
+)
+
 set "WEB_PORT=8765"
 set "CFQUANT_START_ROOT=%~dp0"
 for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=8765; $root=$env:CFQUANT_START_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.web_port) { $p=[int]$c.web_port } elseif ($c.web_server -and $c.web_server.port) { $p=[int]$c.web_server.port }; break } catch {} } }; Write-Output $p"`) do set "WEB_PORT=%%P"
@@ -102,6 +111,32 @@ if not "%WEB_EXIT_CODE%"=="0" (
 )
 endlocal
 exit /b %WEB_EXIT_CODE%
+
+:ensure_cfquant_package
+echo Checking the cfquant package in the selected Python environment...
+call :log "checking cfquant package python=%PYTHON_EXE%"
+"%PYTHON_EXE%" -m pip show cfquant >nul 2>&1
+if not errorlevel 1 (
+    call :log "cfquant package already installed"
+    exit /b 0
+)
+
+echo cfquant package was not found. Installing the current project with pip...
+call :log "cfquant package missing, installing editable project"
+"%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-input -e "%~dp0" >>"%START_LOG%" 2>&1
+if errorlevel 1 (
+    call :log "cfquant package installation failed"
+    exit /b 1
+)
+
+"%PYTHON_EXE%" -m pip show cfquant >nul 2>&1
+if errorlevel 1 (
+    call :log "cfquant package still missing after installation"
+    exit /b 1
+)
+echo cfquant package is ready.
+call :log "cfquant package installation completed"
+exit /b 0
 
 :is_port_open
 set "CFQUANT_START_PORT=%~1"

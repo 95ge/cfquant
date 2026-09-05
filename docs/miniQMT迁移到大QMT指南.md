@@ -7,10 +7,11 @@
 适合迁移的能力：
 
 - 买入、卖出、撤单。
+- 信用、期货、期货期权、股票期权委托。
 - 委托、成交、持仓、资金查询。
 - 行情快照、K 线、订阅和全推行情。
 - 外部 Python 多进程访问同一个资金账号。
-- 多账号、多 QMT、普通账户和信用账户分开绑定。
+- 多账号、多 QMT、普通、信用、期货、期货期权和股票期权账户分开绑定。
 
 不建议直接迁移到桥接链路的能力：
 
@@ -90,7 +91,7 @@ QMT 侧需要两个入口：
 
 | 类型 | 常见接口 |
 | --- | --- |
-| 下单 | `order_stock`、`order_stock_async` |
+| 下单 | `order_stock`、`order_stock_async`，普通/信用/期货/期货期权/股票期权均保持 MiniQMT 入参签名 |
 | 撤单 | `cancel_order_stock`、`cancel_order_stock_async`、`cancel_order_stock_sysid` |
 | 资金 | `query_stock_asset` |
 | 持仓 | `query_stock_positions`、`query_stock_position` |
@@ -126,7 +127,7 @@ http://127.0.0.1:8765/
 
 - 账号名称，可选，用来在列表中识别客户或券商。
 - 资金账号。
-- 账户类型，普通账户选 `STOCK`，信用账户选 `CREDIT`。
+- 账户类型，普通账户选 `STOCK`，信用账户选 `CREDIT`，期货账户选 `FUTURE`，期货期权账户选 `FUTURE_OPTION`，股票期权账户选 `STOCK_OPTION`。
 - QMT 核心目录，建议填大 QMT 的 `bin.x64` 目录。
 - 账号模式，先用通用模式验证，低延迟交易再切高级模式。
 - 是否作为共享行情数据提供商。
@@ -191,6 +192,20 @@ print(asset, positions)
 
 详细外部接入规则见 [外部 Python 接入](外部Python接入.md)。
 
+## 交易账号和常量映射
+
+`cfquant` 对外仍使用 MiniQMT 风格的 `StockAccount` 和 `order_stock`，账号类型决定业务语义：
+
+| 账号类型 | 适用业务 | `order_type` 处理 |
+| --- | --- | --- |
+| `STOCK` | 普通证券买卖 | `STOCK_BUY=23`、`STOCK_SELL=24` 原样传入大 QMT `passorder`。 |
+| `CREDIT` | 信用账户担保品买卖、融资融券、还款还券、专项业务 | MiniQMT 信用常量会映射到大 QMT 信用 opType；也可通过 `credit_action` 指定业务。 |
+| `FUTURE` | 期货开平仓、套利、换月等 | MiniQMT `FUTURE_*` 常量 0-22 原样传入大 QMT `passorder`。 |
+| `FUTURE_OPTION` | 期货期权开平仓、行权 | 期货类 `FUTURE_*` 常量原样传入；`OPTION_FUTURE_OPTION_EXERCISE=100` 原样传入。 |
+| `STOCK_OPTION` | ETF/股票期权买开卖平、卖开买平、备兑、行权、锁券/解锁 | 外部传 MiniQMT `STOCK_OPTION_*` 常量 48-57，桥接层转换为大 QMT ETF 期权 opType 50-59。 |
+
+Web/API 下单也遵循同一套规则：普通账户可继续传 `side=buy|sell`；信用账户可传 `credit_action`；期货和期权账户可传 `order_action`，例如 `future_open_long`、`future_open_short`、`stock_option_buy_open`。`price_type` 保持 MiniQMT 数值，默认 `FIX_PRICE=11`；固定价时 `price` 必须大于 0，市价/最新价类报价可以传 0。
+
 ## 多进程访问同一个账户
 
 miniQMT 里经常通过不同 `session_id` 管理多个进程或多个策略实例。迁移到 `cfquant` 后，不建议继续把 `session_id` 当成主路由依据。
@@ -210,8 +225,8 @@ from cfquant.xttype import StockAccount
 
 account = StockAccount("2220009880")
 
-# session_id 保留兼容参数，但 cfquant 的账号路由主要看账号绑定。
-trader = XtQuantTrader("", 10001, account=account)
+# 未显式传 session_id 或传 0 时，cfquant 会自动分配一个正整数。
+trader = XtQuantTrader("", account=account)
 trader.start()
 ```
 
@@ -231,6 +246,7 @@ trader.start()
 | 成交查询 | 成交编号、委托编号、证券代码、成交价格、成交数量、成交时间 |
 | 持仓查询 | 证券代码、证券名称、持仓数量、可用数量、成本价、市值、盈亏 |
 | 资金查询 | 总资产、可用资金、冻结资金、持仓市值 |
+| 派生品扩展字段 | `direction`、`offset_flag`、`order_type`、`price_type`、`commission`、冻结数量、在途数量、昨仓、最新价、收益率 |
 
 建议迁移时先把 `query_stock_orders`、`query_stock_trades`、`query_stock_positions`、`query_stock_asset` 的原始返回保存一份，再对照 miniQMT 当前字段做映射。不同券商 QMT 版本的字段名和状态枚举可能存在差异。
 

@@ -532,16 +532,274 @@ class CfquantQmtBridge(object):
         func = getattr(self.context, "get_instrument_detail")
         return func(params.get("stock_code", ""))
 
+    def _passorder_optype(self, params, account_type):
+        qmt_optype = self._first_param(params, ("qmt_optype", "passorder_optype"))
+        if qmt_optype is not None:
+            return self._coerce_optype(qmt_optype)
+        account_type_text = str(account_type or "").strip().upper()
+        credit_action_names = ("credit_action", "credit_business")
+        if account_type_text == "CREDIT":
+            credit_action_names += ("order_action", "business_type", "action")
+        credit_action = self._first_param(params, credit_action_names)
+        if credit_action is not None:
+            return self._credit_action_optype(credit_action)
+        derivative_action = self._first_param(params, (
+            "future_action",
+            "future_business",
+            "stock_option_action",
+            "future_option_action",
+            "option_action",
+            "option_business",
+            "derivative_action",
+            "business_type",
+            "order_action",
+            "action",
+        ))
+        if derivative_action is not None:
+            return self._derivative_action_optype(account_type_text, derivative_action)
+        order_type = params.get("optype", params.get("order_type"))
+        if isinstance(order_type, str):
+            text = order_type.strip().lower()
+            if text in ("buy", "stock_buy"):
+                return 33 if account_type_text == "CREDIT" else 23
+            if text in ("sell", "stock_sell"):
+                return 34 if account_type_text == "CREDIT" else 24
+            if text in self._credit_action_optype_map():
+                return self._credit_action_optype(text)
+            if account_type_text in ("FUTURE", "FUTURE_OPTION", "STOCK_OPTION"):
+                return self._derivative_action_optype(account_type_text, text)
+        order_type = self._coerce_optype(order_type)
+        if order_type is None:
+            raise ValueError("order_type is required")
+        return self._qmt_account_optype(order_type, account_type_text)
+
+    def _coerce_optype(self, value):
+        if isinstance(value, str):
+            text = value.strip()
+            if text.lstrip("+-").isdigit():
+                return int(text)
+        return value
+
+    def _credit_action_optype(self, value):
+        text = str(value or "").strip().lower()
+        key = text if text.startswith("credit_") else self._credit_action_aliases().get(text) or "credit_%s" % text
+        actions = self._credit_action_optype_map()
+        if key not in actions:
+            raise ValueError("unknown credit order action: %s" % value)
+        return actions[key]
+
+    def _qmt_credit_optype(self, order_type):
+        mapping = {
+            23: 33,
+            24: 34,
+            40: 70,
+            41: 71,
+            42: 72,
+            43: 73,
+            44: 74,
+            45: 75,
+        }
+        return mapping.get(order_type, order_type)
+
+    def _qmt_stock_option_optype(self, order_type):
+        mapping = {
+            48: 50,
+            49: 51,
+            50: 52,
+            51: 53,
+            52: 54,
+            53: 55,
+            54: 56,
+            55: 57,
+            56: 58,
+            57: 59,
+        }
+        return mapping.get(order_type, order_type)
+
+    def _qmt_account_optype(self, order_type, account_type):
+        account_type = str(account_type or "").strip().upper()
+        if account_type == "CREDIT":
+            return self._qmt_credit_optype(order_type)
+        if account_type == "STOCK_OPTION":
+            return self._qmt_stock_option_optype(order_type)
+        return order_type
+
+    def _derivative_action_optype(self, account_type, value):
+        account_type = str(account_type or "").strip().upper()
+        coerced = self._coerce_optype(value)
+        if isinstance(coerced, int):
+            return self._qmt_account_optype(coerced, account_type)
+        text = str(value or "").strip().lower()
+        if account_type in ("FUTURE", "FUTURE_OPTION"):
+            aliases = self._future_action_aliases()
+            actions = self._future_action_optype_map()
+            if account_type == "FUTURE_OPTION":
+                actions = dict(actions, **self._future_option_action_optype_map())
+            key = text if text in actions else aliases.get(text)
+            if key is None and not text.startswith("future_") and ("future_%s" % text) in actions:
+                key = "future_%s" % text
+            if key in actions:
+                return actions[key]
+        if account_type == "STOCK_OPTION":
+            aliases = self._stock_option_action_aliases()
+            actions = self._stock_option_action_optype_map()
+            key = text if text in actions else aliases.get(text)
+            if key is None and not text.startswith("stock_option_") and ("stock_option_%s" % text) in actions:
+                key = "stock_option_%s" % text
+            if key in actions:
+                return actions[key]
+        raise ValueError("unknown %s order action: %s" % (account_type or "derivative", value))
+
+    def _credit_action_aliases(self):
+        return {
+            "buy": "credit_buy",
+            "collateral_buy": "credit_buy",
+            "assure_buy": "credit_buy",
+            "sell": "credit_sell",
+            "collateral_sell": "credit_sell",
+            "assure_sell": "credit_sell",
+            "fin_buy": "credit_fin_buy",
+            "finance_buy": "credit_fin_buy",
+            "margin_buy": "credit_fin_buy",
+            "slo_sell": "credit_slo_sell",
+            "short_sell": "credit_slo_sell",
+            "buy_secu_repay": "credit_buy_secu_repay",
+            "buy_security_repay": "credit_buy_secu_repay",
+            "direct_secu_repay": "credit_direct_secu_repay",
+            "direct_security_repay": "credit_direct_secu_repay",
+            "sell_secu_repay": "credit_sell_secu_repay",
+            "sell_security_repay": "credit_sell_secu_repay",
+            "direct_cash_repay": "credit_direct_cash_repay",
+            "cash_repay": "credit_direct_cash_repay",
+            "fin_buy_special": "credit_fin_buy_special",
+            "finance_buy_special": "credit_fin_buy_special",
+            "margin_buy_special": "credit_fin_buy_special",
+            "slo_sell_special": "credit_slo_sell_special",
+            "short_sell_special": "credit_slo_sell_special",
+            "buy_secu_repay_special": "credit_buy_secu_repay_special",
+            "direct_secu_repay_special": "credit_direct_secu_repay_special",
+            "sell_secu_repay_special": "credit_sell_secu_repay_special",
+            "direct_cash_repay_special": "credit_direct_cash_repay_special",
+        }
+
+    def _credit_action_optype_map(self):
+        return {
+            "credit_buy": 33,
+            "credit_sell": 34,
+            "credit_fin_buy": 27,
+            "credit_slo_sell": 28,
+            "credit_buy_secu_repay": 29,
+            "credit_direct_secu_repay": 30,
+            "credit_sell_secu_repay": 31,
+            "credit_direct_cash_repay": 32,
+            "credit_fin_buy_special": 70,
+            "credit_slo_sell_special": 71,
+            "credit_buy_secu_repay_special": 72,
+            "credit_direct_secu_repay_special": 73,
+            "credit_sell_secu_repay_special": 74,
+            "credit_direct_cash_repay_special": 75,
+        }
+
+    def _future_action_aliases(self):
+        return {
+            "open_long": "future_open_long",
+            "buy_open": "future_open_long",
+            "close_long": "future_close_long_history_first",
+            "sell_close": "future_close_long_history_first",
+            "close_long_history": "future_close_long_history",
+            "close_long_today": "future_close_long_today",
+            "open_short": "future_open_short",
+            "sell_open": "future_open_short",
+            "close_short": "future_close_short_history_first",
+            "buy_close": "future_close_short_history_first",
+            "close_short_history": "future_close_short_history",
+            "close_short_today": "future_close_short_today",
+            "open": "future_open",
+            "close": "future_close",
+            "exercise": "future_option_exercise",
+            "future_option_exercise": "future_option_exercise",
+            "option_future_option_exercise": "future_option_exercise",
+        }
+
+    def _future_action_optype_map(self):
+        return {
+            "future_open_long": 0,
+            "future_close_long_history": 1,
+            "future_close_long_today": 2,
+            "future_open_short": 3,
+            "future_close_short_history": 4,
+            "future_close_short_today": 5,
+            "future_close_long_today_first": 6,
+            "future_close_long_history_first": 7,
+            "future_close_short_today_first": 8,
+            "future_close_short_history_first": 9,
+            "future_close_long_today_history_then_open_short": 10,
+            "future_close_long_history_today_then_open_short": 11,
+            "future_close_short_today_history_then_open_long": 12,
+            "future_close_short_history_today_then_open_long": 13,
+            "future_open": 14,
+            "future_close": 15,
+            "future_arbitrage_open": 16,
+            "future_arbitrage_close_history_first": 17,
+            "future_arbitrage_close_today_first": 18,
+            "future_renew_long_close_history_first": 19,
+            "future_renew_long_close_today_first": 20,
+            "future_renew_short_close_history_first": 21,
+            "future_renew_short_close_today_first": 22,
+            "future_hedge": 400,
+        }
+
+    def _future_option_action_optype_map(self):
+        return {
+            "future_option_exercise": 100,
+        }
+
+    def _stock_option_action_aliases(self):
+        return {
+            "buy_open": "stock_option_buy_open",
+            "open_long": "stock_option_buy_open",
+            "sell_close": "stock_option_sell_close",
+            "close_long": "stock_option_sell_close",
+            "sell_open": "stock_option_sell_open",
+            "open_short": "stock_option_sell_open",
+            "buy_close": "stock_option_buy_close",
+            "close_short": "stock_option_buy_close",
+            "covered_open": "stock_option_covered_open",
+            "covered_close": "stock_option_covered_close",
+            "call_exercise": "stock_option_call_exercise",
+            "put_exercise": "stock_option_put_exercise",
+            "secu_lock": "stock_option_secu_lock",
+            "secu_unlock": "stock_option_secu_unlock",
+            "lock": "stock_option_secu_lock",
+            "unlock": "stock_option_secu_unlock",
+        }
+
+    def _stock_option_action_optype_map(self):
+        return {
+            "stock_option_buy_open": 50,
+            "stock_option_sell_close": 51,
+            "stock_option_sell_open": 52,
+            "stock_option_buy_close": 53,
+            "stock_option_covered_open": 54,
+            "stock_option_covered_close": 55,
+            "stock_option_call_exercise": 56,
+            "stock_option_put_exercise": 57,
+            "stock_option_secu_lock": 58,
+            "stock_option_secu_unlock": 59,
+        }
+
     def _order_stock(self, params):
         account = params.get("account") or {}
         account_id = account.get("account_id", "")
+        account_type = self._account_type_name(account.get("account_type"))
+        order_type = self._passorder_optype(params, account_type)
         user_order_id = self._first_param(
             params,
             ("order_remark", "remark", "strategy_name"),
             "cfquant_%s" % int(time.time() * 1000),
         )
         args = (
-            params.get("optype", params.get("order_type")),
+            order_type,
             params.get("qmt_order_type", 1101),
             account_id,
             params.get("stock_code", ""),
@@ -563,6 +821,7 @@ class CfquantQmtBridge(object):
         if order_id is None:
             order_id = self._find_order_id(
                 account_id,
+                account_type,
                 user_order_id,
                 params.get("strategy_name", ""),
                 params.get("find_order_wait", 0.3),
@@ -571,6 +830,8 @@ class CfquantQmtBridge(object):
             "order_id": order_id if order_id is not None else -1,
             "request_result": result,
             "order_remark": user_order_id,
+            "order_type": order_type,
+            "account_type": str(account_type or "").upper(),
         }
 
     def _order_stock_async(self, params, msg):
@@ -602,8 +863,9 @@ class CfquantQmtBridge(object):
         if cancel_func is None:
             raise NotImplementedError("当前QMT环境未找到cancel函数，暂不能撤单")
         account = params.get("account") or {}
-        result = cancel_func(str(params.get("order_id")), account.get("account_id", ""), "STOCK", self.context)
-        return {"cancel_result": 0 if result else -1, "request_result": result}
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        result = cancel_func(str(params.get("order_id")), account.get("account_id", ""), account_type, self.context)
+        return {"cancel_result": 0 if result else -1, "request_result": result, "account_type": str(account_type or "").upper()}
 
     def _cancel_order_stock_async(self, params, msg):
         seq = params.get("seq")
@@ -665,6 +927,7 @@ class CfquantQmtBridge(object):
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
                 "order_source": self._order_source(obj),
+                "order_type": self._first_value(obj, ("m_nOrderType", "m_nBusinessType")),
                 "order_time": self._first_value(obj, (
                     "order_time",
                     "entrust_time",
@@ -685,8 +948,11 @@ class CfquantQmtBridge(object):
                     "m_nOrderDate",
                     "m_nEntrustDate",
                 )),
+                "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "order_volume": self._get_value(obj, "m_nVolumeTotalOriginal"),
+                "price_type": self._first_value(obj, ("m_nPriceType", "m_nOrderPriceType")),
+                "price": self._first_value(obj, ("m_dLimitPrice", "m_dOrderPrice", "m_dPrice")),
                 "traded_price": self._get_value(obj, "m_dTradedPrice"),
                 "traded_volume": self._get_value(obj, "m_nVolumeTraded"),
                 "trade_amount": self._get_value(obj, "m_dTradeAmount"),
@@ -694,8 +960,16 @@ class CfquantQmtBridge(object):
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
+                "m_nOrderType": self._get_value(obj, "m_nOrderType"),
+                "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
+                "m_nDirection": self._get_value(obj, "m_nDirection"),
                 "m_nOffsetFlag": self._get_value(obj, "m_nOffsetFlag"),
                 "m_nVolumeTotalOriginal": self._get_value(obj, "m_nVolumeTotalOriginal"),
+                "m_nPriceType": self._get_value(obj, "m_nPriceType"),
+                "m_nOrderPriceType": self._get_value(obj, "m_nOrderPriceType"),
+                "m_dLimitPrice": self._get_value(obj, "m_dLimitPrice"),
+                "m_dOrderPrice": self._get_value(obj, "m_dOrderPrice"),
+                "m_dPrice": self._get_value(obj, "m_dPrice"),
                 "m_dTradedPrice": self._get_value(obj, "m_dTradedPrice"),
                 "m_nVolumeTraded": self._get_value(obj, "m_nVolumeTraded"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
@@ -723,17 +997,24 @@ class CfquantQmtBridge(object):
                 "stock_code": self._stock_code_from_trade_obj(obj),
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
+                "order_type": self._first_value(obj, ("m_nOrderType", "m_nBusinessType")),
+                "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "price": self._get_value(obj, "m_dPrice"),
                 "volume": self._get_value(obj, "m_nVolume"),
                 "trade_amount": self._get_value(obj, "m_dTradeAmount"),
+                "commission": self._get_value(obj, "m_dCommission"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
+                "m_nOrderType": self._get_value(obj, "m_nOrderType"),
+                "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
+                "m_nDirection": self._get_value(obj, "m_nDirection"),
                 "m_nOffsetFlag": self._get_value(obj, "m_nOffsetFlag"),
                 "m_dPrice": self._get_value(obj, "m_dPrice"),
                 "m_nVolume": self._get_value(obj, "m_nVolume"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
+                "m_dCommission": self._get_value(obj, "m_dCommission"),
             }
         if datatype == "POSITION":
             return {
@@ -746,15 +1027,27 @@ class CfquantQmtBridge(object):
                 "market_value": self._get_value(obj, "m_dInstrumentValue"),
                 "position_cost": self._get_value(obj, "m_dPositionCost"),
                 "position_profit": self._get_value(obj, "m_dPositionProfit"),
+                "direction": self._get_value(obj, "m_nDirection"),
+                "frozen_volume": self._get_value(obj, "m_nFrozenVolume"),
+                "on_road_volume": self._get_value(obj, "m_nOnRoadVolume"),
+                "yesterday_volume": self._get_value(obj, "m_nYesterdayVolume"),
+                "last_price": self._get_value(obj, "m_dLastPrice"),
+                "profit_rate": self._get_value(obj, "m_dProfitRate"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
+                "m_nDirection": self._get_value(obj, "m_nDirection"),
                 "m_nVolume": self._get_value(obj, "m_nVolume"),
                 "m_nCanUseVolume": self._get_value(obj, "m_nCanUseVolume"),
+                "m_nFrozenVolume": self._get_value(obj, "m_nFrozenVolume"),
+                "m_nOnRoadVolume": self._get_value(obj, "m_nOnRoadVolume"),
+                "m_nYesterdayVolume": self._get_value(obj, "m_nYesterdayVolume"),
                 "m_dOpenPrice": self._get_value(obj, "m_dOpenPrice"),
                 "m_dInstrumentValue": self._get_value(obj, "m_dInstrumentValue"),
                 "m_dPositionCost": self._get_value(obj, "m_dPositionCost"),
                 "m_dPositionProfit": self._get_value(obj, "m_dPositionProfit"),
+                "m_dLastPrice": self._get_value(obj, "m_dLastPrice"),
+                "m_dProfitRate": self._get_value(obj, "m_dProfitRate"),
             }
         if datatype == "ACCOUNT":
             return {
@@ -777,8 +1070,53 @@ class CfquantQmtBridge(object):
         instrument_id = self._get_value(obj, "m_strInstrumentID")
         exchange_id = self._get_value(obj, "m_strExchangeID")
         if instrument_id and exchange_id:
-            return "%s.%s" % (instrument_id, exchange_id)
+            return "%s.%s" % (instrument_id, self._market_suffix(exchange_id))
         return instrument_id
+
+    def _market_suffix(self, value):
+        text = str(value or "").strip().upper()
+        aliases = {
+            "0": "SH",
+            "SH": "SH",
+            "SSE": "SH",
+            "SHSE": "SH",
+            "1": "SZ",
+            "SZ": "SZ",
+            "SZSE": "SZ",
+            "70": "BJ",
+            "BJ": "BJ",
+            "BSE": "BJ",
+            "3": "SF",
+            "SF": "SF",
+            "SHFE": "SF",
+            "SHF": "SF",
+            "4": "DF",
+            "DF": "DF",
+            "DCE": "DF",
+            "DLCE": "DF",
+            "5": "ZF",
+            "ZF": "ZF",
+            "CZCE": "ZF",
+            "ZCE": "ZF",
+            "2": "IF",
+            "IF": "IF",
+            "CFFEX": "IF",
+            "CFX": "IF",
+            "6": "INE",
+            "INE": "INE",
+            "75": "GF",
+            "GF": "GF",
+            "GFEX": "GF",
+            "7": "SHO",
+            "SHO": "SHO",
+            "SSEOPTION": "SHO",
+            "SSE_OPTION": "SHO",
+            "67": "SZO",
+            "SZO": "SZO",
+            "SZSEOPTION": "SZO",
+            "SZSE_OPTION": "SZO",
+        }
+        return aliases.get(text, text)
 
     def _order_source(self, obj):
         values = [
@@ -810,13 +1148,13 @@ class CfquantQmtBridge(object):
             return dict(vars(obj))
         return {"value": str(obj)}
 
-    def _find_order_id(self, account_id, user_order_id, strategy_name="", wait_seconds=0.3):
+    def _find_order_id(self, account_id, account_type, user_order_id, strategy_name="", wait_seconds=0.3):
         wait_seconds = float(wait_seconds or 0)
         deadline = time.time() + wait_seconds
         while time.time() <= deadline:
             try:
                 orders = self._query_trade_detail(
-                    {"account": {"account_id": account_id, "account_type": 2}, "strategy_name": strategy_name},
+                    {"account": {"account_id": account_id, "account_type": account_type}, "strategy_name": strategy_name},
                     "ORDER",
                 )
                 for order in orders or []:

@@ -22,6 +22,7 @@ log/
 log_data/
 tx_log/
 reports/
+test_dir/
 
 *.log
 *.runtime.log

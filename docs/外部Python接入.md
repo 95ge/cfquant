@@ -70,12 +70,85 @@ from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
 
 account = StockAccount("2220009880")
-trader = XtQuantTrader("", 0, account=account)
+trader = XtQuantTrader("", account=account)
 trader.start()
 
 asset = trader.query_stock_asset(account)
 positions = trader.query_stock_positions(account)
 print(asset, positions)
+```
+
+未显式传入或传 `0` 时，`trader.session_id` 会自动生成一个正整数，外部系统可以直接读取这个属性做实例归属。
+
+交易账号类型：
+
+| 账号类型 | 说明 |
+| --- | --- |
+| `STOCK` | 普通证券账户。 |
+| `CREDIT` | 信用账户，支持担保品买卖、融资买入、融券卖出、还款还券及专项业务。 |
+| `FUTURE` | 期货账户，支持 MiniQMT `FUTURE_*` 下单常量。 |
+| `FUTURE_OPTION` | 期货期权账户，支持期货开平仓动作和 `OPTION_FUTURE_OPTION_EXERCISE=100`。 |
+| `STOCK_OPTION` | 股票/ETF 期权账户，外部使用 MiniQMT `STOCK_OPTION_*` 常量 48-57，桥接层转换为大 QMT opType 50-59。 |
+
+下单接口保持 MiniQMT 签名：
+
+```python
+order_id = trader.order_stock(
+    account,
+    stock_code,
+    order_type,
+    order_volume,
+    price_type,
+    price,
+    strategy_name="strategy_name",
+    order_remark="client_order_id",
+)
+```
+
+期货下单示例：
+
+```python
+from cfquant import xtconstant
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+account = StockAccount("YOUR_FUTURE_ACCOUNT_ID", "FUTURE")
+trader = XtQuantTrader("", 0, account=account)
+trader.start()
+
+order_id = trader.order_stock(
+    account,
+    "IF2601.IF",
+    xtconstant.FUTURE_OPEN_LONG,
+    1,
+    xtconstant.FIX_PRICE,
+    4200.0,
+    strategy_name="demo_future",
+    order_remark="demo_future_order",
+)
+```
+
+股票期权下单示例：
+
+```python
+from cfquant import xtconstant
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+account = StockAccount("YOUR_OPTION_ACCOUNT_ID", "STOCK_OPTION")
+trader = XtQuantTrader("", 0, account=account)
+trader.start()
+
+order_id = trader.order_stock(
+    account,
+    "10000001.SH",
+    xtconstant.STOCK_OPTION_BUY_OPEN,
+    1,
+    xtconstant.FIX_PRICE,
+    0.100,
+    strategy_name="demo_option",
+    order_remark="demo_option_order",
+)
 ```
 
 ## 默认路由

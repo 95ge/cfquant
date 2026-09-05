@@ -2592,6 +2592,10 @@ body[data-view="overview"] .orders-panel {
   color: var(--danger);
 }
 
+.metric-note.is-warn {
+  color: #8a5a00;
+}
+
 .metric-note.is-busy {
   color: var(--accent);
 }
@@ -3334,6 +3338,140 @@ th.num .sort-header {
   font-size: 13px;
 }
 
+.binding-script-panel {
+  min-width: 0;
+}
+
+.binding-script-panel-hidden {
+  display: none !important;
+}
+
+.binding-script-guide {
+  margin: 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #efd18a;
+  border-radius: 6px;
+  background: #fff8df;
+  color: #7a5300;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.binding-script-list {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.binding-script-list.compact {
+  padding: 10px 0 0;
+}
+
+.binding-script-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.binding-script-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.binding-script-card-title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.binding-script-card-title strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.binding-script-card-title code,
+.binding-script-meta code {
+  min-width: 0;
+  color: #334155;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.binding-script-card-head button {
+  flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.binding-script-meta,
+.binding-script-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 12px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.binding-script-note {
+  display: block;
+  padding-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.binding-script-code {
+  max-height: 320px;
+  margin: 10px 12px 12px;
+  overflow: auto;
+  border: 1px solid #d8e0e8;
+  border-radius: 5px;
+  background: #f3f6f9;
+  color: #263442;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre;
+}
+
+.binding-script-code code {
+  display: block;
+  padding: 10px;
+}
+
+.binding-script-loading,
+.binding-script-error {
+  margin: 10px 12px 12px;
+  padding: 10px;
+  border-radius: 5px;
+  background: #f3f6f9;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.binding-script-error {
+  background: #fff4f2;
+  color: #a33a31;
+}
+
+.binding-script-preview {
+  min-width: 0;
+  display: none;
+}
+
 .binding-page-notice,
 .binding-save-status {
   min-width: 0;
@@ -3654,6 +3792,132 @@ th.num .sort-header {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.binding-qmt-guide-overlay {
+  z-index: 2160;
+}
+
+.binding-qmt-guide-dialog {
+  width: min(980px, 100%);
+  max-height: calc(100vh - 28px);
+}
+
+.binding-qmt-guide-body {
+  display: grid;
+  gap: 16px;
+  padding: 16px 18px;
+}
+
+.binding-qmt-guide-instruction {
+  padding: 11px 12px;
+  border: 1px solid #b9d3fb;
+  border-radius: 6px;
+  background: #eef5ff;
+  color: #1f5fa8;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.binding-qmt-guide-section-head {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.binding-qmt-guide-section-head strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.binding-qmt-guide-section-head span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.binding-qmt-guide-status {
+  display: grid;
+  gap: 6px;
+}
+
+.binding-qmt-status-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.35fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid #c9d3dd;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #344150;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.binding-qmt-status-row strong {
+  color: var(--text);
+}
+
+.binding-qmt-status-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.binding-qmt-status-row code {
+  font-family: Consolas, "Courier New", monospace;
+  overflow-wrap: anywhere;
+}
+
+.binding-qmt-status-row small {
+  display: block;
+  margin-top: 3px;
+  color: inherit;
+}
+
+.binding-qmt-status-row.is-success {
+  border-color: #b7dfc8;
+  background: #edf8f1;
+  color: #0f6b43;
+}
+
+.binding-qmt-status-row.is-warn {
+  border-color: #efd18a;
+  background: #fff8df;
+  color: #7a5300;
+}
+
+.binding-qmt-status-row.is-error {
+  border-color: #ebb4ad;
+  background: #fff4f2;
+  color: #a33a31;
+}
+
+.binding-qmt-status-summary {
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fbfcfd;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.binding-qmt-guide-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.binding-qmt-guide-actions .metric-note {
+  flex: 1 1 260px;
 }
 
 .binding-dialog-form {
@@ -5178,9 +5442,14 @@ body[data-view="bindings"] .bindings-panel {
   grid-row: 1;
 }
 
-body[data-view="bindings"] .binding-verify-panel {
+body[data-view="bindings"] .binding-script-panel {
   grid-column: 2;
   grid-row: 2;
+}
+
+body[data-view="bindings"] .binding-verify-panel {
+  grid-column: 2;
+  grid-row: 3;
 }
 
 body[data-view="trade"] .trade-ticket {
@@ -6294,7 +6563,152 @@ tr.order-row-updated td {
 }
 
 .onboarding-actions .metric-note {
-  min-width: min(260px, 100%);
+  flex: 1 1 100%;
+  min-width: 0;
+  line-height: 1.5;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.onboarding-restart-checklist {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid #d5dee7;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.onboarding-restart-row {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 11px 12px;
+  border-bottom: 1px solid #e1e7ed;
+}
+
+.onboarding-restart-row:last-child {
+  border-bottom: 0;
+}
+
+.onboarding-restart-row > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 4px;
+  background: #1f6feb;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.onboarding-restart-row > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.onboarding-restart-row strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.onboarding-restart-row small {
+  color: #4c5b6a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.onboarding-restart-row code {
+  color: #245a91;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.onboarding-bridge-waiting {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 12px;
+  border: 1px solid #b9d3fb;
+  border-radius: 6px;
+  background: #eef5ff;
+  color: #1f5fa8;
+}
+
+.onboarding-bridge-waiting.hidden {
+  display: none;
+}
+
+.onboarding-bridge-waiting > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.onboarding-bridge-waiting strong {
+  font-size: 13px;
+}
+
+.onboarding-bridge-waiting span {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.onboarding-bridge-spinner {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(31, 111, 235, 0.24);
+  border-top-color: #1f6feb;
+  border-radius: 50%;
+  animation: loginSpin 780ms linear infinite;
+}
+
+.onboarding-force-close {
+  margin-left: auto;
+  border-color: #e0a39d;
+  color: var(--danger);
+}
+
+.onboarding-back-step {
+  color: #4c5b6a;
+}
+
+.onboarding-back-step:hover:not(:disabled) {
+  border-color: #9aabbc;
+  background: #f4f7fa;
+}
+
+.onboarding-force-close:hover:not(:disabled) {
+  border-color: #cf8178;
+  background: #fff4f2;
+}
+
+.onboarding-api-ready {
+  display: grid;
+  gap: 5px;
+  padding: 11px 12px;
+  border-left: 3px solid #16794c;
+  background: #edf8f1;
+}
+
+.onboarding-api-ready strong {
+  color: #0f6b43;
+  font-size: 13px;
+}
+
+.onboarding-api-ready span {
+  color: #315b48;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.onboarding-wizard.is-binding-locked .onboarding-progress button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .onboarding-deploy-list,
@@ -7655,6 +8069,20 @@ tr.order-row-updated td {
     overflow-x: visible;
   }
 
+  .onboarding-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .onboarding-actions button {
+    width: 100%;
+  }
+
+  .onboarding-force-close {
+    margin-left: 0;
+  }
+
   .onboarding-step {
     min-width: 0;
   }
@@ -7681,6 +8109,7 @@ tr.order-row-updated td {
 
   body[data-view="bindings"] .binding-action-panel,
   body[data-view="bindings"] .bindings-panel,
+  body[data-view="bindings"] .binding-script-panel,
   body[data-view="bindings"] .binding-verify-panel {
     grid-column: 1;
     grid-row: auto;
@@ -7689,7 +8118,8 @@ tr.order-row-updated td {
 
   .bindings-head,
   .binding-dialog-head,
-  .binding-dialog-actions {
+  .binding-dialog-actions,
+  .binding-qmt-guide-actions {
     display: grid;
     grid-template-columns: 1fr;
     justify-content: stretch;
@@ -7707,8 +8137,28 @@ tr.order-row-updated td {
 
   .panel-actions button,
   .binding-row-actions button,
-  .binding-dialog-actions button {
+  .binding-script-card-head button,
+  .binding-dialog-actions button,
+  .binding-qmt-guide-actions button {
     width: 100%;
+  }
+
+  .binding-qmt-guide-body {
+    padding: 12px;
+  }
+
+  .binding-qmt-status-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .binding-qmt-guide-actions {
+    padding: 12px;
+  }
+
+  .binding-script-card-head {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .binding-dialog-form {

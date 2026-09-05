@@ -518,20 +518,33 @@ class NormalQmtBridge(TxTradeBridge):
             "m_strInstrumentID",
             "m_strExchangeID",
             "m_strInstrumentName",
+            "m_nOrderType",
+            "m_nBusinessType",
+            "m_nDirection",
             "m_nOffsetFlag",
             "m_nVolumeTotalOriginal",
             "m_nVolumeTraded",
             "m_nVolume",
             "m_nCanUseVolume",
+            "m_nFrozenVolume",
+            "m_nOnRoadVolume",
+            "m_nYesterdayVolume",
+            "m_nPriceType",
+            "m_nOrderPriceType",
+            "m_dLimitPrice",
+            "m_dOrderPrice",
             "m_dPrice",
             "m_dTradedPrice",
             "m_dTradeAmount",
+            "m_dCommission",
             "m_dBalance",
             "m_dAssureAsset",
             "m_dInstrumentValue",
             "m_dTotalDebit",
             "m_dAvailable",
             "m_dPositionProfit",
+            "m_dLastPrice",
+            "m_dProfitRate",
             "m_dOpenPrice",
             "m_dPositionCost",
             "m_strRemark",
@@ -562,7 +575,7 @@ class NormalQmtBridge(TxTradeBridge):
         code = data.get("m_strInstrumentID")
         market = data.get("m_strExchangeID")
         if code and market:
-            data["stock_code"] = "%s.%s" % (code, market)
+            data["stock_code"] = "%s.%s" % (code, self._market_suffix(market))
         source_text = " ".join(str(item or "") for item in (
             data.get("order_source"),
             data.get("source"),
@@ -574,6 +587,51 @@ class NormalQmtBridge(TxTradeBridge):
         )).strip().lower()
         data["order_source"] = "cfquant" if "cfquant" in source_text else "other"
         return data
+
+    def _market_suffix(self, value):
+        text = str(value or "").strip().upper()
+        aliases = {
+            "0": "SH",
+            "SH": "SH",
+            "SSE": "SH",
+            "SHSE": "SH",
+            "1": "SZ",
+            "SZ": "SZ",
+            "SZSE": "SZ",
+            "70": "BJ",
+            "BJ": "BJ",
+            "BSE": "BJ",
+            "3": "SF",
+            "SF": "SF",
+            "SHFE": "SF",
+            "SHF": "SF",
+            "4": "DF",
+            "DF": "DF",
+            "DCE": "DF",
+            "DLCE": "DF",
+            "5": "ZF",
+            "ZF": "ZF",
+            "CZCE": "ZF",
+            "ZCE": "ZF",
+            "2": "IF",
+            "IF": "IF",
+            "CFFEX": "IF",
+            "CFX": "IF",
+            "6": "INE",
+            "INE": "INE",
+            "75": "GF",
+            "GF": "GF",
+            "GFEX": "GF",
+            "7": "SHO",
+            "SHO": "SHO",
+            "SSEOPTION": "SHO",
+            "SSE_OPTION": "SHO",
+            "67": "SZO",
+            "SZO": "SZO",
+            "SZSEOPTION": "SZO",
+            "SZSE_OPTION": "SZO",
+        }
+        return aliases.get(text, text)
 
     def _callback_account_id(self, obj, data):
         for key in ("account_id", "m_strAccountID", "m_strAccountId", "m_strAccount", "m_accountID"):
@@ -603,6 +661,12 @@ class NormalQmtBridge(TxTradeBridge):
                 return "STOCK"
             if text in ("3", "CREDIT_ACCOUNT", "MARGIN"):
                 return "CREDIT"
+            if text in ("1", "FUTURE_ACCOUNT"):
+                return "FUTURE"
+            if text in ("5", "FUTURE_OPTION_ACCOUNT"):
+                return "FUTURE_OPTION"
+            if text in ("6", "STOCK_OPTION_ACCOUNT", "OPTION"):
+                return "STOCK_OPTION"
             return text
         return ""
 
