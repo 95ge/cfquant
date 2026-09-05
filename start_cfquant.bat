@@ -123,7 +123,7 @@ if not errorlevel 1 (
 
 echo cfquant package was not found. Installing the current project with pip...
 call :log "cfquant package missing, installing editable project"
-"%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-input -e "%~dp0" >>"%START_LOG%" 2>&1
+"%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-input -e . >>"%START_LOG%" 2>&1
 if errorlevel 1 (
     call :log "cfquant package installation failed"
     exit /b 1
