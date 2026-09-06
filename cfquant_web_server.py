@@ -6328,7 +6328,7 @@ def qmt_restart_required_info(reason="", entry_info=None):
         "reason": reason or "QMT 核心包已更新",
         "message": (
             "更新已写入文件系统，但 QMT 中正在运行的桥接脚本不会自动加载新代码；"
-            "请停止并重新启动对应 QMT 入口脚本。"
+            "请完全退出并重启对应的 QMT 客户端，然后重新运行 cfquant 入口脚本加载新版本。"
         ),
         "entry_manual_update": entry_info,
     }
@@ -7628,12 +7628,19 @@ class CfquantUpdater(object):
         ignored_dirs = {"__pycache__", ".pytest_cache", ".mypy_cache"}
         ignored_suffixes = (".pyc", ".pyo")
 
+        def ignored_file(name):
+            lowered = str(name or "").lower()
+            return (
+                lowered == str(QMT_BRIDGE_CONFIG_FILENAME).lower()
+                or (lowered.startswith("cfquant_bridge_config_") and lowered.endswith(".json"))
+            )
+
         def walk_files(root):
             rows = []
             for current_root, dirs, files in os.walk(root):
                 dirs[:] = [name for name in dirs if name not in ignored_dirs]
                 for name in files:
-                    if name.endswith(ignored_suffixes):
+                    if name.endswith(ignored_suffixes) or ignored_file(name):
                         continue
                     path = os.path.join(current_root, name)
                     rows.append(os.path.relpath(path, root).replace("\\", "/"))
@@ -7922,6 +7929,7 @@ class CfquantProjectUpdater(object):
             )
             entry_info = self._entry_rollback_info(selected)
             self._restore_backup(selected)
+            qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
             removed = self._prune_backups()
             return {
                 "updated": True,
@@ -7931,16 +7939,13 @@ class CfquantProjectUpdater(object):
                 "removed_backups": removed,
                 "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
                 "backups": self._list_backups(),
-                "qmt_restart_required": (
-                    qmt_restart_required_info(
-                        reason="Web 项目回滚影响了 QMT 入口脚本",
-                        entry_info=entry_info,
-                    )
-                    if entry_info.get("required")
-                    else qmt_restart_not_required_info(
-                        reason="Web 项目回滚未检测到 QMT 入口脚本变更",
-                        entry_info=entry_info,
-                    )
+                "qmt_core_deploy": qmt_core_deploy,
+                "update_completed": bool(
+                    (qmt_core_deploy.get("summary") or {}).get("ok", True)
+                ),
+                "qmt_restart_required": qmt_restart_required_info(
+                    reason="版本已回滚并同步到已绑定 QMT 目录，请完全退出并重启 QMT",
+                    entry_info=entry_info,
                 ),
                 "entry_manual_update": entry_info,
             }
@@ -7972,6 +7977,8 @@ class CfquantProjectUpdater(object):
                 copied.append(rel_path)
             entry_info = self._entry_update_info(changed)
             self._write_install_meta(meta, source_root, backup, copied, changed, entry_info)
+            qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
+            qmt_deploy_summary = qmt_core_deploy.get("summary") or {}
             removed = self._prune_backups()
             return {
                 "updated": True,
@@ -7985,16 +7992,15 @@ class CfquantProjectUpdater(object):
                 "removed_backups": removed,
                 "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
                 "backups": self._list_backups(),
-                "qmt_restart_required": (
-                    qmt_restart_required_info(
-                        reason="Web 项目更新包含 QMT 入口脚本变更",
-                        entry_info=entry_info,
-                    )
-                    if entry_info.get("required")
-                    else qmt_restart_not_required_info(
-                        reason="Web 项目更新未检测到 QMT 入口脚本变更",
-                        entry_info=entry_info,
-                    )
+                "qmt_core_deploy": qmt_core_deploy,
+                "update_completed": bool(qmt_deploy_summary.get("ok", True)),
+                "qmt_restart_required": qmt_restart_required_info(
+                    reason=(
+                        "版本更新完成，最新 cfquant 核心已同步到所有已绑定 QMT 目录；请完全退出并重启 QMT"
+                        if qmt_deploy_summary.get("ok", True) else
+                        "Web 已更新，但部分 QMT 目录同步失败；处理失败项后请完全退出并重启 QMT"
+                    ),
+                    entry_info=entry_info,
                 ),
                 "entry_manual_update": entry_info,
             }
@@ -8656,6 +8662,128 @@ def auto_deploy_qmt_core_for_account(row, enabled=True):
     }
 
 
+def auto_deploy_qmt_core_for_all_accounts(source_dir=None):
+    """Copy the current core into every distinct QMT directory in saved bindings."""
+    configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
+    targets = []
+    seen = {}
+
+    def add_target(qmt_dir, qmt_role, row, bridge_id=None, market=""):
+        qmt_dir = normalize_optional_path(qmt_dir)
+        if not qmt_dir:
+            return
+        resolved_dir = qmt_dir
+        try:
+            if UPDATER is not None:
+                resolved = UPDATER._target_paths(qmt_dir)
+                resolved_dir = normalize_optional_path(resolved.get("python_dir") or qmt_dir)
+        except Exception:
+            resolved_dir = qmt_dir
+        key = os.path.normcase(os.path.abspath(os.path.normpath(resolved_dir)))
+        account_key = str(row.get("account_key") or "").strip()
+        if key in seen:
+            if account_key and account_key not in seen[key]["account_keys"]:
+                seen[key]["account_keys"].append(account_key)
+            return
+        target = {
+            "key": key,
+            "qmt_dir": qmt_dir,
+            "qmt_role": str(qmt_role or "normal"),
+            "bridge_id": normalize_bridge_id(bridge_id or row.get("bridge_id") or DEFAULT_BRIDGE_ID),
+            "account_keys": [account_key] if account_key else [],
+            "market": market,
+        }
+        seen[key] = target
+        targets.append(target)
+
+    for row in configs.values():
+        if not isinstance(row, dict):
+            continue
+        add_target(
+            row.get("qmt_dir") or row.get("python_dir"),
+            "normal",
+            row,
+        )
+        if normalize_transport_mode(row.get("mode") or "ctypes") == "lttx":
+            add_target(
+                row.get("qmt_trade_dir")
+                or row.get("trade_qmt_dir")
+                or row.get("advanced_qmt_dir")
+                or row.get("qmt_trade_core_dir"),
+                "trade",
+                row,
+            )
+        if parse_config_bool(row.get("market_routing_enabled"), False):
+            routes = normalize_market_bridge_config(
+                row.get("market_bridges") or {},
+                account_id=row.get("account_id"),
+                account_type=row.get("account_type") or "STOCK",
+                parent_bridge_id=row.get("bridge_id") or DEFAULT_BRIDGE_ID,
+                enabled=True,
+            )
+            for market, route in routes.items():
+                if route.get("enabled", True) is False:
+                    continue
+                add_target(
+                    route.get("qmt_dir"),
+                    "market_%s" % market,
+                    row,
+                    bridge_id=route.get("bridge_id") or row.get("bridge_id"),
+                    market=market,
+                )
+
+    results = []
+    for target in targets:
+        if UPDATER is None:
+            results.append({
+                "updated": False,
+                "skipped": False,
+                "qmt_role": target["qmt_role"],
+                "bridge_id": target["bridge_id"],
+                "qmt_dir": target["qmt_dir"],
+                "error": "更新器未初始化，无法同步 cfquant 核心包",
+                "message": "更新器未初始化，无法同步 cfquant 核心包",
+            })
+            continue
+        result = UPDATER.install_local_core_to_qmt_dir(
+            target["qmt_dir"],
+            bridge_id=target["bridge_id"],
+            qmt_role=target["qmt_role"],
+            account_keys=target["account_keys"],
+            source_dir=source_dir or BASE_DIR,
+        )
+        if target.get("market"):
+            result["market"] = target["market"]
+        results.append(result)
+
+    identity_results = sync_qmt_bridge_identities() if targets else []
+    summary = _auto_deploy_qmt_core_result_summary(results)
+    identity_errors = [
+        item for item in identity_results
+        if isinstance(item, dict) and item.get("error")
+    ]
+    summary.update({
+        "target_count": len(targets),
+        "identity_error_count": len(identity_errors),
+        "ok": bool(summary.get("ok", True) and not identity_errors),
+    })
+    if not targets:
+        summary["message"] = "未配置 QMT 绑定目录，Web 已更新；绑定 QMT 后会自动复制核心包"
+    elif identity_errors:
+        summary["message"] = "%s；%d 个 QMT 身份配置写入失败" % (
+            summary.get("message") or "核心包同步完成",
+            len(identity_errors),
+        )
+    return {
+        "enabled": True,
+        "source_dir": normalize_optional_path(source_dir or BASE_DIR),
+        "target_count": len(targets),
+        "results": results,
+        "identity_results": identity_results,
+        "summary": summary,
+    }
+
+
 def sync_qmt_bridge_identities():
     results = []
     try:
@@ -8703,7 +8831,19 @@ def sync_qmt_bridge_identities():
         return results
 
 
-sync_qmt_bridge_identities()
+try:
+    STARTUP_QMT_CORE_DEPLOY = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
+except Exception as startup_qmt_core_error:
+    STARTUP_QMT_CORE_DEPLOY = {
+        "enabled": True,
+        "results": [],
+        "summary": {
+            "ok": False,
+            "error_count": 1,
+            "message": "Web 启动时同步 QMT 核心失败: %s" % startup_qmt_core_error,
+        },
+    }
+    safe_print(STARTUP_QMT_CORE_DEPLOY["summary"]["message"])
 
 
 def tcp_port_open(host, port, timeout=0.35):

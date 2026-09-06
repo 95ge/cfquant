@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260907_02';
+const FRONTEND_VERSION = 'web_20260907_03';
 
 const state = {
   accountId: '',
@@ -1839,7 +1839,7 @@ function qmtRuntimeDetail(report = {}) {
   return report.message || '未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看。';
 }
 
-function renderProjectVersion(info) {
+function renderProjectVersionLegacyRuntime(info) {
   state.versionInfo = info || state.versionInfo || null;
   const data = state.versionInfo || {};
   const qmtRuntime = data.qmt_runtime || data.qmt_saved_report || {};
@@ -2012,6 +2012,106 @@ function renderProjectVersion(info) {
       <button type="button" data-version-action="open-update">更新设置</button>
     </div>
     <div class="version-action-status">${esc(state.versionCheckInFlight ? '正在连接官网和 QMT 运行时...' : stateDetail)}</div>`;
+}
+
+function renderProjectVersion(info) {
+  state.versionInfo = info || state.versionInfo || null;
+  const data = state.versionInfo || {};
+  const currentVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
+  const remote = data.remote || {};
+  const latestVersion = remote.core_version || remote.version || '--';
+  const comparison = data.comparison || 'unknown';
+  const checking = state.versionCheckInFlight;
+  const updateAvailable = Boolean(data.update_available || comparison === 'newer' || comparison === 'different');
+  const remoteError = remote.error || '';
+  const statusText = checking
+    ? '正在检查版本'
+    : (remoteError ? '版本检查失败' : (updateAvailable ? '发现新版本' : (comparison === 'same' ? '已是最新版本' : '版本信息')));
+  const statusClass = checking
+    ? 'status-checking'
+    : (remoteError ? 'status-error' : projectVersionClass(data));
+  const widget = $('versionWidget');
+  const badge = $('versionBadge');
+  const label = $('versionBadgeLabel');
+  const badgeState = $('versionBadgeState');
+  const badgeEntry = $('versionBadgeEntry');
+  const badgeMeta = $('versionBadgeMeta');
+  const checkState = $('versionCheckState');
+  const body = $('versionPopoverBody');
+  const alert = $('versionAlert');
+
+  if (label) label.textContent = currentVersion;
+  if (badgeState) badgeState.textContent = statusText;
+  if (badgeEntry) badgeEntry.textContent = updateAvailable ? '点击更新' : '点击查看版本';
+  if (badgeMeta) {
+    badgeMeta.textContent = checking
+      ? '正在连接官网版本源'
+      : (remoteError ? '稍后可重新检查' : (latestVersion !== '--' ? `最新版本 ${latestVersion}` : '点击检查最新版本'));
+  }
+  if (badge) badge.setAttribute('aria-label', `当前版本 ${currentVersion}，${statusText}`);
+  if (checkState) checkState.textContent = statusText;
+  if (widget) {
+    widget.classList.remove(
+      'status-same',
+      'status-newer',
+      'status-different',
+      'status-older',
+      'status-error',
+      'status-checking',
+      'status-unknown',
+    );
+    widget.classList.add(statusClass);
+  }
+  if (alert) {
+    alert.classList.toggle('hidden', !remoteError || checking);
+    alert.textContent = remoteError ? `版本探测失败：${remoteError}` : '版本探测失败，不影响交易和行情功能';
+    alert.title = remoteError;
+  }
+  if (!body) return;
+
+  const remoteDetail = remoteError
+    ? `检查失败：${remoteError}`
+    : (latestVersion !== '--' ? remoteUpdateDetail(remote, data.repo_url || DEFAULT_UPDATE_REPO_URL) : '尚未检查官网版本');
+  const compareText = projectUpdateCompareText(comparison, remoteError);
+  const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
+  const recheckDisabled = checking ? ' disabled' : '';
+  const heroClass = checking ? 'is-checking' : (remoteError ? 'is-wait' : (updateAvailable ? 'is-stale' : 'is-ok'));
+  const changelog = remote.changelog || {};
+  body.innerHTML = `
+    <section class="version-runtime-hero ${heroClass}">
+      <div class="version-runtime-head">
+        <div>
+          <span class="version-section-label">版本信息</span>
+          <strong>${esc(statusText)}</strong>
+        </div>
+        <span class="version-runtime-status">${esc(compareText)}</span>
+      </div>
+      <div class="version-runtime-value">
+        <span>当前版本</span>
+        <strong>${esc(currentVersion)}</strong>
+      </div>
+      <p>一次更新会替换完整项目，并把最新 cfquant 核心复制到所有已绑定的 QMT 目录。</p>
+    </section>
+    <section class="version-compare-section">
+      <div class="version-section-head">
+        <span>最新版本</span>
+        <strong>${esc(latestVersion)}</strong>
+      </div>
+      <div class="version-compare-row">
+        <div>
+          <span>更新状态</span>
+          <strong>${esc(compareText)}</strong>
+        </div>
+        <small>${esc(remoteDetail)}</small>
+      </div>
+    </section>
+    ${remote.version || remote.error ? `<div class="version-log-wrap">${renderVersionLog(changelog, '版本说明')}</div>` : ''}
+    <div class="version-actions">
+      <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
+      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新</button>
+      <button type="button" data-version-action="open-update">更新设置</button>
+    </div>
+    <div class="version-action-status">${esc(state.projectUpdateBusy ? '正在更新完整版本并同步已绑定 QMT 目录...' : '更新完成后，请完全退出并重启 QMT 加载新版本。')}</div>`;
 }
 
 function renderProjectVersionLegacy(info) {
@@ -4293,23 +4393,36 @@ function renderUpdateResult(payload) {
 function renderProjectUpdateResult(payload) {
   const box = $('projectUpdateResultBox');
   if (!box) return;
-  renderUpdateNotice('projectUpdateNoticeBox', payload, { forceQmtRestart: false });
+  renderUpdateNotice('projectUpdateNoticeBox', payload, { forceQmtRestart: true });
   box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
   syncUpdateResultDetails(box, payload);
 }
 
 function buildUpdateNoticeLines(payload, options = {}) {
   if (!payload) return [];
+  const deploy = payload.qmt_core_deploy || {};
+  const deploySummary = deploy.summary || {};
   const restart = payload.qmt_restart_required || {};
   const entry = payload.entry_manual_update || restart.entry_manual_update || {};
   const restartRequired = !!restart.required || !!options.forceQmtRestart;
   const entryRequired = !!entry.required;
   if (!restartRequired && !entryRequired) return [];
   const lines = [];
+  if (deploySummary.error_count || deploySummary.identity_error_count || deploySummary.ok === false) {
+    lines.push({
+      strong: '部分 QMT 目录同步失败',
+      text: deploySummary.message || '请展开执行结果，检查失败目录及文件权限后重新更新。',
+    });
+  } else if (deploySummary.target_count) {
+    lines.push({
+      strong: '核心同步完成',
+      text: `最新 cfquant 核心已同步到 ${deploySummary.target_count} 个已绑定 QMT 目录。`,
+    });
+  }
   if (restartRequired) {
     lines.push({
-      strong: 'QMT 侧需要重启',
-      text: restart.message || '更新完成后，请停止并重新启动对应 QMT 入口脚本，让 QMT 加载最新代码。',
+      strong: '请重启 QMT',
+      text: restart.message || '更新完成后，请完全退出并重启对应的 QMT 客户端，再运行入口脚本加载新版本。',
     });
   }
   if (entryRequired) {
@@ -4348,15 +4461,15 @@ function buildUpdateNoticeModel(payload, options = {}) {
       '回到网页刷新状态，确认通道在线。',
     ]
     : [
-      '停止 QMT 里正在运行的 cfquant 桥接脚本。',
-      '重新启动对应入口脚本，让 QMT 加载最新核心包。',
+      '保存当前工作并完全退出对应的 QMT 客户端。',
+      '重新启动 QMT，再运行 cfquant 入口脚本加载最新核心包。',
       '回到网页刷新状态，确认通道在线。',
     ];
   return {
-    title: entryRequired ? 'QMT 入口文件需要手动更新' : 'QMT 侧需要重启',
+    title: entryRequired ? 'QMT 入口文件需要手动更新' : '更新完成，请重启 QMT',
     subtitle: entryRequired
       ? '本次更新涉及 QMT 入口脚本。由于入口文件通常是加密文件，需要手动替换后再启动。'
-      : '核心文件已经写入磁盘，但 QMT 运行中的脚本不会自动加载新代码。',
+      : '完整版本和绑定目录中的核心文件已经更新；QMT 运行中的进程不会自动加载新代码。',
     lines,
     steps,
     version,
@@ -4614,28 +4727,21 @@ function renderProjectUpdateVersionInfo(data) {
   const version = data && data.version_info ? data.version_info : {};
   const local = version.local || {};
   const remote = version.remote || {};
-  const projectRemoteVersion = remote.web_version
-    ? `${remote.version || remote.core_version || '--'} / ${remote.web_version}`
-    : (remote.version || remote.core_version || '--');
+  const projectRemoteVersion = remote.core_version || remote.version || '--';
   const currentVersion = version.current_version || local.version || data && data.current_version || '--';
-  const webVersion = version.web_version || version.frontend_version || '--';
-  const browserFrontendVersion = FRONTEND_VERSION;
   const localDetail = local.matches_changelog === false
     ? `版本日志版本为 ${local.changelog_version || '--'}，与核心版本不一致`
     : `来源：${local.source || '本地项目'}`;
-  const webDetail = webVersion !== browserFrontendVersion
-    ? `前端 ${browserFrontendVersion} / 服务端 ${webVersion}`
-    : `Web ${webVersion}`;
   const remoteDetail = remoteUpdateDetail(remote);
   const compareClass = projectUpdateCompareClass(version.comparison, remote.error);
   box.innerHTML = `
     <div class="update-version-item">
-      <span>当前 Web</span>
+      <span>当前版本</span>
       <strong>${esc(currentVersion)}</strong>
-      <small>${esc(webVersion !== '--' ? webDetail : localDetail)}</small>
+      <small>${esc(localDetail)}</small>
     </div>
     <div class="update-version-item">
-      <span>远端</span>
+      <span>最新版本</span>
       <strong>${esc(projectRemoteVersion)}</strong>
       <small>${esc(remote.version || remote.error ? remoteDetail : '未检查远端版本')}</small>
     </div>
@@ -4705,8 +4811,11 @@ function handleProjectReload(reloadInfo, message) {
 function projectReloadProgressText(data, actionText) {
   const reloadInfo = data && data.reload;
   const version = data && data.current_version ? `，当前版本 ${data.current_version}` : '';
-  if (reloadInfo) return `${actionText}${version}。Web 服务即将重启，页面会自动跳转。`;
-  return `${actionText}${version}。`;
+  const deploy = data && data.qmt_core_deploy ? data.qmt_core_deploy : {};
+  const summary = deploy.summary || {};
+  const deployText = summary.message ? ` ${summary.message}。` : '';
+  if (reloadInfo) return `${actionText}${version}。${deployText} 服务即将重启，页面会自动跳转；请随后完全退出并重启 QMT。`;
+  return `${actionText}${version}。${deployText} 请完全退出并重启 QMT 加载新版本。`;
 }
 
 function uploadProjectUpdateZip(formData, onProgress) {
@@ -4776,43 +4885,44 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   if (repoInput && !repoInput.value.trim()) repoInput.value = repoUrl;
   if (refInput && !refInput.value.trim()) refInput.value = ref;
   if (!repoUrl) {
-    log('官网和 GitHub 回退源均不可用，无法更新 Web 项目');
+    log('官网和 GitHub 回退源均不可用，无法更新版本');
     return;
   }
   const versionInfo = state.versionInfo || {};
   const remoteInfo = versionInfo.remote || {};
-  let confirmText = '确认从官网优先源更新当前 Web 项目并自动重启？本地配置、数据库和日志会保留；官网不可用时会回退 GitHub。';
+  let confirmText = '确认更新到官网最新版本？本次会同时更新控制台与本地服务，并把最新 cfquant 核心复制到所有已绑定 QMT 目录。完成后需要完全退出并重启 QMT。';
   if (versionInfo.comparison === 'older') {
-    confirmText = '当前本地版本显示比远端更新，继续会用远端当前内容覆盖 Web 项目。确认继续？本地配置、数据库和日志会保留。';
+    confirmText = '当前版本显示比官网版本更新，继续会用官网当前版本覆盖完整项目和已绑定 QMT 核心。确认继续？';
   } else if (remoteInfo.error) {
-    confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从官网优先源更新 Web 项目吗？`;
+    confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从官网优先源更新完整版本吗？更新完成后需要重启 QMT。`;
   }
   const confirmed = window.confirm(confirmText);
   if (!confirmed) return;
   openQmtUpdateProgress(
     'project-official',
-    'Web 项目更新',
-    '正在准备从官网优先源更新 Web 项目...'
+    '完整版本更新',
+    '正在准备更新完整版本并同步已绑定 QMT 目录...'
   );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
-    setQmtUpdateProgressStep('download', '正在连接官网并下载 Web 项目发布包...');
+    setQmtUpdateProgressStep('download', '正在连接官网并下载完整版本包...');
     const data = await api('/api/project-updates/official', {
       method: 'POST',
       body: JSON.stringify({ site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, reload: true }),
     });
-    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已替换，正在准备重启 Web 服务...' : 'Web 项目已替换，正在刷新页面状态...');
+    setQmtUpdateProgressStep('restart', data.reload ? '完整版本和 QMT 核心已处理，正在准备重启服务...' : '完整版本已处理，正在刷新页面状态...');
     renderProjectUpdateResult(data);
-    alertUpdateNotice(data, { forceQmtRestart: false });
-    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目更新完成'));
-    log('Web 项目已从官网优先更新', {
+    alertUpdateNotice(data, { forceQmtRestart: true });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, '版本更新完成'));
+    log('完整版本已从官网优先更新', {
       version: data.current_version || '',
       copied_files: data.copied_files || 0,
+      qmt_core_deploy: data.qmt_core_deploy || null,
       source: options.source || 'settings',
     });
-    handleProjectReload(data.reload, 'Web 项目已更新，正在重启');
+    handleProjectReload(data.reload, '版本已更新，正在重启本地服务');
   } catch (error) {
     failQmtUpdateProgress(error);
     throw error;
@@ -4827,18 +4937,18 @@ async function uploadProjectZipUpdateFromUi() {
   const input = $('projectUpdateZipInput');
   const file = input && input.files && input.files[0];
   if (!file) {
-    log('未选择项目 zip 文件，无法更新 Web 项目');
+    log('未选择完整版本 zip 文件，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认上传 zip 更新当前 Web 项目并自动重启？本地配置、数据库和日志会保留。');
+  const confirmed = window.confirm('确认使用该 zip 更新完整版本，并把最新 cfquant 核心同步到所有已绑定 QMT 目录？完成后需要完全退出并重启 QMT。');
   if (!confirmed) return;
   const formData = new FormData();
   formData.append('reload', '1');
   formData.append('file', file, file.name);
   openQmtUpdateProgress(
     'project-upload',
-    'Web 项目 zip 更新',
-    `正在上传项目源码 zip：${file.name}`
+    '完整版本 zip 更新',
+    `正在上传完整版本 zip：${file.name}`
   );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
@@ -4847,17 +4957,18 @@ async function uploadProjectZipUpdateFromUi() {
     const data = await uploadProjectUpdateZip(formData, (loaded, total) => {
       const uploadPercent = total > 0 ? Math.round((loaded / total) * 100) : 0;
       const mapped = 8 + Math.min(34, Math.round(uploadPercent * 0.34));
-      setQmtUpdateProgressStep('upload', `正在上传项目源码 zip：${uploadPercent}%`, mapped);
+      setQmtUpdateProgressStep('upload', `正在上传完整版本 zip：${uploadPercent}%`, mapped);
     });
-    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已替换，正在准备重启 Web 服务...' : 'Web 项目已替换，正在刷新页面状态...');
+    setQmtUpdateProgressStep('restart', data.reload ? '完整版本和 QMT 核心已处理，正在准备重启服务...' : '完整版本已处理，正在刷新页面状态...');
     renderProjectUpdateResult(data);
-    alertUpdateNotice(data, { forceQmtRestart: false });
-    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目 zip 更新完成'));
-    log('Web 项目已通过 zip 更新', {
+    alertUpdateNotice(data, { forceQmtRestart: true });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, '完整版本 zip 更新完成'));
+    log('完整版本已通过 zip 更新', {
       version: data.current_version || '',
       copied_files: data.copied_files || 0,
+      qmt_core_deploy: data.qmt_core_deploy || null,
     });
-    handleProjectReload(data.reload, 'Web 项目 zip 更新完成，正在重启');
+    handleProjectReload(data.reload, '完整版本 zip 更新完成，正在重启本地服务');
   } catch (error) {
     failQmtUpdateProgress(error);
     throw error;
@@ -4875,28 +4986,28 @@ async function rollbackProjectUpdateFromUi() {
     log('没有可回滚的项目备份');
     return;
   }
-  const confirmed = window.confirm(`确认回滚 Web 项目到备份 ${backup} 并自动重启？`);
+  const confirmed = window.confirm(`确认回滚完整版本到备份 ${backup}？回滚后的 cfquant 核心也会同步到所有已绑定 QMT 目录，完成后需要重启 QMT。`);
   if (!confirmed) return;
   openQmtUpdateProgress(
     'project-rollback',
-    'Web 项目回滚',
-    `正在回滚 Web 项目到备份 ${backup}`
+    '完整版本回滚',
+    `正在回滚完整版本到备份 ${backup}`
   );
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
   try {
-    setQmtUpdateProgressStep('restore', '正在备份当前 Web 项目并恢复选中备份...');
+    setQmtUpdateProgressStep('restore', '正在备份当前版本并恢复选中备份...');
     const data = await api('/api/project-updates/rollback', {
       method: 'POST',
       body: JSON.stringify({ backup, reload: true }),
     });
-    setQmtUpdateProgressStep('restart', data.reload ? 'Web 项目已回滚，正在准备重启 Web 服务...' : 'Web 项目已回滚，正在刷新页面状态...');
+    setQmtUpdateProgressStep('restart', data.reload ? '完整版本与 QMT 核心已回滚，正在准备重启服务...' : '完整版本已回滚，正在刷新页面状态...');
     renderProjectUpdateResult(data);
-    alertUpdateNotice(data, { forceQmtRestart: false });
-    finishQmtUpdateProgress(data, projectReloadProgressText(data, 'Web 项目回滚完成'));
-    log('Web 项目已回滚', { version: data.current_version || '', backup });
-    handleProjectReload(data.reload, 'Web 项目已回滚，正在重启');
+    alertUpdateNotice(data, { forceQmtRestart: true });
+    finishQmtUpdateProgress(data, projectReloadProgressText(data, '完整版本回滚完成'));
+    log('完整版本已回滚', { version: data.current_version || '', backup, qmt_core_deploy: data.qmt_core_deploy || null });
+    handleProjectReload(data.reload, '完整版本已回滚，正在重启本地服务');
   } catch (error) {
     failQmtUpdateProgress(error);
     throw error;
@@ -11085,27 +11196,6 @@ async function boot() {
     rollbackProjectUpdateFromUi().catch((error) => {
       renderProjectUpdateResult({ error: error.message });
       log('Web 项目回滚失败', { error: error.message });
-    });
-  });
-  $('refreshUpdateStatusBtn').addEventListener('click', () => {
-    refreshUpdateStatus().catch((error) => log('更新状态刷新失败', { error: error.message }));
-  });
-  $('runGithubUpdateBtn').addEventListener('click', () => {
-    runGithubUpdateFromUi().catch((error) => {
-      renderUpdateResult({ error: error.message });
-      log('官网优先更新失败', { error: error.message });
-    });
-  });
-  $('uploadZipUpdateBtn').addEventListener('click', () => {
-    uploadZipUpdateFromUi().catch((error) => {
-      renderUpdateResult({ error: error.message });
-      log('zip 更新失败', { error: error.message });
-    });
-  });
-  $('rollbackUpdateBtn').addEventListener('click', () => {
-    rollbackUpdateFromUi().catch((error) => {
-      renderUpdateResult({ error: error.message });
-      log('核心代码回滚失败', { error: error.message });
     });
   });
   const qmtUpdateProgressCloseBtn = $('qmtUpdateProgressCloseBtn');
