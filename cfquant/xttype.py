@@ -64,6 +64,14 @@ def _set_first(data, target, names, default=_MISSING):
         data[target] = value
 
 
+def _normalize_order_id_field(data):
+    value = data.get("order_id")
+    if isinstance(value, str):
+        text = value.strip()
+        if text.isdigit():
+            data["order_id"] = int(text)
+
+
 _CANCELABLE_ORDER_STATUS_VALUES = frozenset((
     getattr(xtconstant, "ORDER_UNREPORTED", 48),
     getattr(xtconstant, "ORDER_WAIT_REPORTING", 49),
@@ -329,9 +337,12 @@ class XtOrder(DictObject):
         _apply_common_account_fields(data)
         _apply_stock_code_field(data)
         _set_first(data, "order_id", (
+            "m_nRef",
             "m_nOrderID",
+            "m_strOrderRef",
             "m_strOrderID",
         ), default=-1)
+        _normalize_order_id_field(data)
         _set_first(data, "order_sysid", (
             "m_strOrderSysID",
             "sysid",
@@ -379,6 +390,8 @@ class XtOrder(DictObject):
         ), default=getattr(xtconstant, "ORDER_UNKNOWN", 255))
         _set_first(data, "status_msg", (
             "m_strStatusMsg",
+            "m_strErrorMsg",
+            "m_strCancelInfo",
             "m_strStatus",
             "m_strOrderStatus",
         ), default="")
@@ -551,7 +564,12 @@ class XtOrderError(DictObject):
         if data is None:
             return value
         _apply_common_account_fields(data)
-        _set_first(data, "order_id", ("m_nOrderID", "m_strOrderID"), default=-1)
+        _set_first(data, "order_id", (
+            "m_nRef",
+            "m_nOrderID",
+            "m_strOrderRef",
+            "m_strOrderID",
+        ), default=-1)
         _set_first(data, "error_id", ("m_nErrorID", "error_code"), default=None)
         _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")
         _set_first(data, "strategy_name", ("m_strStrategyName",), default="")
@@ -581,10 +599,15 @@ class XtOrderResponse(DictObject):
         if data is None:
             return value
         _apply_common_account_fields(data)
-        _set_first(data, "order_id", ("m_nOrderID", "m_strOrderID"), default=-1)
+        _set_first(data, "order_id", (
+            "m_nRef",
+            "m_nOrderID",
+            "m_strOrderRef",
+            "m_strOrderID",
+        ), default=-1)
+        _normalize_order_id_field(data)
         _set_first(data, "strategy_name", ("m_strStrategyName",), default="")
         _set_first(data, "order_remark", ("m_strRemark", "m_strOrderRemark"), default="")
-        _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")
         _set_first(data, "seq", ("m_nSeq", "request_id"), default=None)
         return cls(**data)
 

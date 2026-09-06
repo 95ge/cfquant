@@ -6,6 +6,8 @@ from cfquant.tx_trade_bridge import TxTradeBridge
 from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import (
     StockAccount,
+    XtOrder,
+    XtOrderResponse,
     filter_cancelable_orders,
     is_cancelable_order_status,
 )
@@ -101,6 +103,128 @@ def test_query_stock_orders_treats_string_false_as_not_cancelable_only(monkeypat
     assert calls[0][1]["cancelable_only"] is False
 
 
+def test_xtorder_uses_big_qmt_order_reference_as_miniqmt_order_id():
+    order = XtOrder.from_any({
+        "m_nRef": 719000001,
+        "m_strOrderRef": "719000001",
+        "m_strOrderSysID": "SYS-1",
+        "m_strErrorMsg": "已报",
+    })
+
+    assert order.order_id == 719000001
+    assert order.order_sysid == "SYS-1"
+    assert order.status_msg == "已报"
+
+
+def test_xtorder_response_uses_big_qmt_order_reference():
+    response = XtOrderResponse.from_any({
+        "m_strOrderRef": "719000002",
+        "m_strRemark": "remark-a",
+        "m_strStrategyName": "strategy-a",
+        "m_nSeq": 9,
+    })
+
+    assert response.order_id == 719000002
+    assert response.order_remark == "remark-a"
+    assert response.strategy_name == "strategy-a"
+    assert response.seq == 9
+
+
+def test_order_stock_async_returns_request_seq_or_minus_one(monkeypatch):
+    account = StockAccount("A123")
+    responses = iter((
+        {"seq": 1, "accepted": True, "request_result": 0},
+        {"seq": -1, "accepted": False, "request_result": -1},
+    ))
+
+    monkeypatch.setattr(
+        XtQuantTrader,
+        "_trade_request",
+        lambda self, action, params=None, timeout=None: next(responses),
+    )
+    trader = XtQuantTrader()
+
+    seq = trader.order_stock_async(account, "000001.SZ", 23, 100, 11, 10.0, "hxy", "remark")
+    failed = trader.order_stock_async(account, "000001.SZ", 23, 100, 11, 10.0, "hxy", "remark")
+
+    assert isinstance(seq, int) and seq > 0
+    assert failed == -1
+
+
+def test_order_stock_async_is_completed_from_cross_process_order_callback(monkeypatch):
+    class Callback(object):
+        def __init__(self):
+            self.orders = []
+            self.responses = []
+
+        def on_stock_order(self, order):
+            self.orders.append(order)
+
+        def on_order_stock_async_response(self, response):
+            self.responses.append(response)
+
+    monkeypatch.setattr(
+        XtQuantTrader,
+        "_trade_request",
+        lambda self, action, params=None, timeout=None: {
+            "seq": params.get("seq"),
+            "accepted": True,
+            "request_result": 0,
+        },
+    )
+    callback = Callback()
+    account = StockAccount("A123")
+    trader = XtQuantTrader(callback=callback, account=account)
+
+    seq = trader.order_stock_async(account, "000001.SZ", 23, 100, 11, 10.0, "hxy", "remark")
+    trader._make_trader_handler("on_stock_order")({
+        "account_id": "A123",
+        "stock_code": "000001.SZ",
+        "order_id": 719000010,
+        "order_remark": "",
+        "strategy_name": "",
+    })
+    trader._make_trader_handler("on_order_stock_async_response")({
+        "account_id": "A123",
+        "order_id": 719000010,
+        "strategy_name": "hxy",
+        "order_remark": "remark",
+        "seq": seq,
+    })
+
+    assert callback.orders[0].order_remark == "remark"
+    assert callback.orders[0].strategy_name == "hxy"
+    assert len(callback.responses) == 1
+    assert vars(callback.responses[0]) == {
+        "account_type": xtconstant.SECURITY_ACCOUNT,
+        "account_id": "A123",
+        "order_id": 719000010,
+        "strategy_name": "hxy",
+        "order_remark": "remark",
+        "seq": seq,
+    }
+
+
+def test_xtorderresponse_canonical_payload_has_miniqmt_fields_only():
+    response = XtOrderResponse.from_any({
+        "account_type": xtconstant.SECURITY_ACCOUNT,
+        "account_id": "A123",
+        "order_id": 719000003,
+        "strategy_name": "hxy",
+        "order_remark": "remark",
+        "seq": 10,
+    })
+
+    assert set(vars(response)) == {
+        "account_type",
+        "account_id",
+        "order_id",
+        "strategy_name",
+        "order_remark",
+        "seq",
+    }
+
+
 def test_xtquanttrader_auto_assigns_session_id_when_omitted_or_zero():
     account = StockAccount("A123")
 
@@ -154,6 +278,28 @@ def test_tx_trade_bridge_query_prefers_three_arg_signature():
 
     assert calls == [("A123", "stock", "account")]
     assert result[0]["m_dAvailable"] == 1.0
+
+
+def test_query_stock_orders_preserves_requested_account_fields():
+    row = {
+        "m_nRef": 700001,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+    }
+    bridge = TxTradeBridge(
+        object(),
+        show=False,
+        globals_dict={"get_trade_detail_data": lambda *args: [row]},
+    )
+
+    result = bridge._query_trade_detail({
+        "account": {"account_id": "C123", "account_type": "CREDIT"},
+    }, "order")
+    order = XtOrder.from_any(result[0])
+
+    assert order.account_id == "C123"
+    assert order.account_type == xtconstant.CREDIT_ACCOUNT
+    assert order.order_id == 700001
 
 
 def test_tx_trade_bridge_query_falls_back_to_three_args():

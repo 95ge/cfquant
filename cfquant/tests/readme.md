@@ -160,3 +160,15 @@ D:\ProgramData\anaconda3\python.exe .\cfquant\tests\4_交易委托查询测试.p
 - `"error"`：调用失败时的错误信息。
 - 行情脚本中的 `heartbeat.delta_events > 0` 表示回调仍在持续进入。
 - 行情脚本出现 `gap_warning` 才表示指定时间内没有收到新回调。
+
+## 7. 同步/异步下单与回调综合测试
+
+`7_同步异步下单测试.py` 将同步下单、异步下单、交易回调、委托查询、JSON 序列化检查和自动撤单放在一个流程中。可直接修改脚本顶部“用户配置区”的账号、标的、买卖方向、价格、数量和测试模式。
+
+修改完成后直接运行脚本，程序会立即按照代码中的配置连接交易通道并执行测试：
+
+```powershell
+D:\ProgramData\anaconda3\python.exe .\cfquant\tests\7_同步异步下单测试.py
+```
+
+默认会自动撤销测试结束时仍可撤的委托。将顶部 `AUTO_CANCEL` 改为 `False` 会保留委托；使用前需注意，市价附近的委托可能在撤单前已经成交。

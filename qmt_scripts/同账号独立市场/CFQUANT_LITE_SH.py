@@ -979,6 +979,10 @@ class TxTradeBridge(object):
         self.started_at = 0.0
         self.account_type = ""
         self.auto_trade_callback_enabled = False
+        self.pending_async_orders = []
+        self.pending_async_orders_lock = threading.RLock()
+        self.order_request_metadata = {}
+        self.order_request_metadata_lock = threading.RLock()
 
     def set_context(self, context):
         self.context = context
@@ -1409,7 +1413,17 @@ class TxTradeBridge(object):
         result = []
         for index, row in enumerate(rows):
             try:
-                result.append(self._format_trade_detail(row, detail_type))
+                formatted = self._format_trade_detail(row, detail_type)
+                if isinstance(formatted, dict):
+                    if not formatted.get("account_id"):
+                        formatted["account_id"] = account_id
+                    if formatted.get("account_type") in (None, ""):
+                        formatted["account_type"] = (
+                            account.get("account_type") or params.get("account_type") or account_type.upper()
+                        )
+                    if detail_type.lower() == "order":
+                        self._enrich_order_request_fields(formatted)
+                result.append(formatted)
             except Exception as e:
                 self._log(
                     "query_trade_detail format failed detail_type=%s index=%s type=%s error=%s"
@@ -1682,7 +1696,7 @@ class TxTradeBridge(object):
             "stock_option_secu_lock": 58,
             "stock_option_secu_unlock": 59,
         }
-    def _order_stock(self, params, msg):
+    def _order_stock(self, params, msg, resolve_order_id=True):
         passorder = self._get_callable("passorder")
         if not passorder:
             raise NotImplementedError("passorder not found")
@@ -1698,6 +1712,8 @@ class TxTradeBridge(object):
             ("order_remark", "remark", "strategy_name"),
             msg.get("id", "tx_order"),
         )
+        strategy_name = params.get("strategy_name", "")
+        previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
         result = passorder(
             order_type,
             params.get("qmt_order_type", 1101),
@@ -1711,26 +1727,251 @@ class TxTradeBridge(object):
             order_remark,
             self.context,
         )
+        if not self._is_failed_order_result(result):
+            self._remember_order_request(
+                account_id,
+                params.get("stock_code", params.get("code", "")),
+                order_remark,
+                strategy_name,
+            )
+        order_id = self._normalize_order_id(result)
+        if resolve_order_id and order_id is None and not self._is_failed_order_result(result):
+            order_id = self._find_order_id(
+                account_id,
+                account_type,
+                order_remark,
+                strategy_name,
+                previous_order_id,
+                params,
+            )
         return {
             "request_result": result,
-            "order_id": result,
+            "order_id": order_id if order_id is not None else -1,
             "order_remark": order_remark,
             "order_type": order_type,
             "account_type": str(account_type or "").upper(),
+            "previous_order_id": previous_order_id,
         }
 
+    def _get_last_order_id(self, account_id, account_type, strategy_name=""):
+        func = self._get_callable("get_last_order_id")
+        if not func:
+            return None
+        args = (account_id, str(account_type or "stock").lower(), "order")
+        try:
+            if strategy_name:
+                return self._normalize_order_id(func(*(args + (strategy_name,))))
+            return self._normalize_order_id(func(*args))
+        except TypeError:
+            try:
+                return self._normalize_order_id(func(*args))
+            except Exception:
+                return None
+        except Exception:
+            return None
+
+    def _find_order_id(self, account_id, account_type, order_remark, strategy_name, previous_order_id, params):
+        wait_seconds = params.get("find_order_wait", os.environ.get("CFQUANT_ORDER_ID_WAIT_SECONDS", 2.0))
+        try:
+            wait_seconds = max(0.0, float(wait_seconds or 0))
+        except Exception:
+            wait_seconds = 2.0
+        deadline = time.time() + wait_seconds
+        while True:
+            try:
+                orders = self._query_trade_detail({
+                    "account": {"account_id": account_id, "account_type": account_type},
+                }, "order")
+                for order in reversed(orders or []):
+                    if str(self._first_value(order, ("order_remark", "m_strRemark", "m_strOrderRemark")) or "") != str(order_remark or ""):
+                        continue
+                    stock_code = str(params.get("stock_code", params.get("code", "")) or "").upper()
+                    candidate_code = str(self._first_value(order, ("stock_code", "m_strInstrumentID")) or "").upper()
+                    if (
+                        stock_code
+                        and candidate_code
+                        and stock_code != candidate_code
+                        and stock_code.split(".", 1)[0] != candidate_code.split(".", 1)[0]
+                    ):
+                        continue
+                    order_id = self._order_id_from_detail(order)
+                    if order_id is not None and order_id != previous_order_id:
+                        return order_id
+            except Exception:
+                pass
+            latest_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
+            if latest_order_id is not None and latest_order_id != previous_order_id:
+                return latest_order_id
+            if time.time() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def _order_id_from_detail(self, order):
+        for name in ("order_id", "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID"):
+            order_id = self._normalize_order_id(self._get_value(order, name))
+            if order_id is not None:
+                return order_id
+        return None
+
+    def _normalize_order_id(self, value):
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            if value <= 0:
+                return None
+            return int(value) if int(value) == value else value
+        text = str(value).strip()
+        if not text or text in ("0", "-1"):
+            return None
+        try:
+            number = int(text)
+            return number if number > 0 else None
+        except Exception:
+            return None
+
+    def _is_failed_order_result(self, value):
+        if value is False:
+            return True
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return value < 0
+        return str(value).strip() == "-1" if value is not None else False
+
     def _order_stock_async(self, params, msg):
-        result = self._order_stock(params, msg)
-        data = {
+        seq = params.get("seq")
+        result = self._order_stock(params, msg, resolve_order_id=False)
+        request_result = result.get("request_result")
+        accepted = not self._is_failed_order_result(request_result)
+        if not accepted:
+            return {"seq": -1, "accepted": False, "request_result": request_result}
+
+        pending = self._async_order_record(params, msg, result)
+        order_id = self._normalize_order_id(result.get("order_id"))
+        if order_id is not None:
+            self._send_async_order_response(pending, order_id)
+        else:
+            self._register_pending_async_order(pending)
+        return {"seq": seq, "accepted": True, "request_result": request_result}
+
+    def _async_order_record(self, params, msg, result):
+        account = params.get("account") or {}
+        return {
             "seq": params.get("seq"),
-            "account_id": (params.get("account") or {}).get("account_id", params.get("account_id", "")),
-            "account_type": self._account_type_name((params.get("account") or {}).get("account_type") or params.get("account_type")).upper(),
-            "order_id": result.get("order_id", -1) if isinstance(result, dict) else result,
-            "order_remark": result.get("order_remark", params.get("order_remark", "")) if isinstance(result, dict) else params.get("order_remark", ""),
-            "order_type": result.get("order_type", params.get("order_type", params.get("optype"))) if isinstance(result, dict) else params.get("order_type", params.get("optype")),
+            "client_id": msg.get("client_id") or msg.get("reply_channel"),
+            "account_id": account.get("account_id") or params.get("account_id") or self.account_id,
+            "account_type": result.get("account_type") or self._account_type_name(
+                account.get("account_type") or params.get("account_type")
+            ).upper(),
+            "stock_code": str(params.get("stock_code", params.get("code", "")) or "").upper(),
+            "strategy_name": params.get("strategy_name", ""),
+            "order_remark": result.get("order_remark", params.get("order_remark", "")),
+            "previous_order_id": result.get("previous_order_id"),
+            "created_at": time.time(),
         }
-        self._send_trader_event(msg.get("client_id"), "on_order_stock_async_response", data)
-        return result
+
+    def _register_pending_async_order(self, record):
+        with self.pending_async_orders_lock:
+            self._prune_pending_async_orders_locked()
+            self.pending_async_orders.append(record)
+
+    def _remember_order_request(self, account_id, stock_code, order_remark, strategy_name):
+        key = (
+            str(account_id or "").strip(),
+            str(stock_code or "").strip().upper().split(".", 1)[0],
+            str(order_remark or ""),
+        )
+        if not key[0] or not key[2]:
+            return
+        with self.order_request_metadata_lock:
+            self.order_request_metadata[key] = str(strategy_name or "")
+            while len(self.order_request_metadata) > 1000:
+                self.order_request_metadata.pop(next(iter(self.order_request_metadata)))
+
+    def _enrich_order_request_fields(self, order):
+        if not isinstance(order, dict):
+            return order
+        key = (
+            str(self._first_value(order, ("account_id", "m_strAccountID")) or "").strip(),
+            str(self._first_value(order, ("stock_code", "m_strInstrumentID")) or "").strip().upper().split(".", 1)[0],
+            str(self._first_value(order, ("order_remark", "m_strRemark", "m_strOrderRemark")) or ""),
+        )
+        with self.order_request_metadata_lock:
+            strategy_name = self.order_request_metadata.get(key)
+        if strategy_name is not None and not order.get("strategy_name"):
+            order["strategy_name"] = strategy_name
+            if not order.get("m_strStrategyName"):
+                order["m_strStrategyName"] = strategy_name
+        return order
+
+    def _prune_pending_async_orders_locked(self):
+        wait_seconds = os.environ.get("CFQUANT_ASYNC_ORDER_RESPONSE_WAIT_SECONDS", 60.0)
+        try:
+            wait_seconds = max(1.0, float(wait_seconds or 60.0))
+        except Exception:
+            wait_seconds = 60.0
+        cutoff = time.time() - wait_seconds
+        self.pending_async_orders[:] = [
+            item for item in self.pending_async_orders
+            if item.get("created_at", 0) >= cutoff
+        ]
+
+    def _consume_pending_async_order(self, order):
+        order_id = self._order_id_from_detail(order)
+        if order_id is None:
+            return None
+        account_id = str(self._first_value(order, ("account_id", "m_strAccountID")) or "").strip()
+        order_remark = str(self._first_value(order, ("order_remark", "m_strRemark", "m_strOrderRemark")) or "")
+        strategy_name = str(self._first_value(order, ("strategy_name", "m_strStrategyName")) or "")
+        stock_code = str(self._first_value(order, ("stock_code", "m_strInstrumentID")) or "").upper()
+        stock_code_base = stock_code.split(".", 1)[0]
+        with self.pending_async_orders_lock:
+            self._prune_pending_async_orders_locked()
+            for index, item in enumerate(self.pending_async_orders):
+                if account_id and str(item.get("account_id") or "").strip() != account_id:
+                    continue
+                if item.get("previous_order_id") is not None and order_id == item.get("previous_order_id"):
+                    continue
+                expected_remark = str(item.get("order_remark") or "")
+                expected_strategy = str(item.get("strategy_name") or "")
+                if order_remark and expected_remark and order_remark != expected_remark:
+                    continue
+                if not order_remark and strategy_name and expected_strategy and strategy_name != expected_strategy:
+                    continue
+                expected_code = str(item.get("stock_code") or "").upper()
+                if (
+                    expected_code
+                    and stock_code
+                    and expected_code != stock_code
+                    and expected_code.split(".", 1)[0] != stock_code_base
+                ):
+                    continue
+                return self.pending_async_orders.pop(index), order_id
+        return None
+
+    def _handle_async_order_callback(self, order):
+        matched = self._consume_pending_async_order(order)
+        if not matched:
+            return False
+        record, order_id = matched
+        if isinstance(order, dict):
+            order["order_remark"] = record.get("order_remark", "")
+            order["strategy_name"] = record.get("strategy_name", "")
+            if not order.get("m_strRemark"):
+                order["m_strRemark"] = record.get("order_remark", "")
+            if not order.get("m_strStrategyName"):
+                order["m_strStrategyName"] = record.get("strategy_name", "")
+        self._send_async_order_response(record, order_id)
+        return True
+
+    def _send_async_order_response(self, record, order_id):
+        data = {
+            "account_type": record.get("account_type"),
+            "account_id": record.get("account_id", ""),
+            "order_id": order_id,
+            "strategy_name": record.get("strategy_name", ""),
+            "order_remark": record.get("order_remark", ""),
+            "seq": record.get("seq"),
+        }
+        self._send_trader_event(record.get("client_id"), "on_order_stock_async_response", data)
 
     def _order_stock_batch(self, params, msg):
         orders = params.get("orders") or []
@@ -2575,11 +2816,14 @@ class TxTradeBridge(object):
         detail_type = str(detail_type).lower()
         if detail_type == "order":
             return {
+                "account_id": self._get_value(obj, "m_strAccountID"),
                 "stock_code": self._stock_code(obj),
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
                 "order_source": self._order_source(obj),
-                "order_type": self._first_value(obj, ("m_nOrderType", "m_nBusinessType")),
+                "order_id": self._first_value(obj, ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID")),
+                "order_sysid": self._get_value(obj, "m_strOrderSysID"),
+                "order_type": self._stock_order_type(obj),
                 "order_time": self._first_value(obj, (
                     "order_time",
                     "entrust_time",
@@ -2609,6 +2853,10 @@ class TxTradeBridge(object):
                 "traded_volume": self._get_value(obj, "m_nVolumeTraded"),
                 "trade_amount": self._get_value(obj, "m_dTradeAmount"),
                 "order_status": self._get_value(obj, "m_nOrderStatus"),
+                "status_msg": self._first_value(obj, ("m_strStatusMsg", "m_strErrorMsg", "m_strCancelInfo", "m_strStatus", "m_strOrderStatus")),
+                "strategy_name": self._get_value(obj, "m_strStrategyName"),
+                "order_remark": self._first_value(obj, ("m_strRemark", "m_strOrderRemark")),
+                "m_strAccountID": self._get_value(obj, "m_strAccountID"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
@@ -2628,15 +2876,24 @@ class TxTradeBridge(object):
                 "m_strRemark": self._get_value(obj, "m_strRemark"),
                 "m_strStrategyName": self._get_value(obj, "m_strStrategyName"),
                 "m_strOrderSysID": self._get_value(obj, "m_strOrderSysID"),
-                "m_nOrderID": self._get_value(obj, "m_nOrderID"),
-                "m_strOrderID": self._get_value(obj, "m_strOrderID"),
+                "m_nRef": self._get_value(obj, "m_nRef"),
+                "m_strOrderRef": self._get_value(obj, "m_strOrderRef"),
+                "m_nOrderID": self._first_value(obj, ("m_nOrderID", "m_nRef")),
+                "m_strOrderID": self._first_value(obj, ("m_strOrderID", "m_strOrderRef")),
                 "m_nOrderStatus": self._get_value(obj, "m_nOrderStatus"),
+                "m_nOrderSubmitStatus": self._get_value(obj, "m_nOrderSubmitStatus"),
+                "m_nVolumeTotal": self._get_value(obj, "m_nVolumeTotal"),
+                "m_nErrorID": self._get_value(obj, "m_nErrorID"),
+                "m_strErrorMsg": self._get_value(obj, "m_strErrorMsg"),
+                "m_strCancelInfo": self._get_value(obj, "m_strCancelInfo"),
+                "m_strOptName": self._get_value(obj, "m_strOptName"),
                 "m_strOrderStatus": self._get_value(obj, "m_strOrderStatus"),
                 "m_nOrderState": self._get_value(obj, "m_nOrderState"),
                 "m_strStatus": self._get_value(obj, "m_strStatus"),
                 "m_strOrderTime": self._get_value(obj, "m_strOrderTime"),
                 "m_strEntrustTime": self._get_value(obj, "m_strEntrustTime"),
                 "m_strInsertTime": self._get_value(obj, "m_strInsertTime"),
+                "m_strInsertDate": self._get_value(obj, "m_strInsertDate"),
                 "m_nOrderTime": self._get_value(obj, "m_nOrderTime"),
                 "m_nEntrustTime": self._get_value(obj, "m_nEntrustTime"),
                 "m_nInsertTime": self._get_value(obj, "m_nInsertTime"),
@@ -2753,6 +3010,19 @@ class TxTradeBridge(object):
                 return value
         return None
 
+    def _stock_order_type(self, obj):
+        order_type = self._first_value(obj, ("m_nOrderType", "m_nBusinessType"))
+        if order_type not in (None, "", 0, "0"):
+            return order_type
+        market = self._market_suffix(self._get_value(obj, "m_strExchangeID"))
+        if market not in ("SH", "SZ", "BJ"):
+            return order_type
+        try:
+            offset_flag = int(self._get_value(obj, "m_nOffsetFlag"))
+        except Exception:
+            return order_type
+        return {48: 23, 49: 24}.get(offset_flag, order_type)
+
     def _stock_code(self, obj):
         instrument_id = self._get_value(obj, "m_strInstrumentID")
         exchange_id = self._get_value(obj, "m_strExchangeID")
@@ -2821,14 +3091,16 @@ class TxTradeBridge(object):
         if value is None or isinstance(value, (str, bool, int, float)):
             return value
         if isinstance(value, bytes):
-            try:
-                return value.decode("utf-8")
-            except Exception:
-                return str(value)
+            for encoding in ("utf-8", "gbk"):
+                try:
+                    return value.decode(encoding)
+                except Exception:
+                    pass
+            return value.decode("utf-8", errors="replace")
         try:
             item = getattr(value, "item", None)
             if callable(item):
-                return item()
+                return self._plain_value(item())
         except Exception:
             pass
         if isinstance(value, (list, tuple)):
@@ -3510,9 +3782,17 @@ class NormalQmtBridge(TxTradeBridge):
     def publish_callback_event(self, event_name, obj):
         if self.tx is None:
             return
-        data = self._callback_object_to_dict(obj)
+        if event_name == "trader:on_stock_order":
+            data = self._format_trade_detail(obj, "order")
+        else:
+            data = self._callback_object_to_dict(obj)
         account_id = self._callback_account_id(obj, data)
         account_type = self._callback_account_type(obj, data)
+        if account_type:
+            data.setdefault("account_type", account_type)
+        if event_name == "trader:on_stock_order":
+            self._enrich_order_request_fields(data)
+            self._handle_async_order_callback(data)
         payload = {
             "type": "event",
             "event": event_name,
@@ -3581,6 +3861,8 @@ class NormalQmtBridge(TxTradeBridge):
             "m_strOrderSysID",
             "m_strOrderID",
             "m_nOrderID",
+            "m_strOrderRef",
+            "m_nRef",
             "m_nOrderStatus",
             "m_strOrderStatus",
             "m_nOrderState",

@@ -482,9 +482,17 @@ class NormalQmtBridge(TxTradeBridge):
     def publish_callback_event(self, event_name, obj):
         if self.tx is None:
             return
-        data = self._callback_object_to_dict(obj)
+        if event_name == "trader:on_stock_order":
+            data = self._format_trade_detail(obj, "order")
+        else:
+            data = self._callback_object_to_dict(obj)
         account_id = self._callback_account_id(obj, data)
         account_type = self._callback_account_type(obj, data)
+        if account_type:
+            data.setdefault("account_type", account_type)
+        if event_name == "trader:on_stock_order":
+            self._enrich_order_request_fields(data)
+            self._handle_async_order_callback(data)
         payload = {
             "type": "event",
             "event": event_name,
@@ -553,6 +561,8 @@ class NormalQmtBridge(TxTradeBridge):
             "m_strOrderSysID",
             "m_strOrderID",
             "m_nOrderID",
+            "m_strOrderRef",
+            "m_nRef",
             "m_nOrderStatus",
             "m_strOrderStatus",
             "m_nOrderState",

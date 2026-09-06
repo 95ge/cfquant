@@ -3,6 +3,7 @@ import itertools
 import json
 import os
 import threading
+import time
 import atexit
 
 from .client import create_rpc_client
@@ -240,6 +241,9 @@ class XtQuantTrader(object):
         self.connected = False
         self._registered_events = set()
         self._subscribed_accounts = {}
+        self._pending_async_orders = []
+        self._pending_async_orders_lock = threading.RLock()
+        self._completed_async_order_seqs = {}
         self.timeout = 0
         self.relaxed_response_order_enabled = False
 
@@ -361,7 +365,7 @@ class XtQuantTrader(object):
 
     def order_stock_async(self, account, stock_code, order_type, order_volume, price_type, price, strategy_name="", order_remark=""):
         seq = next(self._seq)
-        self._trade_request("xttrader.order_stock_async", {
+        request = {
             "account": _account_payload(account),
             "stock_code": stock_code,
             "order_type": order_type,
@@ -371,7 +375,20 @@ class XtQuantTrader(object):
             "strategy_name": strategy_name,
             "order_remark": order_remark,
             "seq": seq,
-        })
+        }
+        self._register_pending_async_order(request)
+        try:
+            result = self._trade_request("xttrader.order_stock_async", request)
+        except Exception:
+            self._discard_pending_async_order(seq)
+            raise
+        if isinstance(result, dict):
+            if result.get("accepted") is False or result.get("seq") == -1:
+                self._discard_pending_async_order(seq)
+                return -1
+        elif result == -1:
+            self._discard_pending_async_order(seq)
+            return -1
         return seq
 
     def cancel_order_stock(self, account, order_id):
@@ -692,14 +709,105 @@ class XtQuantTrader(object):
             cls = self._event_types.get(name)
             if cls is not None:
                 data = cls.from_any(data)
+            if name == "on_order_stock_async_response" and not self._accept_async_order_response(data):
+                return
+            async_response = None
+            if name == "on_stock_order":
+                async_response = self._async_order_response_from_order(data)
             func = getattr(self.callback, name, None)
             if callable(func):
                 if name in ("on_connected", "on_disconnected"):
                     func()
                 else:
                     func(data)
+            if async_response is not None:
+                response_func = getattr(self.callback, "on_order_stock_async_response", None)
+                if callable(response_func):
+                    response_func(async_response)
 
         return handler
+
+    def _register_pending_async_order(self, request):
+        account = request.get("account") or {}
+        record = {
+            "seq": request.get("seq"),
+            "account_id": str(account.get("account_id") or "").strip(),
+            "account_type": account.get("account_type", xtconstant.SECURITY_ACCOUNT),
+            "stock_code": str(request.get("stock_code") or "").strip().upper(),
+            "strategy_name": str(request.get("strategy_name") or ""),
+            "order_remark": str(request.get("order_remark") or ""),
+            "created_at": time.time(),
+        }
+        with self._pending_async_orders_lock:
+            self._prune_async_order_state_locked()
+            self._pending_async_orders.append(record)
+
+    def _discard_pending_async_order(self, seq):
+        with self._pending_async_orders_lock:
+            self._pending_async_orders[:] = [
+                item for item in self._pending_async_orders if item.get("seq") != seq
+            ]
+
+    def _prune_async_order_state_locked(self):
+        cutoff = time.time() - 120.0
+        self._pending_async_orders[:] = [
+            item for item in self._pending_async_orders if item.get("created_at", 0) >= cutoff
+        ]
+        self._completed_async_order_seqs = {
+            seq: completed_at
+            for seq, completed_at in self._completed_async_order_seqs.items()
+            if completed_at >= cutoff
+        }
+
+    def _accept_async_order_response(self, response):
+        seq = getattr(response, "seq", None)
+        if seq is None:
+            return True
+        with self._pending_async_orders_lock:
+            self._prune_async_order_state_locked()
+            if seq in self._completed_async_order_seqs:
+                return False
+            self._pending_async_orders[:] = [
+                item for item in self._pending_async_orders if item.get("seq") != seq
+            ]
+            self._completed_async_order_seqs[seq] = time.time()
+        return True
+
+    def _async_order_response_from_order(self, order):
+        order_id = getattr(order, "order_id", None)
+        if order_id in (None, "", -1, "-1", 0, "0"):
+            return None
+        account_id = _event_account_id(order)
+        stock_code = str(getattr(order, "stock_code", "") or "").strip().upper()
+        stock_code_base = stock_code.split(".", 1)[0]
+        order_remark = str(getattr(order, "order_remark", "") or "")
+        with self._pending_async_orders_lock:
+            self._prune_async_order_state_locked()
+            matched = None
+            for index, item in enumerate(self._pending_async_orders):
+                if account_id and item.get("account_id") and item.get("account_id") != account_id:
+                    continue
+                expected_code = str(item.get("stock_code") or "").upper()
+                if expected_code and stock_code and expected_code.split(".", 1)[0] != stock_code_base:
+                    continue
+                expected_remark = str(item.get("order_remark") or "")
+                if order_remark and expected_remark and order_remark != expected_remark:
+                    continue
+                matched = self._pending_async_orders.pop(index)
+                break
+            if matched is None:
+                return None
+            self._completed_async_order_seqs[matched.get("seq")] = time.time()
+        order.order_remark = matched.get("order_remark", "")
+        order.strategy_name = matched.get("strategy_name", "")
+        return XtOrderResponse.from_any({
+            "account_type": matched.get("account_type"),
+            "account_id": matched.get("account_id", ""),
+            "order_id": order_id,
+            "strategy_name": matched.get("strategy_name", ""),
+            "order_remark": matched.get("order_remark", ""),
+            "seq": matched.get("seq"),
+        })
 
     def _emit_noarg_callback(self, name):
         func = getattr(self.callback, name, None)

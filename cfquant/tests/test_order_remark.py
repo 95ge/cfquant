@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import cfquant_web_server as web
 from cfquant import xtconstant
 from cfquant.qmt_bridge import CfquantQmtBridge
+from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.tx_trade_bridge import TxTradeBridge
 
 
@@ -89,6 +91,360 @@ def test_tx_trade_bridge_order_remark_precedes_strategy_name():
     assert result["order_remark"] == "remark-a"
     assert calls[0][7] == "strategy-a"
     assert calls[0][9] == "remark-a"
+
+
+def test_tx_trade_bridge_resolves_zero_passorder_result_to_new_order_id():
+    last_order_ids = iter(("700001", "700002"))
+    calls = []
+
+    def get_last_order_id(*args):
+        calls.append(args)
+        return next(last_order_ids)
+
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": get_last_order_id,
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(strategy_name="hxy", order_remark="remark"),
+        {"id": "request-1"},
+    )
+
+    assert result["request_result"] == 0
+    assert result["order_id"] == 700002
+    assert calls == [
+        ("A123", "stock", "order", "hxy"),
+        ("A123", "stock", "order", "hxy"),
+    ]
+
+
+def test_qmt_bridge_resolves_zero_passorder_result_to_new_order_id():
+    last_order_ids = iter(("800001", "800002"))
+
+    bridge = CfquantQmtBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: next(last_order_ids),
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(strategy_name="hxy", order_remark="remark"),
+    )
+
+    assert result["request_result"] == 0
+    assert result["order_id"] == 800002
+
+
+def test_tx_trade_bridge_async_zero_is_accepted_without_sync_order_lookup():
+    last_order_id_calls = []
+    detail_calls = []
+    events = []
+
+    def get_last_order_id(*args):
+        last_order_id_calls.append(args)
+        return "700001"
+
+    def get_trade_detail_data(*args):
+        detail_calls.append(args)
+        return []
+
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": get_last_order_id,
+            "get_trade_detail_data": get_trade_detail_data,
+        },
+    )
+    bridge._send_trader_event = lambda client_id, name, data: events.append((client_id, name, data))
+
+    result = bridge._order_stock_async(
+        _base_order_params(strategy_name="hxy", order_remark="remark", seq=21),
+        {"id": "request-1", "client_id": "client-1"},
+    )
+
+    assert result == {"seq": 21, "accepted": True, "request_result": 0}
+    assert len(last_order_id_calls) == 1
+    assert detail_calls == []
+    assert events == []
+    assert len(bridge.pending_async_orders) == 1
+
+    assert bridge._handle_async_order_callback({
+        "m_strAccountID": "A123",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700002,
+        "m_strRemark": "other-remark",
+    }) is False
+    assert bridge._handle_async_order_callback({
+        "m_strAccountID": "A123",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700002,
+        "m_strRemark": "remark",
+        "m_strStrategyName": "hxy",
+    }) is True
+    assert events == [("client-1", "on_order_stock_async_response", {
+        "account_type": "STOCK",
+        "account_id": "A123",
+        "order_id": 700002,
+        "strategy_name": "hxy",
+        "order_remark": "remark",
+        "seq": 21,
+    })]
+    assert bridge.pending_async_orders == []
+
+
+def test_qmt_bridge_async_zero_waits_for_matching_order_callback():
+    events = []
+    bridge = CfquantQmtBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: "800001",
+        },
+    )
+    bridge._send_trader_event = lambda client_id, name, data: events.append((client_id, name, data))
+
+    result = bridge._order_stock_async(
+        _base_order_params(strategy_name="hxy", order_remark="remark", seq=22),
+        {"id": "request-2", "client_id": "client-2"},
+    )
+
+    assert result == {"seq": 22, "accepted": True, "request_result": 0}
+    assert events == []
+    assert bridge._handle_async_order_callback({
+        "account_id": "A123",
+        "stock_code": "000001.SZ",
+        "order_id": 800002,
+        "order_remark": "remark",
+    }) is True
+    assert events[0][2] == {
+        "account_type": "STOCK",
+        "account_id": "A123",
+        "order_id": 800002,
+        "strategy_name": "hxy",
+        "order_remark": "remark",
+        "seq": 22,
+    }
+
+
+def test_tx_trade_bridge_async_explicit_failure_is_not_registered():
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={"passorder": lambda *args: -1},
+    )
+
+    result = bridge._order_stock_async(
+        _base_order_params(seq=23),
+        {"id": "request-3", "client_id": "client-3"},
+    )
+
+    assert result == {"seq": -1, "accepted": False, "request_result": -1}
+    assert bridge.pending_async_orders == []
+
+
+def test_normal_bridge_turns_real_order_callback_into_xtorderresponse():
+    class FakeTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, *args):
+            self.pushes.append(args)
+            return 0
+
+    events = []
+    bridge = NormalQmtBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: None,
+            "get_last_order_id": lambda *args: "700001",
+        },
+    )
+    bridge.tx = FakeTx()
+    bridge._send_trader_event = lambda client_id, name, data: events.append((client_id, name, data))
+    bridge._order_stock_async(
+        _base_order_params(strategy_name="hxy", order_remark="remark", seq=24),
+        {"id": "request-4", "client_id": "client-4"},
+    )
+
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "A123",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700002,
+        "m_strOrderRef": "700002",
+        "m_strOrderSysID": "SYS-2",
+        "m_strRemark": "",
+        "m_strStrategyName": "",
+    })
+
+    response_events = [item for item in events if item[1] == "on_order_stock_async_response"]
+    assert response_events == [("client-4", "on_order_stock_async_response", {
+        "account_type": "STOCK",
+        "account_id": "A123",
+        "order_id": 700002,
+        "strategy_name": "hxy",
+        "order_remark": "remark",
+        "seq": 24,
+    })]
+    callback_payload = json.loads(bridge.tx.pushes[0][1])
+    assert callback_payload["data"]["order_remark"] == "remark"
+    assert callback_payload["data"]["strategy_name"] == "hxy"
+
+
+def test_tx_trade_bridge_never_exposes_zero_as_order_id_when_lookup_is_stale():
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: "700001",
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(find_order_wait=0),
+        {"id": "request-1"},
+    )
+
+    assert result["order_id"] == -1
+
+
+def test_tx_trade_bridge_falls_back_to_matching_order_detail_for_zero_result():
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_trade_detail_data": lambda *args: [{
+                "m_nRef": 700003,
+                "m_strInstrumentID": "000001",
+                "m_strExchangeID": "SZ",
+                "m_strRemark": "remark",
+            }],
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="remark", find_order_wait=0),
+        {"id": "request-1"},
+    )
+
+    assert result["order_id"] == 700003
+
+
+def test_tx_trade_bridge_ignores_system_order_id_when_resolving_sync_order():
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: "xt700003",
+            "get_trade_detail_data": lambda *args: [{
+                "m_nRef": 700003,
+                "m_strOrderSysID": "xt700003",
+                "m_strInstrumentID": "000001",
+                "m_strExchangeID": "SZ",
+                "m_strRemark": "remark",
+            }],
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="remark", find_order_wait=0),
+        {"id": "request-1"},
+    )
+
+    assert result["order_id"] == 700003
+    assert isinstance(result["order_id"], int)
+
+
+def test_query_order_restores_strategy_name_from_submitted_remark():
+    raw_order = {
+        "m_strAccountID": "A123",
+        "m_nRef": 700004,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_strRemark": "remark",
+        "m_strStrategyName": "",
+    }
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_trade_detail_data": lambda *args: [raw_order],
+        },
+    )
+
+    bridge._order_stock(
+        _base_order_params(strategy_name="hxy", order_remark="remark", find_order_wait=0),
+        {"id": "request-1"},
+    )
+    orders = bridge._query_trade_detail(
+        {"account": {"account_id": "A123", "account_type": "STOCK"}},
+        "order",
+    )
+
+    assert orders[0]["strategy_name"] == "hxy"
+    assert orders[0]["m_strStrategyName"] == "hxy"
+
+
+def test_big_qmt_order_fields_map_to_miniqmt_shape_and_json_primitives():
+    class ScalarBytes(object):
+        def __init__(self, value):
+            self.value = value
+
+        def item(self):
+            return self.value
+
+    class BigQmtOrder(object):
+        m_strAccountID = b"A123"
+        m_strInstrumentID = b"000001"
+        m_strExchangeID = b"SZ"
+        m_strInstrumentName = "平安银行".encode("gbk")
+        m_nRef = 719000001
+        m_strOrderRef = b"719000001"
+        m_strOrderSysID = ScalarBytes(b"SYS-1")
+        m_nOrderPriceType = 11
+        m_nOrderType = 0
+        m_nOffsetFlag = 49
+        m_dLimitPrice = 10.5
+        m_nVolumeTotalOriginal = 100
+        m_nVolumeTraded = 0
+        m_nOrderStatus = 50
+        m_strErrorMsg = "已报".encode("gbk")
+        m_strInsertDate = b"20260906"
+        m_strInsertTime = b"09:35:01"
+        m_strRemark = b"remark"
+
+    order = BigQmtOrder()
+    tx_row = TxTradeBridge(DummyContext(), show=False, globals_dict={})._format_trade_detail(order, "order")
+    qmt_row = CfquantQmtBridge(DummyContext(), show=False, globals_dict={})._format_trade_detail(order, "ORDER")
+
+    for row in (tx_row, qmt_row):
+        assert row["order_id"] == 719000001
+        assert row["m_nOrderID"] == 719000001
+        assert row["m_strOrderID"] == "719000001"
+        assert row["order_sysid"] == "SYS-1"
+        assert row["order_type"] == xtconstant.STOCK_SELL
+        assert row["instrument_name"] == "平安银行"
+        assert row["status_msg"] == "已报"
+        assert json.loads(json.dumps(row, ensure_ascii=False))["order_id"] == 719000001
 
 
 def test_tx_trade_bridge_batch_keeps_row_strategy_name_as_remark():
