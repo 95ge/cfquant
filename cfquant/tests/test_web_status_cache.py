@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 import json
 import subprocess
+import threading
 import time
 from types import SimpleNamespace
+import urllib.error
+import urllib.request
+from urllib.parse import urlparse
 
 import cfquant_web_server as web
 
@@ -13,6 +17,180 @@ def _status(online, mode):
         "trade": {"online": online, "channel": "%s.trade" % mode},
         "monitor": {"ready": True, "cached": True, "transport_mode": mode},
     }
+
+
+def _handler(headers=None):
+    handler = object.__new__(web.CfquantWebHandler)
+    handler.headers = dict(headers or {})
+    return handler
+
+
+def test_internal_api_key_is_generated_once_and_persisted(monkeypatch, tmp_path):
+    key_file = tmp_path / "cfquant_internal_api_key"
+    monkeypatch.delenv("CFQUANT_INTERNAL_API_KEY", raising=False)
+    monkeypatch.setattr(web, "INTERNAL_API_KEY_FILE", str(key_file))
+    monkeypatch.setattr(web, "_INTERNAL_API_KEY", None)
+
+    first = web.internal_api_key()
+    second = web.internal_api_key()
+
+    assert first.startswith("cfqi_")
+    assert second == first
+    assert key_file.read_text(encoding="ascii").strip() == first
+
+
+def test_internal_api_key_only_authorizes_allowlisted_paths(monkeypatch):
+    config = SimpleNamespace(
+        web_auth_enabled=lambda: True,
+        api_key=lambda: "primary-secret",
+    )
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+    monkeypatch.setattr(web, "internal_api_key", lambda: "internal-secret")
+    monkeypatch.setattr(web, "web_auth_token_info", lambda token: None)
+    handler = _handler({web.INTERNAL_API_KEY_HEADER: "internal-secret"})
+
+    assert handler._authorized(urlparse("/api/internal/runtime-route")) is True
+    assert handler._authorized(urlparse("/api/health")) is True
+    assert handler._authorized(urlparse("/api/order")) is False
+    assert handler._internal_api_key_valid(urlparse("/api/config")) is False
+    assert handler._has_access_token(urlparse("/api/config")) is False
+
+
+def test_internal_api_still_requires_its_key_when_primary_auth_is_disabled(monkeypatch):
+    config = SimpleNamespace(
+        web_auth_enabled=lambda: False,
+        api_key=lambda: "",
+    )
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+    monkeypatch.setattr(web, "internal_api_key", lambda: "internal-secret")
+    monkeypatch.setattr(web, "web_auth_token_info", lambda token: None)
+
+    assert _handler()._authorized(urlparse("/api/internal/runtime-route")) is False
+    assert _handler({web.INTERNAL_API_KEY_HEADER: "wrong"})._authorized(
+        urlparse("/api/internal/runtime-route")
+    ) is False
+    assert _handler({web.INTERNAL_API_KEY_HEADER: "internal-secret"})._authorized(
+        urlparse("/api/internal/runtime-route")
+    ) is True
+
+
+def test_internal_runtime_route_redacts_account_details(monkeypatch):
+    provider = {
+        "account_key": "bridge-a:STOCK:123456",
+        "account_id": "123456",
+        "account_type": "STOCK",
+        "bridge_id": "bridge-a",
+        "mode": "lite",
+        "qmt_dir": r"D:\\broker\\bin.x64",
+        "enabled": True,
+    }
+    config = SimpleNamespace(
+        account_configs=lambda: {provider["account_key"]: provider},
+        data_provider_account_key=lambda: provider["account_key"],
+        setup_info=lambda: {"default_account_key": provider["account_key"]},
+        transport_mode=lambda: "ctypes",
+    )
+    monitor = SimpleNamespace(latest=lambda bridge_id, mode=None: {
+        "normal": {"online": True, "channel": "cfquant.bridge-a.normal.request"},
+        "checked_at": 123.0,
+    })
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+    monkeypatch.setattr(web, "STATUS_MONITOR", monitor)
+
+    result = web.internal_runtime_route_info()
+    serialized = json.dumps(result, ensure_ascii=False)
+
+    assert result == {
+        "available": True,
+        "source": "configured_data_provider",
+        "bridge_id": "bridge-a",
+        "mode": "lite",
+        "transport": "ctypes",
+        "channel": "cfquant.bridge-a.normal.request",
+        "online": True,
+        "checked_at": 123.0,
+    }
+    assert "123456" not in serialized
+    assert "broker" not in serialized
+
+
+def test_internal_http_api_enforces_its_own_scope(monkeypatch):
+    provider = {
+        "account_key": "bridge-a:STOCK:123456",
+        "account_id": "123456",
+        "account_type": "STOCK",
+        "bridge_id": "bridge-a",
+        "mode": "lite",
+        "enabled": True,
+    }
+    config = SimpleNamespace(
+        allow_remote=lambda: False,
+        allowed_domains=lambda: [],
+        web_auth_enabled=lambda: True,
+        api_key=lambda: "primary-secret",
+        account_configs=lambda: {provider["account_key"]: provider},
+        data_provider_account_key=lambda: provider["account_key"],
+        setup_info=lambda: {"default_account_key": provider["account_key"]},
+        transport_mode=lambda: "ctypes",
+        transport_info=lambda: {"mode": "ctypes"},
+        qmt_log_language_info=lambda: {"language": "zh"},
+        api_key_info=lambda include_secret=True: {"enabled": True, "masked": "cfq_***", "api_key": ""},
+    )
+    monitor = SimpleNamespace(latest=lambda bridge_id, mode=None: {
+        "normal": {"online": True, "channel": "cfquant.bridge-a.normal.request"},
+        "checked_at": 123.0,
+    })
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+    monkeypatch.setattr(web, "STATUS_MONITOR", monitor)
+    monkeypatch.setattr(web, "PIPE_HUB", SimpleNamespace(status=lambda: {"running": True}))
+    monkeypatch.setattr(web, "internal_api_key", lambda: "internal-secret")
+    monkeypatch.setattr(web, "web_auth_token_info", lambda token: None)
+    monkeypatch.setattr(
+        web,
+        "server_access_info",
+        lambda include_auth_details=False: {"web_auth": {"enabled": True}},
+    )
+    monkeypatch.setattr(web, "project_version_info", lambda include_remote=False: {"version": "test"})
+
+    server = web.ThreadingHTTPServer(("127.0.0.1", 0), web.CfquantWebHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = "http://127.0.0.1:%s" % server.server_address[1]
+    monkeypatch.setenv("CFQUANT_INTERNAL_API_KEY", "internal-secret")
+    monkeypatch.setenv("CFQUANT_WEB_INTERNAL_URL", base_url)
+
+    def get(path, key=None):
+        headers = {web.INTERNAL_API_KEY_HEADER: key} if key else {}
+        request = urllib.request.Request(base_url + path, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            return error.code, json.loads(error.read().decode("utf-8"))
+
+    try:
+        health_status, health = get("/api/health")
+        denied_status, _ = get("/api/internal/runtime-route")
+        route_status, route = get("/api/internal/runtime-route", "internal-secret")
+        order_status, _ = get("/api/order", "internal-secret")
+        config_status, public_config = get("/api/config", "internal-secret")
+        from cfquant.tests import _helpers as test_helpers
+        discovered_route = test_helpers.discover_data_provider_route()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert health_status == 200
+    assert health["data"] == {"status": "ok"}
+    assert denied_status == 401
+    assert route_status == 200
+    assert route["data"]["mode"] == "lite"
+    assert discovered_route == route["data"]
+    assert order_status == 401
+    assert config_status == 200
+    assert public_config["data"]["auth_required"] is True
+    assert "account_configs" not in public_config["data"]
 
 
 def test_channel_status_monitor_keeps_ctypes_and_lttx_snapshots_separate():

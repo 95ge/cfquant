@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 
@@ -166,10 +167,69 @@ def emit_skip(name, reason, example=None):
     return None
 
 
-def add_runtime_args(parser):
-    parser.add_argument("--transport", default="ctypes", help="cfquant 通信模式，默认 ctypes。")
+def add_runtime_args(parser, default_transport="ctypes"):
+    parser.add_argument(
+        "--transport",
+        default=default_transport,
+        help="cfquant 通信模式，默认 %s。" % default_transport,
+    )
     parser.add_argument("--bridge-id", default="default", help="桥接 ID，默认 default。")
     parser.add_argument("--timeout", type=float, default=15.0, help="请求超时时间，单位秒。")
+
+
+def _internal_api_key_paths():
+    configured_file = str(os.environ.get("CFQUANT_INTERNAL_API_KEY_FILE") or "").strip()
+    if configured_file:
+        yield Path(configured_file).expanduser()
+    runtime_dir = str(os.environ.get("CFQUANT_RUNTIME_DIR") or "").strip()
+    if runtime_dir:
+        yield Path(runtime_dir).expanduser() / "config" / "cfquant_internal_api_key"
+    state_dir = str(os.environ.get("CFQUANT_HOME") or os.environ.get("CFQUANT_STATE_DIR") or "").strip()
+    if state_dir:
+        yield Path(state_dir).expanduser() / "runtime" / "config" / "cfquant_internal_api_key"
+    yield PROJECT_ROOT / "runtime" / "config" / "cfquant_internal_api_key"
+
+
+def read_internal_api_key():
+    configured = str(os.environ.get("CFQUANT_INTERNAL_API_KEY") or "").strip()
+    if configured:
+        return configured
+    seen = set()
+    for path in _internal_api_key_paths():
+        path = path.resolve()
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            value = path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError):
+            continue
+        if value:
+            return value
+    return ""
+
+
+def discover_data_provider_route(timeout=1.5):
+    """Read the active quote route from the allowlisted Web internal API."""
+    api_key = read_internal_api_key()
+    if not api_key:
+        return {}
+    base_url = str(os.environ.get("CFQUANT_WEB_INTERNAL_URL") or "").strip().rstrip("/")
+    if not base_url:
+        port = str(os.environ.get("CFQUANT_WEB_PORT") or "8765").strip()
+        base_url = "http://127.0.0.1:%s" % port
+    request = urllib.request.Request(
+        base_url + "/api/internal/runtime-route",
+        headers={"X-CFQuant-Internal-Key": api_key},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=max(0.2, float(timeout))) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return {}
+    route = payload.get("data") if isinstance(payload, dict) and payload.get("ok") else None
+    return route if isinstance(route, dict) else {}
 
 
 def configure_cfquant(args):

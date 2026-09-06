@@ -393,6 +393,15 @@ WEB_AUTH_TOKENS = {}
 WEB_AUTH_LOCK = threading.RLock()
 WEB_AUTH_COOKIE_NAME = "cfquant_web_token"
 WEB_AUTH_SESSION_TTL_SECONDS = float(os.environ.get("CFQUANT_WEB_AUTH_SESSION_TTL_SECONDS", str(30 * 24 * 3600)))
+INTERNAL_API_KEY_HEADER = "X-CFQuant-Internal-Key"
+INTERNAL_API_KEY_FILE = os.path.abspath(
+    os.environ.get("CFQUANT_INTERNAL_API_KEY_FILE")
+    or os.path.join(RUNTIME_CONFIG_DIR, "cfquant_internal_api_key")
+)
+PUBLIC_API_PATHS = frozenset({"/api/health"})
+INTERNAL_API_PATHS = frozenset({"/api/internal/runtime-route"})
+INTERNAL_API_KEY_LOCK = threading.RLock()
+_INTERNAL_API_KEY = None
 BUILTIN_AVATARS = (
     {"id": "market-blue", "name": "Market Blue", "url": "/avatars/market-blue.svg"},
     {"id": "signal-green", "name": "Signal Green", "url": "/avatars/signal-green.svg"},
@@ -1476,6 +1485,51 @@ def extract_host_name(value):
 def is_loopback_host(host):
     host = extract_host_name(host)
     return host in ("localhost", "::1", "0:0:0:0:0:0:0:1") or host.startswith("127.")
+
+
+def internal_api_key():
+    """Return the dedicated key used only by allowlisted internal HTTP APIs."""
+    configured = str(os.environ.get("CFQUANT_INTERNAL_API_KEY") or "").strip()
+    if configured:
+        return configured
+
+    global _INTERNAL_API_KEY
+    with INTERNAL_API_KEY_LOCK:
+        if _INTERNAL_API_KEY:
+            return _INTERNAL_API_KEY
+        try:
+            with open(INTERNAL_API_KEY_FILE, "r", encoding="ascii") as f:
+                stored = f.read().strip()
+        except FileNotFoundError:
+            stored = ""
+        if stored:
+            _INTERNAL_API_KEY = stored
+            return stored
+
+        generated = "cfqi_%s" % secrets.token_urlsafe(32)
+        parent = os.path.dirname(INTERNAL_API_KEY_FILE)
+        os.makedirs(parent, exist_ok=True)
+        temp_path = "%s.tmp-%s-%s" % (
+            INTERNAL_API_KEY_FILE,
+            os.getpid(),
+            secrets.token_hex(4),
+        )
+        try:
+            with open(temp_path, "w", encoding="ascii", newline="\n") as f:
+                f.write(generated + "\n")
+            try:
+                os.chmod(temp_path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
+            os.replace(temp_path, INTERNAL_API_KEY_FILE)
+        finally:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+        _INTERNAL_API_KEY = generated
+        return generated
 
 
 def host_matches_patterns(host, patterns):
@@ -3783,6 +3837,35 @@ def data_provider_candidates():
                 "bridge_id": DEFAULT_BRIDGE_ID,
             })
     return result
+
+
+def internal_runtime_route_info():
+    """Expose the active quote route without leaking account or QMT details."""
+    candidates = data_provider_candidates()
+    selected = candidates[0] if candidates else {}
+    provider_key = WEB_CONFIG.data_provider_account_key() if WEB_CONFIG is not None else ""
+    selected_key = str(selected.get("account_key") or "").strip()
+    configured = bool(provider_key and selected_key == provider_key)
+    bridge_id = normalize_bridge_id(selected.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    mode = normalize_transport_mode(
+        selected.get("mode")
+        or (WEB_CONFIG.transport_mode() if WEB_CONFIG is not None else "ctypes")
+    )
+    try:
+        status = STATUS_MONITOR.latest(bridge_id, mode=mode)
+    except Exception:
+        status = {}
+    normal_status = status.get("normal") if isinstance(status.get("normal"), dict) else {}
+    return {
+        "available": bool(selected),
+        "source": "configured_data_provider" if configured else ("fallback_data_provider" if selected else "none"),
+        "bridge_id": bridge_id,
+        "mode": mode,
+        "transport": transport_client_mode(mode),
+        "channel": str(normal_status.get("channel") or ""),
+        "online": bool(normal_status.get("online")),
+        "checked_at": status.get("checked_at"),
+    }
 
 
 def data_account_route_candidates(account_id, account_type, account_key, bridge_id=None, params=None):
@@ -12559,6 +12642,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             provided = auth[7:].strip()
         return str(provided or "").strip()
 
+    def _provided_internal_api_key(self):
+        return str(
+            self.headers.get(INTERNAL_API_KEY_HEADER)
+            or self.headers.get(INTERNAL_API_KEY_HEADER.lower())
+            or ""
+        ).strip()
+
     def _provided_web_token(self, parsed):
         query = urllib.parse.parse_qs(parsed.query)
         provided = (
@@ -12603,6 +12693,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         provided = self._provided_api_key(parsed)
         return bool(api_key and provided) and secrets.compare_digest(provided, api_key)
 
+    def _internal_api_key_valid(self, parsed):
+        if parsed.path not in INTERNAL_API_PATHS:
+            return False
+        provided = self._provided_internal_api_key()
+        expected = internal_api_key()
+        return bool(expected and provided) and secrets.compare_digest(provided, expected)
+
     def _web_token_valid(self, parsed):
         return bool(web_auth_token_info(self._provided_web_token(parsed)))
 
@@ -12610,8 +12707,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         return self._web_token_valid(parsed) or self._api_key_valid(parsed)
 
     def _authorized(self, parsed):
-        if parsed.path == "/api/config":
+        if parsed.path == "/api/config" or parsed.path in PUBLIC_API_PATHS:
             return True
+        if parsed.path in INTERNAL_API_PATHS:
+            return self._internal_api_key_valid(parsed) or self._has_access_token(parsed)
         if parsed.path == "/api/apikey" and not WEB_CONFIG.web_auth_enabled():
             return True
         if WEB_CONFIG.web_auth_enabled():
@@ -12747,7 +12846,11 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             return
         query = urllib.parse.parse_qs(parsed.query)
         try:
-            if parsed.path == "/api/config":
+            if parsed.path == "/api/health":
+                self._write_json(ok({"status": "ok"}))
+            elif parsed.path == "/api/internal/runtime-route":
+                self._write_json(ok(internal_runtime_route_info()))
+            elif parsed.path == "/api/config":
                 has_access = self._has_access_token(parsed)
                 auth_required = WEB_CONFIG.web_auth_enabled() and not has_access
                 if auth_required:
@@ -13234,7 +13337,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         elif not origin:
             self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key, X-CFQUANT-WEB-TOKEN, Authorization")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Content-Type, X-API-Key, X-CFQUANT-WEB-TOKEN, X-CFQuant-Internal-Key, Authorization",
+        )
         self.send_header("Access-Control-Max-Age", "600")
 
 
@@ -13291,6 +13397,7 @@ def main(argv=None):
         raise RuntimeError("cfquant web port %s is already listening, skip duplicate start" % args.port)
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
+        internal_api_key()
         if "lttx" in configured_modes:
             # 高级模式故障时需要立即回退到 ctypes，因此即使没有独立通用账号也要启动 PipeHub。
             if not any(is_ctypes_transport_mode(mode) for mode in configured_modes):
