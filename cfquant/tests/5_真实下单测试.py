@@ -15,7 +15,7 @@ from cfquant.xttype import StockAccount
 
 DEFAULT_ACCOUNT_ID = "8885060548"
 DEFAULT_STOCK_CODE = "000001.SZ"
-DEFAULT_PRICE = 10.6
+DEFAULT_PRICE = 11.5
 DEFAULT_VOLUME = 100
 DEFAULT_SIDE = "buy"
 DEFAULT_STRATEGY_NAME = "cfquant_real_order_latency"

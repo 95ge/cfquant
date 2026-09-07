@@ -11,6 +11,7 @@ from cfquant import xtconstant
 from cfquant.qmt_bridge import CfquantQmtBridge
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.tx_trade_bridge import TxTradeBridge
+from cfquant.xttype import XtTrade
 
 
 class DummyContext(object):
@@ -445,6 +446,42 @@ def test_big_qmt_order_fields_map_to_miniqmt_shape_and_json_primitives():
         assert row["instrument_name"] == "平安银行"
         assert row["status_msg"] == "已报"
         assert json.loads(json.dumps(row, ensure_ascii=False))["order_id"] == 719000001
+
+
+def test_big_qmt_deal_keeps_linked_order_and_trade_fields():
+    class BigQmtDeal(object):
+        m_strAccountID = "A123"
+        m_strInstrumentID = "600877"
+        m_strExchangeID = "SH"
+        m_strInstrumentName = "电科芯片"
+        m_nRef = 1209008141
+        m_strOrderRef = "1209008141"
+        m_strOrderSysID = "24500"
+        m_strTradeID = "13"
+        m_nOrderType = None
+        m_nBusinessType = None
+        m_nDirection = 48
+        m_nOffsetFlag = 49
+        m_dPrice = 12.1
+        m_nVolume = 500
+        m_dTradeAmount = 6050.0
+        m_dCommission = 4.2955
+        m_strStrategyName = "strategy-a"
+        m_strRemark = "remark-a"
+
+    raw = BigQmtDeal()
+    tx_row = TxTradeBridge(DummyContext(), show=False, globals_dict={})._format_trade_detail(raw, "deal")
+    qmt_row = CfquantQmtBridge(DummyContext(), show=False, globals_dict={})._format_trade_detail(raw, "DEAL")
+
+    for row in (tx_row, qmt_row):
+        trade = XtTrade.from_any(row)
+        assert trade.order_id == 1209008141
+        assert trade.order_sysid == "24500"
+        assert trade.traded_id == "13"
+        assert trade.order_type == xtconstant.STOCK_SELL
+        assert trade.strategy_name == "strategy-a"
+        assert trade.order_remark == "remark-a"
+        assert json.loads(json.dumps(row, ensure_ascii=False))["order_id"] == 1209008141
 
 
 def test_tx_trade_bridge_batch_keeps_row_strategy_name_as_remark():

@@ -431,6 +431,13 @@ class XtTrade(DictObject):
             "m_nOrderType",
             "m_nBusinessType",
         ), default=0)
+        if data.get("order_type") in (None, "", 0, "0"):
+            try:
+                offset_flag = int(data.get("m_nOffsetFlag"))
+            except (TypeError, ValueError):
+                offset_flag = None
+            if offset_flag in (48, 49):
+                data["order_type"] = xtconstant.STOCK_BUY if offset_flag == 48 else xtconstant.STOCK_SELL
         _set_first(data, "traded_id", (
             "trade_id",
             "deal_id",
@@ -462,12 +469,16 @@ class XtTrade(DictObject):
             "m_dTradedAmount",
         ), default=0.0)
         _set_first(data, "order_id", (
+            "m_nRef",
             "m_nOrderID",
+            "m_strOrderRef",
             "m_strOrderID",
         ), default=-1)
+        _normalize_order_id_field(data)
         _set_first(data, "order_sysid", (
             "m_strOrderSysID",
             "sysid",
+            "m_strOrderRef",
             "m_strOrderID",
         ), default="")
         _set_first(data, "strategy_name", (
