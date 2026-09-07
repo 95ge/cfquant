@@ -1227,12 +1227,11 @@ def normalize_market_code(value):
         "SSE": "SH",
         "SHSE": "SH",
         "XSHG": "SH",
-        "1": "SH",
+        "0": "SH",
         "SZ": "SZ",
         "SZSE": "SZ",
         "XSHE": "SZ",
-        "0": "SZ",
-        "2": "SZ",
+        "1": "SZ",
     }
     return aliases.get(text, text if text in MARKET_ROUTE_MARKETS else "")
 
@@ -1317,7 +1316,7 @@ def data_request_markets(params):
 
 def market_account_row_market(row):
     if isinstance(row, dict):
-        for key in ("market", "exchange", "exchange_id", "market_id", "m_strExchangeID"):
+        for key in ("market", "exchange", "exchange_id", "market_id", "m_nMarket", "m_strExchangeID", "m_strMarket"):
             market = normalize_market_code(row.get(key))
             if market:
                 return market
@@ -1361,6 +1360,17 @@ def normalize_market_bridge_config(value, account_id="", account_type="STOCK", p
             item.get("qmt_dir") or item.get("python_dir") or item.get("core_dir")
         )
         bridge_id = str(item.get("bridge_id") or item.get("id") or "").strip()
+        position_account_id = str(
+            item.get("position_account_id")
+            or item.get("query_account_id")
+            or item.get("account_query_id")
+            or item.get("market_query_account_id")
+            or item.get("shareholder_account_id")
+            or item.get("stock_holder_account_id")
+            or item.get("stockholder_account_id")
+            or item.get("secu_account")
+            or ""
+        ).strip()
         if enabled or has_input or qmt_dir:
             bridge_id = normalize_bridge_id(
                 bridge_id or default_market_bridge_id(account_id, account_type, parent_bridge_id, market)
@@ -1369,6 +1379,8 @@ def normalize_market_bridge_config(value, account_id="", account_type="STOCK", p
                 "market": market,
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
+                "position_account_id": position_account_id,
+                "query_account_id": position_account_id,
                 "config_filename": MARKET_ROUTE_CONFIG_FILENAME_TEMPLATE % market,
                 "enabled": parse_config_bool(item.get("enabled"), True),
             }
@@ -8433,6 +8445,7 @@ def write_qmt_market_bridge_identities(row):
         bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
         qmt_dir = normalize_optional_path(route.get("qmt_dir"))
         filename = str(route.get("config_filename") or (MARKET_ROUTE_CONFIG_FILENAME_TEMPLATE % market))
+        position_account_id = str(route.get("position_account_id") or route.get("query_account_id") or "").strip()
         result = {
             "written": False,
             "market": market,
@@ -8441,6 +8454,7 @@ def write_qmt_market_bridge_identities(row):
             "account_id": account_id,
             "account_type": account_type,
             "account_key": account_key,
+            "position_account_id": position_account_id,
             "qmt_dir": qmt_dir,
             "path": "",
             "error": "",
@@ -8468,6 +8482,10 @@ def write_qmt_market_bridge_identities(row):
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_key": account_key,
+                "position_account_id": position_account_id,
+                "query_account_id": position_account_id,
+                "shareholder_account_id": position_account_id,
+                "stock_holder_account_id": position_account_id,
                 "accounts": accounts,
                 "mode": normalize_transport_mode(row.get("mode") or "ctypes"),
                 "pipe_name": normalize_pipe_name(os.environ.get("CFQUANT_PIPE_NAME") or DEFAULT_PIPE_NAME),

@@ -474,6 +474,81 @@ def test_account_cache_channel_uses_trade_for_lttx_account_sections():
     ) == "trade"
 
 
+def test_market_account_row_market_uses_qmt_numeric_exchange_mapping():
+    assert web.normalize_market_code("0") == "SH"
+    assert web.normalize_market_code("1") == "SZ"
+    assert web.market_account_row_market({
+        "stock_code": "000001.SZ",
+        "market": "1",
+        "m_strExchangeID": "1",
+    }) == "SZ"
+    assert web.market_account_row_market({
+        "stock_code": "000001.SZ",
+        "m_nMarket": 1,
+        "m_strExchangeID": "",
+    }) == "SZ"
+
+
+def test_market_bridge_config_preserves_position_query_account():
+    routes = web.normalize_market_bridge_config(
+        {
+            "SH": {"bridge_id": "acct_sh", "qmt_dir": r"D:\\qmt-sh", "shareholder_account_id": "B885307113"},
+            "SZ": {"bridge_id": "acct_sz", "qmt_dir": r"D:\\qmt-sz", "query_account_id": "0800514969"},
+        },
+        account_id="77557115",
+        account_type="STOCK",
+        parent_bridge_id="acct_parent",
+        enabled=True,
+    )
+
+    assert routes["SH"]["position_account_id"] == "B885307113"
+    assert routes["SH"]["query_account_id"] == "B885307113"
+    assert routes["SZ"]["position_account_id"] == "0800514969"
+    assert routes["SZ"]["query_account_id"] == "0800514969"
+
+
+def test_market_account_positions_merge_keeps_numeric_sz_rows():
+    result = web.merge_market_account_section(
+        "positions",
+        [
+            {
+                "market": "SH",
+                "bridge_id": "acct_sh",
+                "positions": {
+                    "ok": True,
+                    "data": [
+                        {
+                            "stock_code": "600000.SH",
+                            "market": "0",
+                            "volume": 100,
+                        },
+                    ],
+                },
+            },
+            {
+                "market": "SZ",
+                "bridge_id": "acct_sz",
+                "positions": {
+                    "ok": True,
+                    "data": [
+                        {
+                            "stock_code": "000001.SZ",
+                            "market": "1",
+                            "volume": 200,
+                        },
+                    ],
+                },
+            },
+        ],
+        time.perf_counter(),
+    )
+
+    assert result["ok"] is True
+    assert result["market_counts"] == {"SH": 1, "SZ": 1}
+    assert [row["stock_code"] for row in result["data"]] == ["600000.SH", "000001.SZ"]
+    assert [row["source_market"] for row in result["data"]] == ["SH", "SZ"]
+
+
 def test_account_data_cache_prewarm_tracks_configured_accounts_separately(monkeypatch):
     cache = web.AccountDataCache(interval=5, background_timeout=2)
     stale_key = ("old", "normal", "old:STOCK:000001", "000001", "STOCK")

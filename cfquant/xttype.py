@@ -558,8 +558,26 @@ class XtPosition(DictObject):
             "m_dProfitRate",
         ), default=0.0)
         _set_first(data, "secu_account", (
+            "m_strStockHolder",
             "m_strSecuAccount",
             "m_strSecurityAccount",
+        ), default="")
+        _set_first(data, "stock_holder", (
+            "m_strStockHolder",
+            "m_strShareholderID",
+            "m_strShareHolder",
+            "m_strSecuAccount",
+            "m_strSecurityAccount",
+            "m_strStockAccount",
+        ), default=data.get("secu_account", ""))
+        _set_first(data, "branch_id", (
+            "m_strBranchID",
+            "m_nBranchID",
+            "m_strBranch",
+            "m_nBranch",
+        ), default="")
+        _set_first(data, "branch_name", (
+            "m_strBranchName",
         ), default="")
         _set_first(data, "instrument_name", (
             "m_strInstrumentName",

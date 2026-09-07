@@ -1397,19 +1397,35 @@ class TxTradeBridge(object):
         if not account_id:
             raise ValueError("account_id is required")
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        query_account_id = self._trade_detail_query_account_id(params, detail_type, account_id)
         self._log(
-            "query_trade_detail start account=%s account_type=%s detail_type=%s"
-            % (account_id, account_type.lower(), detail_type.lower())
+            "query_trade_detail start account=%s query_account=%s account_type=%s detail_type=%s"
+            % (account_id, query_account_id, account_type.lower(), detail_type.lower())
         )
+        used_query_account_id = query_account_id
         try:
-            rows = func(account_id, account_type.lower(), detail_type.lower()) or []
+            rows = func(query_account_id, account_type.lower(), detail_type.lower()) or []
         except Exception as e:
+            if query_account_id != account_id:
+                self._log(
+                    "query_trade_detail query account failed account=%s query_account=%s detail_type=%s error=%s"
+                    % (account_id, query_account_id, detail_type, e)
+                )
+                used_query_account_id = account_id
+                rows = func(account_id, account_type.lower(), detail_type.lower()) or []
+            else:
+                self._log(
+                    "query_trade_detail call failed account=%s detail_type=%s error=%s"
+                    % (account_id, detail_type, e)
+                )
+                raise
+        if query_account_id != account_id and not rows:
             self._log(
-                "query_trade_detail call failed account=%s detail_type=%s error=%s"
-                % (account_id, detail_type, e)
+                "query_trade_detail query account empty account=%s query_account=%s detail_type=%s fallback_account=%s"
+                % (account_id, query_account_id, detail_type, account_id)
             )
-            raise
-
+            used_query_account_id = account_id
+            rows = func(account_id, account_type.lower(), detail_type.lower()) or []
         result = []
         for index, row in enumerate(rows):
             try:
@@ -1421,6 +1437,8 @@ class TxTradeBridge(object):
                         formatted["account_type"] = (
                             account.get("account_type") or params.get("account_type") or account_type.upper()
                         )
+                    if used_query_account_id != account_id:
+                        formatted.setdefault("query_account_id", used_query_account_id)
                     if detail_type.lower() == "order":
                         self._enrich_order_request_fields(formatted)
                 result.append(formatted)
@@ -1433,6 +1451,7 @@ class TxTradeBridge(object):
                     "format_error": str(e),
                     "raw_type": type(row).__name__,
                 })
+        result = self._filter_trade_detail_market(result, detail_type)
         if detail_type.lower() == "order" and _truthy_param(params.get("cancelable_only")):
             result = _filter_cancelable_orders(result)
         self._log(
@@ -1440,6 +1459,111 @@ class TxTradeBridge(object):
             % (detail_type, len(result))
         )
         return result
+
+    def _active_market_route(self):
+        market = str(globals().get("QMT_MARKET") or os.environ.get("CFQUANT_MARKET") or "").strip().upper()
+        if not market:
+            try:
+                market = str(RUNTIME_CONFIG.get("market") or "").strip().upper()
+            except Exception:
+                market = ""
+        market = self._market_suffix(market)
+        return market if market in ("SH", "SZ") else ""
+
+    def _trade_detail_query_account_id(self, params, detail_type, default_account_id):
+        if str(detail_type or "").strip().lower() != "position":
+            return default_account_id
+        names = (
+            "position_account_id",
+            "query_account_id",
+            "account_query_id",
+            "market_position_account_id",
+            "market_query_account_id",
+            "shareholder_account_id",
+            "stock_holder_account_id",
+            "stockholder_account_id",
+            "secu_account",
+        )
+        sources = []
+        if isinstance(params, dict):
+            sources.append(params)
+            account = params.get("account")
+            if isinstance(account, dict):
+                sources.append(account)
+        for source in sources:
+            for name in names:
+                value = str(source.get(name) or "").strip()
+                if value:
+                    return value
+        try:
+            config = RUNTIME_CONFIG if isinstance(RUNTIME_CONFIG, dict) else {}
+        except Exception:
+            config = {}
+        for name in names:
+            value = str(config.get(name) or "").strip()
+            if value:
+                return value
+        market = self._active_market_route()
+        for name in (
+            "position_account_ids",
+            "query_account_ids",
+            "market_position_account_ids",
+            "market_query_account_ids",
+            "shareholder_account_ids",
+            "stock_holder_account_ids",
+        ):
+            mapping = config.get(name)
+            if isinstance(mapping, dict):
+                value = str(mapping.get(market) or mapping.get(str(market).lower()) or "").strip()
+                if value:
+                    return value
+        return default_account_id
+    def _stock_code_market(self, value):
+        text = str(value or "").strip().upper()
+        if not text:
+            return ""
+        if "." in text:
+            return self._market_suffix(text.rsplit(".", 1)[-1])
+        code = re.sub(r"\D", "", text)
+        if not code:
+            return ""
+        if code.startswith(("5", "6", "9")):
+            return "SH"
+        if code.startswith(("0", "1", "2", "3")):
+            return "SZ"
+        return ""
+
+    def _formatted_trade_detail_market(self, row):
+        if isinstance(row, dict):
+            for key in ("market", "exchange", "exchange_id", "market_id", "m_nMarket", "m_strExchangeID", "m_strMarket"):
+                market = self._market_suffix(row.get(key))
+                if market in ("SH", "SZ"):
+                    return market
+            for key in ("stock_code", "code", "security_code", "m_strInstrumentID", "instrument_id"):
+                market = self._stock_code_market(row.get(key))
+                if market:
+                    return market
+        return self._stock_code_market(row)
+
+    def _filter_trade_detail_market(self, rows, detail_type):
+        detail = str(detail_type or "").strip().lower()
+        if detail not in ("position", "order", "deal"):
+            return rows
+        market = self._active_market_route()
+        if not market or not isinstance(rows, list):
+            return rows
+        filtered = []
+        for row in rows:
+            row_market = self._formatted_trade_detail_market(row)
+            if row_market and row_market != market:
+                continue
+            filtered.append(row)
+        if len(filtered) != len(rows):
+            self._log(
+                "query_trade_detail market filter market=%s detail_type=%s before=%s after=%s"
+                % (market, detail, len(rows), len(filtered))
+            )
+        return filtered
 
     def _passorder_optype(self, params, account_type):
         qmt_optype = self._first_param(params, ("qmt_optype", "passorder_optype"))
@@ -2818,7 +2942,7 @@ class TxTradeBridge(object):
             return {
                 "account_id": self._get_value(obj, "m_strAccountID"),
                 "stock_code": self._stock_code(obj),
-                "market": self._get_value(obj, "m_strExchangeID"),
+                "market": self._market_suffix(self._first_value(obj, ("m_nMarket", "m_strExchangeID", "m_strMarket"))),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
                 "order_source": self._order_source(obj),
                 "order_id": self._first_value(obj, ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID")),
@@ -2859,6 +2983,8 @@ class TxTradeBridge(object):
                 "m_strAccountID": self._get_value(obj, "m_strAccountID"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
+                "m_nMarket": self._get_value(obj, "m_nMarket"),
+                "m_strMarket": self._get_value(obj, "m_strMarket"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
                 "m_nOrderType": self._get_value(obj, "m_nOrderType"),
                 "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
@@ -2904,7 +3030,7 @@ class TxTradeBridge(object):
         if detail_type == "deal":
             return {
                 "stock_code": self._stock_code(obj),
-                "market": self._get_value(obj, "m_strExchangeID"),
+                "market": self._market_suffix(self._first_value(obj, ("m_nMarket", "m_strExchangeID", "m_strMarket"))),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
                 "order_type": self._stock_order_type(obj),
                 "order_id": self._first_value(obj, ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID")),
@@ -2937,6 +3063,8 @@ class TxTradeBridge(object):
                 "commission": self._get_value(obj, "m_dCommission"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
+                "m_nMarket": self._get_value(obj, "m_nMarket"),
+                "m_strMarket": self._get_value(obj, "m_strMarket"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
                 "m_nOrderType": self._get_value(obj, "m_nOrderType"),
                 "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
@@ -2966,8 +3094,12 @@ class TxTradeBridge(object):
         if detail_type == "position":
             return {
                 "stock_code": self._stock_code(obj),
-                "market": self._get_value(obj, "m_strExchangeID"),
+                "market": self._market_suffix(self._first_value(obj, ("m_nMarket", "m_strExchangeID", "m_strMarket"))),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
+                "exchange_name": self._get_value(obj, "m_strExchangeName"),
+                "stock_holder": self._first_value(obj, ("m_strStockHolder", "m_strShareholderID", "m_strShareHolder", "m_strSecuAccount", "m_strSecurityAccount", "m_strStockAccount")),
+                "branch_id": self._first_value(obj, ("m_strBranchID", "m_nBranchID", "m_strBranch", "m_nBranch")),
+                "branch_name": self._get_value(obj, "m_strBranchName"),
                 "volume": self._get_value(obj, "m_nVolume"),
                 "can_use_volume": self._get_value(obj, "m_nCanUseVolume"),
                 "open_price": self._get_value(obj, "m_dOpenPrice"),
@@ -2982,7 +3114,21 @@ class TxTradeBridge(object):
                 "profit_rate": self._get_value(obj, "m_dProfitRate"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
+                "m_nMarket": self._get_value(obj, "m_nMarket"),
+                "m_strMarket": self._get_value(obj, "m_strMarket"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
+                "m_strExchangeName": self._get_value(obj, "m_strExchangeName"),
+                "m_strStockHolder": self._get_value(obj, "m_strStockHolder"),
+                "m_strShareholderID": self._get_value(obj, "m_strShareholderID"),
+                "m_strShareHolder": self._get_value(obj, "m_strShareHolder"),
+                "m_strSecuAccount": self._get_value(obj, "m_strSecuAccount"),
+                "m_strSecurityAccount": self._get_value(obj, "m_strSecurityAccount"),
+                "m_strStockAccount": self._get_value(obj, "m_strStockAccount"),
+                "m_strBranchID": self._get_value(obj, "m_strBranchID"),
+                "m_strBranchName": self._get_value(obj, "m_strBranchName"),
+                "m_nBranchID": self._get_value(obj, "m_nBranchID"),
+                "m_strBranch": self._get_value(obj, "m_strBranch"),
+                "m_nBranch": self._get_value(obj, "m_nBranch"),
                 "m_nOrderType": self._get_value(obj, "m_nOrderType"),
                 "m_nBusinessType": self._get_value(obj, "m_nBusinessType"),
                 "m_nDirection": self._get_value(obj, "m_nDirection"),
@@ -4956,10 +5102,94 @@ def _runtime_config_paths():
         return []
 
 
+def _runtime_path_maybe_file(path):
+    try:
+        return os.path.isfile(path)
+    except Exception:
+        return True
+
+
+def _read_text_file_ctypes(path, max_bytes=1024 * 1024):
+    if os.name != "nt":
+        return None
+    handle = None
+    k32 = None
+    try:
+        _ctypes = ctypes
+        _wintypes = wintypes
+        k32 = _ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.argtypes = [
+            _wintypes.LPCWSTR,
+            _wintypes.DWORD,
+            _wintypes.DWORD,
+            _wintypes.LPVOID,
+            _wintypes.DWORD,
+            _wintypes.DWORD,
+            _wintypes.HANDLE,
+        ]
+        k32.CreateFileW.restype = _wintypes.HANDLE
+        k32.ReadFile.argtypes = [
+            _wintypes.HANDLE,
+            _wintypes.LPVOID,
+            _wintypes.DWORD,
+            _ctypes.POINTER(_wintypes.DWORD),
+            _wintypes.LPVOID,
+        ]
+        k32.ReadFile.restype = _wintypes.BOOL
+        k32.CloseHandle.argtypes = [_wintypes.HANDLE]
+        k32.CloseHandle.restype = _wintypes.BOOL
+        handle = k32.CreateFileW(
+            path,
+            0x80000000,
+            0x00000001 | 0x00000002 | 0x00000004,
+            None,
+            3,
+            0x00000080,
+            None,
+        )
+        invalid = _ctypes.c_void_p(-1).value
+        if handle in (None, 0, invalid):
+            handle = None
+            return None
+        chunks = []
+        total = 0
+        limit = int(max_bytes)
+        while total < limit:
+            chunk_size = min(65536, limit - total)
+            buf = _ctypes.create_string_buffer(chunk_size)
+            read = _wintypes.DWORD(0)
+            ok = k32.ReadFile(handle, buf, chunk_size, _ctypes.byref(read), None)
+            if not ok:
+                if _ctypes.get_last_error() == 38:
+                    break
+                return None
+            if read.value <= 0:
+                break
+            chunks.append(buf.raw[:read.value])
+            total += read.value
+        raw = b"".join(chunks)
+        for encoding in ("utf-8-sig", "utf-8", "gbk"):
+            try:
+                return raw.decode(encoding)
+            except Exception:
+                pass
+        return raw.decode("utf-8", errors="replace")
+    except Exception:
+        return None
+    finally:
+        if handle not in (None, 0):
+            try:
+                if k32 is not None:
+                    k32.CloseHandle(handle)
+            except Exception:
+                pass
+
+
 def _load_runtime_config():
     for path in _runtime_config_paths():
-        if not os.path.isfile(path):
+        if not _runtime_path_maybe_file(path):
             continue
+        last_error = None
         for index, opener in enumerate((
             lambda: io.open(path, "r", encoding="utf-8"),
             lambda: open(path, "r"),
@@ -4970,8 +5200,17 @@ def _load_runtime_config():
                 if isinstance(data, dict):
                     return path, data
             except Exception as e:
-                if index == 1:
-                    _write_runtime_log("cfquant lite runtime config read failed path=%s error=%s" % (path, e))
+                last_error = e
+        text = _read_text_file_ctypes(path)
+        if text is not None:
+            try:
+                data = json.loads(text)
+                if isinstance(data, dict):
+                    return path, data
+            except Exception as e:
+                last_error = e
+        if last_error is not None:
+            _write_runtime_log("cfquant lite runtime config read failed path=%s error=%s" % (path, last_error))
     return "", {}
 
 

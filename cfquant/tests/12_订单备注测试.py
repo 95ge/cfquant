@@ -7,6 +7,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import cfquant_web_server as web
+from cfquant import order_meta
 from cfquant import xtconstant
 from cfquant.qmt_bridge import CfquantQmtBridge
 from cfquant.normal_bridge import NormalQmtBridge
@@ -45,6 +46,28 @@ def _recording_cancel(calls):
         return True
 
     return cancel
+
+
+class RecordingTx(object):
+    def __init__(self):
+        self.pushes = []
+        self.store = {}
+
+    def push(self, *args):
+        self.pushes.append(args)
+        return 0
+
+    def get(self, key):
+        return self.store.get(key)
+
+    def put(self, key, value):
+        self.store[key] = value
+        return 0
+
+    def dict_change(self, var, key, value):
+        bucket = self.store.setdefault(var, {})
+        bucket[key] = value
+        return 0
 
 
 def test_qmt_bridge_uses_strategy_name_as_default_remark():
@@ -257,14 +280,6 @@ def test_tx_trade_bridge_async_explicit_failure_is_not_registered():
 
 
 def test_normal_bridge_turns_real_order_callback_into_xtorderresponse():
-    class FakeTx(object):
-        def __init__(self):
-            self.pushes = []
-
-        def push(self, *args):
-            self.pushes.append(args)
-            return 0
-
     events = []
     bridge = NormalQmtBridge(
         DummyContext(),
@@ -274,7 +289,7 @@ def test_normal_bridge_turns_real_order_callback_into_xtorderresponse():
             "get_last_order_id": lambda *args: "700001",
         },
     )
-    bridge.tx = FakeTx()
+    bridge.tx = RecordingTx()
     bridge._send_trader_event = lambda client_id, name, data: events.append((client_id, name, data))
     bridge._order_stock_async(
         _base_order_params(strategy_name="hxy", order_remark="remark", seq=24),
@@ -302,9 +317,127 @@ def test_normal_bridge_turns_real_order_callback_into_xtorderresponse():
         "order_remark": "remark",
         "seq": 24,
     })]
-    callback_payload = json.loads(bridge.tx.pushes[0][1])
+    callback_pushes = [item for item in bridge.tx.pushes if item[0] == "event"]
+    callback_payload = json.loads(callback_pushes[0][1])
     assert callback_payload["data"]["order_remark"] == "remark"
     assert callback_payload["data"]["strategy_name"] == "hxy"
+
+
+def test_tx_trade_bridge_pushes_order_meta_before_passorder_and_persists_account_store():
+    calls = []
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={},
+    )
+    bridge.tx = RecordingTx()
+
+    def passorder(*args):
+        calls.append((args, list(bridge.tx.pushes), dict(bridge.tx.store)))
+        return 700010
+
+    bridge.globals_dict["passorder"] = passorder
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="user-001", strategy_name="fast-strategy", find_order_wait=0),
+        {"id": "request-meta-1"},
+    )
+
+    expected_channel = order_meta.account_meta_channel("default", "STOCK", "A123")
+    store_key = order_meta.account_store_key("default", "STOCK", "A123")
+    assert result["order_id"] == 700010
+    assert calls[0][1][0][0] == order_meta.ORDER_META_PUSH_KEY
+    assert calls[0][1][0][2] == expected_channel
+    assert order_meta.store_user_key("user-001") in calls[0][2][store_key]
+    assert order_meta.store_order_ref_key("700010") in bridge.tx.store[store_key]
+
+
+def test_normal_bridge_receives_order_meta_push_and_fills_cross_qmt_order_callback():
+    bridge = NormalQmtBridge(DummyContext(), show=False, schedule_timer=False)
+    bridge.tx = RecordingTx()
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "A123",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price_type": 11,
+        "price": 10.0,
+        "order_volume": 100,
+        "strategy_name": "fast-strategy",
+        "order_remark": "user-001",
+        "user_order_id": "user-001",
+    })
+
+    assert bridge._handle_order_meta_raw(
+        "%s|%s" % (order_meta.ORDER_META_PUSH_KEY, order_meta.encode_record(record))
+    ) is True
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "A123",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 9001,
+        "m_strOrderRef": "9001",
+        "m_strRemark": None,
+        "m_strStrategyName": None,
+    })
+
+    callback_payload = json.loads([item for item in bridge.tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    store_key = order_meta.account_store_key("default", "STOCK", "A123")
+    assert data["strategy_name"] == "fast-strategy"
+    assert data["order_remark"] == "user-001"
+    assert data["cfquant_order_meta_hit"] is True
+    assert data["cfquant_order_meta_match"] == "pending_fifo"
+    assert order_meta.store_user_key("user-001") in bridge.tx.store[store_key]
+    assert order_meta.store_order_ref_key("9001") in bridge.tx.store[store_key]
+
+
+def test_normal_bridge_order_meta_store_fallback_is_account_scoped():
+    bridge = NormalQmtBridge(DummyContext(), show=False, schedule_timer=False)
+    bridge.tx = RecordingTx()
+    store_key = order_meta.account_store_key("default", "STOCK", "A123")
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "A123",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "strategy_name": "strategy-a",
+        "order_remark": "user-a",
+        "user_order_id": "user-a",
+    })
+    bridge.tx.put(store_key, {
+        order_meta.store_user_key("user-a"): order_meta.encode_record(record),
+    })
+
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "A123",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 9002,
+        "m_strOrderRef": "9002",
+        "m_strRemark": "",
+        "m_strStrategyName": "",
+    })
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "B123",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 9003,
+        "m_strOrderRef": "9003",
+        "m_strRemark": "",
+        "m_strStrategyName": "",
+    })
+
+    callback_payloads = [json.loads(item[1]) for item in bridge.tx.pushes if item[0] == "event"]
+    assert callback_payloads[-2]["data"]["strategy_name"] == "strategy-a"
+    assert callback_payloads[-2]["data"]["order_remark"] == "user-a"
+    assert callback_payloads[-1]["data"]["strategy_name"] == ""
+    assert callback_payloads[-1]["data"]["order_remark"] == ""
+    assert "cfquant_order_meta_hit" not in callback_payloads[-1]["data"]
 
 
 def test_tx_trade_bridge_never_exposes_zero_as_order_id_when_lookup_is_stale():

@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260907_07';
+const FRONTEND_VERSION = 'web_20260908_01';
 
 const state = {
   accountId: '',
@@ -6251,9 +6251,20 @@ function normalizeMarketRoutes(config = {}) {
         market,
         bridge_id: String(row.bridge_id || row.id || '').trim(),
         qmt_dir: String(row.qmt_dir || row.python_dir || '').trim(),
+        position_account_id: String(
+          row.position_account_id
+          || row.query_account_id
+          || row.account_query_id
+          || row.market_query_account_id
+          || row.shareholder_account_id
+          || row.stock_holder_account_id
+          || row.stockholder_account_id
+          || row.secu_account
+          || ''
+        ).trim(),
         enabled: row.enabled !== false,
       }
-      : { market, bridge_id: '', qmt_dir: '', enabled: true };
+      : { market, bridge_id: '', qmt_dir: '', position_account_id: '', enabled: true };
   });
   return routes;
 }
@@ -6271,7 +6282,8 @@ function marketRouteSummary(config = {}) {
   const routes = normalizeMarketRoutes(config);
   return ['SH', 'SZ'].map((market) => {
     const route = routes[market] || {};
-    return `${market}: ${route.bridge_id || '自动'}${route.qmt_dir ? ` / ${route.qmt_dir}` : ''}`;
+    const queryAccount = route.position_account_id ? ` / 查询账号: ${route.position_account_id}` : '';
+    return `${market}: ${route.bridge_id || '自动'}${route.qmt_dir ? ` / ${route.qmt_dir}` : ''}${queryAccount}`;
   }).join(' | ');
 }
 
@@ -6873,10 +6885,12 @@ async function saveCurrentAccountPair() {
     SH: {
       bridge_id: form && form.market_sh_bridge_id ? form.market_sh_bridge_id.value.trim() : '',
       qmt_dir: form && form.market_sh_qmt_dir ? form.market_sh_qmt_dir.value.trim() : '',
+      position_account_id: form && form.market_sh_position_account_id ? form.market_sh_position_account_id.value.trim() : '',
     },
     SZ: {
       bridge_id: form && form.market_sz_bridge_id ? form.market_sz_bridge_id.value.trim() : '',
       qmt_dir: form && form.market_sz_qmt_dir ? form.market_sz_qmt_dir.value.trim() : '',
+      position_account_id: form && form.market_sz_position_account_id ? form.market_sz_position_account_id.value.trim() : '',
     },
   };
   if (!accountId) {
@@ -7044,8 +7058,10 @@ function syncBindingForm() {
   if (form.market_routing_enabled) form.market_routing_enabled.checked = isMarketRoutingEnabled(config || {});
   if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
   if (form.market_sh_bridge_id) form.market_sh_bridge_id.value = routes.SH.bridge_id || '';
+  if (form.market_sh_position_account_id) form.market_sh_position_account_id.value = routes.SH.position_account_id || '';
   if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = routes.SZ.qmt_dir || '';
   if (form.market_sz_bridge_id) form.market_sz_bridge_id.value = routes.SZ.bridge_id || '';
+  if (form.market_sz_position_account_id) form.market_sz_position_account_id.value = routes.SZ.position_account_id || '';
   renderBindingQmtScriptPanel();
 }
 
@@ -7074,8 +7090,10 @@ function fillBindingForm(values = {}) {
   if (form.market_routing_enabled) form.market_routing_enabled.checked = !!values.marketRoutingEnabled;
   if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
   if (form.market_sh_bridge_id) form.market_sh_bridge_id.value = routes.SH.bridge_id || '';
+  if (form.market_sh_position_account_id) form.market_sh_position_account_id.value = routes.SH.position_account_id || '';
   if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = routes.SZ.qmt_dir || '';
   if (form.market_sz_bridge_id) form.market_sz_bridge_id.value = routes.SZ.bridge_id || '';
+  if (form.market_sz_position_account_id) form.market_sz_position_account_id.value = routes.SZ.position_account_id || '';
 }
 
 function openBindingDialog(options = {}) {
@@ -7246,10 +7264,12 @@ async function submitBindingForm(event) {
     SH: {
       bridge_id: form.market_sh_bridge_id ? form.market_sh_bridge_id.value.trim() : '',
       qmt_dir: form.market_sh_qmt_dir ? form.market_sh_qmt_dir.value.trim() : '',
+      position_account_id: form.market_sh_position_account_id ? form.market_sh_position_account_id.value.trim() : '',
     },
     SZ: {
       bridge_id: form.market_sz_bridge_id ? form.market_sz_bridge_id.value.trim() : '',
       qmt_dir: form.market_sz_qmt_dir ? form.market_sz_qmt_dir.value.trim() : '',
+      position_account_id: form.market_sz_position_account_id ? form.market_sz_position_account_id.value.trim() : '',
     },
   };
   if (!accountId) {

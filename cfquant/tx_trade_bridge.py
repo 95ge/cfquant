@@ -8,6 +8,7 @@ import time
 from .protocol import loads_message, pack_event, pack_response
 from .version import __version__ as CORE_VERSION
 from . import account_routing
+from . import order_meta
 from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, set_log_language, translate_log
 from .runtime_report import build_qmt_runtime_report, write_qmt_runtime_marker
 from .xttype import filter_cancelable_orders
@@ -132,6 +133,9 @@ class TxTradeBridge(object):
         self.pending_async_orders_lock = threading.RLock()
         self.order_request_metadata = {}
         self.order_request_metadata_lock = threading.RLock()
+        self.order_meta_cache = order_meta.OrderMetaCache(self.bridge_id)
+        self.order_meta_store_lock = threading.RLock()
+        self.order_meta_store_initialized = set()
 
     def set_context(self, context):
         self.context = context
@@ -859,29 +863,59 @@ class TxTradeBridge(object):
             msg.get("id", "tx_order"),
         )
         strategy_name = params.get("strategy_name", "")
-        previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
-        result = passorder(
-            order_type,
-            params.get("qmt_order_type", 1101),
+        order_meta_record = self._build_order_meta_record(
+            params,
+            msg,
             account_id,
-            params.get("stock_code", params.get("code", "")),
+            account_type,
+            order_type,
             price_type,
-            params.get("price", 0),
-            params.get("order_volume", params.get("num", 0)),
-            params.get("strategy_name", "1"),
-            params.get("quick_trade", 2),
             order_remark,
-            self.context,
+            strategy_name,
         )
-        if not self._is_failed_order_result(result):
+        self._publish_order_meta_record(order_meta_record, push=True, persist=True)
+        previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
+        order_meta_record["previous_order_id"] = previous_order_id
+        try:
+            result = passorder(
+                order_type,
+                params.get("qmt_order_type", 1101),
+                account_id,
+                params.get("stock_code", params.get("code", "")),
+                price_type,
+                params.get("price", 0),
+                params.get("order_volume", params.get("num", 0)),
+                params.get("strategy_name", "1"),
+                params.get("quick_trade", 2),
+                order_remark,
+                self.context,
+            )
+        except Exception as e:
+            order_meta_record.update({
+                "status": "failed",
+                "error": str(e),
+            })
+            self._publish_order_meta_record(order_meta_record, push=True, persist=True)
+            raise
+
+        failed = self._is_failed_order_result(result)
+        order_id = self._normalize_order_id(result)
+        order_meta_record["request_result"] = self._plain_value(result)
+        if order_id is not None:
+            order_meta_record["order_ref"] = str(order_id)
+        if failed:
+            order_meta_record["status"] = "failed"
+            self._publish_order_meta_record(order_meta_record, push=True, persist=True)
+        else:
+            order_meta_record["status"] = "accepted"
+            self._publish_order_meta_record(order_meta_record, push=True, persist=True)
             self._remember_order_request(
                 account_id,
                 params.get("stock_code", params.get("code", "")),
                 order_remark,
                 strategy_name,
             )
-        order_id = self._normalize_order_id(result)
-        if resolve_order_id and order_id is None and not self._is_failed_order_result(result):
+        if resolve_order_id and order_id is None and not failed:
             order_id = self._find_order_id(
                 account_id,
                 account_type,
@@ -890,6 +924,10 @@ class TxTradeBridge(object):
                 previous_order_id,
                 params,
             )
+            if order_id is not None:
+                order_meta_record["order_ref"] = str(order_id)
+                order_meta_record["status"] = "bound"
+                self._publish_order_meta_record(order_meta_record, push=True, persist=True)
         return {
             "request_result": result,
             "order_id": order_id if order_id is not None else -1,
@@ -981,6 +1019,176 @@ class TxTradeBridge(object):
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             return value < 0
         return str(value).strip() == "-1" if value is not None else False
+
+    def _build_order_meta_record(
+        self,
+        params,
+        msg,
+        account_id,
+        account_type,
+        order_type,
+        price_type,
+        order_remark,
+        strategy_name,
+    ):
+        return order_meta.normalize_record(
+            {
+                "bridge_id": self.bridge_id,
+                "account_id": account_id,
+                "account_type": str(account_type or "").upper(),
+                "stock_code": params.get("stock_code", params.get("code", "")),
+                "order_type": order_type,
+                "price_type": price_type,
+                "price": params.get("price", 0),
+                "order_volume": params.get("order_volume", params.get("num", 0)),
+                "strategy_name": strategy_name,
+                "order_remark": order_remark,
+                "user_order_id": order_remark,
+                "client_order_id": order_remark,
+                "quick_trade": params.get("quick_trade", 2),
+                "request_id": (msg or {}).get("id", ""),
+                "request_channel": self.request_channel,
+                "status": "pending",
+                "created_at": time.time(),
+            },
+            bridge_id=self.bridge_id,
+            account_type=account_type,
+            account_id=account_id,
+        )
+
+    def _publish_order_meta_record(self, record, push=True, persist=True):
+        record = order_meta.normalize_record(record, bridge_id=self.bridge_id)
+        self.order_meta_cache.upsert(record)
+        payload = order_meta.encode_record(record)
+        tx = self.tx
+        if tx is None:
+            return record
+        if push:
+            try:
+                channel = order_meta.account_meta_channel(
+                    record.get("bridge_id") or self.bridge_id,
+                    record.get("account_type"),
+                    record.get("account_id"),
+                )
+                tx.push(order_meta.ORDER_META_PUSH_KEY, payload, channel)
+            except Exception as e:
+                self._log("order meta push failed:%s" % e)
+        if persist:
+            self._persist_order_meta_record(record, payload=payload)
+        return record
+
+    def _persist_order_meta_record(self, record, payload=None):
+        tx = self.tx
+        if tx is None:
+            return False
+        store_key = order_meta.account_store_key(
+            record.get("bridge_id") or self.bridge_id,
+            record.get("account_type"),
+            record.get("account_id"),
+        )
+        if not store_key:
+            return False
+        if not self._ensure_order_meta_store(store_key):
+            return False
+        payload = payload or order_meta.encode_record(record)
+        dict_change = getattr(tx, "dict_change", None)
+        if not callable(dict_change):
+            return False
+        ok = False
+        for item_key, _ in order_meta.store_entries_for_record(record):
+            if not item_key:
+                continue
+            try:
+                dict_change(store_key, item_key, payload)
+                ok = True
+            except Exception as e:
+                self._log("order meta dict_change failed key=%s error=%s" % (store_key, e))
+        return ok
+
+    def _ensure_order_meta_store(self, store_key):
+        with self.order_meta_store_lock:
+            if store_key in self.order_meta_store_initialized:
+                return True
+            tx = self.tx
+            if tx is None:
+                return False
+            get_func = getattr(tx, "get", None)
+            put_func = getattr(tx, "put", None)
+            store_value = None
+            if callable(get_func):
+                try:
+                    store_value = get_func(store_key)
+                except Exception as e:
+                    self._log("order meta get store failed key=%s error=%s" % (store_key, e))
+            decoded = store_value if isinstance(store_value, dict) else order_meta.decode_record_payload(store_value)
+            if not isinstance(decoded, dict) and callable(put_func):
+                try:
+                    put_func(store_key, {})
+                except Exception as e:
+                    self._log("order meta init store failed key=%s error=%s" % (store_key, e))
+                    return False
+            self.order_meta_store_initialized.add(store_key)
+            return True
+
+    def _load_order_meta_store(self, account_id, account_type):
+        tx = self.tx
+        if tx is None or not account_id:
+            return {"loaded": 0, "stale": 0}
+        store_key = order_meta.account_store_key(self.bridge_id, account_type, account_id)
+        get_func = getattr(tx, "get", None)
+        put_func = getattr(tx, "put", None)
+        if not callable(get_func):
+            return {"loaded": 0, "stale": 0}
+        try:
+            store_value = get_func(store_key)
+        except Exception as e:
+            self._log("order meta load store failed key=%s error=%s" % (store_key, e))
+            return {"loaded": 0, "stale": 0}
+        if store_value in (None, ""):
+            if callable(put_func):
+                try:
+                    put_func(store_key, {})
+                    with self.order_meta_store_lock:
+                        self.order_meta_store_initialized.add(store_key)
+                except Exception:
+                    pass
+            return {"loaded": 0, "stale": 0}
+        info = self.order_meta_cache.load_store(
+            store_value,
+            bridge_id=self.bridge_id,
+            account_type=account_type,
+            account_id=account_id,
+        )
+        with self.order_meta_store_lock:
+            self.order_meta_store_initialized.add(store_key)
+        if info.get("loaded") or info.get("stale"):
+            self._log(
+                "order meta store loaded account=%s type=%s loaded=%s stale=%s"
+                % (account_id, str(account_type or "").upper(), info.get("loaded"), info.get("stale"))
+            )
+        return info
+
+    def _reset_order_meta_store(self, account_id, account_type, reason="manual"):
+        tx = self.tx
+        if tx is None or not account_id:
+            return False
+        store_key = order_meta.account_store_key(self.bridge_id, account_type, account_id)
+        put_func = getattr(tx, "put", None)
+        if not callable(put_func):
+            return False
+        try:
+            put_func(store_key, {})
+            self.order_meta_cache.clear_account(self.bridge_id, account_type, account_id)
+            with self.order_meta_store_lock:
+                self.order_meta_store_initialized.add(store_key)
+            self._log(
+                "order meta store reset account=%s type=%s reason=%s"
+                % (account_id, str(account_type or "").upper(), reason)
+            )
+            return True
+        except Exception as e:
+            self._log("order meta reset failed key=%s error=%s" % (store_key, e))
+            return False
 
     def _order_stock_async(self, params, msg):
         seq = params.get("seq")
@@ -2049,6 +2257,7 @@ class TxTradeBridge(object):
             }
         if detail_type == "deal":
             return {
+                "account_id": self._get_value(obj, "m_strAccountID"),
                 "stock_code": self._stock_code(obj),
                 "market": self._get_value(obj, "m_strExchangeID"),
                 "instrument_name": self._get_value(obj, "m_strInstrumentName"),
@@ -2092,6 +2301,7 @@ class TxTradeBridge(object):
                 "m_nVolume": self._get_value(obj, "m_nVolume"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
                 "m_dCommission": self._get_value(obj, "m_dCommission"),
+                "m_strAccountID": self._get_value(obj, "m_strAccountID"),
                 "m_nRef": self._get_value(obj, "m_nRef"),
                 "m_strOrderRef": self._get_value(obj, "m_strOrderRef"),
                 "m_nOrderID": self._first_value(obj, ("m_nOrderID", "m_nRef")),

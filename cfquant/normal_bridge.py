@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 
+from . import order_meta
 from .protocol import loads_message, pack_event, pack_response
 from .tx_trade_bridge import TxTradeBridge
 
@@ -74,6 +75,12 @@ class NormalQmtBridge(TxTradeBridge):
         self.callback_event_channel = callback_event_channel
         self.bridge_id = bridge_id or "default"
         self.schedule_timer = bool(schedule_timer)
+        self.order_meta_txs = {}
+        self.order_meta_threads = {}
+        self.order_meta_accounts = set()
+        self.order_meta_subscription_lock = threading.RLock()
+        self.order_meta_reset_slots = set()
+        self.order_meta_store_load_times = {}
 
     def start(self):
         if self.running:
@@ -88,6 +95,12 @@ class NormalQmtBridge(TxTradeBridge):
         self.recv_thread = threading.Thread(target=self._recv_loop)
         self.recv_thread.daemon = True
         self.recv_thread.start()
+        if self.account_id:
+            self._ensure_order_meta_account_subscription(self.account_id, self.account_type)
+        with self.order_meta_subscription_lock:
+            initial_order_meta_accounts = list(self.order_meta_accounts)
+        for account_type, account_id in initial_order_meta_accounts:
+            self._ensure_order_meta_account_subscription(account_id, account_type)
         self._log(
             "normal bridge started LTtx=%s:%s request_channel=%s"
             % (self.ip, self.port, self.request_channel)
@@ -100,6 +113,8 @@ class NormalQmtBridge(TxTradeBridge):
         if self.account_id:
             self._set_context_account(self.account_id, self.account_type)
         self._enable_auto_trade_callback()
+        if self.account_id:
+            self._ensure_order_meta_account_subscription(self.account_id, self.account_type)
         self._subscribe_internal_whole_quote()
         if self.dispatch_on_qmt_thread:
             self._log("normal bridge QMT-thread dispatch enabled")
@@ -118,9 +133,18 @@ class NormalQmtBridge(TxTradeBridge):
     def close(self):
         self.running = False
         self.worker_event.set()
+        with self.order_meta_subscription_lock:
+            meta_txs = list(self.order_meta_txs.values())
+            self.order_meta_txs.clear()
+            self.order_meta_threads.clear()
         if self.context is not None and self.schedule_key:
             try:
                 self.context.cancel_schedule_run(self.schedule_key)
+            except Exception:
+                pass
+        for meta_tx in meta_txs:
+            try:
+                meta_tx.close()
             except Exception:
                 pass
         super(NormalQmtBridge, self).close()
@@ -168,6 +192,152 @@ class NormalQmtBridge(TxTradeBridge):
             )
         except queue.Full as e:
             self._send_error(msg, e)
+
+    def _subscribe_account(self, params, msg=None):
+        account = params.get("account") or {}
+        account_id = account.get("account_id") or params.get("account_id") or self.account_id
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type")).upper()
+        result = super(NormalQmtBridge, self)._subscribe_account(params, msg)
+        self._ensure_order_meta_account_subscription(account_id or self.account_id, account_type or self.account_type)
+        return result
+
+    def _ensure_order_meta_account_subscription(self, account_id, account_type=None):
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            return False
+        account_type = order_meta.normalize_account_type(account_type or self.account_type)
+        account_key = (account_type, account_id)
+        channel = order_meta.account_meta_channel(self.bridge_id, account_type, account_id)
+        with self.order_meta_subscription_lock:
+            self.order_meta_accounts.add(account_key)
+            if self.tx is None or not self.running:
+                return False
+            if channel in self.order_meta_txs:
+                return True
+            txl = self._load_txl()
+            try:
+                meta_tx = txl(self.ip, self.port, self.token, show=False)
+            except TypeError:
+                meta_tx = txl(self.ip, self.port, self.token)
+            try:
+                meta_tx.start_txg(channel)
+            except Exception:
+                try:
+                    meta_tx.close()
+                except Exception:
+                    pass
+                raise
+            thread = threading.Thread(target=self._order_meta_recv_loop, args=(channel, meta_tx))
+            thread.daemon = True
+            self.order_meta_txs[channel] = meta_tx
+            self.order_meta_threads[channel] = thread
+            thread.start()
+        self._load_order_meta_store_throttled(account_id, account_type, force=True)
+        self._log("normal bridge order meta subscribed account=%s type=%s channel=%s" % (account_id, account_type, channel))
+        return True
+
+    def _order_meta_recv_loop(self, channel, meta_tx):
+        while self.running:
+            try:
+                raw = meta_tx.Q.get()
+                if raw is None:
+                    break
+                self._handle_order_meta_raw(raw, channel)
+            except Exception as e:
+                if self.running:
+                    self._log("normal bridge order meta recv error channel=%s error=%s" % (channel, e))
+                time.sleep(0.05)
+
+    def _handle_order_meta_raw(self, raw, channel=""):
+        key, payload = order_meta.split_push_message(raw)
+        if not key:
+            return False
+        record = order_meta.decode_record_payload(payload)
+        if not isinstance(record, dict):
+            return False
+        record = order_meta.normalize_record(record, bridge_id=self.bridge_id)
+        status = order_meta.normalize_text(record.get("status")).lower()
+        if key == order_meta.ORDER_META_DELETE_KEY or status in ("delete", "deleted", "failed", "cancelled"):
+            self.order_meta_cache.remove(record)
+        else:
+            self.order_meta_cache.upsert(record)
+        self._persist_order_meta_record(record, payload=order_meta.encode_record(record))
+        return True
+
+    def _load_order_meta_store_throttled(self, account_id, account_type, force=False):
+        account_id = str(account_id or "").strip()
+        account_type = order_meta.normalize_account_type(account_type or self.account_type)
+        if not account_id:
+            return {"loaded": 0, "stale": 0}
+        key = (account_type, account_id)
+        now = time.time()
+        with self.order_meta_subscription_lock:
+            last_load = self.order_meta_store_load_times.get(key, 0.0)
+            if not force and now - last_load < 1.0:
+                return {"loaded": 0, "stale": 0}
+            self.order_meta_store_load_times[key] = now
+        return self._load_order_meta_store(account_id, account_type)
+
+    def _enrich_callback_order_meta(self, event_name, data, account_id, account_type):
+        if event_name not in ("trader:on_stock_order", "trader:on_stock_trade"):
+            return None
+        if not isinstance(data, dict):
+            return None
+        account_id = str(account_id or "").strip()
+        account_type = order_meta.normalize_account_type(account_type or self.account_type)
+        if account_id:
+            data.setdefault("account_id", account_id)
+            data.setdefault("m_strAccountID", account_id)
+            self._ensure_order_meta_account_subscription(account_id, account_type)
+        if account_type:
+            data.setdefault("account_type", account_type)
+        record, match_info = self.order_meta_cache.resolve_callback(
+            data,
+            bridge_id=self.bridge_id,
+            account_type=account_type,
+            account_id=account_id,
+            allow_pending=True,
+        )
+        if record is None and account_id:
+            self._load_order_meta_store_throttled(account_id, account_type)
+            record, match_info = self.order_meta_cache.resolve_callback(
+                data,
+                bridge_id=self.bridge_id,
+                account_type=account_type,
+                account_id=account_id,
+                allow_pending=True,
+            )
+        order_meta.apply_record_to_callback(data, record, match_info)
+        order_meta.ensure_callback_text_fields(data)
+        if record and match_info.get("bound_order_ref"):
+            self._persist_order_meta_record(record, payload=order_meta.encode_record(record))
+        return record
+
+    def _maybe_reset_order_meta_stores(self):
+        now = dt.datetime.now()
+        slot = ""
+        if now.hour == 9 and now.minute == 0:
+            slot = "0900"
+        elif now.hour >= 16:
+            slot = "after_1600"
+        if not slot:
+            return
+        trade_day = now.strftime("%Y%m%d")
+        with self.order_meta_subscription_lock:
+            self.order_meta_reset_slots = set(
+                item for item in self.order_meta_reset_slots
+                if item and item[0] == trade_day
+            )
+            accounts = list(self.order_meta_accounts)
+            markers = []
+            for account_type, account_id in accounts:
+                marker = (trade_day, slot, account_type, account_id)
+                if marker in self.order_meta_reset_slots:
+                    continue
+                self.order_meta_reset_slots.add(marker)
+                markers.append((account_type, account_id, marker))
+        for account_type, account_id, marker in markers:
+            self._reset_order_meta_store(account_id, account_type, reason=marker[1])
 
     def _publish_runtime_report(self, reason):
         super(NormalQmtBridge, self)._publish_runtime_report(reason)
@@ -312,6 +482,7 @@ class NormalQmtBridge(TxTradeBridge):
         return self.request_queue.qsize()
 
     def on_timer(self, *args, **kwargs):
+        self._maybe_reset_order_meta_stores()
         if self.dispatch_on_qmt_thread:
             self._drain_requests("timer")
             return
@@ -484,14 +655,22 @@ class NormalQmtBridge(TxTradeBridge):
             return
         if event_name == "trader:on_stock_order":
             data = self._format_trade_detail(obj, "order")
+        elif event_name == "trader:on_stock_trade":
+            data = self._format_trade_detail(obj, "deal")
         else:
             data = self._callback_object_to_dict(obj)
         account_id = self._callback_account_id(obj, data)
         account_type = self._callback_account_type(obj, data)
+        if not account_type and self.account_type:
+            account_type = order_meta.normalize_account_type(self.account_type)
+        if account_id:
+            data.setdefault("account_id", account_id)
         if account_type:
             data.setdefault("account_type", account_type)
         if event_name == "trader:on_stock_order":
             self._enrich_order_request_fields(data)
+        self._enrich_callback_order_meta(event_name, data, account_id, account_type)
+        if event_name == "trader:on_stock_order":
             self._handle_async_order_callback(data)
         payload = {
             "type": "event",
