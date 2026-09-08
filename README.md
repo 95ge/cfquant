@@ -156,6 +156,7 @@ restart_cfquant.bat     重启
 | 高级模式部署 | [高级模式部署指南](docs/高级模式部署指南.md) |
 | 账号和 QMT 目录配置 | [Web 账号运行配置说明](docs/Web账号运行配置说明.md) |
 | 从 miniQMT 迁移 | [miniQMT 迁移到大 QMT 指南](docs/miniQMT迁移到大QMT指南.md) |
+| 官网 nativeApi 接口功能及适配状态 | [xtquant 原版接口适配清单](docs/xtquant原版接口适配清单.md) |
 | `xtdata` 兼容性 | [xtdata 平替追踪](docs/xtdata平替追踪.md) |
 | `xttrader` 兼容性 | [xttrader 平替追踪](docs/xttrader平替追踪.md) |
 | 接口能力范围 | [QMT 函数封装能力清单](docs/QMT函数封装能力清单.md) |

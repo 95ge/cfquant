@@ -407,7 +407,7 @@ def test_account_route_status_reads_monitor_cache_without_sync_probe(monkeypatch
     assert ("default", "lttx") in calls
 
 
-def test_lttx_routes_xttrader_queries_to_trade_channel():
+def test_lttx_routes_xttrader_queries_and_callback_xtdata_channels():
     assert web.route_channel_for_account(
         "8885060548",
         requested_channel="normal",
@@ -427,17 +427,50 @@ def test_lttx_routes_xttrader_queries_to_trade_channel():
         requested_channel="trade",
         default="trade",
         mode="lttx",
+        action="xtdata.subscribe_quote",
+    ) == "normal"
+    assert web.route_channel_for_account(
+        "8885060548",
+        requested_channel=None,
+        default="normal",
+        mode="lttx",
         action="xtdata.get_instrument_detail",
+    ) == "trade"
+    assert web.route_channel_for_account(
+        "8885060548",
+        requested_channel=None,
+        default="normal",
+        mode="lttx",
+        action="xtdata.get_full_tick",
+    ) == "trade"
+    assert web.route_channel_for_account(
+        "8885060548",
+        requested_channel="normal",
+        default="normal",
+        mode="lttx",
+        action="xtdata.get_full_tick",
+    ) == "normal"
+    assert web.route_channel_for_account(
+        "8885060548",
+        requested_channel=None,
+        default="normal",
+        mode="lttx",
+        action="xtdata.call_formula",
+        params={"callback_event": "formula:callback"},
     ) == "normal"
 
 
-def test_external_xtdata_defaults_to_normal_channel():
-    assert web._external_default_channel("xtdata.get_instrument_detail") == "normal"
-    assert web._external_default_channel("xtdata.get_full_tick") == "normal"
+def test_external_xtdata_default_channel_is_mode_aware(monkeypatch):
+    monkeypatch.setattr(web, "default_runtime_client_mode", lambda: "lttx")
+    assert web._external_default_channel("xtdata.get_instrument_detail") == "trade"
+    assert web._external_default_channel("xtdata.get_full_tick") == "trade"
+    assert web._external_default_channel("xtdata.download_holiday_data") == "normal"
     assert web._external_default_channel("xttrader.order_stock") == "trade"
+    monkeypatch.setattr(web, "default_runtime_client_mode", lambda: "ctypes")
+    assert web._external_default_channel("xtdata.get_full_tick") == "normal"
 
 
-def test_data_channel_request_defaults_to_normal(monkeypatch):
+def test_data_channel_request_reports_lttx_trade_default_for_readonly_xtdata(monkeypatch):
     captured = {}
 
     def fake_data_provider_request(action, params, **kwargs):
@@ -448,11 +481,11 @@ def test_data_channel_request_defaults_to_normal(monkeypatch):
         })
         return {
             "bridge_id": "default",
-            "channel": "normal",
+            "channel": "trade",
             "mode": "lttx",
             "fallback": False,
             "fallback_reason": "",
-            "result": {"InstrumentID": "000001"},
+            "result": {"000001.SZ": {"lastPrice": 10.0}},
             "attempts": [],
             "data_provider": "A123",
             "data_provider_account_type": "STOCK",
@@ -461,11 +494,52 @@ def test_data_channel_request_defaults_to_normal(monkeypatch):
 
     monkeypatch.setattr(web, "data_provider_request", fake_data_provider_request)
 
-    result = web.get_instrument_detail({"stock_code": "000001.SZ"})
+    result = web.get_full_tick({"code_list": "000001.SZ"})
 
-    assert result["channel"] == "normal"
-    assert captured["action"] == "xtdata.get_instrument_detail"
+    assert result["channel"] == "trade"
+    assert result["preferred_channel"] == "trade"
+    assert captured["action"] == "xtdata.get_full_tick"
     assert captured["kwargs"]["default_channel"] == "normal"
+
+
+def test_lttx_readonly_xtdata_falls_back_from_trade_to_normal(monkeypatch):
+    calls = []
+
+    class FakeClients(object):
+        def request(self, bridge_id, channel, action, params=None, **kwargs):
+            calls.append({
+                "bridge_id": bridge_id,
+                "channel": channel,
+                "action": action,
+                "mode": kwargs.get("mode"),
+            })
+            if channel == "trade":
+                raise RuntimeError("get_instrument_detail not found")
+            return {"InstrumentID": "000001"}
+
+    fake_config = SimpleNamespace(account_config=lambda **kwargs: {"account_key": "default:STOCK:8885060548"})
+    monkeypatch.setattr(web, "WEB_CONFIG", fake_config)
+    monkeypatch.setattr(web, "CLIENTS", FakeClients())
+    monkeypatch.setattr(web, "resolve_bridge_id", lambda **kwargs: kwargs.get("bridge_id") or "default")
+    monkeypatch.setattr(web, "resolve_market_route_for_request", lambda **kwargs: (kwargs["bridge_id"], {}))
+    monkeypatch.setattr(web, "resolve_account_mode", lambda *args, **kwargs: "lttx")
+
+    route = web.account_request(
+        "8885060548",
+        "default",
+        None,
+        "xtdata.get_instrument_detail",
+        {"stock_code": "000001.SZ"},
+        default_channel="normal",
+        account_type="STOCK",
+    )
+
+    assert route["channel"] == "normal"
+    assert route["fallback"] is True
+    assert [(item["mode"], item["channel"]) for item in calls] == [
+        ("lttx", "trade"),
+        ("lttx", "normal"),
+    ]
 
 
 def test_account_request_forces_trade_channel_for_lttx_queries(monkeypatch):

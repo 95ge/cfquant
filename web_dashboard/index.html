@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260908_03">
+  <link rel="stylesheet" href="/styles.css?v=web_20260908_04_python_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -1145,7 +1145,7 @@
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="python">
                   <strong>Python 接入</strong>
-                  <span>pip、auto 路由、xtquant 平替</span>
+                  <span>新旧调用对照、完整示例、迁移排查</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="same_account_market">
                   <strong>同账号独立市场</strong>
@@ -1519,36 +1519,376 @@
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="python">
-                  <div class="guide-section">
-                    <h3>外部 Python</h3>
-                    <p>外部程序优先使用默认 <code>auto</code> 路由。Web 在线时请求进入 Web 统一路由，再按账号配置选择通用、极致或高级模式。</p>
-                    <pre class="guide-code">pip install cfquant
-pip install "cfquant[zmq]"   # 需要 ZMQ 能力时再安装</pre>
+                  <div class="guide-section" id="python-prepare">
+                    <h3>1. 安装与运行前提</h3>
+                    <p>这里的“原来”指 MiniQMT / 原版 <code>xtquant</code>，“现在”指外部 Python 通过 <code>cfquant</code> 接入大 QMT。示例运行在 PyCharm、VS Code 或命令行的外部 Python 环境中；QMT 内部运行的是“部署教程”中的桥接入口脚本。</p>
+                    <ol class="guide-list detailed">
+                      <li>在运行策略的同一个 Python 环境安装 cfquant；源码开发时，在项目根目录执行可编辑安装。</li>
+                      <li>启动本地 Web，在“绑定”页配置资金账号、账户类型和 QMT 目录，并按模式部署、运行 QMT 入口脚本。</li>
+                      <li>在网页先查到资金和持仓，再运行下面的脚本；把 <code>YOUR_ACCOUNT_ID</code> 换成绑定的资金账号，保留字符串引号。</li>
+                    </ol>
+                    <pre class="guide-code" data-language="powershell">python -m pip install --upgrade cfquant
+# 需要 ZMQ 能力时安装：python -m pip install "cfquant[zmq]"
+# 使用本地源码时，在项目根目录执行：python -m pip install -e .
+python -c "import cfquant; print(cfquant.__version__, cfquant.__file__)"</pre>
                     <pre class="guide-code">cfquant --open-browser
 cfquant qmt-scripts --output D:\QMT\cfquant</pre>
+                    <p>以上命令用于首次准备；Web 和 QMT 入口已运行时，直接执行策略即可。安装包和导出脚本不会自动完成 QMT 侧的部署。</p>
+                    <nav class="python-guide-toc" aria-label="Python 接入章节">
+                      <a href="#python-migration">新旧调用对照</a>
+                      <a href="#python-query">完整查询示例</a>
+                      <a href="#python-market">行情与历史数据</a>
+                      <a href="#python-quote">行情订阅</a>
+                      <a href="#python-callback">交易回调</a>
+                      <a href="#python-order">下单与撤单</a>
+                      <a href="#python-accounts">多账号</a>
+                      <a href="#python-routing">路由配置</a>
+                      <a href="#python-troubleshooting">迁移排查</a>
+                    </nav>
                   </div>
 
-                  <div class="guide-section">
-                    <h3>xtquant 平替写法</h3>
-                    <pre class="guide-code">from cfquant import xtdata
+                  <div class="guide-section" id="python-migration">
+                    <h3>2. 原来怎么调用，现在怎么改</h3>
+                    <p>常用接口保留了接近 xtquant 的名称与参数。迁移先调整导入和连接初始化，再逐项核对策略实际用到的接口；同名入口不代表所有返回字段、异步时序和券商能力都完全一致。</p>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead><tr><th scope="col">位置</th><th scope="col">原来：xtquant / MiniQMT</th><th scope="col">现在：cfquant / 大 QMT</th></tr></thead>
+                        <tbody>
+                          <tr><td>导入模块</td><td><code>from xtquant import xtdata, xtconstant</code></td><td><code>from cfquant import xtdata, xtconstant</code>；交易类、账号类和回调类的导入前缀一起替换。</td></tr>
+                          <tr><td>交易连接</td><td><code>XtQuantTrader(path, session_id)</code>，path 指向 MiniQMT 的 <code>userdata_mini</code>。</td><td><code>XtQuantTrader("", session_id)</code>；QMT 目录由 Web 账号绑定管理，构造函数中的 path 只作兼容保留。</td></tr>
+                          <tr><td>会话标识</td><td>传入用于区分连接的 session_id。</td><td>可继续传正整数；省略或传 <code>0</code> 时自动生成正整数，可读取 <code>trader.session_id</code>。</td></tr>
+                          <tr><td>账号对象</td><td><code>StockAccount("YOUR_ACCOUNT_ID", "STOCK")</code></td><td>相同写法；资金账号和账户类型必须与 Web 绑定一致，账号不能写成整数。</td></tr>
+                          <tr><td>启动与订阅</td><td><code>start → connect → subscribe</code></td><td>可保留这个顺序。若构造时传 <code>account=account</code>，<code>start()</code> 会尝试自动订阅；下文用显式订阅检查结果。</td></tr>
+                          <tr><td>行情与查询</td><td><code>get_full_tick</code>、<code>query_stock_asset</code>、<code>query_stock_positions</code> 等。</td><td>常用调用参数可沿用；数据来自当前大 QMT 桥接链路。</td></tr>
+                          <tr><td>下单与回调</td><td><code>order_stock</code>、<code>cancel_order_stock</code>、<code>XtQuantTraderCallback</code>。</td><td>沿用常用签名和回调名；返回请求结果后仍需核对委托、成交或错误回报。</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <h4>原来的导入</h4>
+                    <pre class="guide-code" data-language="python">from xtquant import xtdata, xtconstant
+from xtquant.xttrader import XtQuantTrader, XtQuantTraderCallback
+from xtquant.xttype import StockAccount</pre>
+                    <h4>现在的导入</h4>
+                    <pre class="guide-code" data-language="python">from cfquant import xtdata, xtconstant
+from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
+from cfquant.xttype import StockAccount</pre>
+                    <p>同一份策略里的交易类、常量、账号和行情模块应一起迁移，避免一部分请求仍然发往原版 MiniQMT。</p>
+                  </div>
+
+                  <div class="guide-section" id="python-query">
+                    <h3>3. 连接、资金、持仓、委托和成交</h3>
+                    <p>这两个示例展示同一条查询流程。当前示例可单独保存为 <code>query_account.py</code> 后运行，只查询数据，不提交订单。</p>
+                    <h4>原来：连接 MiniQMT 的 userdata_mini</h4>
+                    <pre class="guide-code" data-language="python">import time
+from xtquant.xttrader import XtQuantTrader
+from xtquant.xttype import StockAccount
+
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+trader = XtQuantTrader(r"D:\QMT\userdata_mini", int(time.time()))
+try:
+    trader.start()
+    if trader.connect() != 0:
+        raise RuntimeError("MiniQMT connection failed")
+    if trader.subscribe(account) != 0:
+        raise RuntimeError("Account subscription failed")
+    print(trader.query_stock_asset(account))
+    print(trader.query_stock_positions(account))
+    print(trader.query_stock_orders(account))
+    print(trader.query_stock_trades(account))
+finally:
+    trader.stop()</pre>
+                    <h4>现在：通过 cfquant 自动路由到大 QMT</h4>
+                    <pre class="guide-code" data-language="python">from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+trader = XtQuantTrader("", 0)
+try:
+    trader.start()
+    if trader.connect() != 0:
+        raise RuntimeError("CFQuant connection failed; check Web and QMT")
+    if trader.subscribe(account) != 0:
+        raise RuntimeError("Account subscription failed; check binding")
+
+    print("session_id:", trader.session_id)
+    asset = trader.query_stock_asset(account)
+    if asset is None:
+        print("No asset data returned")
+    else:
+        print("account:", asset.account_id)
+        print("cash:", asset.cash, "total_asset:", asset.total_asset)
+
+    positions = trader.query_stock_positions(account)
+    for position in positions:
+        print(position.stock_code, position.volume, position.can_use_volume)
+    print("position_count:", len(positions))
+
+    for order in trader.query_stock_orders(account):
+        print("order:", order.order_id, order.stock_code,
+              order.order_status, order.traded_volume, order.order_remark)
+    for trade in trader.query_stock_trades(account):
+        print("trade:", trade.order_id, trade.stock_code,
+              trade.traded_volume, trade.traded_price)
+finally:
+    trader.stop()</pre>
+                    <p><code>query_stock_asset()</code> 返回资产对象；持仓、委托和成交查询返回对象列表，可用点号读取字段。空持仓或当日没有委托时列表可以为空。<code>connect() == 0</code> 说明连接检查通过，仍需用实际账号查询确认绑定和 QMT 数据可用。脚本结束时调用 <code>stop()</code> 释放本进程的交易订阅和连接。</p>
+                  </div>
+
+                  <div class="guide-section" id="python-market">
+                    <h3>4. 实时行情与历史 K 线</h3>
+                    <p>仅查询行情时无需创建 <code>XtQuantTrader</code>。证券代码仍带市场后缀，例如 <code>000001.SZ</code>、<code>600000.SH</code>；先确认网页中的行情源已在线。</p>
+                    <h4>原来：xtquant 行情快照</h4>
+                    <pre class="guide-code" data-language="python">from xtquant import xtdata
+
+ticks = xtdata.get_full_tick(["000001.SZ", "600000.SH"])
+print(ticks)</pre>
+                    <h4>现在：同样的参数，改用 cfquant</h4>
+                    <pre class="guide-code" data-language="python">from cfquant import xtdata
+
+ticks = xtdata.get_full_tick(["000001.SZ", "600000.SH"])
+for code, tick in ticks.items():
+    print(code, tick.get("lastPrice"), tick.get("volume"))</pre>
+                    <h4>历史数据：先补数据，再读取指定区间</h4>
+                    <p>原来的 <code>download_history_data()</code> 和 <code>get_market_data_ex()</code> 常用参数可保留，导入前缀改为 cfquant。下面读取固定日期范围的日线；日期用于演示历史查询，可按需要调整。</p>
+                    <pre class="guide-code" data-language="python">from cfquant import xtdata
+
+code = "000001.SZ"
+xtdata.download_history_data(
+    code, period="1d", start_time="20260803", end_time="20260831"
+)
+bars = xtdata.get_market_data_ex(
+    field_list=["open", "high", "low", "close", "volume"],
+    stock_list=[code],
+    period="1d",
+    start_time="20260803",
+    end_time="20260831",
+    count=-1,
+    dividend_type="none",
+    fill_data=True,
+)
+print(type(bars), bars)
+if isinstance(bars, dict):
+    data = bars.get(code)
+    print("last five rows:", data.tail(5) if hasattr(data, "tail") else data)</pre>
+                    <p><code>period="1d"</code> 表示日线，<code>count=-1</code> 表示读取区间内的数据，<code>dividend_type="none"</code> 表示不复权。常见返回为“证券代码 → DataFrame”；具体结构取决于大 QMT 返回值，迁移时先打印类型和字段。桥接传输后的索引、类型也需核对，再接入原策略计算。</p>
+                    <p>下载操作发生在 QMT 侧。首次下载可能较慢，空结果时先检查时间区间、下载状态、行情权限和数据源；批量回测读取速度与 MiniQMT 本地数据读取不同。<code>get_local_data(data_dir=...)</code> 的同名参数不代表接管原来的 MiniQMT 本地数据目录。</p>
+                  </div>
+
+                  <div class="guide-section" id="python-quote">
+                    <h3>5. 行情订阅、回调与取消订阅</h3>
+                    <p>原来用 <code>from xtquant import xtdata</code>，现在改为下面的导入。保留 <code>subscribe_quote(..., callback=...)</code> 和 <code>unsubscribe_quote(seq)</code>；订阅返回的序号用于取消对应订阅。</p>
+                    <pre class="guide-code" data-language="python">from cfquant import xtdata
+
+def on_quote(data):
+    print("quote:", data)
+
+seq = xtdata.subscribe_quote("000001.SZ", period="tick", callback=on_quote)
+if seq is None or int(seq) &lt;= 0:
+    raise RuntimeError("Quote subscription failed")
+print("subscribe_id:", seq)
+try:
+    xtdata.run()  # 保持进程运行，Ctrl+C 结束
+except KeyboardInterrupt:
+    pass
+finally:
+    xtdata.unsubscribe_quote(seq)</pre>
+                    <p>订阅成功不等于立即有行情变化，非交易时段可能没有推送。回调里先打印实际数据结构，再接入策略；耗时计算和网络请求应交给独立队列处理，避免阻塞回调线程。</p>
+                  </div>
+
+                  <div class="guide-section" id="python-callback">
+                    <h3>6. 交易回调：委托、成交和错误</h3>
+                    <p>原来的 <code>XtQuantTraderCallback</code> 子类可保留常用方法名，把导入前缀改成 <code>cfquant</code>。下面是独立的监听脚本，不主动下单；账号有对应事件时才会输出。</p>
+                    <pre class="guide-code" data-language="python">from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
+from cfquant.xttype import StockAccount
+
+class TradeCallback(XtQuantTraderCallback):
+    def on_stock_order(self, order):
+        print("order:", order.order_id, order.order_status,
+              order.traded_volume, order.order_remark)
+
+    def on_stock_trade(self, trade):
+        print("trade:", trade.order_id, trade.stock_code,
+              trade.traded_volume, trade.traded_price)
+
+    def on_order_error(self, error):
+        print("order_error:", error.error_id, error.error_msg)
+
+    def on_cancel_error(self, error):
+        print("cancel_error:", error.error_id, error.error_msg)
+
+    def on_order_stock_async_response(self, response):
+        print("async_order:", response.seq, response.order_id,
+              response.order_remark)
+
+    def on_disconnected(self):
+        print("Trading connection closed")
+
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+trader = XtQuantTrader("", 0)
+try:
+    trader.register_callback(TradeCallback())
+    trader.start()
+    if trader.connect() != 0:
+        raise RuntimeError("Connection failed")
+    if trader.subscribe(account) != 0:
+        raise RuntimeError("Account subscription failed")
+    trader.run_forever()  # 保持进程运行，Ctrl+C 结束
+except KeyboardInterrupt:
+    pass
+finally:
+    trader.stop()</pre>
+                    <p>行情订阅和账号交易订阅是两件事：前者用 <code>xtdata.subscribe_quote()</code>，后者用 <code>trader.subscribe(account)</code>。监听不到交易事件时，检查账号订阅、QMT 入口状态和网页“回调”页；不要把 <code>run_forever()</code> 放在后续还要执行的下单代码之前。</p>
+                  </div>
+
+                  <div class="guide-section" id="python-order">
+                    <h3>7. 下单、撤单与异步返回值</h3>
+                    <p>原版和当前的常用下单签名都是 <code>order_stock(account, stock_code, order_type, order_volume, price_type, price, strategy_name, order_remark)</code>。股票买卖用 <code>xtconstant.STOCK_BUY</code> / <code>STOCK_SELL</code>，限价用 <code>xtconstant.FIX_PRICE</code>；迁移时同时替换常量模块的导入。</p>
+                    <p>下面是完整的当前写法，默认只打印参数。确认账号、代码、数量和价格后，显式开启 <code>ENABLE_ORDER</code> 才会提交真实委托；示例价格仅用于展示参数。</p>
+                    <pre class="guide-code" data-language="python">from uuid import uuid4
+from cfquant import xtconstant
 from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
 
-account = StockAccount("YOUR_ACCOUNT_ID")
-trader = XtQuantTrader("", 0, account=account)
-trader.start()
+ENABLE_ORDER = False
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+order_params = dict(
+    stock_code="000001.SZ",
+    order_type=xtconstant.STOCK_BUY,
+    order_volume=100,
+    price_type=xtconstant.FIX_PRICE,
+    price=10.00,
+    strategy_name="python_demo",
+    order_remark="demo_" + uuid4().hex[:12],
+)
 
-print(xtdata.get_full_tick(["000001.SZ"]))
-print(trader.query_stock_asset(account))</pre>
+if not ENABLE_ORDER:
+    print("Preview only:", account.account_id, order_params)
+else:
+    trader = XtQuantTrader("", 0)
+    try:
+        trader.start()
+        if trader.connect() != 0 or trader.subscribe(account) != 0:
+            raise RuntimeError("Connection or subscription failed")
+        order_id = trader.order_stock(account, **order_params)
+        print("order_id:", order_id)
+        print("order:", trader.query_stock_order(account, order_id))
+    finally:
+        trader.stop()</pre>
+                    <p>与原来相比，这个下单调用本身可沿用，连接改用 <code>XtQuantTrader("", 0)</code>。<code>order_volume</code> 在此股票例子中以股为单位，其他品种按各自交易单位填写。每次请求使用可追踪的备注；备注有助于关联查询和回调，并不提供自动去重保证。</p>
+                    <h4>撤单：明确指定要撤的委托</h4>
+                    <p>原来的 <code>cancel_order_stock(account, order_id)</code> 调用可保留。下面先查询可撤委托，只有开启撤单且填入对应编号才提交；不会自动撤掉账号下的全部订单。</p>
+                    <pre class="guide-code" data-language="python">from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+ENABLE_CANCEL = False
+TARGET_ORDER_ID = ""  # 填写查询或回调中得到的 order_id
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+trader = XtQuantTrader("", 0)
+try:
+    trader.start()
+    if trader.connect() != 0 or trader.subscribe(account) != 0:
+        raise RuntimeError("Connection or subscription failed")
+    orders = trader.query_stock_orders(account, cancelable_only=True)
+    for order in orders:
+        print(order.order_id, order.stock_code, order.order_remark)
+    if ENABLE_CANCEL:
+        target = next(
+            (order for order in orders
+             if str(order.order_id) == TARGET_ORDER_ID), None
+        )
+        if target is None:
+            raise RuntimeError("Target order is not in the cancelable list")
+        result = trader.cancel_order_stock(account, target.order_id)
+        print("cancel_result:", result)
+    else:
+        print("Query only; no cancellation submitted")
+finally:
+    trader.stop()</pre>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead><tr><th scope="col">接口 / 结果</th><th scope="col">如何确认</th></tr></thead>
+                        <tbody>
+                          <tr><td><code>order_stock()</code></td><td>返回委托编号；失败可能返回 <code>-1</code> 或抛出异常。拿到编号不代表已成交，应查委托状态或看成交回调；刚提交时单笔查询也可能暂时为空。</td></tr>
+                          <tr><td><code>order_stock_async()</code></td><td>与同步下单的参数相同，但返回的是请求序号 <code>seq</code>，不是委托编号。通过本交易实例的 <code>on_order_stock_async_response</code> 关联 <code>response.seq</code> 和 <code>response.order_id</code>，不能用 seq 撤单。</td></tr>
+                          <tr><td><code>cancel_order_stock()</code></td><td><code>0</code> 表示撤单请求调用成功，<code>-1</code> 表示失败；最终是否撤成，以后续委托状态或撤单错误回调为准。查询之后订单也可能已经成交。</td></tr>
+                          <tr><td>超时 / 连接异常</td><td>结果可能尚未确认。先按账号、代码、备注核对委托和回调，再决定是否重试，避免重复提交。</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p>使用异步下单时，把调用放在第 6 节注册回调和订阅账号之后、<code>run_forever()</code> 之前，并保留进程等待回报。部分 <code>query_*_async()</code> 当前由同步查询后调用 callback 实现，例如 <code>query_stock_asset_async()</code> 当前返回 <code>None</code>，不能统一按原版请求序号或线程时序处理。</p>
                   </div>
 
-                  <div class="guide-section">
-                    <h3>什么时候手动配置</h3>
-                    <p>正常多账号部署不用写 <code>configure()</code>。只有固定走某条链路、改 LTtx 端口、改 Pipe 名称或排查连接问题时再手动指定。</p>
-                    <pre class="guide-code">from cfquant import configure
+                  <div class="guide-section" id="python-accounts">
+                    <h3>8. 多账号与账户类型</h3>
+                    <p>每个请求携带明确的账号对象，Web 根据绑定路由到相应 QMT。普通账户用 <code>STOCK</code>，信用账户用 <code>CREDIT</code>；同一个账号数字配上不同账户类型，含义也不同。</p>
+                    <pre class="guide-code" data-language="python">from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+accounts = [
+    StockAccount("YOUR_STOCK_ACCOUNT_ID", "STOCK"),
+    StockAccount("YOUR_CREDIT_ACCOUNT_ID", "CREDIT"),
+]
+trader = XtQuantTrader("", 0)
+try:
+    trader.start()
+    if trader.connect() != 0:
+        raise RuntimeError("Connection failed")
+    for account in accounts:
+        if trader.subscribe(account) != 0:
+            raise RuntimeError("Subscription failed: " + account.account_id)
+        asset = trader.query_stock_asset(account)
+        print(account.account_id, asset)
+finally:
+    trader.stop()</pre>
+                    <p>其他账户类型还有 <code>FUTURE</code>、<code>FUTURE_OPTION</code>、<code>STOCK_OPTION</code>。对应业务要使用匹配的买卖 / 开平仓常量和合约代码，不能只换账户类型就照搬股票下单参数。<code>xtdata</code> 的行情调用不接收这个交易账号参数，多账号共享行情源需在 Web“绑定”页配置。</p>
+                  </div>
+
+                  <div class="guide-section" id="python-routing">
+                    <h3>9. 旧版手动通道与当前 auto 路由</h3>
+                    <p>如果原来用的已经是 cfquant，并手工指定 Pipe 或 LTtx 通道，当前常规部署可改用默认 <code>auto</code>。Web 在线且自动发现成功时，请求进入 Web 统一路由，再按账号绑定选择通用、极致或高级模式；发现不到 Web 注册信息时，会回退到通用 PipeHub。</p>
+                    <h4>原来：显式指定连接链路</h4>
+                    <pre class="guide-code" data-language="python">from cfquant import configure
 
 configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
-# 或：configure(transport="web_lttx", host="127.0.0.1", port=2049, token="LTtx")</pre>
+# 然后再创建 trader 或调用 xtdata</pre>
+                    <h4>现在：使用自动发现和账号路由</h4>
+                    <pre class="guide-code" data-language="python">from cfquant import configure, xtdata
+
+# 无旧配置时可省略；迁移旧脚本时可显式选择 auto
+configure(transport="auto")
+print(xtdata.get_full_tick(["000001.SZ"]))</pre>
+                    <p>检查旧脚本及启动环境中的 <code>CFQUANT_TRANSPORT</code>，避免仍被固定为 <code>ctypes</code> 或 <code>lttx</code>。自定义 LTtx 地址、端口、认证或 Pipe 名称仍需保持一致；auto 不会自动修复这些连接参数。</p>
+                    <h4>排查时：显式指定 Web 路由</h4>
+                    <pre class="guide-code" data-language="python">from cfquant import configure
+
+configure(
+    transport="web_lttx",
+    host="127.0.0.1",
+    port=2049,
+    token="LTtx",
+    web_request_channel="cfquant.web.request",
+    timeout=15,
+)
+# 然后再创建 trader 或调用 xtdata</pre>
+                    <p>这里的 <code>2049</code> 是默认 LTtx 端口，<code>LTtx</code> 是默认通信 token；都要与实际服务配置一致。它们不同于网页 HTTP 地址（默认 <code>8765</code>）及 HTTP API Key。<code>configure()</code> 应在创建交易实例、查询和订阅之前调用；切换通道后重启外部策略进程更便于确认配置生效。</p>
+                  </div>
+
+                  <div class="guide-section" id="python-troubleshooting">
+                    <h3>10. 常见迁移问题</h3>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead><tr><th scope="col">现象</th><th scope="col">检查与处理</th></tr></thead>
+                        <tbody>
+                          <tr><td><code>ModuleNotFoundError: cfquant</code></td><td>在策略使用的解释器执行 <code>python -m pip install cfquant</code>。核对 IDE 解释器和 <code>cfquant.__file__</code>，确认没有装到另一个环境或导入旧副本。</td></tr>
+                          <tr><td>连接返回 -1，或出现 <code>CfquantTimeout</code></td><td>检查 Web、LTtx / PipeHub 和对应 QMT 入口是否在线，再核对旧环境变量和自定义端口。交易请求超时后先查委托，不要立即重复下单。</td></tr>
+                          <tr><td>连接成功，但账号查询为空或报错</td><td>核对资金账号字符串、STOCK / CREDIT 等账户类型、绑定目录和 QMT 登录账号；先在网页执行同一查询，区分绑定问题与脚本问题。</td></tr>
+                          <tr><td>快照 / 历史数据为空</td><td>核对证券代码后缀、日期范围、周期、行情源、下载完成情况及券商权限。先查单只证券的小区间，再扩大批量。</td></tr>
+                          <tr><td>没有回调</td><td>检查回调注册、对应的行情或账号订阅、进程是否仍在运行，以及 QMT 是否实际产生了该事件；<code>stop()</code> 后本进程不再监听。</td></tr>
+                          <tr><td>同名接口不可用 / 字段不一致</td><td>对照项目文档 <code>docs/xtquant原版接口适配清单.md</code>、<code>docs/xtdata平替追踪.md</code> 和 <code>docs/xttrader平替追踪.md</code>。条件适配接口仍依赖券商大 QMT 暴露对应 callable；客户端连接管理、本地目录语义及部分异步接口不能只替换导入就假定完全兼容。</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p>建议迁移顺序：确认导入版本 → 只读行情 → 资金和持仓 → 回调监听 → 单笔委托和撤单 → 多账号与策略自动运行。每一步都核对实际返回值，再接入下一段策略逻辑。</p>
                   </div>
                 </article>
 
@@ -2421,6 +2761,6 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260908_03"></script>
+  <script src="/app.js?v=web_20260908_04"></script>
 </body>
 </html>

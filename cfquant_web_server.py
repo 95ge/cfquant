@@ -474,43 +474,18 @@ ACCOUNT_ACTIONS = {
     "trades": "xttrader.query_stock_trades",
 }
 NORMAL_QMT_ACTIONS = {
-    "xtdata.get_market_data",
-    "xtdata.get_market_data_ex",
-    "xtdata.get_full_tick",
-    "xtdata.get_local_data",
     "xtdata.subscribe_quote",
     "xtdata.subscribe_whole_quote",
     "xtdata.unsubscribe_quote",
     "xtdata.download_history_data",
     "xtdata.download_history_data2",
-    "xtdata.get_instrument_detail",
-    "xtdata.get_stock_list_in_sector",
-    "xtdata.get_financial_data",
-    "xtdata.get_financial_data_ori",
-    "xtdata.get_raw_financial_data",
     "xtdata.download_financial_data",
     "xtdata.download_financial_data2",
-    "xtdata.get_trading_dates",
-    "xtdata.is_stock",
-    "xtdata.is_fund",
-    "xtdata.is_future",
-    "xtdata.get_stock_type",
-    "xtdata.get_stock_name",
-    "xtdata.get_open_date",
-    "xtdata.get_contract_expire_date",
-    "xtdata.get_contract_multiplier",
-    "xtdata.get_weight_in_index",
-    "xtdata.get_turnover_rate",
-    "xtdata.get_ETF_list",
-    "xtdata.get_etf_list",
-    "xtdata.get_option_detail_data",
-    "xtdata.get_option_list",
-    "xtdata.get_option_undl",
-    "xtdata.get_option_undl_data",
-    "xtdata.get_his_st_data",
-    "xtdata.get_his_index_data",
-    "xtdata.get_factor_data",
+    "xtdata.subscribe_formula",
+    "xtdata.unsubscribe_formula",
+    "xtdata.subscribe_l2thousand",
 }
+XTDATA_NORMAL_METHOD_PREFIXES = ("subscribe_", "unsubscribe_", "download_")
 MARKET_ACCOUNT_ROW_SECTIONS = {"positions", "orders", "trades"}
 CREDIT_ACTIONS = {
     "detail": "xttrader.query_credit_detail",
@@ -3458,10 +3433,50 @@ def default_runtime_client_mode():
     return "ctypes"
 
 
-def forced_channel_for_action(action, mode=None):
+def xtdata_action_requires_normal_bridge(action, params=None):
+    action = str(action or "")
+    if not action.startswith("xtdata."):
+        return False
+    params = params if isinstance(params, dict) else {}
+    if params.get("callback_event") or params.get("callback_positions"):
+        return True
+    method = action.split(".", 1)[1]
+    return action in NORMAL_QMT_ACTIONS or method.startswith(XTDATA_NORMAL_METHOD_PREFIXES)
+
+
+def xtdata_prefers_lttx_trade_channel(action, mode=None, params=None):
     action = str(action or "")
     mode = normalize_transport_mode(mode or default_runtime_client_mode())
-    if action in NORMAL_QMT_ACTIONS:
+    return (
+        mode == "lttx"
+        and action.startswith("xtdata.")
+        and not xtdata_action_requires_normal_bridge(action, params=params)
+    )
+
+
+def default_channel_for_action(action, mode=None, default="normal", params=None):
+    default = normalize_channel(default, "normal")
+    if xtdata_prefers_lttx_trade_channel(action, mode=mode, params=params):
+        return "trade"
+    return default
+
+
+def action_channel_attempts(action, requested_channel, selected_channel, mode=None, params=None):
+    selected_channel = normalize_channel(selected_channel, "normal")
+    attempts = [selected_channel]
+    if (
+        xtdata_prefers_lttx_trade_channel(action, mode=mode, params=params)
+        and selected_channel == "trade"
+        and not str(requested_channel or "").strip()
+    ):
+        attempts.append("normal")
+    return list(dict.fromkeys(attempts))
+
+
+def forced_channel_for_action(action, mode=None, params=None):
+    action = str(action or "")
+    mode = normalize_transport_mode(mode or default_runtime_client_mode())
+    if xtdata_action_requires_normal_bridge(action, params=params):
         return "normal"
     if mode == "lttx" and action.startswith("xttrader."):
         return "trade"
@@ -3485,17 +3500,19 @@ def account_cache_channel_for_sections(
         forced = forced_channel_for_action(action, mode=mode)
         if forced:
             return forced
+        default = default_channel_for_action(action, mode=mode, default=default)
     if is_ctypes_transport_mode(mode):
         return normalize_channel(default, "normal")
     return normalize_channel(requested_channel, default)
 
 
-def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None, account_type=None, bridge_id=None, account_key=None, action=None):
+def route_channel_for_account(account_id, requested_channel=None, default="normal", mode=None, account_type=None, bridge_id=None, account_key=None, action=None, params=None):
     default = normalize_channel(default, "normal")
     mode = normalize_transport_mode(mode or resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key))
-    forced = forced_channel_for_action(action, mode=mode)
+    forced = forced_channel_for_action(action, mode=mode, params=params)
     if forced:
         return forced
+    default = default_channel_for_action(action, mode=mode, default=default, params=params)
     if is_ctypes_transport_mode(mode):
         return default
     return normalize_channel(requested_channel, default)
@@ -3726,7 +3743,7 @@ def account_request(
     attempts = []
     last_error = None
     for mode in modes:
-        channel = route_channel_for_account(
+        selected_channel = route_channel_for_account(
             account_id,
             requested_channel=requested_channel,
             default=default_channel,
@@ -3735,47 +3752,55 @@ def account_request(
             bridge_id=bridge_id,
             account_key=resolved_account_key,
             action=action,
+            params=request_params,
         )
-        started = time.perf_counter()
-        try:
-            result = CLIENTS.request(
-                bridge_id,
-                channel,
-                action,
-                params,
-                timeout=timeout,
-                mark_offline_on_timeout=mark_offline_on_timeout,
-                ignore_cooldown=ignore_cooldown,
-                mode=mode,
-            )
-            return {
-                "result": result,
-                "mode": mode,
-                "channel": channel,
-                "bridge_id": bridge_id,
-                "base_bridge_id": base_bridge_id,
-                "market_route": market_route,
-                "account_id": account_id,
-                "account_type": account_type,
-                "account_key": resolved_account_key,
-                "fallback": bool(attempts),
-                "fallback_reason": str(last_error or ""),
-                "attempts": attempts + [{
+        for channel in action_channel_attempts(
+            action,
+            requested_channel,
+            selected_channel,
+            mode=mode,
+            params=request_params,
+        ):
+            started = time.perf_counter()
+            try:
+                result = CLIENTS.request(
+                    bridge_id,
+                    channel,
+                    action,
+                    params,
+                    timeout=timeout,
+                    mark_offline_on_timeout=mark_offline_on_timeout,
+                    ignore_cooldown=ignore_cooldown,
+                    mode=mode,
+                )
+                return {
+                    "result": result,
                     "mode": mode,
                     "channel": channel,
-                    "ok": True,
+                    "bridge_id": bridge_id,
+                    "base_bridge_id": base_bridge_id,
+                    "market_route": market_route,
+                    "account_id": account_id,
+                    "account_type": account_type,
+                    "account_key": resolved_account_key,
+                    "fallback": bool(attempts),
+                    "fallback_reason": str(last_error or ""),
+                    "attempts": attempts + [{
+                        "mode": mode,
+                        "channel": channel,
+                        "ok": True,
+                        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                    }],
+                }
+            except Exception as error:
+                last_error = error
+                attempts.append({
+                    "mode": mode,
+                    "channel": channel,
+                    "ok": False,
+                    "error": str(error),
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-                }],
-            }
-        except Exception as error:
-            last_error = error
-            attempts.append({
-                "mode": mode,
-                "channel": channel,
-                "ok": False,
-                "error": str(error),
-                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-            })
+                })
     detail = "; ".join(
         "%s/%s: %s" % (row["mode"], row["channel"], row.get("error") or "")
         for row in attempts
@@ -4638,6 +4663,12 @@ def _external_account_key(params):
 
 def _external_default_channel(action):
     action = str(action or "")
+    mode = default_runtime_client_mode()
+    forced = forced_channel_for_action(action, mode=mode)
+    if forced:
+        return forced
+    if xtdata_prefers_lttx_trade_channel(action, mode=mode):
+        return "trade"
     if action in {
         "xttrader.order_stock",
         "xttrader.order_stock_async",
@@ -4648,8 +4679,6 @@ def _external_default_channel(action):
         "xttrader.cancel_order_stock_sysid_async",
     }:
         return "trade"
-    if action in NORMAL_QMT_ACTIONS:
-        return "normal"
     if action.startswith("xtdata."):
         return "normal"
     if action.startswith("xttrader."):
@@ -12294,12 +12323,22 @@ def data_channel_request(body, action, params, default_channel="normal", force_c
         provider_account_key = route.get("data_provider_account_key") or ""
         provider_fallback = bool(route.get("provider_fallback"))
         provider_attempts = route.get("provider_attempts") or []
+    effective_preferred_channel = (
+        preferred_channel
+        or force_channel
+        or default_channel_for_action(
+            action,
+            mode=route.get("mode") or default_runtime_client_mode(),
+            default=default_channel,
+            params=params,
+        )
+    )
     return {
         "bridge_id": route["bridge_id"],
         "account_id": provider_account_id,
         "account_type": provider_account_type,
         "account_key": provider_account_key,
-        "preferred_channel": preferred_channel or default_channel,
+        "preferred_channel": effective_preferred_channel,
         "channel": route["channel"],
         "mode": route["mode"],
         "fallback": route["fallback"],

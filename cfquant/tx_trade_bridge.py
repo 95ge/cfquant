@@ -1799,10 +1799,209 @@ class TxTradeBridge(object):
         return result
 
     def _get_instrument_detail(self, params):
+        params = params or {}
+        stock_code = self._first_param(params, ("stock_code", "stockcode", "stock", "code"), "")
+        iscomplete = params.get("iscomplete", params.get("is_complete", params.get("complete", False)))
         func = self._get_callable("get_instrument_detail")
+        if func:
+            try:
+                return self._call_variants(func, [
+                    ((stock_code, iscomplete), {}),
+                    ((stock_code,), {}),
+                ])
+            except Exception as e:
+                if not self._instrument_detail_callable_missing(e):
+                    raise
+                self._log("get_instrument_detail unavailable, using fallback: %s" % e)
+        else:
+            self._log("get_instrument_detail not found, using fallback")
+        return self._fallback_instrument_detail(params, stock_code)
+
+    def _instrument_detail_callable_missing(self, error):
+        if isinstance(error, (AttributeError, NotImplementedError)):
+            return True
+        text = str(error or "").strip().lower().replace("_", " ")
+        if not text:
+            return False
+        missing_markers = ("not found", "not implemented", "unsupported", "no attribute")
+        return "get instrument detail" in text and any(marker in text for marker in missing_markers)
+
+    def _fallback_instrument_detail(self, params, stock_code):
+        code_info = self._instrument_code_info(stock_code)
+        candidates = self._stock_code_candidates(code_info)
+        stock_name = self._optional_stock_callable("get_stock_name", candidates)
+        stock_type = self._optional_stock_callable("get_stock_type", candidates)
+        open_date = self._optional_stock_callable("get_open_date", candidates, prefer_nonzero=True)
+        expire_date = self._optional_stock_callable("get_contract_expire_date", candidates, prefer_nonzero=True)
+        multiplier = self._optional_stock_callable("get_contract_multiplier", candidates, prefer_nonzero=True)
+        is_stock = self._optional_stock_bool("is_stock", candidates)
+        is_fund = self._optional_stock_bool("is_fund", candidates)
+        is_future = self._optional_stock_bool("is_future", candidates)
+        product_id = self._fallback_product_id(code_info, is_stock, is_fund, is_future)
+        canonical_code = code_info.get("canonical") or code_info.get("raw") or ""
+
+        detail = {
+            "ExchangeID": code_info.get("exchange_id", ""),
+            "InstrumentID": code_info.get("instrument_id", ""),
+            "InstrumentName": stock_name if stock_name is not None else "",
+            "ProductID": product_id,
+            "ProductName": product_id,
+            "ExchangeCode": code_info.get("exchange_id", ""),
+            "RzrkCode": "",
+            "UniCode": canonical_code,
+            "CreateDate": "",
+            "OpenDate": open_date if open_date is not None else "",
+            "ExpireDate": expire_date if expire_date is not None else "",
+            "TradingDay": time.strftime("%Y%m%d"),
+            "PreClose": 0.0,
+            "SettlementPrice": 0.0,
+            "UpStopPrice": 0.0,
+            "DownStopPrice": 0.0,
+            "FloatVolumn": 0,
+            "TotalVolumn": 0,
+            "FloatVolume": 0,
+            "TotalVolume": 0,
+            "LongMarginRatio": 0.0,
+            "ShortMarginRatio": 0.0,
+            "PriceTick": 0.0,
+            "VolumeMultiple": multiplier if multiplier is not None else 0,
+            "MainContract": 0,
+            "LastVolume": 0,
+            "InstrumentStatus": 0,
+            "IsTrading": False,
+            "IsRecent": False,
+            "HSGTFlag": "",
+            "StockCode": canonical_code,
+            "stock_code": canonical_code,
+            "InputStockCode": code_info.get("raw", ""),
+            "cfquant_detail_fallback": True,
+            "cfquant_detail_partial": True,
+        }
+        if stock_type is not None:
+            detail["StockType"] = stock_type
+        if is_stock is not None:
+            detail["IsStock"] = is_stock
+        if is_fund is not None:
+            detail["IsFund"] = is_fund
+        if is_future is not None:
+            detail["IsFuture"] = is_future
+        return detail
+
+    def _instrument_code_info(self, stock_code):
+        raw = str(stock_code or "").strip().upper()
+        instrument_id = raw
+        exchange_id = ""
+        if "." in raw:
+            left, right = raw.rsplit(".", 1)
+            instrument_id = left.strip()
+            exchange_id = self._market_suffix(right.strip())
+        elif len(raw) > 2 and raw[:2] in ("SH", "SZ", "BJ") and raw[2:].isdigit():
+            exchange_id = self._market_suffix(raw[:2])
+            instrument_id = raw[2:]
+        elif len(raw) > 2 and raw[-2:] in ("SH", "SZ", "BJ") and raw[:-2].isdigit():
+            exchange_id = self._market_suffix(raw[-2:])
+            instrument_id = raw[:-2]
+        else:
+            exchange_id = self._infer_stock_exchange_id(raw)
+        canonical = "%s.%s" % (instrument_id, exchange_id) if instrument_id and exchange_id else raw
+        return {
+            "raw": raw,
+            "instrument_id": instrument_id,
+            "exchange_id": exchange_id,
+            "canonical": canonical,
+        }
+
+    def _infer_stock_exchange_id(self, instrument_id):
+        code = str(instrument_id or "").strip().upper()
+        if not code:
+            return ""
+        if code.startswith(("43", "83", "87", "88", "92")) and len(code) == 6:
+            return "BJ"
+        if code.startswith(("600", "601", "603", "605", "688", "689", "900")):
+            return "SH"
+        if code.startswith(("510", "511", "512", "513", "515", "516", "517", "518", "519", "588", "589")):
+            return "SH"
+        if code.startswith(("000", "001", "002", "003", "159", "184", "200", "300", "301", "399")):
+            return "SZ"
+        return ""
+
+    def _stock_code_candidates(self, code_info):
+        raw = code_info.get("raw", "")
+        instrument_id = code_info.get("instrument_id", "")
+        exchange_id = code_info.get("exchange_id", "")
+        canonical = code_info.get("canonical", "")
+        prefixed = "%s%s" % (exchange_id, instrument_id) if exchange_id in ("SH", "SZ", "BJ") and instrument_id else ""
+        values = []
+        for value in (raw, canonical, prefixed, instrument_id):
+            if value and value not in values:
+                values.append(value)
+        return values
+
+    def _optional_stock_callable(self, method, candidates, prefer_nonzero=False):
+        func = self._get_callable(method)
         if not func:
-            raise NotImplementedError("get_instrument_detail not found")
-        return func(params.get("stock_code", ""))
+            return None
+        fallback_value = None
+        for stock_code in candidates:
+            try:
+                value = self._plain_value(func(stock_code))
+            except Exception:
+                continue
+            if value is None or value == "":
+                continue
+            if prefer_nonzero and value in (0, "0", False):
+                fallback_value = value
+                continue
+            return value
+        return fallback_value
+
+    def _optional_stock_bool(self, method, candidates):
+        func = self._get_callable(method)
+        if not func:
+            return None
+        fallback_value = None
+        for stock_code in candidates:
+            try:
+                value = self._plain_value(func(stock_code))
+            except Exception:
+                continue
+            if value is None or value == "":
+                continue
+            bool_value = self._coerce_optional_bool(value)
+            if bool_value is True:
+                return True
+            if bool_value is False:
+                fallback_value = False
+        return fallback_value
+
+    def _coerce_optional_bool(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+        return bool(text)
+
+    def _fallback_product_id(self, code_info, is_stock, is_fund, is_future):
+        if is_fund:
+            return "FUND"
+        if is_future:
+            return "FUTURE"
+        if is_stock:
+            return "STOCK"
+        exchange_id = code_info.get("exchange_id", "")
+        instrument_id = code_info.get("instrument_id", "")
+        if exchange_id in ("IF", "SF", "DF", "ZF", "INE", "GF"):
+            return "FUTURE"
+        if instrument_id.startswith(("510", "511", "512", "513", "515", "516", "517", "518", "519", "588", "589", "159")):
+            return "FUND"
+        if exchange_id in ("SH", "SZ", "BJ"):
+            return "STOCK"
+        return ""
 
     def _get_financial_data(self, params):
         func = self._get_callable("get_financial_data")

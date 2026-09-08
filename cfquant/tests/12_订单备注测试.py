@@ -1248,3 +1248,90 @@ def test_web_submit_future_batch_orders_maps_default_and_row_actions(monkeypatch
     assert orders[1]["order_type"] == xtconstant.FUTURE_OPEN_SHORT
     assert orders[1]["order_action"] == "future_open_short"
     assert orders[1]["side"] == "sell"
+
+
+def test_tx_trade_bridge_instrument_detail_uses_native_two_arg_signature():
+    calls = []
+
+    def get_instrument_detail(*args):
+        calls.append(args)
+        return {"native": True}
+
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={"get_instrument_detail": get_instrument_detail},
+    )
+
+    result = bridge._get_instrument_detail({"stock_code": "000001.SZ", "iscomplete": True})
+
+    assert result == {"native": True}
+    assert calls == [("000001.SZ", True)]
+
+
+def test_tx_trade_bridge_instrument_detail_falls_back_to_one_arg_native_signature():
+    calls = []
+
+    def get_instrument_detail(stock_code):
+        calls.append(stock_code)
+        return {"stock_code": stock_code, "native": True}
+
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={"get_instrument_detail": get_instrument_detail},
+    )
+
+    result = bridge._get_instrument_detail({"stock_code": "000001.SZ", "iscomplete": True})
+
+    assert result == {"stock_code": "000001.SZ", "native": True}
+    assert calls == ["000001.SZ"]
+
+
+def test_tx_trade_bridge_instrument_detail_synthesizes_when_native_missing():
+    calls = []
+
+    def record(method, values):
+        def inner(stock_code):
+            calls.append((method, stock_code))
+            return values.get(stock_code, "")
+
+        return inner
+
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "get_stock_name": record("name", {"000001.SZ": "PINGAN BANK"}),
+            "get_stock_type": record("type", {"000001.SZ": 0}),
+            "get_open_date": record("open", {"000001.SZ": 19910403}),
+            "is_stock": record("is_stock", {"000001.SZ": True}),
+            "is_fund": record("is_fund", {"000001.SZ": False}),
+        },
+    )
+
+    result = bridge._get_instrument_detail({"stock_code": "000001.SZ"})
+
+    assert result["cfquant_detail_fallback"] is True
+    assert result["cfquant_detail_partial"] is True
+    assert result["InstrumentName"] == "PINGAN BANK"
+    assert result["ExchangeID"] == "SZ"
+    assert result["InstrumentID"] == "000001"
+    assert result["OpenDate"] == 19910403
+    assert result["StockType"] == 0
+    assert result["IsStock"] is True
+    assert result["IsFund"] is False
+    assert result["ProductID"] == "STOCK"
+    assert ("name", "000001.SZ") in calls
+
+
+def test_tx_trade_bridge_instrument_detail_minimal_fallback_keeps_code_fields():
+    bridge = TxTradeBridge(DummyContext(), show=False, globals_dict={})
+
+    result = bridge._get_instrument_detail({"stock_code": "688600.SH"})
+
+    assert result["cfquant_detail_fallback"] is True
+    assert result["ExchangeID"] == "SH"
+    assert result["InstrumentID"] == "688600"
+    assert result["StockCode"] == "688600.SH"
+    assert result["ProductID"] == "STOCK"

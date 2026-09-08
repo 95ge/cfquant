@@ -7533,6 +7533,29 @@ tr.order-row-updated td {
   overflow: auto;
 }
 
+.python-guide-toc {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin-top: 14px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.python-guide-toc a {
+  color: #1f6feb;
+  text-underline-offset: 3px;
+}
+
+.tutorial-topic[data-guide-panel="python"] .guide-section {
+  scroll-margin-top: 16px;
+}
+
+.tutorial-topic[data-guide-panel="python"] .guide-table-wrap th:first-child,
+.tutorial-topic[data-guide-panel="python"] .guide-table-wrap td:first-child {
+  min-width: 120px;
+}
+
 .guide-table-wrap table {
   min-width: 620px;
 }
@@ -7578,6 +7601,10 @@ tr.order-row-updated td {
 }
 
 @media (max-width: 980px) {
+  .tutorial-topic[data-guide-panel="python"] .guide-section {
+    scroll-margin-top: 280px;
+  }
+
   .login-shell {
     grid-template-columns: 1fr;
     min-height: 100vh;
