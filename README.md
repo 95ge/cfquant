@@ -80,7 +80,7 @@
 新用户和生产环境优先使用源码包部署。原因很简单：cfquant 的 Web 控制台、QMT 入口脚本和本地配置是一起工作的，源码包保留完整项目目录，后续在网页里检查更新、更新 Web、回滚版本、提示 QMT 入口脚本变更都更方便。
 
 1. 将项目解压到固定目录，例如 `D:\cfquant`。
-2. 直接双击项目目录中的 `start_cfquant.bat`。启动脚本会使用项目 `.venv`（如果存在）或当前 Python，自动安装 `requirements.txt` 中的项目依赖，并安装当前源码版本的 `cfquant`，不需要用户手动执行安装命令。
+2. 直接双击项目目录中的 `start_cfquant.bat`。启动脚本会使用项目 `.venv`（如果存在）或当前 Python，先检查当前环境是否已经安装 `cfquant`；已通过 PyPI 或其他方式安装时直接跳过，缺失时会用等价于 `python -m pip install --editable .` 的参数列表自动安装当前源码版本，不需要用户手动执行安装命令。
 
 自动安装失败时，启动窗口会保持打开，并把安装日志写入 `log\cfquant_startup.log`，修复 Python、网络或权限问题后重新启动即可。
 

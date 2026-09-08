@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260908_02';
+const FRONTEND_VERSION = 'web_20260908_03';
 
 const state = {
   accountId: '',
@@ -104,6 +104,8 @@ const state = {
   bindingStatusRetryTimer: null,
   bindingStatusSnapshot: null,
   bindingVerifyBusyKey: '',
+  bindingActionBusyKey: '',
+  bindingActionBusyType: '',
   bindingNoticeTimer: null,
   qmtScriptSourceCache: {},
   qmtScriptSourcePromises: {},
@@ -1717,6 +1719,7 @@ function bindingSaveSummary({
   qmtDir,
   qmtTradeDir,
   dataProvider,
+  enabled = true,
   marketRoutingEnabled,
   marketBridges,
   legacyFallback,
@@ -1728,6 +1731,7 @@ function bindingSaveSummary({
     accountTypeLabel(accountType || 'STOCK'),
     `${transportModeLabel(mode || 'ctypes', true)}模式`,
   ];
+  if (!configBool(enabled, true)) parts.push('已禁用，不参与路由');
   if (marketRoutingEnabled) {
     const missing = ['SH', 'SZ'].filter((market) => !String(marketBridges && marketBridges[market] && marketBridges[market].qmt_dir || '').trim());
     parts.push(missing.length ? `市场路由已启用，${missing.join('/')}目录未填写` : '市场路由已启用，SH/SZ目录已记录');
@@ -6209,6 +6213,21 @@ function accountConfigKey(rawKey, config = {}) {
     || makeAccountKey(config.account_id, config.account_type, config.bridge_id || state.defaultBridgeId || 'default');
 }
 
+function configBool(value, defaultValue = false) {
+  if (typeof value === 'boolean') return value;
+  if (value === null || value === undefined) return !!defaultValue;
+  const text = String(value).trim().toLowerCase();
+  if (!text) return !!defaultValue;
+  if (['1', 'true', 'yes', 'y', 'on', 'enable', 'enabled', 'open'].includes(text)) return true;
+  if (['0', 'false', 'no', 'n', 'off', 'disable', 'disabled', 'closed', 'close'].includes(text)) return false;
+  return !!defaultValue;
+}
+
+function accountConfigEnabled(config = {}) {
+  if (!config || typeof config !== 'object') return true;
+  return configBool(config.enabled, true);
+}
+
 function accountPairDisplayName(accountKey, accountId = '', accountType = 'STOCK', bridgeId = '') {
   accountKey = String(accountKey || '').trim();
   accountId = String(accountId || '').trim();
@@ -6310,7 +6329,7 @@ function normalizeMarketRoutes(config = {}) {
         account_unit_key: accountKey,
         position_account_id: positionAccountId,
         query_account_id: positionAccountId,
-        enabled: row.enabled !== false,
+        enabled: configBool(row.enabled, true),
       };
     } else {
       routes[market] = {
@@ -6349,7 +6368,7 @@ function marketRouteSummary(config = {}) {
   }).join(' | ');
 }
 
-function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'STOCK', bridgeId = '', displayName = '', account = null, qmtDir = '', qmtTradeDir = '', mode = 'ctypes', dataProvider = false, marketRoutingEnabled = false, marketBridges = null }) {
+function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'STOCK', bridgeId = '', displayName = '', account = null, qmtDir = '', qmtTradeDir = '', mode = 'ctypes', dataProvider = false, enabled = true, marketRoutingEnabled = false, marketBridges = null }) {
   accountId = String(accountId || (account && account.account_id) || '').trim();
   accountType = normalizeAccountType(accountType || (account && account.account_type) || 'STOCK');
   bridgeId = String(bridgeId || (account && account.bridge_id) || state.defaultBridgeId || 'default').trim();
@@ -6359,6 +6378,9 @@ function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'ST
 
   const currentConfigs = state.accountConfigs || {};
   const currentConfig = currentConfigs[accountKey] || {};
+  const accountEnabled = account && Object.prototype.hasOwnProperty.call(account, 'enabled')
+    ? accountConfigEnabled(account)
+    : (Object.prototype.hasOwnProperty.call(currentConfig, 'enabled') ? accountConfigEnabled(currentConfig) : configBool(enabled, true));
   state.accountConfigs = {
     ...currentConfigs,
     [accountKey]: {
@@ -6372,6 +6394,7 @@ function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'ST
       qmt_dir: (account && account.qmt_dir) || currentConfig.qmt_dir || qmtDir || '',
       qmt_trade_dir: (account && account.qmt_trade_dir) || currentConfig.qmt_trade_dir || qmtTradeDir || '',
       mode: (account && account.mode) || currentConfig.mode || mode || 'ctypes',
+      enabled: accountEnabled,
       data_provider: (account && Object.prototype.hasOwnProperty.call(account, 'data_provider'))
         ? !!account.data_provider
         : (Object.prototype.hasOwnProperty.call(currentConfig, 'data_provider') ? !!currentConfig.data_provider : !!dataProvider),
@@ -6396,6 +6419,7 @@ function mergeSavedAccountDisplayName({ accountKey, accountId, accountType = 'ST
       account_type: accountType,
       bridge_id: bridgeId,
       display_name: displayName,
+      enabled: accountEnabled,
       market_routing_enabled: (account && Object.prototype.hasOwnProperty.call(account, 'market_routing_enabled'))
         ? !!account.market_routing_enabled
         : !!marketRoutingEnabled,
@@ -6481,17 +6505,28 @@ function bindingEntriesFromState() {
         account_key: item.accountKey,
         bridge_id: item.bridgeId,
         display_name: item.displayName || '',
+        enabled: item.enabled,
       },
     }));
   return [...configEntries, ...pairEntries].filter((item) => item.accountId);
 }
 
 function saveAccountConfigCache(data = {}) {
+  const setup = data.setup || state.setup || {};
+  const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
   const cache = {
     saved_at: Date.now(),
-    default_account_id: data.default_account_id || state.defaultAccountId || '',
-    default_account_type: normalizeAccountType(data.default_account_type || state.defaultAccountType || 'STOCK'),
-    default_account_key: data.default_account_key || state.defaultAccountKey || '',
+    default_account_id: hasOwn(data, 'default_account_id')
+      ? (data.default_account_id || '')
+      : (hasOwn(setup, 'default_account_id') ? (setup.default_account_id || '') : (state.defaultAccountId || '')),
+    default_account_type: normalizeAccountType(
+      hasOwn(data, 'default_account_type')
+        ? data.default_account_type
+        : (hasOwn(setup, 'default_account_type') ? setup.default_account_type : state.defaultAccountType) || 'STOCK',
+    ),
+    default_account_key: hasOwn(data, 'default_account_key')
+      ? (data.default_account_key || '')
+      : (hasOwn(setup, 'default_account_key') ? (setup.default_account_key || '') : (state.defaultAccountKey || '')),
     default_bridge_id: data.default_bridge_id || state.defaultBridgeId || 'default',
     bridges: data.bridges || state.bridges || {},
     account_pairs: data.account_pairs || state.accountPairs || {},
@@ -6522,9 +6557,9 @@ function clearAccountConfigCache() {
 function hydrateAccountConfigFromCache() {
   const cache = loadAccountConfigCache();
   if (!cache || !cache.account_configs) return false;
-  state.defaultAccountId = cache.default_account_id || state.defaultAccountId || '';
+  state.defaultAccountId = Object.prototype.hasOwnProperty.call(cache, 'default_account_id') ? (cache.default_account_id || '') : (state.defaultAccountId || '');
   state.defaultAccountType = normalizeAccountType(cache.default_account_type || state.defaultAccountType || 'STOCK');
-  state.defaultAccountKey = cache.default_account_key || state.defaultAccountKey || '';
+  state.defaultAccountKey = Object.prototype.hasOwnProperty.call(cache, 'default_account_key') ? (cache.default_account_key || '') : (state.defaultAccountKey || '');
   state.defaultBridgeId = cache.default_bridge_id || state.defaultBridgeId || 'default';
   state.bridges = cache.bridges || state.bridges || {};
   state.accountPairs = cache.account_pairs || state.accountPairs || {};
@@ -6541,6 +6576,7 @@ function accountPairEntries() {
       const accountId = pair && typeof pair === 'object' ? pair.account_id : rawKey;
       const accountType = normalizeAccountType(pair && typeof pair === 'object' ? pair.account_type : 'STOCK');
       const displayName = pair && typeof pair === 'object' ? String(pair.display_name || pair.account_name || '').trim() : '';
+      const enabled = pair && typeof pair === 'object' ? accountConfigEnabled(pair) : true;
       const accountKey = pair && typeof pair === 'object'
         ? accountConfigKey(rawKey, pair)
         : makeAccountKey(accountId, accountType, bridgeId);
@@ -6550,6 +6586,7 @@ function accountPairEntries() {
         accountType,
         bridgeId: String(bridgeId || '').trim(),
         displayName,
+        enabled,
       };
     })
     .filter((item) => item.accountId && item.bridgeId);
@@ -6571,6 +6608,7 @@ function accountConfigEntries() {
         accountType,
         bridgeId,
         displayName,
+        enabled: accountConfigEnabled(row),
         config: displayName && !row.display_name ? { ...row, display_name: displayName } : row,
       };
     })
@@ -6646,6 +6684,7 @@ async function saveAccountConfigRequest(body) {
         qmt_trade_dir: body.qmt_trade_dir || '',
         mode: body.mode || 'ctypes',
         data_provider: !!body.data_provider,
+        enabled: configBool(body.enabled, true),
       },
       account_pairs: data.account_pairs || state.accountPairs || {},
       account_configs: data.account_configs || state.accountConfigs || {},
@@ -6685,6 +6724,152 @@ async function deleteAccountConfigRequest(accountId, accountType = 'STOCK', acco
   }
 }
 
+async function updateAccountConfigCoreRequest(body) {
+  return api('/api/account-config/update-core', {
+    method: 'POST',
+    body: JSON.stringify(body || {}),
+  });
+}
+
+function applyAccountConfigPayload(data = {}) {
+  if (data.account_pairs) state.accountPairs = data.account_pairs;
+  if (data.account_configs) state.accountConfigs = data.account_configs;
+  if (data.bridges) state.bridges = data.bridges;
+  if (data.setup) {
+    state.setup = data.setup;
+    state.defaultAccountId = data.setup.default_account_id || '';
+    state.defaultAccountType = normalizeAccountType(data.setup.default_account_type || 'STOCK');
+    state.defaultAccountKey = data.setup.default_account_key || '';
+    state.defaultBridgeId = data.setup.default_bridge_id || state.defaultBridgeId || 'default';
+  }
+}
+
+function bindingActionConfig(accountId, accountType = 'STOCK', accountKey = '') {
+  accountId = String(accountId || '').trim();
+  accountType = normalizeAccountType(accountType || 'STOCK');
+  return findAccountConfigByKey(accountKey)
+    || (findAccountEntryById(accountId, accountType) || {}).config
+    || {};
+}
+
+function bindingConfigSavePayload(accountId, bridgeId, accountType = 'STOCK', accountKey = '', enabled = true) {
+  const config = bindingActionConfig(accountId, accountType, accountKey);
+  const normalizedType = normalizeAccountType(accountType || config.account_type || 'STOCK');
+  const normalizedBridge = String(bridgeId || config.bridge_id || state.defaultBridgeId || 'default').trim();
+  const normalizedId = String(accountId || config.account_id || '').trim();
+  const normalizedKey = String(accountKey || accountConfigKey('', config) || makeAccountKey(normalizedId, normalizedType, normalizedBridge)).trim();
+  const nextEnabled = configBool(enabled, true);
+  return {
+    account_id: normalizedId,
+    account_type: normalizedType,
+    account_key: normalizedKey,
+    bridge_id: normalizedBridge || undefined,
+    display_name: String(config.display_name || config.account_name || '').trim(),
+    qmt_dir: String(config.qmt_dir || config.python_dir || '').trim(),
+    qmt_trade_dir: accountConfigQmtTradeDir(config),
+    mode: config.mode || 'ctypes',
+    data_provider: nextEnabled ? !!config.data_provider : false,
+    enabled: nextEnabled,
+    market_routing_enabled: isMarketRoutingEnabled(config),
+    market_bridges: normalizeMarketRoutes(config),
+    auto_deploy_qmt_core: false,
+  };
+}
+
+function setBindingActionBusy(accountId, bridgeId, accountType = 'STOCK', accountKey = '', action = '', busy = true) {
+  const key = bindingVerifyKey(accountId, bridgeId, accountType, accountKey);
+  state.bindingActionBusyKey = busy ? key : '';
+  state.bindingActionBusyType = busy ? action : '';
+  renderCachedBindingStatuses();
+}
+
+async function setBindingEnabled(accountId, bridgeId, accountType = 'STOCK', accountKey = '', enabled = true) {
+  if (state.bindingActionBusyKey) return;
+  const payload = bindingConfigSavePayload(accountId, bridgeId, accountType, accountKey, enabled);
+  if (!payload.account_id && !payload.account_key) {
+    setBindingNotice('账号配置缺少账号标识，无法切换启用状态。', 'error', { autoHide: false });
+    return;
+  }
+  const action = enabled ? 'enable' : 'disable';
+  setBindingActionBusy(payload.account_id || accountId, payload.bridge_id || bridgeId, payload.account_type, payload.account_key, action, true);
+  setBindingNotice(enabled ? '正在启用绑定账号...' : '正在禁用绑定账号...', 'busy', { autoHide: false });
+  try {
+    const data = await saveAccountConfigRequest(payload);
+    applyAccountConfigPayload(data);
+    if (!enabled && state.accountKey === payload.account_key) {
+      state.accountKey = '';
+      state.accountId = '';
+    }
+    renderBridgeSelect(state.bridges);
+    renderAccountPairs();
+    syncBindingForm();
+    renderCachedBindingStatuses();
+    saveAccountConfigCache(data);
+    try {
+      await refreshBindingStatuses();
+    } catch (error) {
+      log('绑定状态刷新失败', { error: error.message });
+    }
+    setBindingNotice(enabled ? '绑定账号已启用。' : '绑定账号已禁用，不再参与路由和自动验证。', 'success');
+    log(enabled ? '绑定账号已启用' : '绑定账号已禁用', {
+      account_id: payload.account_id,
+      account_type: payload.account_type,
+      account_key: payload.account_key,
+    });
+  } catch (error) {
+    setBindingNotice(`${enabled ? '启用' : '禁用'}失败：${error.message}`, 'error', { autoHide: false });
+    log('绑定账号启用状态切换失败', { account_id: payload.account_id, error: error.message });
+  } finally {
+    setBindingActionBusy(payload.account_id || accountId, payload.bridge_id || bridgeId, payload.account_type, payload.account_key, action, false);
+  }
+}
+
+async function updateBindingCfquant(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
+  if (state.bindingActionBusyKey) return;
+  const config = bindingActionConfig(accountId, accountType, accountKey);
+  const payload = {
+    account_id: String(accountId || config.account_id || '').trim(),
+    account_type: normalizeAccountType(accountType || config.account_type || 'STOCK'),
+    account_key: String(accountKey || accountConfigKey('', config) || '').trim(),
+    bridge_id: String(bridgeId || config.bridge_id || '').trim() || undefined,
+  };
+  if (!payload.account_id && !payload.account_key) {
+    setBindingNotice('账号配置缺少账号标识，无法更新 cfquant。', 'error', { autoHide: false });
+    return;
+  }
+  setBindingActionBusy(payload.account_id || accountId, payload.bridge_id || bridgeId, payload.account_type, payload.account_key, 'update-core', true);
+  setBindingNotice('正在复制最新 cfquant 核心到绑定的 QMT 目录...', 'busy', { autoHide: false });
+  try {
+    const data = await updateAccountConfigCoreRequest(payload);
+    applyAccountConfigPayload(data);
+    renderBridgeSelect(state.bridges);
+    renderAccountPairs();
+    renderCachedBindingStatuses();
+    saveAccountConfigCache(data);
+    const deployIssue = qmtCoreDeployHasIssues(data.qmt_core_deploy);
+    const identityIssue = !!(data.qmt_bridge_identity && data.qmt_bridge_identity.error);
+    const message = qmtCoreDeploySummaryText(data.qmt_core_deploy) || 'cfquant 核心更新请求已完成。';
+    setBindingNotice(identityIssue ? `${message}，身份配置写入失败：${data.qmt_bridge_identity.error}` : message, deployIssue || identityIssue ? 'warn' : 'success');
+    log('绑定账号 cfquant 核心已更新', {
+      account_id: payload.account_id,
+      account_type: payload.account_type,
+      account_key: payload.account_key,
+      qmt_core_deploy: qmtCoreDeployLogPayload(data.qmt_core_deploy),
+      qmt_bridge_identity: data.qmt_bridge_identity || null,
+    });
+    try {
+      await refreshBindingStatuses();
+    } catch (error) {
+      log('绑定状态刷新失败', { error: error.message });
+    }
+  } catch (error) {
+    setBindingNotice(`更新 cfquant 失败：${error.message}`, 'error', { autoHide: false });
+    log('绑定账号 cfquant 更新失败', { account_id: payload.account_id, error: error.message });
+  } finally {
+    setBindingActionBusy(payload.account_id || accountId, payload.bridge_id || bridgeId, payload.account_type, payload.account_key, 'update-core', false);
+  }
+}
+
 function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
   const select = $('accountInput');
   if (!select) return;
@@ -6693,8 +6878,11 @@ function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
   const defaultId = String(defaultAccountId || '').trim();
   const defaultKey = String(state.defaultAccountKey || '').trim();
   const defaultBridgeId = state.defaultBridgeId || 'default';
+  const defaultStoredConfig = defaultKey && state.accountConfigs ? state.accountConfigs[defaultKey] : null;
+  const defaultStoredPair = defaultKey && state.accountPairs ? state.accountPairs[defaultKey] : null;
+  const defaultEnabled = accountConfigEnabled(defaultStoredConfig || defaultStoredPair || {});
 
-  if (defaultId) {
+  if (defaultId && defaultEnabled) {
     const key = defaultKey || makeAccountKey(defaultId, state.defaultAccountType || 'STOCK', defaultBridgeId);
     accountMap.set(key, {
       accountId: defaultId,
@@ -6703,7 +6891,8 @@ function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
       defaultAccount: true,
     });
   }
-  accountPairEntries().forEach(({ accountKey, accountId, accountType, bridgeId, displayName }) => {
+  accountPairEntries().forEach(({ accountKey, accountId, accountType, bridgeId, displayName, enabled }) => {
+    if (!enabled) return;
     accountMap.set(accountKey, {
       accountId,
       accountType,
@@ -6712,7 +6901,8 @@ function renderAccountSelect(defaultAccountId = state.defaultAccountId) {
       name: displayName,
     });
   });
-  accountConfigEntries().forEach(({ accountKey, accountId, accountType, displayName, config }) => {
+  accountConfigEntries().forEach(({ accountKey, accountId, accountType, displayName, config, enabled }) => {
+    if (!enabled) return;
     accountMap.set(accountKey, {
       accountId,
       accountType,
@@ -6773,12 +6963,12 @@ function renderAccountPairs() {
   const seen = new Set(configEntries.map((item) => item.accountKey));
   const legacyEntries = accountPairEntries()
     .filter(({ accountKey }) => !seen.has(accountKey))
-    .map(({ accountKey, accountId, accountType, bridgeId }) => ({
+    .map(({ accountKey, accountId, accountType, bridgeId, enabled }) => ({
       accountKey,
       accountId,
       accountType,
       bridgeId,
-      config: { account_key: accountKey, account_id: accountId, account_type: accountType, bridge_id: bridgeId, mode: 'ctypes', qmt_dir: '', data_provider: false },
+      config: { account_key: accountKey, account_id: accountId, account_type: accountType, bridge_id: bridgeId, mode: 'ctypes', qmt_dir: '', data_provider: false, enabled },
     }));
   const entries = [...configEntries, ...legacyEntries].filter((item) => item.accountId);
   renderAccountSelect();
@@ -6794,16 +6984,20 @@ function renderAccountPairs() {
     return;
   }
   entries.forEach(({ accountKey, accountId, accountType, bridgeId, config }) => {
+    const enabled = accountConfigEnabled(config);
     const row = document.createElement('div');
     row.className = 'pair-row';
+    if (!enabled) row.classList.add('is-disabled');
     const label = document.createElement('span');
     const modeLabel = transportModeLabel(config.mode);
-    const providerLabel = config.data_provider ? ' / 共享行情源' : '';
+    const providerLabel = config.data_provider && enabled ? ' / 共享行情源' : '';
+    const enabledLabel = enabled ? '' : ' / 已禁用';
     const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
-    label.textContent = `${accountId} / ${accountTypeLabel(accountType)} / ${bridgeName} / ${modeLabel}${providerLabel}`;
+    label.textContent = `${accountId} / ${accountTypeLabel(accountType)} / ${bridgeName} / ${modeLabel}${providerLabel}${enabledLabel}`;
     const useBtn = document.createElement('button');
     useBtn.type = 'button';
     useBtn.textContent = '使用';
+    useBtn.disabled = !enabled;
     useBtn.dataset.accountKey = accountKey;
     useBtn.dataset.accountId = accountId;
     useBtn.dataset.accountType = accountType;
@@ -6815,6 +7009,7 @@ function renderAccountPairs() {
     if (bindingList) {
       const configRow = document.createElement('div');
       configRow.className = 'config-row';
+      if (!enabled) configRow.classList.add('is-disabled');
       const info = document.createElement('div');
       info.className = 'config-info';
       const strong = document.createElement('strong');
@@ -6823,6 +7018,7 @@ function renderAccountPairs() {
       summary.className = 'config-summary';
       const modeLine = document.createElement('small');
       modeLine.textContent = `模式：${modeLabel}${providerLabel}`;
+      if (!enabled) modeLine.textContent += ' / 已禁用';
       const dirLine = document.createElement('small');
       dirLine.textContent = config.qmt_dir
         ? `QMT 核心目录：${config.qmt_dir}`
@@ -6942,6 +7138,7 @@ async function saveCurrentAccountPair() {
   const qmtTradeDir = form && form.qmt_trade_dir ? form.qmt_trade_dir.value.trim() : '';
   const mode = form && form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form && form.data_provider && form.data_provider.checked);
+  const enabled = !(form && form.enabled && !form.enabled.checked);
   const marketRoutingEnabled = !!(form && form.market_routing_enabled && form.market_routing_enabled.checked);
   const marketBridges = {
     SH: {
@@ -6960,7 +7157,7 @@ async function saveCurrentAccountPair() {
     log('账号为空，无法保存配对');
     return;
   }
-  if (normalizeTransportMode(mode) === 'lttx') {
+  if (enabled && normalizeTransportMode(mode) === 'lttx') {
     if (!qmtDir || !qmtTradeDir) {
       setBindingNotice('高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error', { autoHide: false });
       return;
@@ -6981,6 +7178,7 @@ async function saveCurrentAccountPair() {
       qmt_trade_dir: qmtTradeDir,
       mode,
       data_provider: dataProvider,
+      enabled,
       market_routing_enabled: marketRoutingEnabled,
       market_bridges: marketBridges,
     });
@@ -6989,12 +7187,18 @@ async function saveCurrentAccountPair() {
     state.setup = data.setup || state.setup;
     state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
     state.bridges = data.bridges || state.bridges;
-    state.accountId = accountId;
-    state.accountType = accountType;
-    state.accountKey = (data.account && data.account.account_key) || accountKey;
+    const savedAccountKey = (data.account && data.account.account_key) || accountKey;
+    if (enabled) {
+      state.accountId = accountId;
+      state.accountType = accountType;
+      state.accountKey = savedAccountKey;
+    } else if (state.accountKey === savedAccountKey || (state.accountId === accountId && state.accountType === accountType)) {
+      state.accountId = '';
+      state.accountKey = '';
+    }
     renderBridgeSelect(state.bridges);
     renderAccountSelect();
-    applyAccountPair(state.accountKey || accountId);
+    if (enabled) applyAccountPair(state.accountKey || accountId);
     syncBindingForm();
     renderAccountPairs();
     renderCachedBindingStatuses();
@@ -7015,6 +7219,7 @@ async function saveCurrentAccountPair() {
       qmtDir,
       qmtTradeDir,
       dataProvider,
+      enabled,
       marketRoutingEnabled,
       marketBridges,
       legacyFallback: !!data.legacy_fallback,
@@ -7028,6 +7233,7 @@ async function saveCurrentAccountPair() {
       qmt_dir: qmtDir,
       qmt_trade_dir: qmtTradeDir,
       mode,
+      enabled,
       marketRoutingEnabled,
       marketBridges,
     }, data.qmt_core_deploy, { context: 'binding' });
@@ -7050,14 +7256,16 @@ async function removeCurrentAccountPair() {
   const accountId = selectedAccount();
   const accountType = selectedAccountType();
   const accountKey = selectedAccountKey();
-  if (!accountId) return;
+  await removeBindingAccount(accountId, accountType, accountKey);
+}
+
+async function removeBindingAccount(accountId, accountType = 'STOCK', accountKey = '') {
+  accountId = String(accountId || '').trim();
+  accountType = normalizeAccountType(accountType || 'STOCK');
+  accountKey = String(accountKey || '').trim();
+  if (!accountId && !accountKey) return;
   const data = await deleteAccountConfigRequest(accountId, accountType, accountKey);
-  state.accountPairs = data.account_pairs || {};
-  state.accountConfigs = data.account_configs || {};
-  state.setup = data.setup || state.setup;
-  state.defaultAccountId = (data.setup && data.setup.default_account_id) || state.defaultAccountId;
-  state.defaultAccountType = normalizeAccountType((data.setup && data.setup.default_account_type) || state.defaultAccountType || 'STOCK');
-  state.defaultAccountKey = (data.setup && data.setup.default_account_key) || state.defaultAccountKey || '';
+  applyAccountConfigPayload(data);
   if ((accountKey && state.accountKey === accountKey) || (!accountKey && state.accountId === accountId && state.accountType === accountType)) {
     state.accountId = '';
     state.accountKey = '';
@@ -7116,6 +7324,7 @@ function syncBindingForm() {
   if (form.qmt_trade_dir) form.qmt_trade_dir.value = config && config.qmt_trade_dir ? config.qmt_trade_dir : '';
   syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
   if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
+  if (form.enabled) form.enabled.checked = config ? accountConfigEnabled(config) : true;
   const routes = normalizeMarketRoutes(config || {});
   if (form.market_routing_enabled) form.market_routing_enabled.checked = isMarketRoutingEnabled(config || {});
   if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
@@ -7148,6 +7357,7 @@ function fillBindingForm(values = {}) {
   if (form.qmt_trade_dir) form.qmt_trade_dir.value = values.qmtTradeDir || '';
   syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
   if (form.data_provider) form.data_provider.checked = !!values.dataProvider;
+  if (form.enabled) form.enabled.checked = configBool(values.enabled, true);
   const routes = normalizeMarketRoutes({ market_bridges: values.marketBridges || {} });
   if (form.market_routing_enabled) form.market_routing_enabled.checked = !!values.marketRoutingEnabled;
   if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
@@ -7178,6 +7388,7 @@ function openBindingDialog(options = {}) {
     qmtTradeDir: config && config.qmt_trade_dir ? config.qmt_trade_dir : (options.qmtTradeDir || ''),
     mode: config && config.mode ? config.mode : (options.mode || 'ctypes'),
     dataProvider: config ? !!config.data_provider : !!options.dataProvider,
+    enabled: config ? accountConfigEnabled(config) : configBool(options.enabled, true),
     marketRoutingEnabled: config ? isMarketRoutingEnabled(config) : !!options.marketRoutingEnabled,
     marketBridges: config ? normalizeMarketRoutes(config) : (options.marketBridges || {}),
   });
@@ -7310,7 +7521,8 @@ async function submitBindingForm(event) {
   const qmtTradeDir = form.qmt_trade_dir ? form.qmt_trade_dir.value.trim() : '';
   const mode = form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
-  if (normalizeTransportMode(mode) === 'lttx') {
+  const enabled = !(form.enabled && !form.enabled.checked);
+  if (enabled && normalizeTransportMode(mode) === 'lttx') {
     if (!qmtDir || !qmtTradeDir) {
       setBindingNotice('高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error', { autoHide: false });
       return;
@@ -7352,6 +7564,7 @@ async function submitBindingForm(event) {
       qmt_trade_dir: qmtTradeDir,
       mode,
       data_provider: dataProvider,
+      enabled,
       market_routing_enabled: marketRoutingEnabled,
       market_bridges: marketBridges,
     });
@@ -7371,18 +7584,24 @@ async function submitBindingForm(event) {
       qmtTradeDir,
       mode,
       dataProvider,
+      enabled,
       marketRoutingEnabled,
       marketBridges,
     });
     state.setup = data.setup || state.setup;
     state.bridges = data.bridges || state.bridges;
-    state.accountId = accountId;
-    state.accountType = accountType;
-    state.accountKey = savedAccountKey;
+    if (enabled) {
+      state.accountId = accountId;
+      state.accountType = accountType;
+      state.accountKey = savedAccountKey;
+    } else if (state.accountKey === savedAccountKey || (state.accountId === accountId && state.accountType === accountType)) {
+      state.accountId = '';
+      state.accountKey = '';
+    }
     renderBridgeSelect(state.bridges);
     renderAccountSelect();
     selectedAccount();
-    applyAccountPair(state.accountKey);
+    if (enabled) applyAccountPair(state.accountKey);
     syncBindingForm();
     renderAccountPairs();
     renderCachedBindingStatuses();
@@ -7405,6 +7624,7 @@ async function submitBindingForm(event) {
       qmtDir,
       qmtTradeDir,
       dataProvider,
+      enabled,
       marketRoutingEnabled,
       marketBridges,
       legacyFallback: !!data.legacy_fallback,
@@ -7418,6 +7638,7 @@ async function submitBindingForm(event) {
       qmt_dir: qmtDir,
       qmt_trade_dir: qmtTradeDir,
       mode,
+      enabled,
       marketRoutingEnabled,
       marketBridges,
     }, data.qmt_core_deploy, { context: 'binding' });
@@ -7464,9 +7685,16 @@ async function refreshConfig() {
   state.accountPairs = data.account_pairs || {};
   state.accountConfigs = data.account_configs || {};
   state.setup = data.setup || null;
-  state.defaultAccountId = data.default_account_id || (data.setup && data.setup.default_account_id) || state.defaultAccountId;
-  state.defaultAccountType = normalizeAccountType(data.default_account_type || (data.setup && data.setup.default_account_type) || state.defaultAccountType || 'STOCK');
-  state.defaultAccountKey = data.default_account_key || (data.setup && data.setup.default_account_key) || state.defaultAccountKey || '';
+  state.defaultAccountId = Object.prototype.hasOwnProperty.call(data, 'default_account_id')
+    ? (data.default_account_id || '')
+    : ((data.setup && data.setup.default_account_id) || '');
+  state.defaultAccountType = normalizeAccountType(
+    (Object.prototype.hasOwnProperty.call(data, 'default_account_type') ? data.default_account_type : (data.setup && data.setup.default_account_type))
+    || 'STOCK',
+  );
+  state.defaultAccountKey = Object.prototype.hasOwnProperty.call(data, 'default_account_key')
+    ? (data.default_account_key || '')
+    : ((data.setup && data.setup.default_account_key) || '');
   state.bridgeId = data.bridges && data.bridges[currentBridgeId] ? currentBridgeId : (data.default_bridge_id || Object.keys(data.bridges || {})[0] || 'default');
   renderBridgeSelect(data.bridges || {});
   renderAccountPairs();
@@ -7584,7 +7812,8 @@ function updateBindingVerifyButtons() {
       button.dataset.accountKey,
     );
     const loading = !!busyKey && busyKey === buttonKey;
-    button.disabled = !!busyKey;
+    const rowDisabled = !!(button.closest('.binding-list-row') && button.closest('.binding-list-row').classList.contains('is-disabled'));
+    button.disabled = !!busyKey || !!state.bindingActionBusyKey || rowDisabled;
     button.classList.toggle('is-loading', loading);
     if (loading) {
       button.setAttribute('aria-busy', 'true');
@@ -7609,10 +7838,12 @@ function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
   const normalOnline = !!(selected && selected.normal && selected.normal.online);
   const tradeOnline = !!(selected && selected.trade && selected.trade.online);
   const config = item.config || findAccountConfigByKey(item.accountKey) || {};
+  const statusEnabled = !(status && (status.disabled === true || configBool(status.enabled, true) === false));
+  const enabled = accountConfigEnabled(item) && accountConfigEnabled(config) && statusEnabled;
   const preferred = (status && status.preferred_mode) || (config && config.mode) || 'ctypes';
   const effective = (status && status.effective_mode) || preferred;
-  const provider = (status && status.data_provider) || (config && config.data_provider);
-  const marketEnabled = !!((status && status.market_routing_enabled) || isMarketRoutingEnabled(config));
+  const provider = enabled && ((status && status.data_provider) || (config && config.data_provider));
+  const marketEnabled = enabled && !!((status && status.market_routing_enabled) || isMarketRoutingEnabled(config));
   const marketRoutes = normalizeMarketRoutes(config || {});
   const marketRouteStatuses = (status && status.market_routes) || {};
   const marketLines = ['SH', 'SZ'].map((market) => {
@@ -7637,7 +7868,7 @@ function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
   const qmtDisplayText = normalizeTransportMode(preferred) === 'lttx'
     ? `${qmtDirText} / 极速端：${qmtTradeDirText || '未填写'}`
     : qmtDirText;
-  const title = error ? error.message : (stale ? '上次状态，正在后台刷新' : '');
+  const title = !enabled ? '该绑定账号已禁用' : (error ? error.message : (stale ? '上次状态，正在后台刷新' : ''));
   const accountText = item.accountId || item.account_id || '未绑定';
   const accountType = normalizeAccountType(item.accountType || item.account_type || (config && config.account_type) || 'STOCK');
   const displayName = String(item.displayName || item.display_name || (config && (config.display_name || config.account_name)) || '').trim();
@@ -7648,25 +7879,37 @@ function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
   const bridgeName = (state.bridges && state.bridges[bridgeId] && state.bridges[bridgeId].name) || bridgeId || 'default';
   const verifyKey = bindingVerifyKey(accountText, bridgeId, accountType, accountKey);
   const verifying = !!state.bindingVerifyBusyKey && state.bindingVerifyBusyKey === verifyKey;
-  const verifyDisabled = state.bindingVerifyBusyKey ? ' disabled' : '';
+  const actionLocked = !!state.bindingActionBusyKey;
+  const actionBusy = actionLocked && state.bindingActionBusyKey === verifyKey;
+  const busyAction = actionBusy ? state.bindingActionBusyType : '';
+  const rowActionDisabled = actionLocked ? ' disabled' : '';
+  const verifyDisabled = state.bindingVerifyBusyKey || actionLocked || !enabled ? ' disabled' : '';
   const verifyBusy = verifying ? ' aria-busy="true"' : '';
   const verifyClass = verifying ? ' verify-pair-btn is-loading' : ' verify-pair-btn';
   const verifyLabel = verifying ? '验证中' : '验证';
+  const updateLabel = busyAction === 'update-core' ? '更新中' : '更新 cfquant';
+  const toggleAction = enabled ? 'disable' : 'enable';
+  const toggleLabel = enabled
+    ? (busyAction === 'disable' ? '禁用中' : '禁用')
+    : (busyAction === 'enable' ? '启用中' : '启用');
+  const toggleClass = enabled ? 'binding-disable-btn' : 'binding-enable-btn';
   const preferredLabel = transportModeLabel(preferred, true);
   const effectiveLabel = transportModeLabel(effective, true);
-  const statusClass = pending ? 'warn' : (error ? 'offline' : (marketEnabled
+  const statusClass = !enabled ? 'disabled' : (pending ? 'warn' : (error ? 'offline' : (marketEnabled
     ? (marketReadyCount >= 2 ? 'online' : (marketReadyCount > 0 ? 'warn' : 'offline'))
-    : (normalOnline && tradeOnline ? 'online' : (normalOnline || tradeOnline ? 'warn' : 'offline'))));
-  const statusLabel = pending ? '刷新中' : (error ? '状态失败' : (marketEnabled
+    : (normalOnline && tradeOnline ? 'online' : (normalOnline || tradeOnline ? 'warn' : 'offline')))));
+  const statusLabel = !enabled ? '已禁用' : (pending ? '刷新中' : (error ? '状态失败' : (marketEnabled
     ? (marketReadyCount >= 2 ? '市场路由在线' : (marketReadyCount > 0 ? '市场路由部分在线' : '市场路由离线'))
-    : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线'))));
+    : (normalOnline && tradeOnline ? '全部在线' : (normalOnline || tradeOnline ? '部分在线' : '离线')))));
   const mainBridgeLabel = normalOnline || tradeOnline ? '在线' : (marketEnabled && marketReadyCount > 0 ? '未启用' : '离线');
-  let connectionLines = pending
+  let connectionLines = !enabled
+    ? ['已禁用，不参与路由和验证']
+    : (pending
     ? ['状态后台刷新中']
     : (marketEnabled && configuredMarketLines.length
     ? [`主桥 ${mainBridgeLabel}`, ...configuredMarketLines.map((row) => row.text)]
-    : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`]);
-  if (stale) connectionLines = ['上次状态，后台刷新中', ...connectionLines];
+    : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`]));
+  if (stale && enabled) connectionLines = ['上次状态，后台刷新中', ...connectionLines];
   const connectionHtml = connectionLines
     .map((line) => `<small class="binding-cell-note binding-status-line">${esc(line)}</small>`)
     .join('');
@@ -7675,19 +7918,21 @@ function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
     return `<tr title="${esc(title)}">
       <td>${esc(accountTitle)}<br><small>${esc(accountSubtext)}</small></td>
       <td>${esc(preferredLabel)}</td>
-      <td><span class="status-dot ${esc(statusClass)}">${esc(pending ? '待刷新' : effectiveLabel)}${status && status.fallback ? '（已回退）' : ''}</span></td>
+      <td><span class="status-dot ${esc(statusClass)}">${esc(!enabled ? '已禁用' : (pending ? '待刷新' : effectiveLabel))}${status && status.fallback ? '（已回退）' : ''}</span></td>
       <td>${esc(qmtDisplayText)}</td>
       <td>${provider ? '共享行情源' : '--'}</td>
     </tr>`;
   }
-  return `<tr class="binding-list-row" title="${esc(title)}">
+  return `<tr class="binding-list-row${enabled ? '' : ' is-disabled'}" title="${esc(title)}">
     <td data-label="操作">
       <div class="binding-row-actions">
         <button type="button" class="${verifyClass.trim()}" data-binding-action="verify" ${actionAttrs}${verifyDisabled}${verifyBusy}>
           <span class="button-spinner" aria-hidden="true"></span><span class="binding-verify-label">${esc(verifyLabel)}</span>
         </button>
-        <button type="button" data-binding-action="edit" ${actionAttrs}>编辑</button>
-        <button type="button" class="binding-delete-btn" data-binding-action="delete" ${actionAttrs}>删除</button>
+        <button type="button" class="binding-update-btn" data-binding-action="update-core" ${actionAttrs}${rowActionDisabled}>${esc(updateLabel)}</button>
+        <button type="button" data-binding-action="edit" ${actionAttrs}${rowActionDisabled}>编辑</button>
+        <button type="button" class="${esc(toggleClass)}" data-binding-action="${esc(toggleAction)}" ${actionAttrs}${rowActionDisabled}>${esc(toggleLabel)}</button>
+        <button type="button" class="binding-delete-btn" data-binding-action="delete" ${actionAttrs}${rowActionDisabled}>删除</button>
       </div>
     </td>
     <td class="binding-name-cell" data-label="账号名称">
@@ -7709,12 +7954,17 @@ function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
       ${marketEnabled && marketStatusText ? `<small class="binding-cell-note">${esc(marketStatusText)}</small>` : ''}
     </td>
     <td class="binding-dir-cell" data-label="QMT 目录" title="${esc(qmtDisplayText)}">${esc(qmtDisplayText)}</td>
-    <td data-label="数据源">${provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>'}</td>
+    <td data-label="数据源">${!enabled ? '<span class="binding-muted">已禁用</span>' : (provider ? '<span class="source-pill source-cfquant">共享行情源</span>' : '<span class="binding-muted">普通绑定</span>')}</td>
   </tr>`;
 }
 
 async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey = '') {
   accountType = normalizeAccountType(accountType);
+  const config = bindingActionConfig(accountId, accountType, accountKey);
+  if (config && !accountConfigEnabled(config)) {
+    setBindingNotice('该绑定账号已禁用，启用后才能验证连接。', 'warn');
+    return;
+  }
   if (state.bindingVerifyBusyKey) return;
   setBindingVerifyBusy(accountId, bridgeId, accountType, accountKey, true);
   const note = $('pairVerifyNote');
@@ -11180,11 +11430,16 @@ async function boot() {
       return;
     }
     if (action === 'delete') {
-      state.accountId = button.dataset.accountId || state.accountId;
-      state.accountType = normalizeAccountType(button.dataset.accountType || state.accountType);
-      state.accountKey = button.dataset.accountKey || state.accountKey;
-      renderAccountSelect();
-      removeCurrentAccountPair().catch((error) => log('账号配置删除失败', { error: error.message }));
+      removeBindingAccount(button.dataset.accountId, button.dataset.accountType, button.dataset.accountKey)
+        .catch((error) => log('账号配置删除失败', { error: error.message }));
+      return;
+    }
+    if (action === 'update-core') {
+      updateBindingCfquant(button.dataset.accountId, button.dataset.bridgeId, button.dataset.accountType, button.dataset.accountKey);
+      return;
+    }
+    if (action === 'enable' || action === 'disable') {
+      setBindingEnabled(button.dataset.accountId, button.dataset.bridgeId, button.dataset.accountType, button.dataset.accountKey, action === 'enable');
       return;
     }
     if (action === 'verify') {

@@ -422,6 +422,50 @@ def test_lttx_routes_xttrader_queries_to_trade_channel():
         mode="lttx",
         action="xtdata.download_history_data2",
     ) == "normal"
+    assert web.route_channel_for_account(
+        "8885060548",
+        requested_channel="trade",
+        default="trade",
+        mode="lttx",
+        action="xtdata.get_instrument_detail",
+    ) == "normal"
+
+
+def test_external_xtdata_defaults_to_normal_channel():
+    assert web._external_default_channel("xtdata.get_instrument_detail") == "normal"
+    assert web._external_default_channel("xtdata.get_full_tick") == "normal"
+    assert web._external_default_channel("xttrader.order_stock") == "trade"
+
+
+def test_data_channel_request_defaults_to_normal(monkeypatch):
+    captured = {}
+
+    def fake_data_provider_request(action, params, **kwargs):
+        captured.update({
+            "action": action,
+            "params": params,
+            "kwargs": kwargs,
+        })
+        return {
+            "bridge_id": "default",
+            "channel": "normal",
+            "mode": "lttx",
+            "fallback": False,
+            "fallback_reason": "",
+            "result": {"InstrumentID": "000001"},
+            "attempts": [],
+            "data_provider": "A123",
+            "data_provider_account_type": "STOCK",
+            "data_provider_account_key": "default:STOCK:A123",
+        }
+
+    monkeypatch.setattr(web, "data_provider_request", fake_data_provider_request)
+
+    result = web.get_instrument_detail({"stock_code": "000001.SZ"})
+
+    assert result["channel"] == "normal"
+    assert captured["action"] == "xtdata.get_instrument_detail"
+    assert captured["kwargs"]["default_channel"] == "normal"
 
 
 def test_account_request_forces_trade_channel_for_lttx_queries(monkeypatch):
@@ -648,3 +692,105 @@ def test_account_data_cache_uses_short_background_timeout(monkeypatch):
     cache._refresh_subscriptions()
 
     assert calls == [("default", "normal", "8885060548", ["asset"], 2.5)]
+
+
+def test_save_account_runtime_config_parses_string_disabled(monkeypatch, tmp_path):
+    config = web.WebRuntimeConfig(
+        str(tmp_path / "runtime.json"),
+        settings_db_path=str(tmp_path / "settings.db"),
+    )
+    deploy_calls = []
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+    monkeypatch.setattr(
+        web,
+        "auto_deploy_qmt_core_for_account",
+        lambda row, enabled=True: deploy_calls.append((row["account_key"], enabled)) or {
+            "enabled": enabled,
+            "results": [],
+            "summary": {"ok": True, "error_count": 0, "warning_count": 0},
+        },
+    )
+    monkeypatch.setattr(web, "write_qmt_bridge_identity", lambda row: {})
+    monkeypatch.setattr(web, "write_qmt_market_bridge_identities", lambda row: [])
+    monkeypatch.setattr(web, "ensure_account_runtime", lambda mode: {"ok": True, "mode": mode})
+    monkeypatch.setattr(web, "ACCOUNT_CACHE", SimpleNamespace(prime_configured_accounts=lambda: None))
+    monkeypatch.setattr(web, "STATUS_MONITOR", SimpleNamespace(wake=lambda: None))
+    monkeypatch.setattr(web, "CALLBACKS", SimpleNamespace(refresh_channels=lambda channels: None))
+    monkeypatch.setattr(web, "callback_channels", lambda: [])
+
+    result = web.save_account_runtime_config({
+        "account_id": "77557115",
+        "account_type": "stock",
+        "enabled": "false",
+    })
+
+    assert result["account"]["enabled"] is False
+    assert result["setup"]["default_account_id"] == ""
+    assert web.enabled_account_configs() == {}
+    assert deploy_calls == [(result["account"]["account_key"], False)]
+
+
+def test_binding_status_snapshot_does_not_probe_disabled_accounts(monkeypatch, tmp_path):
+    config = web.WebRuntimeConfig(
+        str(tmp_path / "runtime.json"),
+        settings_db_path=str(tmp_path / "settings.db"),
+    )
+    row = config.save_account_config(
+        account_id="77557115",
+        account_type="STOCK",
+        bridge_id="acct_disabled",
+        enabled=False,
+    )
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+
+    def fail_latest(*args, **kwargs):
+        raise AssertionError("disabled account should not be probed")
+
+    monkeypatch.setattr(web, "STATUS_MONITOR", SimpleNamespace(latest=fail_latest))
+
+    snapshot = web.binding_status_snapshot()
+
+    assert len(snapshot["bindings"]) == 1
+    binding = snapshot["bindings"][0]
+    assert binding["account_key"] == row["account_key"]
+    assert binding["enabled"] is False
+    assert binding["status"]["disabled"] is True
+    assert binding["status"]["ready"] is False
+
+
+def test_update_account_qmt_core_runs_for_disabled_binding(monkeypatch, tmp_path):
+    config = web.WebRuntimeConfig(
+        str(tmp_path / "runtime.json"),
+        settings_db_path=str(tmp_path / "settings.db"),
+    )
+    row = config.save_account_config(
+        account_id="77557115",
+        account_type="STOCK",
+        bridge_id="acct_disabled",
+        qmt_dir=str(tmp_path / "QMT" / "bin.x64"),
+        enabled=False,
+    )
+    deploy_calls = []
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+    monkeypatch.setattr(
+        web,
+        "auto_deploy_qmt_core_for_account",
+        lambda account, enabled=True: deploy_calls.append((account["account_key"], enabled)) or {
+            "enabled": enabled,
+            "results": [{"updated": True, "qmt_dir": account.get("qmt_dir")}],
+            "summary": {"ok": True, "updated_count": 1, "error_count": 0, "warning_count": 0},
+        },
+    )
+    monkeypatch.setattr(web, "write_qmt_bridge_identity", lambda account: {"written": True})
+    monkeypatch.setattr(web, "write_qmt_market_bridge_identities", lambda account: [])
+    monkeypatch.setattr(web, "ACCOUNT_CACHE", SimpleNamespace(prime_configured_accounts=lambda: None))
+    monkeypatch.setattr(web, "STATUS_MONITOR", SimpleNamespace(wake=lambda: None))
+    monkeypatch.setattr(web, "CALLBACKS", SimpleNamespace(refresh_channels=lambda channels: None))
+    monkeypatch.setattr(web, "callback_channels", lambda: [])
+
+    result = web.update_account_qmt_core({"account_key": row["account_key"]})
+
+    assert result["account"]["enabled"] is False
+    assert result["qmt_core_deploy"]["summary"]["updated_count"] == 1
+    assert result["qmt_bridge_identity"]["written"] is True
+    assert deploy_calls == [(row["account_key"], True)]

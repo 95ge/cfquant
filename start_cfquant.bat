@@ -115,27 +115,22 @@ exit /b %WEB_EXIT_CODE%
 :ensure_cfquant_package
 echo Checking the cfquant package in the selected Python environment...
 call :log "checking cfquant package python=%PYTHON_EXE%"
-"%PYTHON_EXE%" -m pip show cfquant >nul 2>&1
-if not errorlevel 1 (
-    call :log "cfquant package already installed"
-    exit /b 0
-)
-
-echo cfquant package was not found. Installing the current project with pip...
-call :log "cfquant package missing, installing editable project"
-"%PYTHON_EXE%" -m pip install --disable-pip-version-check --no-input -e . >>"%START_LOG%" 2>&1
-if errorlevel 1 (
-    call :log "cfquant package installation failed"
+set "CFQUANT_INSTALL_HELPER=%~dp0cfquant\_editable_install.py"
+if not exist "%CFQUANT_INSTALL_HELPER%" (
+    echo [ERROR] cfquant install helper was not found: "%CFQUANT_INSTALL_HELPER%"
+    call :log "cfquant install helper missing"
+    set "CFQUANT_INSTALL_HELPER="
     exit /b 1
 )
-
-"%PYTHON_EXE%" -m pip show cfquant >nul 2>&1
+"%PYTHON_EXE%" "%CFQUANT_INSTALL_HELPER%" . >>"%START_LOG%" 2>&1
 if errorlevel 1 (
-    call :log "cfquant package still missing after installation"
+    call :log "cfquant package check or installation failed"
+    set "CFQUANT_INSTALL_HELPER="
     exit /b 1
 )
 echo cfquant package is ready.
-call :log "cfquant package installation completed"
+call :log "cfquant package ready"
+set "CFQUANT_INSTALL_HELPER="
 exit /b 0
 
 :is_port_open

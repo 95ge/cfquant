@@ -3032,6 +3032,10 @@ th.num .sort-header {
   padding: 14px;
 }
 
+.form-grid > .wide {
+  grid-column: 1 / -1;
+}
+
 .form-grid button.wide {
   grid-column: 1 / -1;
 }
@@ -3246,6 +3250,17 @@ th.num .sort-header {
   font-size: 12px;
 }
 
+.pair-row.is-disabled,
+.config-row.is-disabled {
+  background: #f6f8fa;
+}
+
+.pair-row.is-disabled span,
+.config-row.is-disabled strong,
+.config-row.is-disabled small {
+  color: #7a8594;
+}
+
 .field small {
   color: var(--muted);
   font-size: 12px;
@@ -3280,6 +3295,10 @@ th.num .sort-header {
   background: var(--warn);
 }
 
+.status-dot.disabled::before {
+  background: #9aa3af;
+}
+
 .panel-title-stack {
   display: grid;
   gap: 3px;
@@ -3295,7 +3314,7 @@ th.num .sort-header {
 
 .binding-action-body {
   display: grid;
-  gap: 16px;
+  gap: 12px;
   padding: 14px;
 }
 
@@ -3305,15 +3324,22 @@ th.num .sort-header {
   line-height: 1.25;
 }
 
+.binding-action-head {
+  align-items: center;
+  min-height: 58px;
+}
+
 .binding-action-buttons {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  justify-items: stretch;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .binding-action-buttons button {
+  min-width: 104px;
   justify-content: center;
-  width: 100%;
 }
 
 .bindings-head {
@@ -3531,43 +3557,44 @@ th.num .sort-header {
 
 .binding-table {
   table-layout: fixed;
-  min-width: 1120px;
+  width: 100%;
+  min-width: 1440px;
 }
 
 .binding-table th:nth-child(1) {
-  width: 120px;
+  width: 244px;
 }
 
 .binding-table th:nth-child(2) {
-  width: 112px;
+  width: 144px;
 }
 
 .binding-table th:nth-child(3) {
-  width: 108px;
+  width: 124px;
 }
 
 .binding-table th:nth-child(4) {
-  width: 178px;
-}
-
-.binding-table th:nth-child(5) {
-  width: 68px;
-}
-
-.binding-table th:nth-child(6) {
-  width: 84px;
-}
-
-.binding-table th:nth-child(7) {
-  width: 136px;
-}
-
-.binding-table th:nth-child(8) {
   width: 190px;
 }
 
-.binding-table th:nth-child(9) {
+.binding-table th:nth-child(5) {
   width: 82px;
+}
+
+.binding-table th:nth-child(6) {
+  width: 92px;
+}
+
+.binding-table th:nth-child(7) {
+  width: 154px;
+}
+
+.binding-table th:nth-child(8) {
+  width: 300px;
+}
+
+.binding-table th:nth-child(9) {
+  width: 110px;
 }
 
 .binding-list-row td {
@@ -3577,6 +3604,22 @@ th.num .sort-header {
   padding-bottom: 10px;
   vertical-align: top;
   white-space: normal;
+}
+
+.binding-list-row.is-disabled {
+  background: #f7f9fb;
+}
+
+.binding-list-row.is-disabled .binding-name-cell strong,
+.binding-list-row.is-disabled .binding-account-cell strong,
+.binding-list-row.is-disabled .binding-bridge-name {
+  color: #7a8594;
+}
+
+.binding-list-row.is-disabled .binding-status-cell,
+.binding-list-row.is-disabled .binding-channel-cell,
+.binding-list-row.is-disabled .binding-dir-cell {
+  background: #f8fafc;
 }
 
 .binding-name-cell,
@@ -3652,6 +3695,18 @@ th.num .sort-header {
 .binding-row-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.66;
+}
+
+.binding-update-btn {
+  color: var(--accent);
+}
+
+.binding-enable-btn {
+  color: var(--good);
+}
+
+.binding-disable-btn {
+  color: var(--warn);
 }
 
 .verify-pair-btn.is-loading:disabled {
@@ -3759,7 +3814,7 @@ th.num .sort-header {
 
 .binding-dialog {
   display: grid;
-  width: min(680px, 100%);
+  width: min(1100px, 100%);
   max-height: calc(100vh - 36px);
   overflow: auto;
   border: 1px solid var(--line);
@@ -3928,10 +3983,24 @@ th.num .sort-header {
   align-self: end;
 }
 
+.binding-dialog-wide-row {
+  grid-column: 1 / -1;
+  align-self: start;
+}
+
+.binding-dialog-bleed {
+  width: calc(100% + 36px);
+  max-width: calc(100% + 36px);
+  margin-right: -18px;
+  margin-left: -18px;
+}
+
 .market-routing-panel {
   display: grid;
   gap: 12px;
-  padding: 14px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 12px 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfd;
@@ -3939,15 +4008,46 @@ th.num .sort-header {
 
 .market-routing-head {
   display: grid;
-  grid-template-columns: minmax(220px, max-content) minmax(0, 1fr);
-  align-items: center;
-  gap: 10px 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px 12px;
   padding-bottom: 10px;
   border-bottom: 1px solid #e2e8ef;
+  cursor: pointer;
+  list-style: none;
 }
 
-.market-routing-head .binding-dialog-toggle {
+.market-routing-head::-webkit-details-marker {
+  display: none;
+}
+
+.market-routing-head::after {
+  content: "收起";
   align-self: center;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.market-routing-panel:not([open]) .market-routing-head {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.market-routing-panel:not([open]) .market-routing-head::after {
+  content: "展开";
+}
+
+.market-routing-head div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.market-routing-head strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .market-routing-head small {
@@ -3957,28 +4057,38 @@ th.num .sort-header {
   overflow-wrap: anywhere;
 }
 
+.market-routing-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
 .market-route-groups {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
 }
 
 .market-route-group {
   display: grid;
   gap: 10px;
   min-width: 0;
-  padding: 12px;
+  max-width: 100%;
+  padding: 10px;
   border: 1px solid #d8e1ea;
   border-radius: 8px;
   background: #fff;
 }
 
 .market-route-title {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
+  display: grid;
+  gap: 2px;
   min-width: 0;
+}
+
+.market-route-title span {
+  grid-column: 1 / -1;
 }
 
 .market-route-title strong {
@@ -3994,8 +4104,10 @@ th.num .sort-header {
 
 .market-route-fields {
   display: grid;
-  grid-template-columns: minmax(118px, 0.44fr) minmax(0, 0.56fr);
-  gap: 10px;
+  grid-template-columns: minmax(150px, 0.42fr) minmax(0, 0.58fr);
+  gap: 8px;
+  min-width: 0;
+  margin-top: 8px;
 }
 
 .market-route-fields .field.wide {
@@ -4004,6 +4116,12 @@ th.num .sort-header {
 
 .market-route-fields input {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.market-route-fields input[id$="PositionAccountId"] {
+  font-family: Consolas, "Courier New", monospace;
 }
 
 .binding-dialog-actions {
@@ -5484,35 +5602,42 @@ body[data-view="bindings"] .toolbar {
 }
 
 body[data-view="bindings"] .shell {
-  max-width: 1280px;
+  max-width: 1680px;
   margin: 0 auto;
 }
 
 body[data-view="bindings"] .grid {
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
+  gap: 16px;
 }
 
 body[data-view="bindings"] .binding-action-panel {
-  grid-column: 1;
-  grid-row: 1 / span 2;
-  position: sticky;
-  top: 86px;
+  grid-column: 1 / -1;
+  grid-row: auto;
+  width: min(100%, 620px);
+  order: 1;
+  position: static;
+  justify-self: start;
 }
 
 body[data-view="bindings"] .bindings-panel {
-  grid-column: 2;
-  grid-row: 1;
+  grid-column: 1 / -1;
+  grid-row: auto;
+  order: 2;
+  min-width: 0;
 }
 
 body[data-view="bindings"] .binding-script-panel {
-  grid-column: 2;
-  grid-row: 2;
+  grid-column: 1 / -1;
+  grid-row: auto;
+  order: 3;
 }
 
 body[data-view="bindings"] .binding-verify-panel {
-  grid-column: 2;
-  grid-row: 3;
+  grid-column: 1 / -1;
+  grid-row: auto;
+  order: 4;
 }
 
 body[data-view="trade"] .trade-ticket {
@@ -7992,6 +8117,31 @@ tr.order-row-updated td {
   }
 }
 
+@media (max-width: 760px) {
+  .binding-dialog {
+    width: min(1100px, 100%);
+  }
+
+  .market-routing-panel {
+    width: 100%;
+    max-width: 100%;
+    margin-right: 0;
+    margin-left: 0;
+  }
+
+  .binding-dialog-bleed {
+    width: 100%;
+    max-width: 100%;
+    margin-right: 0;
+    margin-left: 0;
+  }
+
+  .market-route-groups,
+  .market-route-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 560px) {
   .auth-overlay {
     align-items: flex-start;
@@ -8180,6 +8330,7 @@ tr.order-row-updated td {
   }
 
   .bindings-head,
+  .binding-action-head,
   .binding-dialog-head,
   .binding-dialog-actions,
   .binding-qmt-guide-actions {
@@ -8189,6 +8340,7 @@ tr.order-row-updated td {
   }
 
   .panel-actions,
+  .binding-action-buttons,
   .binding-row-actions {
     justify-content: stretch;
   }
@@ -8199,6 +8351,7 @@ tr.order-row-updated td {
   }
 
   .panel-actions button,
+  .binding-action-buttons button,
   .binding-row-actions button,
   .binding-script-card-head button,
   .binding-dialog-actions button,

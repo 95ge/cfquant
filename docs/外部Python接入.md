@@ -19,7 +19,7 @@ pip install "cfquant[zmq]"
 
 ```powershell
 cd D:\cfquant
-pip install -e .
+python -m pip install --editable .
 ```
 
 安装后可直接启动本地控制台：

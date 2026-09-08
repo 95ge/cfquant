@@ -72,6 +72,7 @@ runtime/cli-qmt-export/
 .cfquant_project_updates/
 .pytest_cache/
 .mypy_cache/
+.tmp_pytest*/
 
 # Official website source is local/internal only and must not be published to GitHub.
 official_site/

@@ -313,8 +313,9 @@ class NormalQmtBridge(TxTradeBridge):
             account_id=account_id,
             allow_pending=True,
         )
+        load_info = None
         if record is None and account_id:
-            self._load_order_meta_store_throttled(account_id, account_type)
+            load_info = self._load_order_meta_store_throttled(account_id, account_type, force=True)
             record, match_info = self.order_meta_cache.resolve_callback(
                 data,
                 bridge_id=self.bridge_id,
@@ -326,6 +327,33 @@ class NormalQmtBridge(TxTradeBridge):
         order_meta.ensure_callback_text_fields(data)
         if record and match_info.get("bound_order_ref"):
             self._persist_order_meta_record(record, payload=order_meta.encode_record(record))
+        refs = order_meta.order_ref_candidates_from_data(data)
+        if record:
+            self._log(
+                "normal bridge order meta hit event=%s account=%s type=%s match=%s refs=%s filled_strategy=%s filled_remark=%s"
+                % (
+                    event_name,
+                    account_id or "-",
+                    account_type or "-",
+                    match_info.get("match_confidence") or "-",
+                    ",".join(refs[:6]) or "-",
+                    bool(order_meta.normalize_text(data.get("strategy_name"))),
+                    bool(order_meta.normalize_text(data.get("order_remark"))),
+                )
+            )
+        else:
+            self._log(
+                "normal bridge order meta miss event=%s account=%s type=%s refs=%s order_id=%s order_sysid=%s load=%s"
+                % (
+                    event_name,
+                    account_id or "-",
+                    account_type or "-",
+                    ",".join(refs[:6]) or "-",
+                    data.get("order_id") or "-",
+                    data.get("order_sysid") or data.get("m_strOrderSysID") or "-",
+                    load_info if load_info is not None else "-",
+                )
+            )
         return record
 
     def _maybe_reset_order_meta_stores(self):

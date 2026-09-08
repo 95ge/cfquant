@@ -441,6 +441,193 @@ def test_normal_bridge_order_meta_store_fallback_is_account_scoped():
     assert "cfquant_order_meta_hit" not in callback_payloads[-1]["data"]
 
 
+def test_normal_bridge_keeps_bound_meta_pending_until_real_callback_ref_arrives():
+    bridge = NormalQmtBridge(DummyContext(), show=False, schedule_timer=False)
+    bridge.tx = RecordingTx()
+    strategy = "\u7b56\u7565\u540d\u79f0\u7b2c6\u6b21"
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "8885060548",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price_type": 11,
+        "price": 11.5,
+        "order_volume": 100,
+        "strategy_name": strategy,
+        "order_remark": "666666666",
+        "user_order_id": "666666666",
+        "status": "bound",
+        "order_ref": "1090571181",
+        "m_strOrderRef": "1090571181",
+    })
+
+    bridge.order_meta_cache.upsert(record)
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "8885060548",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 1090571185,
+        "m_nOrderID": 1090571185,
+        "m_strOrderRef": "1602193470259167414",
+        "m_strOrderID": "1602193470259167414",
+        "m_strOrderSysID": "635082606",
+        "m_nOrderType": 23,
+        "m_nOrderPriceType": 50,
+        "m_dLimitPrice": 11.5,
+        "m_nVolumeTotalOriginal": 100,
+        "m_strRemark": "",
+        "m_strOrderRemark": "",
+        "m_strStrategyName": "",
+    })
+
+    callback_payload = json.loads([item for item in bridge.tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    assert data["strategy_name"] == strategy
+    assert data["order_remark"] == "666666666"
+    assert data["cfquant_order_meta_hit"] is True
+    assert data["cfquant_order_meta_match"] == "pending_fifo"
+
+    store_key = order_meta.account_store_key("default", "STOCK", "8885060548")
+    assert order_meta.store_order_ref_key("1602193470259167414") in bridge.tx.store[store_key]
+    assert order_meta.store_order_ref_key("1090571185") in bridge.tx.store[store_key]
+    assert order_meta.store_order_ref_key("635082606") in bridge.tx.store[store_key]
+    assert bridge.order_meta_cache.pending == []
+
+
+def test_normal_bridge_fills_manual_cancel_callback_from_bound_order_ref():
+    bridge = NormalQmtBridge(DummyContext(), show=False, schedule_timer=False)
+    bridge.tx = RecordingTx()
+    strategy = "\u7b56\u7565\u540d\u79f0\u7b2c9\u6b21"
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "8885060548",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price": 11.5,
+        "order_volume": 100,
+        "strategy_name": strategy,
+        "order_remark": "666666666",
+        "user_order_id": "666666666",
+        "status": "callback_bound",
+        "order_ref": "1602193470259168823",
+        "order_refs": ["1602193470259168823", "1090571219", "635082868"],
+    })
+
+    bridge.order_meta_cache.upsert(record)
+    assert bridge.order_meta_cache.pending == []
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "8885060548",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_strOrderSysID": "635082868",
+        "m_nOrderStatus": xtconstant.ORDER_CANCELED,
+        "m_nOffsetFlag": 48,
+        "m_nOrderPriceType": 50,
+        "m_dLimitPrice": 11.5,
+        "m_nVolumeTotalOriginal": 100,
+        "m_strRemark": "",
+        "m_strOrderRemark": "",
+        "m_strStrategyName": "",
+    })
+
+    callback_payload = json.loads([item for item in bridge.tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    assert data["strategy_name"] == strategy
+    assert data["order_remark"] == "666666666"
+    assert data["cfquant_order_meta_hit"] is True
+    assert data["cfquant_order_meta_match"] == "order_ref"
+
+
+def test_normal_bridge_fills_manual_cancel_callback_from_unique_bound_context_without_ref():
+    bridge = NormalQmtBridge(DummyContext(), show=False, schedule_timer=False)
+    bridge.tx = RecordingTx()
+    strategy = "\u7b56\u7565\u540d\u79f0\u7b2c10\u6b21"
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "8885060548",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price": 11.5,
+        "order_volume": 100,
+        "strategy_name": strategy,
+        "order_remark": "manual-cancel-unique",
+        "user_order_id": "manual-cancel-unique",
+        "status": "callback_bound",
+        "order_ref": "1602193470259169001",
+        "order_refs": ["1602193470259169001", "1090571301", "635083001"],
+    })
+
+    bridge.order_meta_cache.upsert(record)
+    assert bridge.order_meta_cache.pending == []
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "8885060548",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nOrderStatus": xtconstant.ORDER_CANCELED,
+        "m_nOffsetFlag": 48,
+        "m_nOrderPriceType": 50,
+        "m_dLimitPrice": 11.5,
+        "m_nVolumeTotalOriginal": 100,
+        "m_strRemark": "",
+        "m_strOrderRemark": "",
+        "m_strStrategyName": "",
+    })
+
+    callback_payload = json.loads([item for item in bridge.tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    assert data["strategy_name"] == strategy
+    assert data["order_remark"] == "manual-cancel-unique"
+    assert data["cfquant_order_meta_hit"] is True
+    assert data["cfquant_order_meta_match"] == "record_context"
+
+
+def test_normal_bridge_does_not_fill_manual_cancel_callback_when_bound_context_is_ambiguous():
+    bridge = NormalQmtBridge(DummyContext(), show=False, schedule_timer=False)
+    bridge.tx = RecordingTx()
+    for index in range(2):
+        bridge.order_meta_cache.upsert(order_meta.normalize_record({
+            "bridge_id": "default",
+            "account_id": "8885060548",
+            "account_type": "STOCK",
+            "stock_code": "000001.SZ",
+            "order_type": 23,
+            "price": 11.5,
+            "order_volume": 100,
+            "strategy_name": "strategy-%s" % index,
+            "order_remark": "remark-%s" % index,
+            "user_order_id": "remark-%s" % index,
+            "status": "callback_bound",
+            "order_ref": "16021934702591691%s" % index,
+        }))
+
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "8885060548",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nOrderStatus": xtconstant.ORDER_CANCELED,
+        "m_nOffsetFlag": 48,
+        "m_nOrderPriceType": 50,
+        "m_dLimitPrice": 11.5,
+        "m_nVolumeTotalOriginal": 100,
+        "m_strRemark": "",
+        "m_strOrderRemark": "",
+        "m_strStrategyName": "",
+    })
+
+    callback_payload = json.loads([item for item in bridge.tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    assert data["strategy_name"] == ""
+    assert data["order_remark"] == ""
+    assert "cfquant_order_meta_hit" not in data
+
+
 def test_pipe_normal_bridge_order_meta_is_disabled_and_does_not_open_lttx():
     bridge = PipeNormalQmtBridge(
         DummyContext(),

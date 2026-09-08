@@ -23,6 +23,16 @@ STORE_REF_PREFIX = "r:"
 DEFAULT_BRIDGE_ID = "default"
 DEFAULT_ACCOUNT_TYPE = "STOCK"
 PENDING_MATCH_TTL_SECONDS = 10 * 60
+ORDER_REF_FIELDS = (
+    "order_ref",
+    "m_strOrderRef",
+    "m_strOrderID",
+    "m_nRef",
+    "m_nOrderID",
+    "order_id",
+    "m_strOrderSysID",
+    "order_sysid",
+)
 
 
 def current_trade_day(ts=None):
@@ -205,19 +215,53 @@ def user_order_id_from_data(data):
 
 
 def order_ref_from_data(data):
-    return normalize_order_ref(
-        first_value(
-            data,
-            (
-                "order_ref",
-                "m_strOrderRef",
-                "m_nRef",
-                "order_id",
-                "m_nOrderID",
-                "m_strOrderSysID",
-            ),
-        )
-    )
+    refs = order_ref_candidates_from_data(data)
+    return refs[0] if refs else ""
+
+
+def order_ref_candidates_from_data(data):
+    if not isinstance(data, dict):
+        return []
+    values = []
+    for name in ORDER_REF_FIELDS:
+        value = data.get(name)
+        if not is_empty(value):
+            values.append(value)
+    existing = data.get("order_refs")
+    if isinstance(existing, (list, tuple, set)):
+        values.extend(existing)
+    elif not is_empty(existing):
+        values.append(existing)
+    refs = []
+    seen = set()
+    for value in values:
+        ref = normalize_order_ref(value)
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+    return refs
+
+
+def merge_order_ref_candidates(record, refs):
+    if not isinstance(record, dict):
+        return []
+    values = order_ref_candidates_from_data(record)
+    if isinstance(refs, (list, tuple, set)):
+        values.extend(refs)
+    elif not is_empty(refs):
+        values.append(refs)
+    merged = []
+    seen = set()
+    for value in values:
+        ref = normalize_order_ref(value)
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        merged.append(ref)
+    if merged:
+        record["order_refs"] = merged
+    return merged
 
 
 def normalize_record(record, bridge_id=None, account_type=None, account_id=None, now=None):
@@ -249,10 +293,14 @@ def normalize_record(record, bridge_id=None, account_type=None, account_id=None,
         if is_empty(data.get("order_remark")):
             data["order_remark"] = user_order_id
 
-    order_ref = order_ref_from_data(data)
+    order_refs = order_ref_candidates_from_data(data)
+    order_ref = order_refs[0] if order_refs else ""
     if order_ref:
         data["order_ref"] = order_ref
-        data["m_strOrderRef"] = order_ref
+        if is_empty(data.get("m_strOrderRef")):
+            data["m_strOrderRef"] = order_ref
+    if order_refs:
+        data["order_refs"] = order_refs
 
     stock_code = normalize_text(first_value(data, ("stock_code", "code", "m_strInstrumentID", "m_strStockCode")))
     if stock_code:
@@ -324,9 +372,10 @@ def store_entries_for_record(record):
     user_key = store_user_key(record.get("user_order_id"))
     if user_key:
         entries.append((user_key, payload))
-    ref_key = store_order_ref_key(record.get("order_ref"))
-    if ref_key:
-        entries.append((ref_key, payload))
+    for ref in order_ref_candidates_from_data(record):
+        ref_key = store_order_ref_key(ref)
+        if ref_key:
+            entries.append((ref_key, payload))
     return entries
 
 
@@ -353,10 +402,20 @@ class OrderMetaCache(object):
         return self._ctx(record) + (user_order_id,)
 
     def _ref_key(self, record):
-        order_ref = normalize_order_ref(record.get("order_ref"))
-        if not order_ref:
+        refs = self._ref_keys(record)
+        if not refs:
             return None
-        return self._ctx(record) + (order_ref,)
+        return refs[0]
+
+    def _ref_keys(self, record):
+        return [self._ctx(record) + (ref,) for ref in order_ref_candidates_from_data(record)]
+
+    @staticmethod
+    def _callback_bound(record):
+        if not isinstance(record, dict):
+            return False
+        status = normalize_text(record.get("status")).lower()
+        return bool(record.get("callback_bound_at")) or status in ("callback_bound", "callback_seen")
 
     def prune(self, trade_day=None, now=None):
         trade_day = current_trade_day(now) if trade_day is None else trade_day
@@ -393,14 +452,14 @@ class OrderMetaCache(object):
             return record
 
         user_key = self._user_key(record)
-        ref_key = self._ref_key(record)
+        ref_keys = self._ref_keys(record)
         if user_key:
             self.by_user[user_key] = record
-        if ref_key:
+        for ref_key in ref_keys:
             self.by_ref[ref_key] = record
 
         self._remove_pending_locked(record)
-        if user_key and not ref_key:
+        if user_key and not self._callback_bound(record):
             self.pending.append(record)
         return record
 
@@ -422,21 +481,22 @@ class OrderMetaCache(object):
 
     def _remove_locked(self, record):
         user_key = self._user_key(record)
-        ref_key = self._ref_key(record)
+        ref_keys = self._ref_keys(record)
         if user_key:
             self.by_user.pop(user_key, None)
-        if ref_key:
+        for ref_key in ref_keys:
             self.by_ref.pop(ref_key, None)
         self._remove_pending_locked(record)
 
     def _remove_pending_locked(self, record):
         user_key = self._user_key(record)
-        ref_key = self._ref_key(record)
+        ref_keys = set(self._ref_keys(record))
         next_pending = []
         for item in self.pending:
             if user_key and self._user_key(item) == user_key:
                 continue
-            if ref_key and self._ref_key(item) == ref_key:
+            item_ref_keys = set(self._ref_keys(item))
+            if ref_keys and item_ref_keys and ref_keys.intersection(item_ref_keys):
                 continue
             next_pending.append(item)
         self.pending = next_pending
@@ -478,32 +538,102 @@ class OrderMetaCache(object):
             self._prune_locked(current_trade_day(), time.time())
             record = None
             confidence = ""
-            order_ref = normalize_order_ref(callback_record.get("order_ref"))
+            order_refs = order_ref_candidates_from_data(callback_record)
             user_order_id = normalize_text(callback_record.get("user_order_id"))
-            if order_ref:
+            for order_ref in order_refs:
                 record = self.by_ref.get(self._ctx(callback_record) + (order_ref,))
                 if record:
                     confidence = "order_ref"
+                    break
             if record is None and user_order_id:
                 record = self.by_user.get(self._ctx(callback_record) + (user_order_id,))
                 if record:
                     confidence = "user_order_id"
             if record is None and allow_pending:
                 record, confidence = self._match_pending_locked(callback_record)
+            if record is None:
+                record, confidence = self._match_known_locked(callback_record, order_refs)
 
             bound_order_ref = ""
-            if record and order_ref and not normalize_order_ref(record.get("order_ref")):
-                record["order_ref"] = order_ref
-                record["m_strOrderRef"] = order_ref
-                record["status"] = "bound"
+            bound_order_refs = []
+            if record and order_refs:
+                existing_refs = order_ref_candidates_from_data(record)
+                existing_set = set(existing_refs)
+                bound_order_refs = [ref for ref in order_refs if ref not in existing_set]
+                merged_refs = merge_order_ref_candidates(record, order_refs)
+                if confidence == "pending_fifo" or not normalize_order_ref(record.get("order_ref")):
+                    record["order_ref"] = order_refs[0]
+                    record["m_strOrderRef"] = order_refs[0]
+                elif is_empty(record.get("m_strOrderRef")):
+                    record["m_strOrderRef"] = normalize_order_ref(record.get("order_ref"))
+                if confidence in ("pending_fifo", "order_ref", "user_order_id"):
+                    record["status"] = "callback_bound"
+                    record["callback_bound_at"] = time.time()
                 record["updated_at"] = time.time()
-                bound_order_ref = order_ref
+                bound_order_ref = order_refs[0] if bound_order_refs or merged_refs else ""
                 self._upsert_locked(record)
 
             return record, {
                 "bound_order_ref": bound_order_ref,
+                "bound_order_refs": bound_order_refs,
                 "match_confidence": confidence,
             }
+
+    def _unique_records_locked(self):
+        records = []
+        seen = set()
+        for mapping in (self.by_ref, self.by_user):
+            for record in mapping.values():
+                ident = id(record)
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                records.append(record)
+        for record in self.pending:
+            ident = id(record)
+            if ident in seen:
+                continue
+            seen.add(ident)
+            records.append(record)
+        return records
+
+    def _match_known_locked(self, callback_record, order_refs=None):
+        ctx = self._ctx(callback_record)
+        callback_refs = set(order_refs or order_ref_candidates_from_data(callback_record))
+        candidates = []
+        for record in self._unique_records_locked():
+            if self._ctx(record) != ctx:
+                continue
+            if normalize_text(record.get("trade_day")) != current_trade_day():
+                continue
+            if not self._has_callback_metadata(record):
+                continue
+            evidence = self._context_match_evidence(record, callback_record)
+            if evidence < 0:
+                continue
+            record_refs = set(order_ref_candidates_from_data(record))
+            ref_hit = bool(callback_refs and record_refs and callback_refs.intersection(record_refs))
+            if not ref_hit:
+                if not self._has_stock_context_match(record, callback_record):
+                    continue
+                if evidence < 3:
+                    continue
+            updated_at = self._record_timestamp(record)
+            score = (100 if ref_hit else 0) + evidence
+            candidates.append((record, score, ref_hit, updated_at))
+        if not candidates:
+            return None, ""
+        candidates.sort(key=lambda item: (item[1], item[3]), reverse=True)
+        top_score = candidates[0][1]
+        top = [item for item in candidates if item[1] == top_score]
+        if top[0][2]:
+            return top[0][0], "record_ref_scan"
+        if len(top) == 1:
+            return top[0][0], "record_context"
+        meta_keys = set(self._record_meta_identity(item[0]) for item in top)
+        if len(meta_keys) == 1:
+            return top[0][0], "record_context_shared_meta"
+        return None, ""
 
     def _match_pending_locked(self, callback_record):
         ctx = self._ctx(callback_record)
@@ -523,8 +653,6 @@ class OrderMetaCache(object):
                 continue
             if not self._compatible_value(record.get("order_type"), callback_record.get("order_type")):
                 continue
-            if not self._compatible_value(record.get("price_type"), callback_record.get("price_type")):
-                continue
             if not self._compatible_number(record.get("order_volume"), callback_record.get("order_volume")):
                 continue
             if not self._compatible_number(record.get("price"), callback_record.get("price")):
@@ -534,6 +662,61 @@ class OrderMetaCache(object):
             return None, ""
         matches.sort(key=lambda item: float(item.get("created_at") or 0))
         return matches[0], "pending_fifo"
+
+    @staticmethod
+    def _has_callback_metadata(record):
+        return bool(
+            normalize_text(record.get("strategy_name"))
+            or normalize_text(record.get("order_remark"))
+            or normalize_text(record.get("user_order_id"))
+            or normalize_text(record.get("client_order_id"))
+        )
+
+    def _context_match_evidence(self, record, callback_record):
+        evidence = 0
+        record_stock = stock_code_base(record.get("stock_code") or record.get("stock_code_base"))
+        callback_stock = stock_code_base(callback_record.get("stock_code") or callback_record.get("stock_code_base"))
+        if callback_stock and record_stock:
+            if callback_stock != record_stock:
+                return -1
+            evidence += 1
+        if not self._compatible_value(record.get("order_type"), callback_record.get("order_type")):
+            return -1
+        if not is_empty(record.get("order_type")) and not is_empty(callback_record.get("order_type")):
+            evidence += 1
+        if not self._compatible_number(record.get("order_volume"), callback_record.get("order_volume")):
+            return -1
+        if not is_empty(record.get("order_volume")) and not is_empty(callback_record.get("order_volume")):
+            evidence += 1
+        if not self._compatible_number(record.get("price"), callback_record.get("price")):
+            return -1
+        if not is_empty(record.get("price")) and not is_empty(callback_record.get("price")):
+            evidence += 1
+        return evidence
+
+    @staticmethod
+    def _has_stock_context_match(record, callback_record):
+        record_stock = stock_code_base(record.get("stock_code") or record.get("stock_code_base"))
+        callback_stock = stock_code_base(callback_record.get("stock_code") or callback_record.get("stock_code_base"))
+        return bool(callback_stock and record_stock and callback_stock == record_stock)
+
+    @staticmethod
+    def _record_timestamp(record):
+        for name in ("updated_at", "callback_bound_at", "created_at"):
+            try:
+                return float(record.get(name) or 0)
+            except Exception:
+                continue
+        return 0.0
+
+    @staticmethod
+    def _record_meta_identity(record):
+        return (
+            normalize_text(record.get("strategy_name")),
+            normalize_text(record.get("order_remark")),
+            normalize_text(record.get("user_order_id")),
+            normalize_text(record.get("client_order_id")),
+        )
 
     @staticmethod
     def _compatible_value(left, right):

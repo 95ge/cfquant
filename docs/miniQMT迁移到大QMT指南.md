@@ -161,7 +161,7 @@ CFQUANT_CTYPE_ALL_LOWLAT.py
 
 ```powershell
 cd D:\cfquant
-pip install -e .
+python -m pip install --editable .
 ```
 
 原 miniQMT 代码一般类似：
