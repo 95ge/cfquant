@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260908_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260908_02">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -1879,6 +1879,7 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
                       <li>分别填写上海、深圳 QMT 的 <code>bin.x64</code> 目录。</li>
                       <li>保存后确认两个目录生成市场身份文件。</li>
                       <li>上海 QMT 加载 <code>_SH.py</code>，深圳 QMT 加载 <code>_SZ.py</code>。</li>
+                      <li>深圳入口需挂在深市标的运行，例如 <code>SZ399001</code> 或 <code>000001.SZ</code>；不要把 <code>_SZ.py</code> 挂在 <code>SH000300</code> 上。</li>
                     </ol>
                   </div>
 
@@ -2257,35 +2258,54 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
           <small>高级模式必须填写与普通端不同的第二个 QMT，保存后会自动复制核心包并写入身份配置。</small>
         </label>
         <div class="market-routing-panel wide">
-          <label class="toggle binding-dialog-toggle">
-            <input id="bindingMarketRoutingEnabled" name="market_routing_enabled" type="checkbox">
-            <span>开启同账号独立市场路由</span>
-          </label>
-          <div class="market-routing-grid">
-            <label class="field">
-              <span>上海交易端目录</span>
-              <input id="bindingMarketShQmtDir" name="market_sh_qmt_dir" placeholder="D:\上海QMT交易端 或 D:\上海QMT交易端\bin.x64" autocomplete="off">
+          <div class="market-routing-head">
+            <label class="toggle binding-dialog-toggle">
+              <input id="bindingMarketRoutingEnabled" name="market_routing_enabled" type="checkbox">
+              <span>开启同账号独立市场路由</span>
             </label>
-            <label class="field">
-              <span>上海 bridge_id（可选）</span>
-              <input id="bindingMarketShBridgeId" name="market_sh_bridge_id" placeholder="自动生成" autocomplete="off">
-            </label>
-            <label class="field">
-              <span>上海持仓查询账号（可选）</span>
-              <input id="bindingMarketShPositionAccountId" name="market_sh_position_account_id" placeholder="股东账号或查询账号" autocomplete="off">
-            </label>
-            <label class="field">
-              <span>深圳交易端目录</span>
-              <input id="bindingMarketSzQmtDir" name="market_sz_qmt_dir" placeholder="D:\深圳QMT交易端 或 D:\深圳QMT交易端\bin.x64" autocomplete="off">
-            </label>
-            <label class="field">
-              <span>深圳 bridge_id（可选）</span>
-              <input id="bindingMarketSzBridgeId" name="market_sz_bridge_id" placeholder="自动生成" autocomplete="off">
-            </label>
-            <label class="field">
-              <span>深圳持仓查询账号（可选）</span>
-              <input id="bindingMarketSzPositionAccountId" name="market_sz_position_account_id" placeholder="股东账号或查询账号" autocomplete="off">
-            </label>
+            <small>同一资金账号拆成上海、深圳两个 QMT 交易端时启用；持仓查询子账号 Key 只用于独立市场脚本。</small>
+          </div>
+          <div class="market-route-groups">
+            <section class="market-route-group" aria-label="上海市场路由">
+              <div class="market-route-title">
+                <strong>SH 上海</strong>
+                <span>上海交易端</span>
+              </div>
+              <div class="market-route-fields">
+                <label class="field wide">
+                  <span>交易端目录</span>
+                  <input id="bindingMarketShQmtDir" name="market_sh_qmt_dir" placeholder="D:\上海QMT交易端 或 D:\上海QMT交易端\bin.x64" autocomplete="off">
+                </label>
+                <label class="field">
+                  <span>bridge_id（可选）</span>
+                  <input id="bindingMarketShBridgeId" name="market_sh_bridge_id" placeholder="自动生成" autocomplete="off">
+                </label>
+                <label class="field">
+                  <span>持仓查询子账号 Key（可选）</span>
+                  <input id="bindingMarketShPositionAccountId" name="market_sh_position_account_id" placeholder="2____10501____98101____49____资金账号____" autocomplete="off">
+                </label>
+              </div>
+            </section>
+            <section class="market-route-group" aria-label="深圳市场路由">
+              <div class="market-route-title">
+                <strong>SZ 深圳</strong>
+                <span>深圳交易端</span>
+              </div>
+              <div class="market-route-fields">
+                <label class="field wide">
+                  <span>交易端目录</span>
+                  <input id="bindingMarketSzQmtDir" name="market_sz_qmt_dir" placeholder="D:\深圳QMT交易端 或 D:\深圳QMT交易端\bin.x64" autocomplete="off">
+                </label>
+                <label class="field">
+                  <span>bridge_id（可选）</span>
+                  <input id="bindingMarketSzBridgeId" name="market_sz_bridge_id" placeholder="自动生成" autocomplete="off">
+                </label>
+                <label class="field">
+                  <span>持仓查询子账号 Key（可选）</span>
+                  <input id="bindingMarketSzPositionAccountId" name="market_sz_position_account_id" placeholder="2____10502____98102____49____资金账号____" autocomplete="off">
+                </label>
+              </div>
+            </section>
           </div>
         </div>
         <div class="binding-script-preview wide">
@@ -2392,6 +2412,6 @@ configure(transport="ctypes", pipe_name=r"\\.\pipe\cfquant_pipe_hub")
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260908_01"></script>
+  <script src="/app.js?v=web_20260908_02"></script>
 </body>
 </html>

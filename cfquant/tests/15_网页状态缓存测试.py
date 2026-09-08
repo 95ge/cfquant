@@ -490,10 +490,21 @@ def test_market_account_row_market_uses_qmt_numeric_exchange_mapping():
 
 
 def test_market_bridge_config_preserves_position_query_account():
+    sh_key = "2____10501____98101____49____77557115____"
+    sz_key = "2____10502____98102____49____77557115____"
+
+    assert web.looks_like_qmt_account_unit_key(sh_key)
+    assert not web.looks_like_qmt_account_unit_key("0800514969")
+
     routes = web.normalize_market_bridge_config(
         {
-            "SH": {"bridge_id": "acct_sh", "qmt_dir": r"D:\\qmt-sh", "shareholder_account_id": "B885307113"},
-            "SZ": {"bridge_id": "acct_sz", "qmt_dir": r"D:\\qmt-sz", "query_account_id": "0800514969"},
+            "SH": {
+                "bridge_id": "acct_sh",
+                "qmt_dir": r"D:\\qmt-sh",
+                "position_account_key": sh_key,
+                "shareholder_account_id": "B885307113",
+            },
+            "SZ": {"bridge_id": "acct_sz", "qmt_dir": r"D:\\qmt-sz", "query_account_id": sz_key},
         },
         account_id="77557115",
         account_type="STOCK",
@@ -501,10 +512,16 @@ def test_market_bridge_config_preserves_position_query_account():
         enabled=True,
     )
 
+    assert routes["SH"]["position_account_key"] == sh_key
+    assert routes["SH"]["query_account_key"] == sh_key
+    assert routes["SH"]["account_unit_key"] == sh_key
     assert routes["SH"]["position_account_id"] == "B885307113"
     assert routes["SH"]["query_account_id"] == "B885307113"
-    assert routes["SZ"]["position_account_id"] == "0800514969"
-    assert routes["SZ"]["query_account_id"] == "0800514969"
+    assert routes["SZ"]["position_account_key"] == sz_key
+    assert routes["SZ"]["query_account_key"] == sz_key
+    assert routes["SZ"]["account_unit_key"] == sz_key
+    assert routes["SZ"]["position_account_id"] == sz_key
+    assert routes["SZ"]["query_account_id"] == sz_key
 
 
 def test_market_account_positions_merge_keeps_numeric_sz_rows():

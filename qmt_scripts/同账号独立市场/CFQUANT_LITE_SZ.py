@@ -1439,6 +1439,8 @@ class TxTradeBridge(object):
                         )
                     if used_query_account_id != account_id:
                         formatted.setdefault("query_account_id", used_query_account_id)
+                        if "____" in str(used_query_account_id or ""):
+                            formatted.setdefault("query_account_key", used_query_account_id)
                     if detail_type.lower() == "order":
                         self._enrich_order_request_fields(formatted)
                 result.append(formatted)
@@ -1474,6 +1476,15 @@ class TxTradeBridge(object):
         if str(detail_type or "").strip().lower() != "position":
             return default_account_id
         names = (
+            "position_account_key",
+            "query_account_key",
+            "account_unit_key",
+            "qmt_account_key",
+            "market_account_key",
+            "market_position_account_key",
+            "market_query_account_key",
+            "sub_account_key",
+            "child_account_key",
             "position_account_id",
             "query_account_id",
             "account_query_id",
@@ -1505,6 +1516,13 @@ class TxTradeBridge(object):
                 return value
         market = self._active_market_route()
         for name in (
+            "position_account_keys",
+            "query_account_keys",
+            "account_unit_keys",
+            "qmt_account_keys",
+            "market_account_keys",
+            "market_position_account_keys",
+            "market_query_account_keys",
             "position_account_ids",
             "query_account_ids",
             "market_position_account_ids",

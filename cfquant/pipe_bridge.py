@@ -41,9 +41,10 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             pump_max_count=pump_max_count,
             pump_max_ms=pump_max_ms,
             dispatch_on_qmt_thread=dispatch_on_qmt_thread,
+            order_meta_enabled=False,
         )
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
-        self.request_channels = request_channels or [request_channel]
+        self.request_channels = list(request_channels or [request_channel])
         self.connect_timeout_ms = int(connect_timeout_ms)
 
     def start(self):
@@ -122,6 +123,7 @@ class PipeTradeBridge(TxTradeBridge):
             account_id=account_id,
             show=show,
             globals_dict=globals_dict,
+            order_meta_enabled=False,
         )
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
         self.connect_timeout_ms = int(connect_timeout_ms)

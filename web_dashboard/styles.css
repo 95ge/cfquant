@@ -3930,17 +3930,80 @@ th.num .sort-header {
 
 .market-routing-panel {
   display: grid;
-  gap: 10px;
-  padding: 12px;
+  gap: 12px;
+  padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfd;
 }
 
-.market-routing-grid {
+.market-routing-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.48fr);
+  grid-template-columns: minmax(220px, max-content) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8ef;
+}
+
+.market-routing-head .binding-dialog-toggle {
+  align-self: center;
+}
+
+.market-routing-head small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.market-route-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.market-route-group {
+  display: grid;
   gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d8e1ea;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.market-route-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.market-route-title strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.market-route-title span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.market-route-fields {
+  display: grid;
+  grid-template-columns: minmax(118px, 0.44fr) minmax(0, 0.56fr);
+  gap: 10px;
+}
+
+.market-route-fields .field.wide {
+  grid-column: 1 / -1;
+}
+
+.market-route-fields input {
+  min-width: 0;
 }
 
 .binding-dialog-actions {
@@ -8165,7 +8228,9 @@ tr.order-row-updated td {
     grid-template-columns: 1fr;
   }
 
-  .market-routing-grid {
+  .market-routing-head,
+  .market-route-groups,
+  .market-route-fields {
     grid-template-columns: 1fr;
   }
 

@@ -9,6 +9,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import cfquant_web_server as web
 from cfquant import order_meta
 from cfquant import xtconstant
+from cfquant.pipe_bridge import PipeNormalQmtBridge, PipeTradeBridge
 from cfquant.qmt_bridge import CfquantQmtBridge
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.tx_trade_bridge import TxTradeBridge
@@ -438,6 +439,55 @@ def test_normal_bridge_order_meta_store_fallback_is_account_scoped():
     assert callback_payloads[-1]["data"]["strategy_name"] == ""
     assert callback_payloads[-1]["data"]["order_remark"] == ""
     assert "cfquant_order_meta_hit" not in callback_payloads[-1]["data"]
+
+
+def test_pipe_normal_bridge_order_meta_is_disabled_and_does_not_open_lttx():
+    bridge = PipeNormalQmtBridge(
+        DummyContext(),
+        show=False,
+        account_id="A123",
+        request_channel="cfquant.normal.request",
+        request_channels=["cfquant.normal.request"],
+        schedule_timer=False,
+    )
+    bridge.running = True
+    bridge.tx = RecordingTx()
+    bridge._load_txl = lambda: (_ for _ in ()).throw(AssertionError("pipe bridge must not load LTtx"))
+
+    assert bridge.order_meta_enabled is False
+    assert bridge._ensure_order_meta_account_subscription("A123", "STOCK") is False
+
+    channel = order_meta.account_meta_channel("default", "STOCK", "A123")
+    assert channel not in bridge.request_channels
+    assert bridge.order_meta_accounts == set()
+
+
+def test_pipe_trade_bridge_does_not_transfer_order_meta_in_ctypes_mode():
+    calls = []
+    bridge = PipeTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={},
+    )
+    bridge.tx = RecordingTx()
+
+    def passorder(*args):
+        calls.append((args, list(bridge.tx.pushes), dict(bridge.tx.store)))
+        return 700011
+
+    bridge.globals_dict["passorder"] = passorder
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="user-ctype", strategy_name="ctype-strategy", find_order_wait=0),
+        {"id": "request-ctype-meta"},
+    )
+
+    assert bridge.order_meta_enabled is False
+    assert result["order_id"] == 700011
+    assert calls[0][1] == []
+    assert calls[0][2] == {}
+    assert bridge.tx.pushes == []
+    assert bridge.tx.store == {}
 
 
 def test_tx_trade_bridge_never_exposes_zero_as_order_id_when_lookup_is_stale():

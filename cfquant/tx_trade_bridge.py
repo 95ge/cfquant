@@ -110,6 +110,7 @@ class TxTradeBridge(object):
         account_id="",
         show=True,
         globals_dict=None,
+        order_meta_enabled=True,
     ):
         self.context = context
         self.ip = ip
@@ -133,6 +134,7 @@ class TxTradeBridge(object):
         self.pending_async_orders_lock = threading.RLock()
         self.order_request_metadata = {}
         self.order_request_metadata_lock = threading.RLock()
+        self.order_meta_enabled = bool(order_meta_enabled)
         self.order_meta_cache = order_meta.OrderMetaCache(self.bridge_id)
         self.order_meta_store_lock = threading.RLock()
         self.order_meta_store_initialized = set()
@@ -863,19 +865,22 @@ class TxTradeBridge(object):
             msg.get("id", "tx_order"),
         )
         strategy_name = params.get("strategy_name", "")
-        order_meta_record = self._build_order_meta_record(
-            params,
-            msg,
-            account_id,
-            account_type,
-            order_type,
-            price_type,
-            order_remark,
-            strategy_name,
-        )
-        self._publish_order_meta_record(order_meta_record, push=True, persist=True)
+        order_meta_record = None
+        if self.order_meta_enabled:
+            order_meta_record = self._build_order_meta_record(
+                params,
+                msg,
+                account_id,
+                account_type,
+                order_type,
+                price_type,
+                order_remark,
+                strategy_name,
+            )
+            self._publish_order_meta_record(order_meta_record, push=True, persist=True)
         previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
-        order_meta_record["previous_order_id"] = previous_order_id
+        if order_meta_record is not None:
+            order_meta_record["previous_order_id"] = previous_order_id
         try:
             result = passorder(
                 order_type,
@@ -891,24 +896,28 @@ class TxTradeBridge(object):
                 self.context,
             )
         except Exception as e:
-            order_meta_record.update({
-                "status": "failed",
-                "error": str(e),
-            })
-            self._publish_order_meta_record(order_meta_record, push=True, persist=True)
+            if order_meta_record is not None:
+                order_meta_record.update({
+                    "status": "failed",
+                    "error": str(e),
+                })
+                self._publish_order_meta_record(order_meta_record, push=True, persist=True)
             raise
 
         failed = self._is_failed_order_result(result)
         order_id = self._normalize_order_id(result)
-        order_meta_record["request_result"] = self._plain_value(result)
-        if order_id is not None:
-            order_meta_record["order_ref"] = str(order_id)
+        if order_meta_record is not None:
+            order_meta_record["request_result"] = self._plain_value(result)
+            if order_id is not None:
+                order_meta_record["order_ref"] = str(order_id)
         if failed:
-            order_meta_record["status"] = "failed"
-            self._publish_order_meta_record(order_meta_record, push=True, persist=True)
+            if order_meta_record is not None:
+                order_meta_record["status"] = "failed"
+                self._publish_order_meta_record(order_meta_record, push=True, persist=True)
         else:
-            order_meta_record["status"] = "accepted"
-            self._publish_order_meta_record(order_meta_record, push=True, persist=True)
+            if order_meta_record is not None:
+                order_meta_record["status"] = "accepted"
+                self._publish_order_meta_record(order_meta_record, push=True, persist=True)
             self._remember_order_request(
                 account_id,
                 params.get("stock_code", params.get("code", "")),
@@ -924,7 +933,7 @@ class TxTradeBridge(object):
                 previous_order_id,
                 params,
             )
-            if order_id is not None:
+            if order_meta_record is not None and order_id is not None:
                 order_meta_record["order_ref"] = str(order_id)
                 order_meta_record["status"] = "bound"
                 self._publish_order_meta_record(order_meta_record, push=True, persist=True)
@@ -1057,6 +1066,8 @@ class TxTradeBridge(object):
         )
 
     def _publish_order_meta_record(self, record, push=True, persist=True):
+        if not self.order_meta_enabled:
+            return record
         record = order_meta.normalize_record(record, bridge_id=self.bridge_id)
         self.order_meta_cache.upsert(record)
         payload = order_meta.encode_record(record)
@@ -1078,6 +1089,8 @@ class TxTradeBridge(object):
         return record
 
     def _persist_order_meta_record(self, record, payload=None):
+        if not self.order_meta_enabled:
+            return False
         tx = self.tx
         if tx is None:
             return False
@@ -1131,6 +1144,8 @@ class TxTradeBridge(object):
             return True
 
     def _load_order_meta_store(self, account_id, account_type):
+        if not self.order_meta_enabled:
+            return {"loaded": 0, "stale": 0}
         tx = self.tx
         if tx is None or not account_id:
             return {"loaded": 0, "stale": 0}
@@ -1169,6 +1184,8 @@ class TxTradeBridge(object):
         return info
 
     def _reset_order_meta_store(self, account_id, account_type, reason="manual"):
+        if not self.order_meta_enabled:
+            return False
         tx = self.tx
         if tx is None or not account_id:
             return False

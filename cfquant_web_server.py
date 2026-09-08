@@ -1346,6 +1346,11 @@ def default_market_bridge_id(account_id, account_type="STOCK", parent_bridge_id=
     return normalize_bridge_id("%s_%s" % (parent, market.lower()))
 
 
+def looks_like_qmt_account_unit_key(value):
+    text = str(value or "").strip()
+    return bool(text and "____" in text and text.count("____") >= 4)
+
+
 def normalize_market_bridge_config(value, account_id="", account_type="STOCK", parent_bridge_id=None, enabled=False):
     raw = value if isinstance(value, dict) else {}
     result = {}
@@ -1360,6 +1365,18 @@ def normalize_market_bridge_config(value, account_id="", account_type="STOCK", p
             item.get("qmt_dir") or item.get("python_dir") or item.get("core_dir")
         )
         bridge_id = str(item.get("bridge_id") or item.get("id") or "").strip()
+        position_account_key = str(
+            item.get("position_account_key")
+            or item.get("query_account_key")
+            or item.get("account_unit_key")
+            or item.get("qmt_account_key")
+            or item.get("market_account_key")
+            or item.get("market_position_account_key")
+            or item.get("market_query_account_key")
+            or item.get("sub_account_key")
+            or item.get("child_account_key")
+            or ""
+        ).strip()
         position_account_id = str(
             item.get("position_account_id")
             or item.get("query_account_id")
@@ -1371,6 +1388,8 @@ def normalize_market_bridge_config(value, account_id="", account_type="STOCK", p
             or item.get("secu_account")
             or ""
         ).strip()
+        if not position_account_key and looks_like_qmt_account_unit_key(position_account_id):
+            position_account_key = position_account_id
         if enabled or has_input or qmt_dir:
             bridge_id = normalize_bridge_id(
                 bridge_id or default_market_bridge_id(account_id, account_type, parent_bridge_id, market)
@@ -1379,6 +1398,9 @@ def normalize_market_bridge_config(value, account_id="", account_type="STOCK", p
                 "market": market,
                 "bridge_id": bridge_id,
                 "qmt_dir": qmt_dir,
+                "position_account_key": position_account_key,
+                "query_account_key": position_account_key,
+                "account_unit_key": position_account_key,
                 "position_account_id": position_account_id,
                 "query_account_id": position_account_id,
                 "config_filename": MARKET_ROUTE_CONFIG_FILENAME_TEMPLATE % market,
@@ -8445,7 +8467,17 @@ def write_qmt_market_bridge_identities(row):
         bridge_id = normalize_bridge_id(route.get("bridge_id") or "")
         qmt_dir = normalize_optional_path(route.get("qmt_dir"))
         filename = str(route.get("config_filename") or (MARKET_ROUTE_CONFIG_FILENAME_TEMPLATE % market))
+        position_account_key = str(
+            route.get("position_account_key")
+            or route.get("query_account_key")
+            or route.get("account_unit_key")
+            or route.get("qmt_account_key")
+            or route.get("market_account_key")
+            or ""
+        ).strip()
         position_account_id = str(route.get("position_account_id") or route.get("query_account_id") or "").strip()
+        if not position_account_key and looks_like_qmt_account_unit_key(position_account_id):
+            position_account_key = position_account_id
         result = {
             "written": False,
             "market": market,
@@ -8454,6 +8486,7 @@ def write_qmt_market_bridge_identities(row):
             "account_id": account_id,
             "account_type": account_type,
             "account_key": account_key,
+            "position_account_key": position_account_key,
             "position_account_id": position_account_id,
             "qmt_dir": qmt_dir,
             "path": "",
@@ -8482,6 +8515,11 @@ def write_qmt_market_bridge_identities(row):
                 "account_id": account_id,
                 "account_type": account_type,
                 "account_key": account_key,
+                "position_account_key": position_account_key,
+                "query_account_key": position_account_key,
+                "account_unit_key": position_account_key,
+                "qmt_account_key": position_account_key,
+                "market_account_key": position_account_key,
                 "position_account_id": position_account_id,
                 "query_account_id": position_account_id,
                 "shareholder_account_id": position_account_id,
