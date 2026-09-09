@@ -71,7 +71,7 @@ def configure(
     if client_id is not None:
         _config["client_id"] = client_id
     if transport is not None:
-        _config["transport"] = str(transport or "ctypes").lower()
+        _config["transport"] = str(transport or DEFAULT_TRANSPORT or "auto").lower()
     if pipe_name is not None:
         _config["pipe_name"] = pipe_name
     if pipe_connect_timeout_ms is not None:

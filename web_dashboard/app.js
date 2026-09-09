@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260908_04';
+const FRONTEND_VERSION = 'web_20260909_02';
 
 const state = {
   accountId: '',
@@ -93,6 +93,7 @@ const state = {
   quoteSocketMessageCount: 0,
   apiDebugBusy: false,
   onboardingStep: 'intro',
+  tutorialReaderSession: null,
   onboardingDoneSteps: new Set(),
   lastLogKey: '',
   lastLogAt: 0,
@@ -110,6 +111,11 @@ const state = {
   qmtScriptSourceCache: {},
   qmtScriptSourcePromises: {},
   qmtScriptRenderToken: 0,
+  tests: [],
+  testSourceId: '',
+  testSearchText: '',
+  testSourceLoaded: false,
+  testSourceBusy: false,
   bindingQmtGuideValues: null,
   bindingQmtGuideDeploy: null,
   bindingQmtGuideContext: '',
@@ -132,6 +138,7 @@ const SETTINGS_TAB_KEY = 'cfquant.settings_tab';
 const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups';
 const ACCOUNT_CONFIG_CACHE_KEY = 'cfquant.account_config_cache.v1';
 const WEB_AUTH_TOKEN_KEY = 'cfquant.web_auth_token';
+const TEST_SOURCE_SELECTION_KEY = 'cfquant.test_source';
 const WEB_AUTH_SESSION_TOKEN_KEY = 'cfquant.web_auth_session_token';
 const WEB_AUTH_REMEMBER_KEY = 'cfquant.web_auth_remember';
 const DEFAULT_AVATAR_URL = '/avatars/market-blue.svg';
@@ -494,6 +501,232 @@ function wireQmtScriptCopyList(listId, statusId) {
     if (!button) return;
     copyQmtScript(button.dataset.qmtScriptCopy || '', statusId);
   });
+}
+
+async function copyTextWithFallback(text) {
+  const value = String(text || '');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch (_error) {
+      // Fallback below handles browsers that block clipboard access for this page.
+    }
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = value;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  textarea.style.top = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const ok = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  if (!ok) throw new Error('浏览器拒绝复制');
+}
+
+function formatTestSourceSize(value) {
+  const size = Number(value || 0);
+  if (!Number.isFinite(size) || size <= 0) return '--';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function selectedTestSource() {
+  if (!state.tests.length) return null;
+  const selected = state.tests.find((item) => item.name === state.testSourceId);
+  return selected || state.tests[0] || null;
+}
+
+function filteredTestSources() {
+  const keyword = String(state.testSearchText || '').trim().toLowerCase();
+  if (!keyword) return state.tests.slice();
+  return state.tests.filter((item) => {
+    const text = [
+      item.title,
+      item.name,
+      item.category,
+      item.description,
+      item.command,
+    ].map((value) => String(value || '').toLowerCase()).join('\n');
+    return text.includes(keyword);
+  });
+}
+
+function setTestSourceSummary(text) {
+  const node = $('testSourceSummary');
+  if (node) node.textContent = text;
+}
+
+function renderTestSourceList() {
+  const list = $('testSourceList');
+  if (!list) return;
+  if (state.testSourceBusy && !state.tests.length) {
+    list.innerHTML = '<div class="test-source-empty">正在读取测试脚本...</div>';
+    return;
+  }
+  if (!state.tests.length) {
+    list.innerHTML = '<div class="test-source-empty">暂未找到测试脚本。</div>';
+    return;
+  }
+  const items = filteredTestSources();
+  if (items.length && !items.some((item) => item.name === state.testSourceId)) {
+    state.testSourceId = items[0].name;
+  }
+  if (!items.length) {
+    list.innerHTML = '<div class="test-source-empty">没有匹配的测试脚本。</div>';
+    return;
+  }
+  list.innerHTML = items.map((item) => {
+    const active = item.name === state.testSourceId;
+    const commandBadge = item.command ? '可复制命令' : '只读源码';
+    const danger = item.dangerous ? '<em>真实委托</em>' : '';
+    return `<button class="test-source-item${active ? ' active' : ''}${item.dangerous ? ' dangerous' : ''}" type="button" data-test-name="${esc(item.name)}">
+      <span>${esc(item.category || '测试脚本')}${danger}</span>
+      <strong>${esc(item.title || item.name)}</strong>
+      <small>${esc(item.name)}</small>
+      <b>${esc(commandBadge)}</b>
+    </button>`;
+  }).join('');
+}
+
+function renderSelectedTestSource() {
+  const selected = selectedTestSource();
+  const title = $('testSourceTitle');
+  const desc = $('testSourceDesc');
+  const meta = $('testSourceMeta');
+  const code = $('testSourceCode');
+  const copyCodeButton = $('copyTestSourceBtn');
+  const copyCommandButton = $('copyTestCommandBtn');
+  if (!selected) {
+    if (title) title.textContent = state.testSourceBusy ? '正在读取测试脚本' : '暂无测试脚本';
+    if (desc) desc.textContent = state.testSourceBusy ? '请稍候。' : 'cfquant/tests 目录下未找到可展示的 .py 或 .md 文件。';
+    if (meta) meta.innerHTML = '';
+    if (code) code.innerHTML = `<code>${state.testSourceBusy ? '正在读取测试脚本...' : '暂无内容'}</code>`;
+    if (copyCodeButton) copyCodeButton.disabled = true;
+    if (copyCommandButton) copyCommandButton.disabled = true;
+    return;
+  }
+  if (title) title.textContent = selected.title || selected.name;
+  if (desc) desc.textContent = selected.description || '';
+  const parts = [
+    `<span>${esc(selected.category || '测试脚本')}</span>`,
+    `<code>${esc(selected.name)}</code>`,
+    `<span>${Number(selected.line_count || 0).toLocaleString('zh-CN')} 行</span>`,
+    `<span>${esc(formatTestSourceSize(selected.size))}</span>`,
+  ];
+  if (selected.updated_at_text) parts.push(`<span>更新 ${esc(selected.updated_at_text)}</span>`);
+  if (selected.command) parts.push(`<code>${esc(selected.command)}</code>`);
+  if (selected.warning) parts.push(`<span class="danger">${esc(selected.warning)}</span>`);
+  if (meta) meta.innerHTML = parts.join('');
+  if (code) code.innerHTML = `<code>${esc(selected.source || '')}</code>`;
+  if (copyCodeButton) copyCodeButton.disabled = !selected.source;
+  if (copyCommandButton) copyCommandButton.disabled = !selected.command;
+}
+
+function renderTestsView() {
+  renderTestSourceList();
+  renderSelectedTestSource();
+  if (!state.testSourceLoaded && !state.testSourceBusy) {
+    loadTestSources().catch((error) => {
+      setTestSourceSummary(`测试脚本读取失败：${error.message}`);
+    });
+  }
+}
+
+async function loadTestSources(options = {}) {
+  if (state.testSourceBusy) return;
+  state.testSourceBusy = true;
+  setTestSourceSummary('正在读取 cfquant/tests...');
+  renderTestSourceList();
+  renderSelectedTestSource();
+  try {
+    const data = await api('/api/tests/source');
+    const tests = Array.isArray(data.tests) ? data.tests : [];
+    state.tests = tests;
+    state.testSourceLoaded = true;
+    const saved = localStorage.getItem(TEST_SOURCE_SELECTION_KEY) || '';
+    if (options.force || !state.testSourceId || !tests.some((item) => item.name === state.testSourceId)) {
+      state.testSourceId = tests.some((item) => item.name === saved)
+        ? saved
+        : ((tests[0] && tests[0].name) || '');
+    }
+    setTestSourceSummary(`已读取 ${tests.length} 个测试文件`);
+  } catch (error) {
+    state.testSourceLoaded = false;
+    setTestSourceSummary(`测试脚本读取失败：${error.message}`);
+    const list = $('testSourceList');
+    const code = $('testSourceCode');
+    if (list) list.innerHTML = `<div class="test-source-empty error">读取失败：${esc(error.message)}</div>`;
+    if (code) code.innerHTML = `<code>读取失败：${esc(error.message)}</code>`;
+    throw error;
+  } finally {
+    state.testSourceBusy = false;
+    renderTestSourceList();
+    renderSelectedTestSource();
+  }
+}
+
+function selectTestSource(name) {
+  if (!state.tests.some((item) => item.name === name)) return;
+  state.testSourceId = name;
+  localStorage.setItem(TEST_SOURCE_SELECTION_KEY, name);
+  renderTestSourceList();
+  renderSelectedTestSource();
+}
+
+async function copySelectedTestSource() {
+  const selected = selectedTestSource();
+  if (!selected || !selected.source) return;
+  try {
+    await copyTextWithFallback(selected.source);
+    setTestSourceSummary(`${selected.title || selected.name} 代码已复制`);
+  } catch (error) {
+    setTestSourceSummary(`复制失败：${error.message}`);
+  }
+}
+
+async function copySelectedTestCommand() {
+  const selected = selectedTestSource();
+  if (!selected || !selected.command) return;
+  try {
+    await copyTextWithFallback(selected.command);
+    setTestSourceSummary(`${selected.title || selected.name} 运行命令已复制`);
+  } catch (error) {
+    setTestSourceSummary(`复制失败：${error.message}`);
+  }
+}
+
+function wireTestsView() {
+  const refreshButton = $('refreshTestsBtn');
+  if (refreshButton) {
+    refreshButton.addEventListener('click', () => {
+      loadTestSources({ force: true }).catch((error) => log('测试脚本读取失败', { error: error.message }));
+    });
+  }
+  const searchInput = $('testSearchInput');
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      state.testSearchText = searchInput.value || '';
+      renderTestSourceList();
+      renderSelectedTestSource();
+    });
+  }
+  const list = $('testSourceList');
+  if (list) {
+    list.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-test-name]');
+      if (!button) return;
+      selectTestSource(button.dataset.testName || '');
+    });
+  }
+  const copyCodeButton = $('copyTestSourceBtn');
+  if (copyCodeButton) copyCodeButton.addEventListener('click', copySelectedTestSource);
+  const copyCommandButton = $('copyTestCommandBtn');
+  if (copyCommandButton) copyCommandButton.addEventListener('click', copySelectedTestCommand);
 }
 
 function bindingQmtDeployRoleLabel(item = {}) {
@@ -4076,6 +4309,9 @@ async function continueAfterConfig() {
   }
   hideSetupOverlay();
   await startAuthenticatedApp();
+  if (state.currentView === 'tests') {
+    renderTestsView();
+  }
   maybeAutoOpenOnboardingGuide();
 }
 
@@ -5984,6 +6220,7 @@ function setView(view) {
     bindings: '绑定',
     callbacks: '回调',
     api: '接口',
+    tests: '测试',
     settings: '设置',
     tutorial: '教程',
   };
@@ -6017,6 +6254,9 @@ function setView(view) {
     connectOrderCallbackSocket();
     refreshCallbacks().catch((error) => log('回调刷新失败', { error: error.message }));
   }
+  if (view === 'tests') {
+    renderTestsView();
+  }
   if (view === 'tutorial') {
     renderActiveTutorialMermaid();
   }
@@ -6025,7 +6265,8 @@ function setView(view) {
 function syncHomeToolbar() {
   const home = state.currentView === 'overview';
   const toolbar = document.querySelector('.toolbar');
-  if (toolbar) toolbar.style.display = state.currentView === 'bindings' ? 'none' : '';
+  const toolbarHidden = state.currentView === 'bindings' || state.currentView === 'tests';
+  if (toolbar) toolbar.style.display = toolbarHidden ? 'none' : '';
   const bridgeField = $('bridgeField');
   if (bridgeField) bridgeField.style.display = 'none';
   [
@@ -10892,11 +11133,13 @@ function setTutorialTopic(name) {
   document.querySelectorAll('.tutorial-topic').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.guidePanel === name);
   });
+  document.querySelector('.tutorial-layout')?.classList.toggle('python-reference-active', name === 'python' && Boolean(window.CfquantPythonReference));
+  if (name === 'python') window.CfquantPythonReference?.mount();
   if (name === 'deploy') {
     setDeployModeTab(deployTab || localStorage.getItem(DEPLOY_MODE_TAB_KEY) || 'ctypes');
   }
   if (name === 'onboarding') syncOnboardingWizard();
-  if (state.currentView === 'tutorial') renderActiveTutorialMermaid();
+  if (state.currentView === 'tutorial' || state.tutorialReaderSession) renderActiveTutorialMermaid();
 }
 
 function setDeployModeTab(mode) {
@@ -11119,17 +11362,87 @@ function setSettingsTab(name, shouldPersist = true) {
   });
 }
 
+function openTutorialReader(opener) {
+  const reader = $('tutorialReader');
+  const layout = document.querySelector('.tutorial-layout');
+  if (!reader || !layout || reader.open) return;
+  // Move the existing tutorial DOM so its navigation, diagrams and IDs remain shared.
+  ensureOnboardingModalRoot();
+  const placeholder = document.createComment('tutorial-layout');
+  layout.replaceWith(placeholder);
+  state.tutorialReaderSession = { placeholder, layout, opener };
+  $('tutorialReaderBody').appendChild(layout);
+  $('closeTutorialReaderBtn').textContent = opener.dataset.tutorialReturn || '返回引导';
+  document.body.classList.add('tutorial-reader-open');
+  reader.showModal();
+  const topic = localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'deploy';
+  setTutorialTopic(topic === 'onboarding' ? 'deploy' : topic);
+  layout.querySelector('.tutorial-content').scrollTop = 0;
+}
+
+function closeTutorialReader() {
+  const session = state.tutorialReaderSession;
+  if (!session) return;
+  closeImageLightbox();
+  const lightbox = $('imageLightbox');
+  if (lightbox && lightbox.parentElement === $('tutorialReader')) {
+    document.body.appendChild(lightbox);
+  }
+  session.placeholder.replaceWith(session.layout);
+  state.tutorialReaderSession = null;
+  document.body.classList.remove('tutorial-reader-open');
+  $('tutorialReader').close();
+  if (session.opener.isConnected) session.opener.focus({ preventScroll: true });
+}
+
+function wireTutorialReader() {
+  document.querySelectorAll('[data-open-tutorial]').forEach((button) => {
+    button.addEventListener('click', () => openTutorialReader(button));
+  });
+  $('closeTutorialReaderBtn').addEventListener('click', closeTutorialReader);
+  const reader = $('tutorialReader');
+  reader.addEventListener('cancel', (event) => {
+    event.preventDefault();
+    closeTutorialReader();
+  });
+  reader.addEventListener('click', (event) => {
+    const link = event.target.closest('a[href^="#"]');
+    const target = link && $(link.hash.slice(1));
+    if (!target || !reader.contains(target)) return;
+    event.preventDefault();
+    target.setAttribute('tabindex', '-1');
+    target.scrollIntoView({ block: 'start' });
+    target.focus({ preventScroll: true });
+  });
+  reader.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    event.stopPropagation();
+    const lightbox = $('imageLightbox');
+    if (lightbox && lightbox.classList.contains('open')) {
+      closeImageLightbox();
+      $('closeTutorialReaderBtn').focus();
+    } else {
+      closeTutorialReader();
+    }
+  });
+}
+
 function wireTutorialNavigation() {
   document.querySelectorAll('.tutorial-menu-item').forEach((item) => {
     item.addEventListener('click', () => {
       if (item.dataset.guide === 'onboarding') {
-        openOnboardingGuide({ manual: true });
+        if (state.tutorialReaderSession) closeTutorialReader();
+        else openOnboardingGuide({ manual: true });
       } else {
         setTutorialTopic(item.dataset.guide);
+        if (state.tutorialReaderSession) {
+          state.tutorialReaderSession.layout.querySelector('.tutorial-content').scrollTop = 0;
+        }
       }
     });
   });
-  setTutorialTopic(localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'deploy');
+  setTutorialTopic(window.CfquantPythonReference?.idFromHash() != null ? 'python' : localStorage.getItem(TUTORIAL_TOPIC_KEY) || 'deploy');
 }
 
 function wireDeployModeNavigation() {
@@ -11200,6 +11513,8 @@ function openImageLightbox(imgNode) {
   const img = $('imageLightboxImg');
   const caption = $('imageLightboxCaption');
   if (!box || !img || !caption || !imgNode) return;
+  const reader = $('tutorialReader');
+  if (reader && reader.open) reader.appendChild(box);
   img.src = imgNode.currentSrc || imgNode.src;
   img.alt = imgNode.alt || '图片预览';
   const figureCaption = imgNode.closest('figure') && imgNode.closest('figure').querySelector('figcaption');
@@ -11280,6 +11595,8 @@ async function boot() {
   wireNavigation();
   wireDataTabs();
   wireTutorialNavigation();
+  wireTutorialReader();
+  wireTestsView();
   wireDeployModeNavigation();
   wireViewShortcuts();
   wireOnboardingGuide();
@@ -11291,7 +11608,7 @@ async function boot() {
   renderCallbacks();
   renderProjectVersion(null);
   setDataTab(localStorage.getItem('cfquant.trade_tab') || 'positions', false);
-  setView(localStorage.getItem('cfquant.view') || 'overview');
+  setView(window.CfquantPythonReference?.idFromHash() != null ? 'tutorial' : localStorage.getItem('cfquant.view') || 'overview');
   if (hydrateAccountConfigFromCache()) {
     renderBridgeSelect(state.bridges);
     renderAccountSelect(state.defaultAccountId);

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import os
+import inspect
 import json
 import sys
 import threading
@@ -10,8 +11,14 @@ from .version import __version__ as CORE_VERSION
 from . import account_routing
 from . import order_meta
 from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, set_log_language, translate_log
-from .runtime_report import build_qmt_runtime_report, write_qmt_runtime_marker
-from .xttype import filter_cancelable_orders
+from .runtime_report import build_qmt_runtime_report, module_source_state, source_sha256, write_qmt_runtime_marker
+from .xttype import (
+    CreditAssure, CreditSloCode, CreditSubjects, XtPositionStatistics,
+    filter_cancelable_orders, normalize_order_price_type,
+)
+
+
+_LOADED_SOURCE_SHA256 = source_sha256(__file__)
 
 
 XTTRADER_COMPAT_CANDIDATES = {
@@ -287,7 +294,7 @@ class TxTradeBridge(object):
         if action == "xtdata.get_instrument_detail":
             return self._get_instrument_detail(params)
         if action == "xtdata.get_stock_list_in_sector":
-            return self.context.get_stock_list_in_sector(params.get("sector_name", ""))
+            return self._get_stock_list_in_sector(params)
         if action.startswith("xtdata."):
             return self._dispatch_xtdata_compat(action, params, msg)
         if action.startswith("xttrader."):
@@ -359,6 +366,7 @@ class TxTradeBridge(object):
             entry_file=entry_file,
             module_file=__file__,
             started_at=self.started_at,
+            extra=module_source_state(__file__, _LOADED_SOURCE_SHA256, self.started_at),
         )
 
     def _publish_runtime_report(self, reason):
@@ -1431,6 +1439,27 @@ class TxTradeBridge(object):
 
     def _dispatch_xttrader_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
+        if method == "query_position_statistics":
+            if self._get_callable("get_trade_detail_data"):
+                return self._query_qmt_objects(params, XtPositionStatistics, "get_trade_detail_data", "FUTURE")
+            return self._generic_xttrader_call(method, params)
+        if method in ("query_credit_assure", "query_credit_subjects", "query_credit_slo_code"):
+            cls, source = {
+                "query_credit_assure": (CreditAssure, "get_assure_contract"),
+                "query_credit_subjects": (CreditSubjects, "get_assure_contract"),
+                "query_credit_slo_code": (CreditSloCode, "get_enable_short_contract"),
+            }[method]
+            if self._get_callable(source):
+                return self._query_qmt_objects(params, cls, source, "CREDIT")
+            return self._generic_xttrader_call(method, params)
+        if method == "query_new_purchase_limit":
+            func = self._get_callable("get_new_purchase_limit")
+            if func:
+                return func(self._query_account_id(params))
+        if method == "query_ipo_data":
+            func = self._get_callable("get_ipo_data")
+            if func:
+                return func()
         if method == "query_com_fund":
             rows = self._query_trade_detail(params, "account")
             return rows[0] if rows else {}
@@ -1446,8 +1475,55 @@ class TxTradeBridge(object):
             return self._query_trade_detail(params, "position")
         return self._generic_xttrader_call(method, params)
 
+    def _query_account_id(self, params):
+        account = params.get("account") or {}
+        account_id = account.get("account_id") or params.get("account_id") or self.account_id
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError("account_id must be a non-empty string")
+        return account_id
+
+    def _query_qmt_objects(self, params, cls, source, required_account_type):
+        account_id = self._query_account_id(params)
+        account = params.get("account") or {}
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        if account_type.upper() != required_account_type:
+            raise ValueError("%s requires a %s account" % (cls.__name__, required_account_type))
+        func = self._get_callable(source)
+        if not func:
+            raise NotImplementedError("%s not found" % source)
+        if cls is XtPositionStatistics:
+            rows = self._call_trade_detail_data(func, account_id, "future", "position_statistics")
+        else:
+            rows = func(account_id)
+        if rows is None:
+            return None
+        result = []
+        for row in rows:
+            obj = cls.from_any(row, normalize=self._plain_value)
+            if not isinstance(obj, cls):
+                raise ValueError("%s returned an invalid query row" % source)
+            data = dict(vars(obj))
+            if not data.get("account_id"):
+                data["account_id"] = account_id
+            if str(data["account_id"]) != account_id:
+                raise ValueError("%s returned a different account" % source)
+            result.append(data)
+        return result
+
     def _dispatch_xtdata_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
+        adapters = {
+            "get_cb_info": self._get_cb_info,
+            "get_divid_factors": self._get_divid_factors,
+            "get_sector_list": self._get_sector_list,
+            "create_sector_folder": self._create_sector_folder,
+            "create_sector": self._create_sector,
+            "reset_sector": self._reset_sector,
+            "remove_stock_from_sector": self._remove_stock_from_sector,
+            "call_formula_batch": self._call_formula_batch,
+        }
+        if method in adapters:
+            return adapters[method](*(params.get("args") or []), **(params.get("kwargs") or {}))
         if method == "get_trading_dates":
             return self._get_trading_dates(params)
         if method in (
@@ -1490,7 +1566,9 @@ class TxTradeBridge(object):
             )
         if method in XTDATA_COMPAT_CANDIDATES:
             return self._generic_xtdata_call(method, params, msg)
-        raise NotImplementedError("xtdata.%s is not implemented by cfquant QMT bridge" % method)
+        source = module_source_state(__file__, _LOADED_SOURCE_SHA256, self.started_at)
+        hint = "; bridge source changed on disk, restart the QMT process to load the updated module" if source["restart_required"] else ""
+        raise NotImplementedError("xtdata.%s is not implemented by cfquant QMT bridge%s" % (method, hint))
 
     def _generic_xtdata_call(self, method, params, msg=None):
         candidates = XTDATA_COMPAT_CANDIDATES.get(method, (method,))
@@ -1611,9 +1689,34 @@ class TxTradeBridge(object):
         )
 
     def _get_local_data(self, params):
+        modern = self._get_callable("get_market_data_ex")
+        if modern:
+            # The ninth QMT argument disables subscription and reads local data.
+            arguments = (
+                params.get("field_list", []),
+                params.get("stock_list") or params.get("code_list") or ([params["stock_code"]] if params.get("stock_code") else []),
+                params.get("period", "1d"),
+                params.get("start_time", ""),
+                params.get("end_time", ""),
+                params.get("count", -1),
+                params.get("dividend_type", "none"),
+                params.get("fill_data", True),
+                False,
+            )
+            try:
+                signature = inspect.signature(modern)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None:
+                try:
+                    signature.bind(*arguments)
+                except TypeError:
+                    modern = None
+            if modern is not None:
+                return modern(*arguments)
         func = self._get_callable("get_local_data")
         if not func:
-            return self._get_market_data_ex(params)
+            raise NotImplementedError("get_local_data requires local QMT data access")
         stock_code = self._first_param(params, ("stock_code", "stockcode", "stock", "code"), "")
         stock_list = self._list_param(params.get("stock_list", params.get("code_list", [])))
         if not stock_code and stock_list:
@@ -1621,26 +1724,28 @@ class TxTradeBridge(object):
         return self._call_local_data(func, stock_code, params)
 
     def _call_local_data(self, func, stock_code, params):
+        start_time = params.get("start_time") or params.get("start_date") or "19700101"
+        end_time = params.get("end_time") or params.get("end_date") or "22010101"
         return self._call_variants(func, [
             ((
                 stock_code,
-                params.get("start_time", params.get("start_date", "19700101")),
-                params.get("end_time", params.get("end_date", "22010101")),
+                start_time,
+                end_time,
                 params.get("period", "follow"),
                 params.get("divid_type", params.get("dividend_type", "none")),
                 params.get("count", -1),
             ), {}),
             ((
                 stock_code,
-                params.get("start_time", params.get("start_date", "19700101")),
-                params.get("end_time", params.get("end_date", "22010101")),
+                start_time,
+                end_time,
                 params.get("period", "follow"),
                 params.get("divid_type", params.get("dividend_type", "none")),
             ), {}),
             ((
                 stock_code,
-                params.get("start_time", params.get("start_date", "19700101")),
-                params.get("end_time", params.get("end_date", "22010101")),
+                start_time,
+                end_time,
             ), {}),
             ((stock_code,), {}),
         ])
@@ -1802,29 +1907,129 @@ class TxTradeBridge(object):
         params = params or {}
         stock_code = self._first_param(params, ("stock_code", "stockcode", "stock", "code"), "")
         iscomplete = params.get("iscomplete", params.get("is_complete", params.get("complete", False)))
-        func = self._get_callable("get_instrument_detail")
-        if func:
+        for name in ("get_instrument_detail", "get_instrumentdetail"):
+            func = self._get_callable(name)
+            if not func:
+                continue
             try:
-                return self._call_variants(func, [
-                    ((stock_code, iscomplete), {}),
-                    ((stock_code,), {}),
-                ])
+                if name == "get_instrumentdetail":
+                    result = func(stock_code)
+                    if isinstance(result, dict):
+                        result = dict(result)
+                        result["cfquant_detail_partial"] = True
+                        result["cfquant_detail_source"] = name
+                    return result
+                return self._call_variants(func, [((stock_code, iscomplete), {}), ((stock_code,), {})])
             except Exception as e:
                 if not self._instrument_detail_callable_missing(e):
                     raise
-                self._log("get_instrument_detail unavailable, using fallback: %s" % e)
-        else:
-            self._log("get_instrument_detail not found, using fallback")
+                self._log("%s unavailable: %s" % (name, e))
+        self._log("get_instrument_detail not found, using fallback")
         return self._fallback_instrument_detail(params, stock_code)
 
+    def _require_qmt_callable(self, *names):
+        func = self._get_callable(*names)
+        if not func:
+            raise NotImplementedError("requires QMT callable: %s" % ", ".join(names))
+        return func
+
+    def _get_cb_info(self, stockcode):
+        # The Python source supplies two fields, not the similarly named VBA API.
+        data = self._require_qmt_callable("get_convert_bond_info")(stockcode)
+        if data is None or data == {}:
+            return data
+        if not isinstance(data, dict):
+            raise ValueError("QMT get_convert_bond_info must return a dictionary")
+        result = {
+            "bondCode": stockcode,
+            "cfquant_partial": True,
+            "cfquant_source": "get_convert_bond_info",
+        }
+        for source, target in (("stockcode", "stockCode"), ("convert_price", "bondConvPrice")):
+            if source in data:
+                result[target] = data[source]
+        return result
+
+    def _get_divid_factors(self, stock_code):
+        return self._require_qmt_callable("get_divid_factors")(stock_code)
+
+    def _get_stock_list_in_sector(self, params):
+        func = self._require_qmt_callable("get_stock_list_in_sector")
+        sector = params.get("sector_name", "")
+        timetag = params.get("real_timetag", -1)
+        if timetag == -1:
+            return func(sector)
+        # Never retry without a requested historical timestamp.
+        return func(sector, timetag)
+
+    def _get_sector_list(self):
+        func = self._require_qmt_callable("get_sector_list")
+        pending, visited, sectors, seen = [""], set(), [], set()
+        while pending:
+            node = pending.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            if len(visited) > 10000:
+                raise ValueError("QMT sector tree exceeds 10000 nodes")
+            info = func(node)
+            if not isinstance(info, (list, tuple)) or len(info) != 2:
+                raise ValueError("QMT get_sector_list must return [sectors, folders]")
+            if any(not isinstance(items, (list, tuple)) for items in info):
+                raise ValueError("invalid QMT sector tree node")
+            if any(not isinstance(name, str) or not name for items in info for name in items):
+                raise ValueError("invalid QMT sector or folder name")
+            for sector in info[0]:
+                if sector not in seen:
+                    seen.add(sector)
+                    sectors.append(sector)
+            pending.extend(reversed(info[1]))
+        return sectors
+
+    def _create_sector_folder(self, parent_node, folder_name, overwrite=True):
+        return self._require_qmt_callable("create_sector_folder")(parent_node, folder_name, overwrite)
+
+    def _create_sector(self, parent_node, sector_name, overwrite=True):
+        return self._require_qmt_callable("create_sector")(parent_node, sector_name, overwrite)
+
+    def _validate_sector_stocks(self, sector_name, stock_list):
+        if not isinstance(sector_name, str) or not sector_name.strip():
+            raise ValueError("sector_name must be a non-empty string")
+        if not isinstance(stock_list, (list, tuple)) or any(
+            not isinstance(code, str) or not code.strip() for code in stock_list
+        ):
+            raise ValueError("stock_list must be a list of non-empty stock codes")
+
+    def _reset_sector(self, sector_name, stock_list):
+        self._validate_sector_stocks(sector_name, stock_list)
+        return self._require_qmt_callable("reset_sector_stock_list", "reset_sector")(sector_name, list(stock_list))
+
+    def _remove_stock_from_sector(self, sector_name, stock_list):
+        self._validate_sector_stocks(sector_name, stock_list)
+        func = self._require_qmt_callable("remove_stock_from_sector")
+        succeeded = True
+        for code in dict.fromkeys(stock_list):
+            # Evaluate every deletion; False must not short-circuit the remaining stocks.
+            if not func(sector_name, code):
+                succeeded = False
+        return succeeded
+
+    def _call_formula_batch(self, formula_names, stock_codes, period, start_time="", end_time="",
+                            count=-1, dividend_type="none", extend_params=None):
+        return self._require_qmt_callable("call_formula_batch")(
+            formula_names, stock_codes, period, start_time, end_time, count, dividend_type,
+            [] if extend_params is None else extend_params,
+        )
+
     def _instrument_detail_callable_missing(self, error):
-        if isinstance(error, (AttributeError, NotImplementedError)):
+        if isinstance(error, NotImplementedError):
             return True
         text = str(error or "").strip().lower().replace("_", " ")
         if not text:
             return False
         missing_markers = ("not found", "not implemented", "unsupported", "no attribute")
-        return "get instrument detail" in text and any(marker in text for marker in missing_markers)
+        is_detail = "get instrument detail" in text or "get instrumentdetail" in text
+        return is_detail and any(marker in text for marker in missing_markers)
 
     def _fallback_instrument_detail(self, params, stock_code):
         code_info = self._instrument_code_info(stock_code)
@@ -2417,7 +2622,10 @@ class TxTradeBridge(object):
                 "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "order_volume": self._get_value(obj, "m_nVolumeTotalOriginal"),
-                "price_type": self._first_value(obj, ("m_nPriceType", "m_nOrderPriceType")),
+                "price_type": normalize_order_price_type(
+                    self._first_value(obj, ("price_type", "m_nPriceType", "m_nOrderPriceType")),
+                    self._get_value(obj, "m_strExchangeID"),
+                ),
                 "price": self._first_value(obj, ("m_dLimitPrice", "m_dOrderPrice", "m_dPrice")),
                 "traded_price": self._get_value(obj, "m_dTradedPrice"),
                 "traded_volume": self._get_value(obj, "m_nVolumeTraded"),

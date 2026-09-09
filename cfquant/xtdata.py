@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import datetime
 import time
 
 from .client import configure, get_client
@@ -189,9 +190,89 @@ def get_instrument_detail(stock_code, iscomplete=False):
     })
 
 
-def get_stock_list_in_sector(sector_name):
+def get_stock_list_in_sector(sector_name, real_timetag=-1):
     return get_client().request("xtdata.get_stock_list_in_sector", {
         "sector_name": sector_name,
+        "real_timetag": real_timetag,
+    })
+
+
+def get_cb_info(stockcode):
+    """Return available CB fields; cfquant_partial marks the two-field QMT source."""
+    return get_client().request("xtdata.get_cb_info", {"args": [stockcode], "stock_code": stockcode})
+
+
+def get_divid_factors(stock_code, start_time="", end_time=""):
+    import pandas as pd
+
+    start = _divid_time_bound(start_time)
+    end = _divid_time_bound(end_time, end=True)
+    if start is not None and end is not None and start > end:
+        raise ValueError("start_time must not be after end_time")
+    data = get_client().request("xtdata.get_divid_factors", {"args": [stock_code], "stock_code": stock_code})
+    columns = ["interest", "stockBonus", "stockGift", "allotNum", "allotPrice", "gugai", "dr"]
+    if not isinstance(data, dict):
+        raise ValueError("QMT get_divid_factors must return a timestamp dictionary")
+    records = []
+    for timestamp, values in data.items():
+        timestamp = int(timestamp)
+        if (start is not None and timestamp < start) or (end is not None and timestamp > end):
+            continue
+        if isinstance(values, dict):
+            if any(column not in values for column in columns):
+                raise ValueError("QMT dividend record is missing required fields")
+            values = [values[column] for column in columns]
+        if not isinstance(values, (list, tuple)) or len(values) != len(columns):
+            raise ValueError("QMT dividend record must contain seven factor values")
+        records.append((timestamp, list(values)))
+    records.sort(key=lambda item: item[0])
+    return pd.DataFrame(
+        [item[1] for item in records],
+        index=pd.Index([item[0] for item in records], dtype="int64"),
+        columns=columns,
+    )
+
+
+def _divid_time_bound(value, end=False):
+    if value == "":
+        return None
+    if not isinstance(value, str) or len(value) not in (8, 14) or not value.isdigit():
+        raise ValueError("dividend time must be YYYYMMDD or YYYYMMDDhhmmss")
+    parsed = datetime.datetime.strptime(value, "%Y%m%d" if len(value) == 8 else "%Y%m%d%H%M%S")
+    # QMT timestamps are milliseconds; use exchange time, not the SDK host's timezone.
+    parsed = parsed.replace(tzinfo=datetime.timezone(datetime.timedelta(hours=8)))
+    result = int(parsed.timestamp() * 1000)
+    if end:
+        result += (86400000 if len(value) == 8 else 1000) - 1
+    return result
+
+
+def get_sector_list():
+    return _generic_xtdata_request("get_sector_list")
+
+
+def create_sector_folder(parent_node, folder_name, overwrite=True):
+    return _generic_xtdata_request("create_sector_folder", parent_node, folder_name, overwrite)
+
+
+def create_sector(parent_node, sector_name, overwrite=True):
+    return _generic_xtdata_request("create_sector", parent_node, sector_name, overwrite)
+
+
+def reset_sector(sector_name, stock_list):
+    return _generic_xtdata_request("reset_sector", sector_name, stock_list)
+
+
+def remove_stock_from_sector(sector_name, stock_list):
+    return _generic_xtdata_request("remove_stock_from_sector", sector_name, stock_list)
+
+
+def call_formula_batch(formula_names, stock_codes, period, start_time="", end_time="",
+                       count=-1, dividend_type="none", extend_params=None):
+    return get_client().request("xtdata.call_formula_batch", {
+        "args": [formula_names, stock_codes, period, start_time, end_time, count,
+                 dividend_type, [] if extend_params is None else extend_params],
+        "stock_codes": stock_codes,
     })
 
 
@@ -417,11 +498,8 @@ _CONDITIONAL_XTDATA_METHODS = [
     "get_kline_trading_period",
     "get_all_trading_periods",
     "get_period_list",
-    "create_sector",
     "add_sector",
     "remove_sector",
-    "reset_sector",
-    "remove_stock_from_sector",
     "create_formula",
     "call_formula",
     "subscribe_formula",

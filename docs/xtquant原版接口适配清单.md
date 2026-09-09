@@ -1,6 +1,6 @@
 # xtquant 原版接口适配清单
 
-更新时间：2026-09-08
+更新时间：2026-09-09
 
 本清单以 [ThinkTrader 原生 Python API 文档](https://dict.thinktrader.net/nativeApi/start_now.html?id=I3DJ97)公开介绍的接口和功能为基准，对照当前 `cfquant` 实现整理。接口范围来自官网文档，不再通过枚举本机 `xtquant` Python 包的函数名确定。
 
@@ -19,12 +19,14 @@
 
 | 范围 | 官网条目数 | ✅ 已适配 | ✅ 部分适配 | ❌ 条件待验证 | ❌ 未适配 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `xtdata` 正文接口 | 43 | 5 | 8 | 18 | 12 |
+| `xtdata` 正文接口 | 43 | 7 | 11 | 18 | 7 |
 | `xtdata` 官网补充提及 | 5 | 1 | 0 | 1 | 3 |
-| `XtQuantTrader` 正文接口，含构造函数 | 38 | 15 | 5 | 17 | 1 |
+| `XtQuantTrader` 正文接口，含构造函数 | 38 | 16 | 10 | 11 | 1 |
 | `XtQuantTrader` 官网补充提及 | 3 | 2 | 1 | 0 | 0 |
 | `XtQuantTraderCallback` 正文回调 | 8 | 5 | 2 | 1 | 0 |
-| 官网交易数据结构及账号对象 | 18 | 9 | 2 | 0 | 7 |
+| 官网交易数据结构及账号对象 | 18 | 13 | 2 | 0 | 3 |
+
+2026-09-09 首批改动覆盖高级模式、通用模式使用的共用桥及 SDK。独立内嵌桥实现的 `CFQUANT_LITE.py` 和其沪深分市场版本，以及旧 `CfquantQmtBridge` 不在本批新增能力覆盖范围内。新增代码已经过模拟终端回归，但未完成券商终端实测；下列状态不能作为所有模式、所有终端均可调用的保证。
 
 ## xtdata：正文接口
 
@@ -43,19 +45,19 @@
 | `subscribe_formula` | 订阅 VBA 模型的计算结果 | ❌ 条件待验证 | 已有转发及回调入口；需要终端暴露模型订阅函数，不能据此认定投研端模型功能已适配。 |
 | `unsubscribe_formula` | 停止指定模型订阅 | ❌ 条件待验证 | 依赖终端模型反订阅函数。 |
 | `call_formula` | 运行指定证券、周期和参数的 VBA 模型 | ❌ 条件待验证 | 仅转发底层同名函数，需验证模型运行环境及结果结构。 |
-| `call_formula_batch` | 一次执行多组模型与证券组合 | ❌ 未适配 | 尚无批量模型调用入口；不能用单模型入口的存在代替此项。 |
+| `call_formula_batch` | 一次执行多组模型与证券组合 | ❌ 条件待验证 | 已补显式参数入口及大 QMT 批量模型调用，不再依赖单模型入口；不猜测旧版签名，模型环境、数据权限及真实结果仍待终端验证。 |
 | `generate_index_data` | 批量计算模型因子并输出本地文件 | ❌ 未适配 | 尚无官网所述因子生成和文件输出流程。 |
 | `get_market_data` | 按字段、证券和时间范围读取 K 线或分笔数据 | ✅ 部分适配 | 已映射大 QMT 行情查询；直接返回底层结构，缺少该函数时还会回退到扩展查询，未统一保证官网的按字段组织结构。 |
-| `get_local_data` | 批量读取本地已有历史行情 | ✅ 部分适配 | 可读取大 QMT 本地数据或回退扩展查询；`data_dir` 不实现 MiniQMT 本地目录切换语义。 |
+| `get_local_data` | 批量读取本地已有历史行情 | ✅ 部分适配 | 优先使用大 QMT `get_market_data_ex(..., subscribe=False)` 读取本地数据；已知不支持该签名的旧接口走本地读取，保留空结果，不用自动订阅掩盖缺失数据。`data_dir` 不实现 MiniQMT 本地目录切换语义。 |
 | `get_full_tick` | 查询证券或市场当前的最新分笔快照 | ✅ 已适配 | 已接入实时 tick 查询；高级模式优先交易桥，失败后尝试普通桥。 |
-| `get_divid_factors` | 查询分红、配股等除权数据及因子 | ❌ 未适配 | 尚无对应查询入口；行情查询的复权参数不等于此接口。 |
+| `get_divid_factors` | 查询分红、配股等除权数据及因子 | ✅ 部分适配 | 已将大 QMT 的时间戳字典转换成七列 DataFrame，按毫秒时间戳排序，以北京时间筛选日期区间；索引固定为整数毫秒，尚未与原版真实返回逐项比对。 |
 | `download_history_data` | 补充单只证券指定周期的历史行情 | ✅ 已适配 | 已接入历史行情补充流程。 |
 | `download_history_data2` | 批量补充历史行情，并通过回调报告进度 | ✅ 部分适配 | 已有批量任务和事件回调；进度及生命周期事件还包含 cfquant 扩展语义。 |
 | `download_history_contracts` | 补充已到期或退市合约的基础资料 | ❌ 条件待验证 | 仅尝试终端对应下载函数。 |
 | `get_holidays` | 读取已保存的节假日日期 | ❌ 未适配 | 尚无读取节假日的同名入口。 |
 | `get_trading_calendar` | 查询指定市场在日期区间内的交易日历 | ❌ 条件待验证 | 依赖终端日历函数及已有节假日数据；不是 `get_trading_dates` 的直接别名。 |
 | `download_cb_data` | 更新可转债基础资料 | ❌ 条件待验证 | 仅尝试终端对应下载函数。 |
-| `get_cb_info` | 查询指定可转债的基础资料 | ❌ 未适配 | cfquant 尚未接入。大 QMT 有 `ContextInfo.get_convert_bond_info(bondcode)`，可返回存续期转债的正股代码和最新转股价，可作为部分适配来源；完整资料不能直接视为等价，见下方说明。 |
+| `get_cb_info` | 查询指定可转债的基础资料 | ✅ 部分适配 | 已映射 `get_convert_bond_info`，转换为 `stockCode`、`bondConvPrice`，附带查询代码 `bondCode` 和 `cfquant_partial=True`；仅存续期转债的部分资料，不包含发行规模、余额、条款等完整数据。 |
 | `get_ipo_info` | 查询日期范围内的新股发行和申购资料 | ❌ 未适配 | 交易侧当日新股查询不能直接替代此行情接口。 |
 | `get_period_list` | 查询当前数据服务支持的数据周期 | ❌ 条件待验证 | 仅转发终端同名函数。 |
 | `download_etf_info` | 更新 ETF 申购赎回清单资料 | ❌ 条件待验证 | 仅尝试终端对应下载函数。 |
@@ -65,7 +67,7 @@
 
 #### 可转债接口的对应关系
 
-[官方函数检索表](https://dict.thinktrader.net/VBA/check_sheet.html)同时列有内置 Python 和 VBA 函数：`ContextInfo.get_convert_bond_info(bondcode)` 返回字典，其中 `stockcode` 是正股代码，`convert_price` 是最新转股价，适用范围为存续期内可转债。该能力可以作为 `get_cb_info` 的部分数据来源，但当前 cfquant 尚未映射，也未在目标终端实测。
+[官方函数检索表](https://dict.thinktrader.net/VBA/check_sheet.html)同时列有内置 Python 和 VBA 函数：`ContextInfo.get_convert_bond_info(bondcode)` 返回字典，其中 `stockcode` 是正股代码，`convert_price` 是最新转股价，适用范围为存续期内可转债。cfquant 已将其映射为[原生可转债字典](https://dict.thinktrader.net/dictionary/bond.html#获取可转债信息)的 `stockCode`、`bondConvPrice`，返回 `cfquant_source="get_convert_bond_info"` 和部分资料标志。底层返回 `None` 或空字典时保持无数据，不伪造缺失字段；尚未在目标终端实测。
 
 同一检索表中的 VBA `get_cb_info(转债代码, 字段号)`、`get_cb_info_num(转债代码, 字段号)` 按字段返回字符串或数值，可查询发行总额、债券余额、转股价等。它们不等同于原生 Python `xtdata.get_cb_info(stockcode)` 返回完整资料字典的接口；要作为完整适配来源，还需验证 Python 到 VBA 的调用路径并逐项转换字段。[官方教程的接口对照表](https://dict.thinktrader.net/freshman/rookie.html#其他vip数据)对原生 `xtdata.get_cb_info` 的内置 Python 对应项标为 `None`，不能据此否定上述较小范围的内置查询能力。
 
@@ -85,18 +87,18 @@
 
 | 原版接口 | 功能释义 | 适配 | 适配情况 |
 | --- | --- | --- | --- |
-| `get_instrument_detail` | 查询合约的市场、名称、上市日期等基础字段 | ✅ 部分适配 | 优先调用终端详情函数；缺失时合成部分基础字段，并标记 `cfquant_detail_fallback`、`cfquant_detail_partial`，不保证完整详情字段。 |
+| `get_instrument_detail` | 查询合约的市场、名称、上市日期等基础字段 | ✅ 部分适配 | 依次尝试新版名称、旧版 `get_instrumentdetail`、基础字段合成。旧版结果标记 `cfquant_detail_partial` 和来源；合成结果还标记 `cfquant_detail_fallback`。真实业务错误不会触发旧名称回退。 |
 | `get_instrument_type` | 判断合约所属证券类型 | ❌ 未适配 | `is_stock`、`is_fund` 等扩展入口不等于官网接口及其返回结构。 |
 | `get_trading_dates` | 查询某市场在日期区间内的交易日列表 | ✅ 部分适配 | 官网参数是 `market/start_time/end_time`；cfquant 使用大 QMT 的 `stockcode/start_date/end_date/period`，参数和市场语义需要转换。 |
-| `get_sector_list` | 列出可查询的板块名称 | ❌ 未适配 | 尚无板块目录查询入口。 |
-| `get_stock_list_in_sector` | 查询某个板块包含的证券代码 | ✅ 部分适配 | 常用板块查询已接入；官网版本说明提到的 `real_timetag` 参数尚未支持。 |
+| `get_sector_list` | 列出可查询的板块名称 | ✅ 部分适配 | 已按大 QMT 节点名称遍历板块树，输出去重后的扁平板块列表，防止循环目录；同名目录及终端分类覆盖仍待实测。 |
+| `get_stock_list_in_sector` | 查询某个板块包含的证券代码 | ✅ 已适配 | 已增加 `real_timetag=-1` 参数；指定历史毫秒时间戳时传给大 QMT 的 `realtime`，旧终端不接受该参数时直接报错，不退回当前成分。 |
 | `download_sector_data` | 更新板块分类和成分信息 | ❌ 条件待验证 | 仅尝试终端对应下载函数。 |
-| `create_sector_folder` | 在板块树中创建目录 | ❌ 未适配 | 尚无板块目录创建入口。 |
-| `create_sector` | 在指定目录下建立板块 | ❌ 条件待验证 | 已有同名转发，父节点、覆盖参数等语义需终端支持并验证。 |
+| `create_sector_folder` | 在板块树中创建目录 | ❌ 条件待验证 | 已补显式入口，准确传递父节点、目录名和覆盖标志，保留实际创建名称；不进行副作用调用重试，实际目录写入仍待终端验证。 |
+| `create_sector` | 在指定目录下建立板块 | ❌ 条件待验证 | 已改为固定签名调用，保留覆盖标志与实际创建名称，不再尝试多种写入参数组合；实际板块写入仍待终端验证。 |
 | `add_sector` | 添加自定义板块及其证券列表 | ❌ 条件待验证 | 仅转发终端同名函数。 |
-| `remove_stock_from_sector` | 从板块中移除指定证券 | ❌ 条件待验证 | 仅转发终端同名函数；此项是删除成分股，不是创建板块。 |
+| `remove_stock_from_sector` | 从板块中移除指定证券 | ✅ 部分适配 | 已将列表拆成大 QMT 单证券删除，全部成功才返回 `True`；部分失败仍处理剩余证券。非原子操作，异常可能发生在部分修改之后，不提供回滚。 |
 | `remove_sector` | 删除指定自定义板块 | ❌ 条件待验证 | 仅转发终端同名函数。 |
-| `reset_sector` | 用新证券列表替换板块成分 | ❌ 条件待验证 | 仅转发终端同名函数。 |
+| `reset_sector` | 用新证券列表替换板块成分 | ✅ 已适配 | 已映射大 QMT `reset_sector_stock_list(sector, stock_list)`，保留布尔结果，支持空列表；调用前校验列表，不进行写入重试。 |
 | `get_index_weight` | 查询指数成分及对应权重 | ❌ 未适配 | 扩展接口 `get_weight_in_index` 查询单个成分权重，不能直接替代官网的整组返回。 |
 | `download_index_weight` | 更新指数成分权重数据 | ❌ 条件待验证 | 仅尝试终端对应下载函数。 |
 
@@ -151,7 +153,7 @@
 | `query_stock_orders` | 查询当日委托，可只返回可撤委托 | ✅ 已适配 | 读取委托明细，支持 `cancelable_only` 筛选并转换为 `XtOrder`。 |
 | `query_stock_trades` | 查询当日成交记录 | ✅ 已适配 | 读取成交明细并转换为 `XtTrade`。 |
 | `query_stock_positions` | 查询账号证券持仓 | ✅ 已适配 | 读取持仓明细并转换为 `XtPosition`。 |
-| `query_position_statistics` | 查询期货持仓的汇总统计 | ❌ 条件待验证 | 仅尝试底层统计查询函数；尚无专用 `XtPositionStatistics` 结构适配。 |
+| `query_position_statistics` | 查询期货持仓的汇总统计 | ✅ 已适配 | 已接入 `get_trade_detail_data(account_id, 'future', 'position_statistics')` 并转换为 `XtPositionStatistics`；校验期货账号类型，保留无数据和空列表的区别。 |
 
 ### 信用查询接口
 
@@ -159,16 +161,16 @@
 | --- | --- | --- | --- |
 | `query_credit_detail` | 查询信用账号资产及融资融券资金情况 | ❌ 条件待验证 | 仅尝试候选信用查询函数，未统一转换为官网信用资产结构。 |
 | `query_stk_compacts` | 查询融资融券负债合约 | ❌ 条件待验证 | 仅尝试候选负债查询函数，未统一转换为官网负债合约结构。 |
-| `query_credit_subjects` | 查询融资融券业务的标的证券 | ❌ 条件待验证 | 依赖终端候选查询函数及其结果结构。 |
-| `query_credit_slo_code` | 查询可用于融券的证券及相关信息 | ❌ 条件待验证 | 依赖终端候选查询函数及其结果结构。 |
-| `query_credit_assure` | 查询担保证券及担保品信息 | ❌ 条件待验证 | 依赖终端候选查询函数及其结果结构。 |
+| `query_credit_subjects` | 查询融资融券业务的标的证券 | ✅ 部分适配 | 已使用 `get_assure_contract(account_id)` 返回 `CreditSubjects`，映射融资融券状态和比例；保留底层全部标的和状态，不推断未提供的字段，与原版标的范围仍待核对。 |
+| `query_credit_slo_code` | 查询可用于融券的证券及相关信息 | ✅ 部分适配 | 已使用 `get_enable_short_contract(account_id)` 返回 `CreditSloCode`，映射可融数量及普通/专项来源；不同柜台的券源覆盖、来源语义仍待实测。 |
+| `query_credit_assure` | 查询担保证券及担保品信息 | ✅ 部分适配 | 已使用 `get_assure_contract(account_id)` 返回 `CreditAssure`，映射担保状态及折算比例；保留底层全部记录，终端返回范围仍待核对。 |
 
 ### 其他查询接口
 
 | 原版接口 | 功能释义 | 适配 | 适配情况 |
 | --- | --- | --- | --- |
-| `query_new_purchase_limit` | 查询账号可用的新股申购额度 | ❌ 条件待验证 | 仅尝试终端候选查询函数。 |
-| `query_ipo_data` | 查询当日可申购的新股和新债 | ❌ 条件待验证 | 仅尝试终端候选查询函数。 |
+| `query_new_purchase_limit` | 查询账号可用的新股申购额度 | ✅ 部分适配 | 优先固定调用 `get_new_purchase_limit(account_id)`，不再先把账号字典传给此大 QMT 函数；保留终端字典，市场键和额度范围仍待实测。 |
+| `query_ipo_data` | 查询当日可申购的新股和新债 | ✅ 部分适配 | 优先固定无参数调用大 QMT `get_ipo_data()`；保留终端字典，返回字段完整性仍待实测，不等价于历史新股资料查询。 |
 | `query_account_infos` | 查询可使用的资金账号信息 | ❌ 条件待验证 | 仅尝试终端账号查询函数；尚未统一转换为 `XtAccountInfo`。 |
 | `query_account_status` | 查询资金账号当前状态 | ❌ 条件待验证 | 仅尝试终端账号状态查询函数，结果未统一规范。 |
 | `query_com_fund` | 查询划拨业务中普通柜台的资金 | ✅ 部分适配 | 当前复用大 QMT 账号资金明细，尚未保证区分官网所述普通柜台资金。 |
@@ -192,7 +194,7 @@
 | --- | --- | --- | --- |
 | `query_stock_order` | 按委托编号查询一笔委托 | ✅ 已适配 | 官网快速入门示例使用；cfquant 从委托列表匹配目标委托。 |
 | `query_stock_position` | 查询指定证券的持仓 | ✅ 已适配 | 官网快速入门示例使用；cfquant 从持仓列表匹配证券代码。 |
-| `query_stock_orders_async` | 通过回调取得委托查询结果 | ✅ 部分适配 | 官网专用线程章节备注提及；当前同步查询后直接调用 callback，不是原版异步查询调度。 |
+| `query_stock_orders_async` | 通过回调取得委托查询结果 | ✅ 部分适配 | 官网专用线程章节备注提及；已改为后台查询、立即返回请求序号，独立线程按查询顺序派发回调。属于 cfquant 异步适配，不保证原版底层调度与专用响应线程开关语义。 |
 
 官网版本说明将约券申请写作 `smt_negotiate_order`，正文给出的调用签名是 `smt_negotiate_order_async`。本清单按正文签名列一项，不将版本说明中的名称额外计数或认定为可调用别名。
 
@@ -208,7 +210,7 @@
 | `on_stock_trade` | 接收新增成交记录 | ✅ 已适配 | 已接入大 QMT 成交回调并进行成交字段转换。 |
 | `on_order_error` | 接收委托提交失败的信息 | ✅ 已适配 | 已有错误事件和 `XtOrderError` 对象转换。 |
 | `on_cancel_error` | 接收撤单失败的信息 | ✅ 已适配 | 已有错误事件和 `XtCancelError` 对象转换。 |
-| `on_order_stock_async_response` | 接收异步报单请求对应的委托结果 | ✅ 已适配 | 已实现请求序号与委托回报关联。 |
+| `on_order_stock_async_response` | 接收异步报单请求对应的委托结果 | ✅ 已适配 | 已实现请求序号与委托回报关联；独立应答缺失时，SDK可从匹配的委托事件补发，不等同于原生应答已经送达。 |
 | `on_smt_appointment_async_response` | 接收约券申请等异步业务反馈 | ❌ 条件待验证 | 已有回调入口；约券业务本身及异步受理语义仍依赖终端，不能按存在回调方法认定完成。 |
 
 ## 官网交易数据结构及账号对象
@@ -219,19 +221,19 @@
 | --- | --- | --- | --- |
 | `StockAccount` | 指定资金账号及账号类型 | ✅ 已适配 | 已提供账号对象，并扩展桥路由信息。 |
 | `XtAsset` | 表示现金、冻结资金、市值和总资产 | ✅ 已适配 | 已实现常用资金字段映射。 |
-| `XtOrder` | 表示委托编号、价格、数量和状态 | ✅ 已适配 | 已实现常用委托字段和大 QMT 字段映射。 |
+| `XtOrder` | 表示委托编号、价格、数量和状态 | ✅ 已适配 | 已实现常用字段映射；查询与回调统一转换有明确对应关系的价格枚举，例如大 QMT限价50转SDK限价11，保留原始字段；无法唯一映射的市价类型不猜测。 |
 | `XtTrade` | 表示成交证券、价格、数量及关联委托 | ✅ 已适配 | 已实现常用成交字段映射。 |
 | `XtPosition` | 表示持仓数量、可用数量、成本和市值 | ✅ 已适配 | 已实现常用持仓字段映射。 |
-| `XtPositionStatistics` | 表示期货持仓汇总及相关统计 | ❌ 未适配 | 尚无专用对象及字段转换。 |
+| `XtPositionStatistics` | 表示期货持仓汇总及相关统计 | ✅ 已适配 | 已映射官网对应的持仓、成本、盈亏、保证金等字段，包含旧拼写 `m_nYestodayPosition`，缺失字段不补零。 |
 | `XtOrderResponse` | 表示异步报单的请求序号和委托编号 | ✅ 已适配 | 已提供对象及请求序号、委托关联字段。 |
 | `XtCancelOrderResponse` | 表示异步撤单请求的处理结果 | ✅ 已适配 | 已提供对象及常用撤单结果字段转换。 |
 | `XtOrderError` | 表示报单失败的编号和原因 | ✅ 已适配 | 已提供对象及错误字段转换。 |
 | `XtCancelError` | 表示撤单失败的委托标识和原因 | ✅ 已适配 | 已提供对象及错误字段转换。 |
 | `XtCreditDetail` | 表示信用账号资产、负债和额度 | ❌ 未适配 | 目前未提供对应专用对象及字段映射。 |
 | `StkCompacts` | 表示融资融券负债合约 | ❌ 未适配 | 目前未提供对应专用对象及字段映射。 |
-| `CreditSubjects` | 表示融资融券标的及其业务属性 | ❌ 未适配 | 目前未提供对应专用对象及字段映射。 |
-| `CreditSloCode` | 表示可融券证券及可用券源信息 | ❌ 未适配 | 目前未提供对应专用对象及字段映射。 |
-| `CreditAssure` | 表示担保证券及担保品属性 | ❌ 未适配 | 目前未提供对应专用对象及字段映射。 |
+| `CreditSubjects` | 表示融资融券标的及其业务属性 | ✅ 已适配 | 已映射账号、市场枚举、证券代码、融资融券状态和保证金比例，保留缺失字段的缺失状态。 |
+| `CreditSloCode` | 表示可融券证券及可用券源信息 | ✅ 已适配 | 已映射账号、市场枚举、证券代码、可融数量及头寸来源，不填充已被内置接口移除的比例字段。 |
+| `CreditAssure` | 表示担保证券及担保品属性 | ✅ 已适配 | 已映射账号、市场枚举、证券代码、担保状态和折算比例。 |
 | `XtAccountStatus` | 表示账号及当前连接状态 | ✅ 部分适配 | 目前为通用属性对象，未实现专用字段规范化。 |
 | `XtAccountInfo` | 表示账号类型、账号标识等账号资料 | ❌ 未适配 | 目前未提供对应专用对象及字段映射。 |
 | `XtSmtAppointmentResponse` | 表示约券业务请求的异步反馈 | ✅ 部分适配 | 目前为通用属性对象，未实现专用字段规范化；不代表约券业务已可用。 |
@@ -241,5 +243,6 @@
 - 高级模式下，低延迟只读 `xtdata` 请求默认交易桥优先、普通桥回退；订阅、反订阅、下载及携带回调的请求走普通桥。路由改变不会补出终端本来没有的函数。
 - 条件入口必须在目标终端确认函数存在，并核对官网参数、返回字段和回调行为后，才能改为已适配。仅成功导入、存在同名方法、通过本地 mock 测试，均不足以确认条件接口可用。
 - 已适配通用行情查询不意味着其所有 `period` 对应的数据产品均可用；官网提及的 Level2、千档、ETF 清单、期权和投研特色数据仍需对应终端支持及数据权限。
-- 本次为文档和代码对照，未重新执行客户终端联调。官网后续增加或更名的接口，应以官网章节为依据更新清单，不再通过枚举 Python 包自动扩大统计范围。
+- 股票资金、委托、持仓、成交及兼容层只读 `query_*_async` 已使用后台查询和独立回调线程，立即返回请求序号。包含三类新增两融查询；底层QMT能力和对象转换限制不因此消失。查询或回调异常记录到 `cfquant.xttrader` 日志，不伪造成功结果；停止后未开始的旧任务及旧结果不再派发，已经进入的回调可以执行完毕。
+- 本批自动化验证见 [大QMT接口适配测试](../cfquant/tests/17_大QMT接口适配测试.py)，未执行客户终端联调或真实板块修改。升级后需重启外部 Python 进程和 QMT 桥策略；仅重启网页不能替换已加载的桥代码。官网后续增加或更名的接口，应以官网章节为依据更新清单，不再通过枚举 Python 包自动扩大统计范围。
 - 核对入口：[行情兼容层](../cfquant/xtdata.py)、[交易兼容层](../cfquant/xttrader.py)、[交易数据对象](../cfquant/xttype.py)、[QMT 桥能力映射](../cfquant/tx_trade_bridge.py)、[服务端路由](../cfquant_web_server.py)。更详细的大 QMT 能力边界见 [QMT函数封装能力清单](QMT函数封装能力清单.md)。

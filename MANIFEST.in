@@ -4,13 +4,13 @@ include cfquant_web_server.py
 include cfquant_pipe_hub.py
 
 recursive-include cfquant *.py
+recursive-include cfquant/tests *.py *.md
 recursive-include LTtx *.py
 include LTtx/tx/Config.txt
 
 recursive-include web_dashboard *.html *.css *.js *.svg *.png
 recursive-include qmt_scripts *.py *.md
 
-recursive-exclude cfquant/tests *
 recursive-exclude LTtx/tx/__pycache__ *
 recursive-exclude LTtx/tx/log_data *
 recursive-exclude LTtx/tx/tx_log *

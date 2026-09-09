@@ -32,6 +32,7 @@ test_dir/
 *.env
 *.tmp
 *.bak
+.tmp_*.py
 
 cfquant_web_config.db
 cfquant_web_config.json

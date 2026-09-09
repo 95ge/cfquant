@@ -72,6 +72,28 @@ def _normalize_order_id_field(data):
             data["order_id"] = int(text)
 
 
+def normalize_order_price_type(value, market=""):
+    """Translate documented QMT broker price enums, preserving unknown values."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return value
+    if str(number) != str(value).strip():
+        return value
+    mapping = {
+        50: xtconstant.FIX_PRICE,
+        84: xtconstant.MARKET_PEER_PRICE_FIRST,
+        86: xtconstant.MARKET_MINE_PRICE_FIRST,
+    }
+    exchange = _exchange_suffix(market)
+    if exchange in ("SH", "BJ"):
+        mapping.update({85: xtconstant.MARKET_SH_CONVERT_5_LIMIT, 88: xtconstant.MARKET_SH_CONVERT_5_CANCEL})
+    elif exchange == "SZ":
+        mapping.update({87: xtconstant.MARKET_SZ_INSTBUSI_RESTCANCEL, 88: xtconstant.MARKET_SZ_CONVERT_5_CANCEL, 89: xtconstant.MARKET_SZ_FULL_OR_CANCEL})
+    # Broker ANY (49) does not identify a specific SDK market-order instruction.
+    return mapping.get(number, value)
+
+
 _CANCELABLE_ORDER_STATUS_VALUES = frozenset((
     getattr(xtconstant, "ORDER_UNREPORTED", 48),
     getattr(xtconstant, "ORDER_WAIT_REPORTING", 49),
@@ -371,6 +393,9 @@ class XtOrder(DictObject):
             "m_nPriceType",
             "m_nOrderPriceType",
         ), default=0)
+        data["price_type"] = normalize_order_price_type(
+            data["price_type"], data["stock_code"].rsplit(".", 1)[-1],
+        )
         _set_first(data, "price", (
             "m_dLimitPrice",
             "m_dOrderPrice",
@@ -584,6 +609,119 @@ class XtPosition(DictObject):
             "name",
         ), default="")
         return cls(**data)
+
+
+class _QmtQueryObject(DictObject):
+    _field_aliases = {}
+    _account_type = xtconstant.CREDIT_ACCOUNT
+
+    @classmethod
+    def from_any(cls, value, normalize=None):
+        if value is None:
+            return None
+        data = _dict_from_any(value)
+        names = ["account_id", "account_type", "m_strAccountID", "m_nAccountType", "m_strAccountType"]
+        for target, sources in cls._field_aliases.items():
+            names.append(target)
+            names.extend(sources)
+        # Embedded QMT objects may expose C++ properties without a __dict__.
+        if not isinstance(value, dict):
+            data = data or {}
+            for name in names:
+                field = getattr(value, name, _MISSING)
+                if field is not _MISSING:
+                    data[name] = field
+        if data is None or not data:
+            return value
+        if normalize is not None:
+            for name in names:
+                if name in data:
+                    data[name] = normalize(data[name])
+        if not any(name in data for name in ("account_type", "m_nAccountType", "m_strAccountType")):
+            data["account_type"] = cls._account_type
+        _apply_common_account_fields(data)
+        for target, sources in cls._field_aliases.items():
+            _set_first(data, target, sources)
+        if cls._account_type == xtconstant.CREDIT_ACCOUNT and "exchange_id" in data:
+            market = _exchange_suffix(data["exchange_id"])
+            data["exchange_id"] = xtconstant.MARKET_STR_TO_ENUM_MAPPING.get(market, data["exchange_id"])
+        return cls(**data)
+
+
+class XtPositionStatistics(_QmtQueryObject):
+    _account_type = xtconstant.FUTURE_ACCOUNT
+    _field_aliases = {
+        "exchange_id": ("m_strExchangeID",),
+        "exchange_name": ("m_strExchangeName",),
+        "product_id": ("m_strProductID",),
+        "instrument_id": ("m_strInstrumentID",),
+        "instrument_name": ("m_strInstrumentName",),
+        "direction": ("m_nDirection",),
+        "hedge_flag": ("m_nHedgeFlag",),
+        "position": ("m_nPosition",),
+        "yesterday_position": ("m_nYestodayPosition",),
+        "today_position": ("m_nTodayPosition",),
+        "can_close_vol": ("m_nCanCloseVol",),
+        "position_cost": ("m_dPositionCost",),
+        "avg_price": ("m_dAvgPrice",),
+        "position_profit": ("m_dPositionProfit",),
+        "float_profit": ("m_dFloatProfit",),
+        "open_price": ("m_dOpenPrice",),
+        "open_cost": ("m_dOpenCost",),
+        "used_margin": ("m_dUsedMargin",),
+        "used_commission": ("m_dUsedCommission",),
+        "frozen_margin": ("m_dFrozenMargin",),
+        "frozen_commission": ("m_dFrozenCommission",),
+        "instrument_value": ("m_dInstrumentValue",),
+        "open_times": ("m_nOpenTimes",),
+        "open_volume": ("m_nOpenVolume",),
+        "cancel_times": ("m_nCancelTimes",),
+        "last_price": ("m_dLastPrice",),
+        "rise_ratio": ("m_dRiseRatio",),
+        "product_name": ("m_strProductName",),
+        "royalty": ("m_dRoyalty",),
+        "expire_date": ("m_strExpireDate",),
+        "assest_weight": ("m_dAssestWeight",),
+        "increase_by_settlement": ("m_dIncreaseBySettlement",),
+        "margin_ratio": ("m_dMarginRatio",),
+        "float_profit_divide_by_used_margin": ("m_dFloatProfitDivideByUsedMargin",),
+        "float_profit_divide_by_balance": ("m_dFloatProfitDivideByBalance",),
+        "today_profit_loss": ("m_dTodayProfitLoss",),
+        "yesterday_init_position": ("m_nYestodayInitPosition",),
+        "frozen_royalty": ("m_dFrozenRoyalty",),
+        "today_close_profit_loss": ("m_dTodayCloseProfitLoss",),
+        "close_profit": ("m_dCloseProfit",),
+        "ft_product_name": ("m_strFtProductName",),
+    }
+
+
+class CreditSubjects(_QmtQueryObject):
+    _field_aliases = {
+        "exchange_id": ("m_strExchangeID",),
+        "instrument_id": ("m_strInstrumentID",),
+        "slo_status": ("m_eSloStatus",),
+        "fin_status": ("m_eFinStatus",),
+        "slo_ratio": ("m_dSloRatio",),
+        "fin_ratio": ("m_dFinRatio",),
+    }
+
+
+class CreditAssure(_QmtQueryObject):
+    _field_aliases = {
+        "exchange_id": ("m_strExchangeID",),
+        "instrument_id": ("m_strInstrumentID",),
+        "assure_status": ("m_eAssureStatus",),
+        "assure_ratio": ("m_dAssureRatio",),
+    }
+
+
+class CreditSloCode(_QmtQueryObject):
+    _field_aliases = {
+        "exchange_id": ("m_strExchangeID",),
+        "instrument_id": ("m_strInstrumentID",),
+        "cashgroup_prop": ("m_eCashgroupProp", "m_eQuerySloType"),
+        "enable_amount": ("m_nEnableAmount",),
+    }
 
 
 class XtOrderError(DictObject):

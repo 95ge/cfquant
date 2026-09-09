@@ -7,6 +7,7 @@ are blocked or still warming up.
 """
 
 import glob
+import hashlib
 import json
 import os
 import sys
@@ -16,6 +17,42 @@ import time
 
 RUNTIME_SCHEMA = "cfquant.qmt.runtime"
 MARKER_FILENAME_PREFIX = "cfquant_qmt_runtime"
+
+
+def source_sha256(module_file):
+    try:
+        with open(module_file, "rb") as stream:
+            return hashlib.sha256(stream.read()).hexdigest()
+    except (OSError, TypeError, ValueError):
+        return ""
+
+
+def module_source_state(module_file, loaded_sha256="", started_at=0):
+    """Keep disk state separate from the fingerprint captured at module import."""
+    result = {
+        "module_file": module_file or "",
+        "module_loaded_sha256": loaded_sha256 or "",
+        "module_disk_sha256": "",
+        "module_disk_mtime": 0,
+        "module_source_state": "unknown",
+        "restart_required": False,
+    }
+    try:
+        modified = os.path.getmtime(module_file)
+        started = float(started_at or 0)
+    except (OSError, TypeError, ValueError):
+        return result
+    result["module_disk_mtime"] = modified
+    if loaded_sha256:
+        disk_hash = source_sha256(module_file)
+        result["module_disk_sha256"] = disk_hash
+        if disk_hash:
+            result["restart_required"] = disk_hash != loaded_sha256
+            result["module_source_state"] = "changed" if result["restart_required"] else "matches_loaded"
+    elif started > 0 and modified > started:
+        result["restart_required"] = True
+        result["module_source_state"] = "changed_after_start_unverified"
+    return result
 
 
 def _now_text(ts=None):

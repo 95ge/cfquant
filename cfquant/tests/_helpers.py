@@ -167,11 +167,11 @@ def emit_skip(name, reason, example=None):
     return None
 
 
-def add_runtime_args(parser, default_transport="ctypes"):
+def add_runtime_args(parser, default_transport="auto"):
     parser.add_argument(
         "--transport",
         default=default_transport,
-        help="cfquant 通信模式，默认 %s。" % default_transport,
+        help="cfquant 通信模式，默认 %s，优先自动发现 Web LTtx 路由。" % default_transport,
     )
     parser.add_argument("--bridge-id", default="default", help="桥接 ID，默认 default。")
     parser.add_argument("--timeout", type=float, default=15.0, help="请求超时时间，单位秒。")

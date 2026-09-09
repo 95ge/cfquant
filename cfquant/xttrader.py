@@ -5,6 +5,8 @@ import os
 import threading
 import time
 import atexit
+import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from .client import create_rpc_client
 from .config import get_config
@@ -12,6 +14,9 @@ from .channels import channels_for_bridge, normalize_bridge_id
 from .protocol import new_id
 from . import xtconstant
 from .xttype import (
+    CreditAssure,
+    CreditSloCode,
+    CreditSubjects,
     XtAsset,
     XtAccountStatus,
     XtBankTransferResponse,
@@ -21,6 +26,7 @@ from .xttype import (
     XtOrderError,
     XtOrderResponse,
     XtPosition,
+    XtPositionStatistics,
     XtSmtAppointmentResponse,
     XtTrade,
     filter_cancelable_orders,
@@ -246,8 +252,16 @@ class XtQuantTrader(object):
         self._completed_async_order_seqs = {}
         self.timeout = 0
         self.relaxed_response_order_enabled = False
+        self._query_lock = threading.RLock()
+        self._query_executor = None
+        self._query_callback_executor = None
+        self._queries_stopped = False
+        self._query_generation = 0
+        self._query_context = threading.local()
 
     def start(self):
+        with self._query_lock:
+            self._queries_stopped = False
         self._get_client().start()
         self._register_trader_events()
         if self.account is not None and _subscription_key(self.account) not in self._subscribed_accounts:
@@ -255,6 +269,7 @@ class XtQuantTrader(object):
         self.connected = True
 
     def stop(self):
+        self._stop_query_workers()
         was_connected = self.connected
         self.connected = False
         for payload in list(self._subscribed_accounts.values()):
@@ -265,9 +280,11 @@ class XtQuantTrader(object):
             except Exception:
                 pass
         self._subscribed_accounts.clear()
-        clients = list(self._clients.values())
-        self._client = None
-        self._clients.clear()
+        with self._query_lock:
+            clients = list(self._clients.values())
+            self._client = None
+            self._clients.clear()
+            self._registered_events.clear()
         for client in clients:
             try:
                 client.close()
@@ -436,10 +453,7 @@ class XtQuantTrader(object):
         return _attach_account_fields(XtAsset.from_any(_first_response_item(result)), account)
 
     def query_stock_asset_async(self, account, callback):
-        result = self.query_stock_asset(account)
-        if callable_callback(callback):
-            callback(result)
-        return None
+        return self._submit_query(self.query_stock_asset, (_account_payload(account),), callback)
 
     def query_stock_orders(self, account, cancelable_only=False):
         cancelable_only = _truthy_param(cancelable_only)
@@ -453,11 +467,7 @@ class XtQuantTrader(object):
         return _attach_account_fields(orders, account)
 
     def query_stock_orders_async(self, account, callback, cancelable_only=False):
-        seq = next(self._seq)
-        result = self.query_stock_orders(account, cancelable_only=cancelable_only)
-        if callable_callback(callback):
-            callback(result)
-        return seq
+        return self._submit_query(self.query_stock_orders, (_account_payload(account), cancelable_only), callback)
 
     def query_stock_order(self, account, order_id):
         orders = self.query_stock_orders(account) or []
@@ -478,11 +488,7 @@ class XtQuantTrader(object):
         return _attach_account_fields(to_objects(result, XtTrade), account)
 
     def query_stock_trades_async(self, account, callback):
-        seq = next(self._seq)
-        result = self.query_stock_trades(account)
-        if callable_callback(callback):
-            callback(result)
-        return seq
+        return self._submit_query(self.query_stock_trades, (_account_payload(account),), callback)
 
     def query_stock_positions(self, account):
         result = self._trade_request("xttrader.query_stock_positions", {
@@ -491,11 +497,7 @@ class XtQuantTrader(object):
         return _attach_account_fields(to_objects(result, XtPosition), account)
 
     def query_stock_positions_async(self, account, callback):
-        seq = next(self._seq)
-        result = self.query_stock_positions(account)
-        if callable_callback(callback):
-            callback(result)
-        return seq
+        return self._submit_query(self.query_stock_positions, (_account_payload(account),), callback)
 
     def query_stock_position(self, account, stock_code):
         positions = self.query_stock_positions(account) or []
@@ -693,13 +695,14 @@ class XtQuantTrader(object):
 
     def _register_trader_events(self, bridge_id=None):
         bridge_id = normalize_bridge_id(bridge_id or self.bridge_id)
-        client = self._get_client(bridge_id)
-        for name in self._event_types:
-            event_name = "%s:trader:%s" % (bridge_id, name)
-            if event_name in self._registered_events:
-                continue
-            client.add_callback("trader:%s" % name, self._make_trader_handler(name))
-            self._registered_events.add(event_name)
+        with self._query_lock:
+            client = self._get_client(bridge_id)
+            for name in self._event_types:
+                event_name = "%s:trader:%s" % (bridge_id, name)
+                if event_name in self._registered_events:
+                    continue
+                client.add_callback("trader:%s" % name, self._make_trader_handler(name))
+                self._registered_events.add(event_name)
 
     def _make_trader_handler(self, name):
         def handler(data):
@@ -829,18 +832,22 @@ class XtQuantTrader(object):
 
     def _get_client(self, bridge_id=None):
         bridge_id = normalize_bridge_id(bridge_id or self.bridge_id)
-        client = self._clients.get(bridge_id)
-        if client is None:
-            client_id = self.client_id
-            if bridge_id != normalize_bridge_id(self.bridge_id):
-                client_id = "%s_%s" % (self.client_id, _safe_client_part(bridge_id))
-            client = _new_trade_client(client_id=client_id, bridge_id=bridge_id)
-            if self.timeout:
-                client.timeout = float(self.timeout)
-            self._clients[bridge_id] = client
-            if self._client is None:
-                self._client = client
-        return client
+        with self._query_lock:
+            generation = getattr(self._query_context, "generation", None)
+            if generation is not None and (self._queries_stopped or generation != self._query_generation):
+                raise RuntimeError("asynchronous query cancelled because trader stopped")
+            client = self._clients.get(bridge_id)
+            if client is None:
+                client_id = self.client_id
+                if bridge_id != normalize_bridge_id(self.bridge_id):
+                    client_id = "%s_%s" % (self.client_id, _safe_client_part(bridge_id))
+                client = _new_trade_client(client_id=client_id, bridge_id=bridge_id)
+                if self.timeout:
+                    client.timeout = float(self.timeout)
+                self._clients[bridge_id] = client
+                if self._client is None:
+                    self._client = client
+            return client
 
     def _trade_request(self, action, params=None, timeout=None):
         params = params or {}
@@ -855,7 +862,14 @@ class XtQuantTrader(object):
         return account
 
     def _compat_request(self, method, params=None):
-        return self._trade_request("xttrader.%s" % method, params or {})
+        result = self._trade_request("xttrader.%s" % method, params or {})
+        cls = {
+            "query_position_statistics": XtPositionStatistics,
+            "query_credit_subjects": CreditSubjects,
+            "query_credit_slo_code": CreditSloCode,
+            "query_credit_assure": CreditAssure,
+        }.get(method)
+        return to_objects(result, cls) if cls else result
 
     def _compat_account_request(self, method, account, args=None, kwargs=None):
         return self._compat_request(method, self._account_params(account, args=args, kwargs=kwargs))
@@ -871,10 +885,62 @@ class XtQuantTrader(object):
         seq = next(self._seq)
         body = dict(params or {})
         body["seq"] = seq
+        if method.startswith("query_"):
+            return self._submit_query(self._compat_request, (method, body), callback, seq=seq)
         result = self._compat_request(method, body)
         if callable_callback(callback):
             callback(result)
         return seq
+
+    def _submit_query(self, function, args, callback, seq=None):
+        with self._query_lock:
+            if self._queries_stopped:
+                raise RuntimeError("trader is stopped; start it before submitting asynchronous queries")
+            if self._query_executor is None:
+                self._query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cfquant-query")
+                self._query_callback_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cfquant-query-callback")
+            seq = next(self._seq) if seq is None else seq
+            generation = self._query_generation
+            self._query_executor.submit(self._run_query, generation, seq, function, args, callback)
+        return seq
+
+    def _run_query(self, generation, seq, function, args, callback):
+        with self._query_lock:
+            if self._queries_stopped or generation != self._query_generation:
+                return
+        self._query_context.generation = generation
+        try:
+            result = function(*args)
+        except Exception:
+            logging.getLogger(__name__).exception("asynchronous query failed seq=%s", seq)
+            return
+        finally:
+            del self._query_context.generation
+        with self._query_lock:
+            if self._queries_stopped or generation != self._query_generation or not callable_callback(callback):
+                return
+            self._query_callback_executor.submit(self._deliver_query, generation, seq, callback, result)
+
+    def _deliver_query(self, generation, seq, callback, result):
+        with self._query_lock:
+            if self._queries_stopped or generation != self._query_generation:
+                return
+        try:
+            callback(result)
+        except Exception:
+            logging.getLogger(__name__).exception("asynchronous query callback failed seq=%s", seq)
+
+    def _stop_query_workers(self):
+        with self._query_lock:
+            self._queries_stopped = True
+            self._query_generation += 1
+            workers = (self._query_executor, self._query_callback_executor)
+            self._query_executor = self._query_callback_executor = None
+        # No self-join when a query callback calls stop(). Queued old tasks are
+        # suppressed by generation checks, including after a subsequent start().
+        for worker in workers:
+            if worker is not None:
+                worker.shutdown(wait=False)
 
 
 def _account_payload(account):

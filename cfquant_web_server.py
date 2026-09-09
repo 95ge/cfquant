@@ -77,6 +77,7 @@ from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
+from cfquant.runtime_report import module_source_state
 from cfquant.version import WEB_VERSION, __version__ as CORE_VERSION
 from tx import txl
 
@@ -689,6 +690,279 @@ def qmt_entry_script_sources(names):
             "path": name,
             "source": source,
             "line_count": len(source.splitlines()),
+        })
+    return result
+
+
+TEST_SOURCE_META = {
+    "readme.md": (
+        "测试脚本说明",
+        "说明文档",
+        "按场景说明 cfquant/tests 目录下各测试脚本的用途和运行方式。",
+        "",
+    ),
+    "_helpers.py": (
+        "测试公共辅助函数",
+        "辅助文件",
+        "集中处理测试脚本的命令行参数、连接配置和输出格式。",
+        "",
+    ),
+    "test_python_api_reference.py": (
+        "Python 接口参考文档测试",
+        "自动化测试",
+        "验证网页端 Python 接口参考数据可以被正确加载和解析。",
+        'python -X utf8 -m pytest "cfquant/tests/test_python_api_reference.py" -q',
+    ),
+    "test_tutorial_reader.py": (
+        "教程阅读器测试",
+        "自动化测试",
+        "验证教程阅读器页面结构、导航和内容读取行为。",
+        'python -X utf8 -m pytest "cfquant/tests/test_tutorial_reader.py" -q',
+    ),
+    "1_行情接收测试.py": (
+        "全市场行情接收测试",
+        "行情测试",
+        "订阅全推行情，验证 cfquant 能否持续收到 SH/SZ 行情回调。",
+        'python -X utf8 "cfquant/tests/1_行情接收测试.py" --seconds 10',
+    ),
+    "2_数据获取测试.py": (
+        "历史数据获取测试",
+        "行情测试",
+        "验证 K 线、行情快照等常用数据读取接口是否可用。",
+        'python -X utf8 "cfquant/tests/2_数据获取测试.py"',
+    ),
+    "3_数据下载测试.py": (
+        "历史数据下载测试",
+        "行情测试",
+        "验证数据下载接口、下载任务和本地缓存写入流程。",
+        'python -X utf8 "cfquant/tests/3_数据下载测试.py"',
+    ),
+    "4_交易委托查询测试.py": (
+        "交易委托查询测试",
+        "交易查询",
+        "查询账号资产、持仓、委托和成交等交易数据。",
+        'python -X utf8 "cfquant/tests/4_交易委托查询测试.py"',
+    ),
+    "5_真实下单测试.py": (
+        "真实下单测试",
+        "交易测试",
+        "包含真实委托流程，运行前必须确认测试账号、价格、数量和撤单策略。",
+        "",
+    ),
+    "6_回调测试.py": (
+        "交易回调测试",
+        "交易测试",
+        "验证成交、委托、账号状态等交易回调是否正常到达。",
+        'python -X utf8 "cfquant/tests/6_回调测试.py"',
+    ),
+    "7_同步异步下单测试.py": (
+        "同步异步下单测试",
+        "交易测试",
+        "包含同步、异步委托和撤单流程，运行前必须确认测试账号和脚本参数。",
+        "",
+    ),
+    "8_成交订单和委托订单查询测试.py": (
+        "成交订单和委托订单查询测试",
+        "交易查询",
+        "集中验证委托列表、成交列表和订单状态读取。",
+        'python -X utf8 "cfquant/tests/8_成交订单和委托订单查询测试.py"',
+    ),
+    "9_可撤订单测试.py": (
+        "可撤订单测试",
+        "自动化测试",
+        "验证可撤订单筛选、订单状态判断和兼容逻辑。",
+        'python -X utf8 -m pytest "cfquant/tests/9_可撤订单测试.py" -q',
+    ),
+    "10_命令行接口测试.py": (
+        "命令行接口测试",
+        "自动化测试",
+        "验证 cfquant 命令行入口和参数解析行为。",
+        'python -X utf8 -m pytest "cfquant/tests/10_命令行接口测试.py" -q',
+    ),
+    "11_普通桥接派发测试.py": (
+        "普通桥接派发测试",
+        "自动化测试",
+        "验证普通桥请求派发、回包和异常处理。",
+        'python -X utf8 -m pytest "cfquant/tests/11_普通桥接派发测试.py" -q',
+    ),
+    "12_订单备注测试.py": (
+        "订单备注测试",
+        "自动化测试",
+        "验证订单备注字段在请求、回调和查询结果中的兼容处理。",
+        'python -X utf8 -m pytest "cfquant/tests/12_订单备注测试.py" -q',
+    ),
+    "13_管道中心连接测试.py": (
+        "管道中心连接测试",
+        "自动化测试",
+        "验证管道中心连接、请求通道和回调通道的基础行为。",
+        'python -X utf8 -m pytest "cfquant/tests/13_管道中心连接测试.py" -q',
+    ),
+    "14_运行时报告测试.py": (
+        "运行时报告测试",
+        "自动化测试",
+        "验证 QMT 运行时标记和网页端运行状态上报。",
+        'python -X utf8 -m pytest "cfquant/tests/14_运行时报告测试.py" -q',
+    ),
+    "15_网页状态缓存测试.py": (
+        "网页状态缓存测试",
+        "自动化测试",
+        "验证网页端对桥接状态、账号状态和缓存数据的读取。",
+        'python -X utf8 -m pytest "cfquant/tests/15_网页状态缓存测试.py" -q',
+    ),
+    "16_启动安装测试.py": (
+        "启动安装测试",
+        "自动化测试",
+        "验证启动脚本、安装流程和部署辅助逻辑。",
+        'python -X utf8 -m pytest "cfquant/tests/16_启动安装测试.py" -q',
+    ),
+    "17_大QMT接口适配测试.py": (
+        "大 QMT 接口适配测试",
+        "自动化测试",
+        "验证 cfquant 对大 QMT 常用接口的兼容适配。",
+        'python -X utf8 -m pytest "cfquant/tests/17_大QMT接口适配测试.py" -q',
+    ),
+    "18_高级模式实机联调.py": (
+        "高级模式实机联调",
+        "实机联调",
+        "用于真实 QMT 环境下验证高级模式连接、查询和回调链路。",
+        'python -X utf8 "cfquant/tests/18_高级模式实机联调.py"',
+    ),
+    "19_实机联调判定测试.py": (
+        "实机联调判定测试",
+        "自动化测试",
+        "验证实机联调结果的判定、输出和错误归因。",
+        'python -X utf8 -m pytest "cfquant/tests/19_实机联调判定测试.py" -q',
+    ),
+    "20_联调问题修复测试.py": (
+        "联调问题修复测试",
+        "自动化测试",
+        "覆盖近期实机联调中发现的问题和回归场景。",
+        'python -X utf8 -m pytest "cfquant/tests/20_联调问题修复测试.py" -q',
+    ),
+    "21_单股行情订阅测试.py": (
+        "单股行情订阅测试",
+        "行情测试",
+        "订阅单只股票行情，验证 subscribe_quote/subscribe_quote2 是否正常接收。",
+        'python -X utf8 "cfquant/tests/21_单股行情订阅测试.py" --seconds 10 --stock-code 000001.SZ --period tick',
+    ),
+}
+
+TEST_SOURCE_DANGEROUS_NAMES = {
+    "5_真实下单测试.py",
+    "7_同步异步下单测试.py",
+}
+
+
+def _test_source_roots():
+    roots = []
+    for base in (BASE_DIR, _SOURCE_ROOT):
+        root = os.path.abspath(os.path.join(base, "cfquant", "tests"))
+        if root not in roots and os.path.isdir(root):
+            roots.append(root)
+    return roots
+
+
+def _test_source_sort_key(name):
+    match = re.match(r"^(\d+)_", name)
+    if match:
+        return (0, int(match.group(1)), name)
+    if name.lower() == "readme.md":
+        return (1, 0, name)
+    if name.startswith("_"):
+        return (2, name, name)
+    return (3, name, name)
+
+
+def _available_test_source_names():
+    seen = set()
+    for root in _test_source_roots():
+        for name in os.listdir(root):
+            path = os.path.join(root, name)
+            if os.path.isfile(path) and (name.endswith(".py") or name.endswith(".md")):
+                seen.add(name)
+    return sorted(seen, key=_test_source_sort_key)
+
+
+def _normalize_test_source_name(value, available_names=None):
+    name = str(value or "").strip()
+    name = name.replace("/", os.sep).replace("\\", os.sep)
+    name = os.path.basename(name)
+    if not name or name in (".", "..") or ".." in name:
+        raise ValueError("invalid test source name: %s" % value)
+    if not (name.endswith(".py") or name.endswith(".md")):
+        raise ValueError("unsupported test source file: %s" % value)
+    if available_names is not None and name not in available_names:
+        raise ValueError("test source not found: %s" % name)
+    return name
+
+
+def _find_test_source_path(name):
+    for root in _test_source_roots():
+        candidate = os.path.abspath(os.path.join(root, name))
+        try:
+            inside_root = os.path.commonpath([root, candidate]) == root
+        except ValueError:
+            inside_root = False
+        if inside_root and os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def _read_test_source(path):
+    if path.endswith(".py"):
+        with tokenize.open(path) as source_file:
+            return source_file.read()
+    with open(path, "r", encoding="utf-8", errors="replace") as source_file:
+        return source_file.read()
+
+
+def _test_source_meta(name):
+    if name in TEST_SOURCE_META:
+        return TEST_SOURCE_META[name]
+    stem, _ext = os.path.splitext(name)
+    title = re.sub(r"^\d+_", "", stem).replace("_", " ")
+    if name.startswith("test_"):
+        category = "自动化测试"
+        command = 'python -X utf8 -m pytest "cfquant/tests/%s" -q' % name
+    elif name.endswith(".md"):
+        category = "说明文档"
+        command = ""
+    elif name.startswith("_"):
+        category = "辅助文件"
+        command = ""
+    else:
+        category = "测试脚本"
+        command = 'python -X utf8 "cfquant/tests/%s"' % name
+    return title, category, "cfquant 测试目录中的脚本。", command
+
+
+def test_source_catalog(names=None, include_source=True):
+    available = _available_test_source_names()
+    available_set = set(available)
+    selected = [_normalize_test_source_name(name, available_set) for name in names] if names else available
+    result = []
+    for name in selected:
+        source_path = _find_test_source_path(name)
+        if not source_path:
+            raise FileNotFoundError("test source not found: %s" % name)
+        title, category, description, command = _test_source_meta(name)
+        source = _read_test_source(source_path) if include_source else ""
+        stat_result = os.stat(source_path)
+        dangerous = name in TEST_SOURCE_DANGEROUS_NAMES
+        result.append({
+            "name": name,
+            "title": title,
+            "category": category,
+            "description": description,
+            "command": command,
+            "dangerous": dangerous,
+            "warning": "该脚本可能提交真实委托，请先阅读代码并确认账号、价格、数量和撤单策略。" if dangerous else "",
+            "language": "markdown" if name.endswith(".md") else "python",
+            "line_count": len(source.splitlines()) if include_source else 0,
+            "size": stat_result.st_size,
+            "updated_at": int(stat_result.st_mtime),
+            "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat_result.st_mtime)),
+            "source": source,
         })
     return result
 CREDIT_LEGACY_ORDER_TYPE_MAP = {
@@ -5118,8 +5392,12 @@ class RuntimeVersionRegistry(object):
             ]
         if not rows:
             return self._empty_report(bridge_id)
+        for row in rows:
+            row.update(module_source_state(
+                row.get("module_file"), row.get("module_loaded_sha256"), row.get("started_at"),
+            ))
         rows.sort(key=lambda item: float(item.get("reported_at") or 0), reverse=True)
-        latest = rows[0]
+        latest = dict(rows[0])
         age = max(0.0, time.time() - float(latest.get("reported_at") or 0))
         latest["age_seconds"] = round(age, 1)
         latest["ttl_seconds"] = self.ttl_seconds
@@ -5137,6 +5415,11 @@ class RuntimeVersionRegistry(object):
             if latest["reported"] else
             "QMT 运行时版本上报已过期，请确认对应 QMT 桥接脚本正在运行"
         )
+        restart_channels = [row.get("channel_key") for row in rows if row.get("restart_required")]
+        latest["restart_required"] = bool(restart_channels)
+        latest["restart_channels"] = restart_channels
+        if restart_channels:
+            latest["message"] += "；桥接文件已变更或晚于运行实例启动，请完整重启对应 QMT 进程（%s）" % ", ".join(restart_channels)
         latest["reports"] = rows[:6]
         return latest
 
@@ -5251,6 +5534,8 @@ class RuntimeVersionRegistry(object):
             "entry_file": self._first_value(runtime, status, keys=("entry_file", "qmt_runtime_entry_file")),
             "core_dir": self._first_value(runtime, status, keys=("core_dir",)),
             "version_file": self._first_value(runtime, status, keys=("version_file",)),
+            "module_file": self._first_value(runtime, status, keys=("module_file",)),
+            "module_loaded_sha256": self._first_value(runtime, status, keys=("module_loaded_sha256",)),
             "pipe_name": self._first_value(runtime, status, keys=("pipe_name",)),
             "market": self._first_value(runtime, status, keys=("market",)),
             "market_role": self._first_value(runtime, status, keys=("market_role",)),
@@ -13308,6 +13593,16 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 if not raw_names:
                     raise ValueError("QMT script name is required")
                 self._write_json(ok({"scripts": qmt_entry_script_sources(raw_names)}))
+            elif parsed.path == "/api/tests/source":
+                raw_names = []
+                for key in ("name", "names", "script", "test"):
+                    for value in query.get(key) or []:
+                        raw_names.extend(part.strip() for part in str(value).split(",") if part.strip())
+                include_source = parse_bool((query.get("source") or ["1"])[0])
+                self._write_json(ok({
+                    "root": "cfquant/tests",
+                    "tests": test_source_catalog(raw_names or None, include_source=include_source),
+                }))
             elif parsed.path == "/api/updates/status":
                 bridge_id = normalize_bridge_id((query.get("bridge_id") or [DEFAULT_BRIDGE_ID])[0])
                 repo_url = (query.get("repo_url") or query.get("url") or [""])[0]

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260908_04_python_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260908_04_python_api_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -110,7 +110,7 @@
           <h2>先连接 QMT</h2>
           <p>填写账号和目录，保存后进入系统。</p>
         </div>
-        <span class="setup-required">首次配置</span>
+        <button type="button" data-open-tutorial data-tutorial-return="返回初始化">阅读教程</button>
       </div>
       <ol class="setup-steps" id="setupSteps" aria-label="初始化步骤">
         <li class="active" data-setup-step="config">
@@ -247,6 +247,7 @@
         <button class="nav-item" data-view="bindings">绑定</button>
         <button class="nav-item" data-view="callbacks">回调</button>
         <button class="nav-item" data-view="api">接口</button>
+        <button class="nav-item" data-view="tests">测试</button>
         <button class="nav-item" data-view="settings">设置</button>
         <button class="nav-item" data-view="tutorial">教程</button>
       </nav>
@@ -827,6 +828,43 @@
             </div>
           </div>
 
+          <div class="panel span-12 view-panel view-tests tests-panel">
+            <div class="panel-head">
+              <h2>测试</h2>
+              <div class="head-actions">
+                <span id="testSourceSummary" class="metric-note">从 cfquant/tests 读取测试脚本</span>
+                <button id="refreshTestsBtn" type="button">刷新</button>
+              </div>
+            </div>
+            <div class="tests-layout">
+              <aside class="tests-sidebar">
+                <label class="field compact test-search-field">
+                  <span>搜索测试</span>
+                  <input id="testSearchInput" type="search" autocomplete="off" placeholder="输入名称、文件或说明">
+                </label>
+                <div class="tests-root-note">
+                  <strong>来源目录</strong>
+                  <span>cfquant/tests</span>
+                </div>
+                <div id="testSourceList" class="test-source-list" aria-label="测试脚本列表"></div>
+              </aside>
+              <section class="test-source-viewer">
+                <div class="test-source-toolbar">
+                  <div class="test-source-title-block">
+                    <strong id="testSourceTitle">请选择测试脚本</strong>
+                    <span id="testSourceDesc">左侧列表会逐个罗列 tests 目录下的脚本。</span>
+                  </div>
+                  <div class="test-source-actions">
+                    <button id="copyTestCommandBtn" type="button">复制命令</button>
+                    <button id="copyTestSourceBtn" class="primary" type="button">复制代码</button>
+                  </div>
+                </div>
+                <div id="testSourceMeta" class="test-selected-meta"></div>
+                <pre id="testSourceCode" class="test-source-code"><code>正在读取测试脚本...</code></pre>
+              </section>
+            </div>
+          </div>
+
           <div class="panel span-12 view-panel view-settings settings-panel">
             <div class="panel-head">
               <h2>设置</h2>
@@ -1181,7 +1219,7 @@
                 <article class="tutorial-topic" data-guide-panel="onboarding">
                   <div class="guide-section">
                     <h3>先把 cfquant 跑起来</h3>
-                    <p>按向导填账号、选模式、部署脚本、验证数据。其他说明以后再看。</p>
+                    <p>按向导填账号、选模式、部署脚本、验证数据。</p>
                     <div class="guide-callout">
                       <strong>推荐</strong>
                       <span>第一次用通用模式，QMT 目录填 <code>bin.x64</code>。</span>
@@ -1196,7 +1234,10 @@
                           <strong id="onboardingWizardTitle">新手初始化向导</strong>
                           <span id="onboardingWizardSubtitle">只保留启动必需项。</span>
                         </div>
-                        <button id="closeOnboardingBtn" type="button" aria-label="关闭新手初始化向导">关闭</button>
+                        <div class="onboarding-head-actions">
+                          <button type="button" data-open-tutorial data-tutorial-return="返回引导">阅读教程</button>
+                          <button id="closeOnboardingBtn" type="button" aria-label="关闭新手初始化向导">关闭</button>
+                        </div>
                       </div>
                       <div class="onboarding-progress" aria-label="新手初始化步骤">
                         <button class="active" type="button" data-onboarding-step="intro"><span>1</span><strong>开始</strong></button>
@@ -1815,7 +1856,7 @@ finally:
                         </tbody>
                       </table>
                     </div>
-                    <p>使用异步下单时，把调用放在第 6 节注册回调和订阅账号之后、<code>run_forever()</code> 之前，并保留进程等待回报。部分 <code>query_*_async()</code> 当前由同步查询后调用 callback 实现，例如 <code>query_stock_asset_async()</code> 当前返回 <code>None</code>，不能统一按原版请求序号或线程时序处理。</p>
+                    <p>使用异步下单时，把调用放在第 6 节注册回调和订阅账号之后、<code>run_forever()</code> 之前，并保留进程等待回报。当前只读 <code>query_*_async()</code> 使用后台查询并立即返回请求序号，查询结果由独立回调线程派发；查询或回调异常会记录到 <code>cfquant.xttrader</code> 日志。这个序号不是委托编号，也不代表原版专用响应线程开关已实现。</p>
                   </div>
 
                   <div class="guide-section" id="python-accounts">
@@ -2684,7 +2725,10 @@ configure(
           <strong id="bindingQmtGuideTitle">绑定已保存，完成 QMT 策略加载</strong>
           <span id="bindingQmtGuideSubtitle">请在对应 QMT 中新建策略并保存运行。</span>
         </div>
-        <button id="closeBindingQmtGuideBtn" type="button" aria-label="关闭 QMT 策略指引">关闭</button>
+        <div class="onboarding-head-actions">
+          <button type="button" data-open-tutorial data-tutorial-return="返回部署">阅读教程</button>
+          <button id="closeBindingQmtGuideBtn" type="button" aria-label="关闭 QMT 策略指引">关闭</button>
+        </div>
       </div>
       <div class="binding-qmt-guide-body">
         <div id="bindingQmtGuideInstruction" class="binding-qmt-guide-instruction"></div>
@@ -2754,6 +2798,14 @@ configure(
     </div>
   </div>
 
+  <dialog id="tutorialReader" class="tutorial-reader" aria-labelledby="tutorialReaderTitle">
+    <header class="tutorial-reader-head">
+      <h2 id="tutorialReaderTitle">教程中心</h2>
+      <button id="closeTutorialReaderBtn" type="button" autofocus>返回初始化</button>
+    </header>
+    <div id="tutorialReaderBody" class="tutorial-reader-body"></div>
+  </dialog>
+
   <div class="image-lightbox" id="imageLightbox" aria-hidden="true">
     <button class="image-lightbox-close" id="imageLightboxClose" type="button" aria-label="关闭图片预览">关闭</button>
     <img id="imageLightboxImg" alt="">
@@ -2761,6 +2813,8 @@ configure(
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/app.js?v=web_20260908_04"></script>
+  <script src="/python-api-data.js?v=20260909_01"></script>
+  <script src="/python-api.js?v=20260909_01"></script>
+  <script src="/app.js?v=web_20260909_02"></script>
 </body>
 </html>

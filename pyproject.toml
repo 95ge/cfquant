@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfquant"
-version = "0.2.12"
+version = "0.2.13"
 description = "QMT local bridge and xtquant-compatible Python client."
 license = {text = "MIT"}
 readme = "README.md"
@@ -35,10 +35,10 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cfquant*", "LTtx*", "web_dashboard*", "qmt_scripts*"]
-exclude = ["cfquant.tests", "cfquant.tests.*"]
 namespaces = true
 
 [tool.setuptools.package-data]
+"cfquant.tests" = ["*.md"]
 "LTtx.tx" = ["Config.txt"]
 "web_dashboard" = [
   "*.html",
