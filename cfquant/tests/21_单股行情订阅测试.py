@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import argparse
+from types import SimpleNamespace
 import signal
 import threading
 import time
@@ -7,6 +7,28 @@ import time
 from _helpers import close_default_client, compact_value, configure_stdout, print_json
 
 from cfquant import configure, get_client, xtdata
+
+
+# ======================== 用户配置区 ========================
+# 直接修改下面的配置，然后运行本文件；不读取命令行参数。
+TRANSPORT = "auto"       # auto 自动发现；也可填写 ctypes、web_lttx 或 lttx
+BRIDGE_ID = "default"
+REQUEST_TIMEOUT = 15.0    # 请求超时，单位秒
+HOST = None              # None 使用 cfquant 默认配置
+PORT = None
+TOKEN = None             # 优先使用运行时配置，不要提交凭据到 Git
+STOCK_CODE = "000001.SZ"
+PERIOD = "tick"           # 也可填写 1d、1m 等
+START_TIME = ""
+END_TIME = ""
+COUNT = 0
+SECONDS = 12.0
+USE_QUOTE2 = False        # True 改用 subscribe_quote2
+DIVIDEND_TYPE = "none"
+SAMPLE_CODES = 3
+HEARTBEAT_SECONDS = 3.0   # 0 关闭心跳统计
+GAP_WARNING_SECONDS = 5.0 # 0 关闭无回调提示
+# ===========================================================
 
 
 def _summarize_quote_payload(payload, sample_codes=3):
@@ -58,37 +80,37 @@ def _stats_template():
 
 def main():
     configure_stdout()
-    parser = argparse.ArgumentParser(description="cfquant 单股行情订阅回调测试")
-    parser.add_argument("--stock-code", default="000001.SZ", help="订阅证券代码，默认 000001.SZ。")
-    parser.add_argument("--period", default="tick", help="订阅周期，默认 tick；也可传 1d、1m 等。")
-    parser.add_argument("--start-time", default="", help="开始时间，默认空。")
-    parser.add_argument("--end-time", default="", help="结束时间，默认空。")
-    parser.add_argument("--count", type=int, default=0, help="订阅数量参数，默认 0。")
-    parser.add_argument("--seconds", type=float, default=12.0, help="测试运行秒数，默认 12 秒。")
-    parser.add_argument("--transport", default="auto", help="通信模式，默认 auto；跨机器建议 web_lttx。")
-    parser.add_argument("--host", default=None, help="LTtx 地址；不传则使用 cfquant 默认配置。")
-    parser.add_argument("--port", type=int, default=None, help="LTtx 端口；不传则使用 cfquant 默认配置。")
-    parser.add_argument("--token", default=None, help="LTtx token；不传则使用 cfquant 默认配置。")
-    parser.add_argument("--bridge-id", default="default", help="桥接 ID，默认 default。")
-    parser.add_argument("--timeout", type=float, default=15.0, help="请求超时秒数，默认 15。")
-    parser.add_argument("--use-quote2", action="store_true", help="改用 xtdata.subscribe_quote2。")
-    parser.add_argument("--dividend-type", default="none", help="subscribe_quote2 的复权参数，默认 none。")
-    parser.add_argument("--sample-codes", type=int, default=3, help="每次回调打印几个样例代码，默认 3。")
-    parser.add_argument("--heartbeat-seconds", type=float, default=3.0, help="心跳统计间隔，默认 3 秒；0 表示关闭。")
-    parser.add_argument("--gap-warning-seconds", type=float, default=5.0, help="超过多少秒无回调时提示，默认 5 秒；0 表示关闭。")
-    args = parser.parse_args()
+    config = SimpleNamespace(
+        transport=TRANSPORT,
+        bridge_id=BRIDGE_ID,
+        timeout=REQUEST_TIMEOUT,
+        host=HOST,
+        port=PORT,
+        token=TOKEN,
+        stock_code=STOCK_CODE,
+        period=PERIOD,
+        start_time=START_TIME,
+        end_time=END_TIME,
+        count=COUNT,
+        seconds=SECONDS,
+        use_quote2=USE_QUOTE2,
+        dividend_type=DIVIDEND_TYPE,
+        sample_codes=SAMPLE_CODES,
+        heartbeat_seconds=HEARTBEAT_SECONDS,
+        gap_warning_seconds=GAP_WARNING_SECONDS,
+    )
 
     configure_kwargs = {
-        "transport": args.transport,
-        "bridge_id": args.bridge_id,
-        "timeout": args.timeout,
+        "transport": config.transport,
+        "bridge_id": config.bridge_id,
+        "timeout": config.timeout,
     }
-    if args.host is not None:
-        configure_kwargs["host"] = args.host
-    if args.port is not None:
-        configure_kwargs["port"] = args.port
-    if args.token is not None:
-        configure_kwargs["token"] = args.token
+    if config.host is not None:
+        configure_kwargs["host"] = config.host
+    if config.port is not None:
+        configure_kwargs["port"] = config.port
+    if config.token is not None:
+        configure_kwargs["token"] = config.token
     configure(**configure_kwargs)
 
     stop_event = threading.Event()
@@ -114,7 +136,7 @@ def main():
             "event_no": event_no,
             "received_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
         }
-        row.update(_summarize_quote_payload(payload, sample_codes=args.sample_codes))
+        row.update(_summarize_quote_payload(payload, sample_codes=config.sample_codes))
         print_json(row)
 
     def on_single_quote(data):
@@ -151,39 +173,39 @@ def main():
     client.add_callback("__event__", on_wire_event)
 
     started_at = time.time()
-    next_heartbeat_at = started_at + max(0.1, args.heartbeat_seconds)
+    next_heartbeat_at = started_at + max(0.1, config.heartbeat_seconds)
     previous = snapshot()
 
     print_json({
         "type": "start",
-        "transport": args.transport,
-        "host": args.host,
-        "port": args.port,
-        "bridge_id": args.bridge_id,
-        "stock_code": args.stock_code,
-        "period": args.period,
-        "seconds": args.seconds,
-        "api": "xtdata.subscribe_quote2" if args.use_quote2 else "xtdata.subscribe_quote",
+        "transport": config.transport,
+        "host": config.host,
+        "port": config.port,
+        "bridge_id": config.bridge_id,
+        "stock_code": config.stock_code,
+        "period": config.period,
+        "seconds": config.seconds,
+        "api": "xtdata.subscribe_quote2" if config.use_quote2 else "xtdata.subscribe_quote",
     })
 
     try:
-        if args.use_quote2:
+        if config.use_quote2:
             subscribe_id = xtdata.subscribe_quote2(
-                args.stock_code,
-                period=args.period,
-                start_time=args.start_time,
-                end_time=args.end_time,
-                count=args.count,
-                dividend_type=args.dividend_type,
+                config.stock_code,
+                period=config.period,
+                start_time=config.start_time,
+                end_time=config.end_time,
+                count=config.count,
+                dividend_type=config.dividend_type,
                 callback=on_single_quote,
             )
         else:
             subscribe_id = xtdata.subscribe_quote(
-                args.stock_code,
-                period=args.period,
-                start_time=args.start_time,
-                end_time=args.end_time,
-                count=args.count,
+                config.stock_code,
+                period=config.period,
+                start_time=config.start_time,
+                end_time=config.end_time,
+                count=config.count,
                 callback=on_single_quote,
             )
         subscribe_id_box["value"] = subscribe_id
@@ -195,13 +217,13 @@ def main():
 
         while not stop_event.is_set():
             now = time.time()
-            if args.seconds > 0 and now - started_at >= args.seconds:
+            if config.seconds > 0 and now - started_at >= config.seconds:
                 break
             current = snapshot()
             last_at = float(current.get("last_at") or 0)
-            if args.gap_warning_seconds > 0 and last_at:
+            if config.gap_warning_seconds > 0 and last_at:
                 gap = now - last_at
-                if gap >= args.gap_warning_seconds and now - current.get("last_gap_warning_at", 0) >= args.gap_warning_seconds:
+                if gap >= config.gap_warning_seconds and now - current.get("last_gap_warning_at", 0) >= config.gap_warning_seconds:
                     with stats_lock:
                         stats["last_gap_warning_at"] = now
                     print_json({
@@ -209,7 +231,7 @@ def main():
                         "seconds_since_last_event": round(gap, 2),
                         "last_event_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_at)),
                     })
-            if args.heartbeat_seconds > 0 and now >= next_heartbeat_at:
+            if config.heartbeat_seconds > 0 and now >= next_heartbeat_at:
                 elapsed = max(0.001, now - started_at)
                 print_json({
                     "type": "heartbeat",
@@ -223,7 +245,7 @@ def main():
                     "seconds_since_last_event": round(now - last_at, 2) if last_at else None,
                 })
                 previous = current
-                next_heartbeat_at = now + args.heartbeat_seconds
+                next_heartbeat_at = now + config.heartbeat_seconds
             time.sleep(0.2)
     finally:
         subscribe_id = subscribe_id_box.get("value")

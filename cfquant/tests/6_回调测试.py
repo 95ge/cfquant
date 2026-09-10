@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import argparse
+from types import SimpleNamespace
 import contextlib
 import io
 import json
@@ -14,7 +14,22 @@ from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback, close_trade_c
 from cfquant.xttype import StockAccount
 
 
-DEFAULT_TRANSPORT = "auto"
+# ======================== 用户配置区 ========================
+# 直接修改下面的配置，然后运行本文件；不读取命令行参数。
+TRANSPORT = "auto"       # auto 自动发现；也可填写 ctypes、web_lttx 或 lttx
+BRIDGE_ID = "default"
+REQUEST_TIMEOUT = 15.0    # 请求超时，单位秒
+ACCOUNT_ID = ""           # 留空读取 CFQUANT_ACCOUNT_ID 或 Web 默认账号
+ACCOUNT_TYPE = "STOCK"
+HEARTBEAT_INTERVAL = 30.0 # 单位秒，0 关闭心跳日志
+DURATION = 0.0            # 单位秒，0 持续监听直到 Ctrl+C
+PAYLOAD_LIMIT = 0         # 回调内容最大字符数，0 不截断
+JSON_OUTPUT = False
+SHOW_TRANSPORT_LOG = False
+DRY_RUN = False           # True 只打印监听配置，不连接
+# ===========================================================
+
+
 LOG_PREFIX = "【回调测试】"
 JSON_OUTPUT_ENABLED = False
 LOG_LOCK = threading.RLock()
@@ -109,7 +124,7 @@ def print_external_logs(stage, captured, show=False):
     if not external_lines:
         return
     if not show:
-        print_info("外部日志已收起", stage=stage, lines=len(external_lines), show_with="--show-transport-log")
+        print_info("外部日志已收起", stage=stage, lines=len(external_lines), show_with="SHOW_TRANSPORT_LOG = True")
         return
     for stream_name, line in external_lines:
         print_info("外部日志", stage=stage, stream=stream_name, line=line)
@@ -421,75 +436,76 @@ def wait_forever(stop_event, callback, heartbeat_interval=30.0, duration=0.0):
 
 def main():
     configure_stdout()
-    parser = argparse.ArgumentParser(description="cfquant 交易回调监听测试；连接后常驻，收到委托/成交回调时打印内容和本地时间。")
-    parser.add_argument("--transport", default=DEFAULT_TRANSPORT, help="cfquant 通信模式，默认 auto；可传 ctypes、web_lttx 或 lttx。")
-    parser.add_argument("--bridge-id", default="default", help="桥接 ID，默认 default。")
-    parser.add_argument("--timeout", type=float, default=15.0, help="请求超时时间，输入单位秒，输出显示为毫秒。")
-    parser.add_argument("--account-id", default=default_account_id(), help="资金账号；默认读取 CFQUANT_ACCOUNT_ID 或 runtime/config/cfquant_web_config.json。")
-    parser.add_argument("--account-type", default="STOCK", help="账号类型，默认 STOCK，可填 CREDIT。")
-    parser.add_argument("--heartbeat-interval", type=float, default=30.0, help="心跳日志间隔，输入单位秒，输出显示为毫秒；传 0 关闭。")
-    parser.add_argument("--duration", type=float, default=0.0, help="运行时长，输入单位秒，0 表示一直运行。")
-    parser.add_argument("--payload-limit", type=int, default=0, help="单条回调完整内容最大打印字符数，默认 0 表示不截断。")
-    parser.add_argument("--json", action="store_true", help="同时输出机器可读 JSON 行；默认只输出标准化人工日志。")
-    parser.add_argument("--show-transport-log", action="store_true", help="显示 LTtx/PipeHub 等底层库原始输出；默认收起。")
-    parser.add_argument("--dry-run", action="store_true", help="只打印监听配置，不连接。")
-    args = parser.parse_args()
+    config = SimpleNamespace(
+        transport=TRANSPORT,
+        bridge_id=BRIDGE_ID,
+        timeout=REQUEST_TIMEOUT,
+        account_id=ACCOUNT_ID,
+        account_type=ACCOUNT_TYPE,
+        heartbeat_interval=HEARTBEAT_INTERVAL,
+        duration=DURATION,
+        payload_limit=PAYLOAD_LIMIT,
+        json=JSON_OUTPUT,
+        show_transport_log=SHOW_TRANSPORT_LOG,
+        dry_run=DRY_RUN,
+    )
+    config.account_id = str(config.account_id or "").strip() or default_account_id()
 
     global JSON_OUTPUT_ENABLED
-    JSON_OUTPUT_ENABLED = bool(args.json)
+    JSON_OUTPUT_ENABLED = bool(config.json)
 
-    requested_transport = str(args.transport or "").strip().lower() or DEFAULT_TRANSPORT
-    args.transport = requested_transport
-    account_id = str(args.account_id or "").strip()
-    account_type = str(args.account_type or "STOCK").strip().upper()
+    requested_transport = str(config.transport or "").strip().lower() or "auto"
+    config.transport = requested_transport
+    account_id = str(config.account_id or "").strip()
+    account_type = str(config.account_type or "STOCK").strip().upper()
 
     print_json({
         "type": "start",
         "api": "cfquant.xttrader.XtQuantTrader callbacks",
-        "transport": args.transport,
-        "bridge_id": args.bridge_id,
+        "transport": config.transport,
+        "bridge_id": config.bridge_id,
         "account_id": account_id,
         "account_type": account_type,
-        "request_timeout_ms": seconds_to_ms(args.timeout),
-        "heartbeat_interval_ms": seconds_to_ms(args.heartbeat_interval),
-        "duration_ms": seconds_to_ms(args.duration),
-        "payload_limit": args.payload_limit,
-        "json_output": bool(args.json),
-        "show_transport_log": bool(args.show_transport_log),
-        "dry_run": bool(args.dry_run),
+        "request_timeout_ms": seconds_to_ms(config.timeout),
+        "heartbeat_interval_ms": seconds_to_ms(config.heartbeat_interval),
+        "duration_ms": seconds_to_ms(config.duration),
+        "payload_limit": config.payload_limit,
+        "json_output": bool(config.json),
+        "show_transport_log": bool(config.show_transport_log),
+        "dry_run": bool(config.dry_run),
     })
     print_info(
         "回调监听启动",
         api="XtQuantTraderCallback",
         account_id=account_id,
         account_type=account_type,
-        transport=args.transport,
-        bridge_id=args.bridge_id,
-        payload_limit=args.payload_limit,
-        json_output=bool(args.json),
-        show_transport_log=bool(args.show_transport_log),
-        dry_run=bool(args.dry_run),
+        transport=config.transport,
+        bridge_id=config.bridge_id,
+        payload_limit=config.payload_limit,
+        json_output=bool(config.json),
+        show_transport_log=bool(config.show_transport_log),
+        dry_run=bool(config.dry_run),
     )
     print_info(
         "计时参数",
-        request_timeout_ms=seconds_to_ms(args.timeout),
-        heartbeat_interval_ms=seconds_to_ms(args.heartbeat_interval),
-        duration_ms=seconds_to_ms(args.duration),
+        request_timeout_ms=seconds_to_ms(config.timeout),
+        heartbeat_interval_ms=seconds_to_ms(config.heartbeat_interval),
+        duration_ms=seconds_to_ms(config.duration),
     )
-    print_info(requested_transport_text(args.transport))
+    print_info(requested_transport_text(config.transport))
 
     if not account_id:
-        print_info("参数校验失败：资金账号为空，请传 --account-id 或设置 CFQUANT_ACCOUNT_ID")
+        print_info("配置校验失败：资金账号为空，请在顶部用户配置区填写 ACCOUNT_ID")
         print_json({"case": "validate", "ok": False, "error": "account_id is required"})
         return 2
-    if args.dry_run:
-        print_info("dry-run 模式：只打印监听配置，不连接")
+    if config.dry_run:
+        print_info("DRY_RUN = True：只打印监听配置，不连接")
         print_json({"case": "dry_run", "ok": True, "message": "callback listener was not connected"})
         return 0
 
-    configure_cfquant(args)
-    account = StockAccount(account_id, account_type, args.bridge_id)
-    callback = CallbackPrinter(payload_limit=args.payload_limit)
+    configure_cfquant(config)
+    account = StockAccount(account_id, account_type, config.bridge_id)
+    callback = CallbackPrinter(payload_limit=config.payload_limit)
     trader = XtQuantTrader(callback=callback, account=account)
     stop_event = threading.Event()
     install_signal_handlers(stop_event)
@@ -499,7 +515,7 @@ def main():
         connect_started = time.perf_counter()
         with capture_external_output() as external_logs:
             connect_result = trader.connect()
-        print_external_logs("connect", external_logs, show=args.show_transport_log)
+        print_external_logs("connect", external_logs, show=config.show_transport_log)
         connect_latency = elapsed_ms(connect_started)
         connection_info = client_connection_info(trader)
         print_connection_info(connection_info)
@@ -525,8 +541,8 @@ def main():
         wait_forever(
             stop_event,
             callback,
-            heartbeat_interval=args.heartbeat_interval,
-            duration=args.duration,
+            heartbeat_interval=config.heartbeat_interval,
+            duration=config.duration,
         )
         counts = callback.summary()
         print_info(
@@ -545,13 +561,13 @@ def main():
                 trader.disconnect()
         except Exception:
             pass
-        print_external_logs("disconnect", external_logs, show=args.show_transport_log)
+        print_external_logs("disconnect", external_logs, show=config.show_transport_log)
         external_logs = []
         try:
             with capture_external_output() as external_logs:
                 close_trade_client()
         finally:
-            print_external_logs("close_trade_client", external_logs, show=args.show_transport_log)
+            print_external_logs("close_trade_client", external_logs, show=config.show_transport_log)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,14 @@ import sys
 from packaging import version
 
 #运行需要的库
+DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+
+def _pip_index_args():
+    index_url = os.environ.get("CFQUANT_PIP_INDEX_URL", DEFAULT_PIP_INDEX_URL).strip()
+    return ["--index-url", index_url] if index_url else []
+
+
 need_packge = {
     'psutil': {'pip_name': 'psutil', 'version': '1.0.0'},
     'pandas': {'pip_name': 'pandas', 'version': '0.0.1'},
@@ -86,8 +94,7 @@ def ensure_modules_with_version(modules: dict):
             try:
                 subprocess.check_call([
                     sys.executable, "-m", "pip", "install", install_target,
-                    "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
-                ], **_hidden_subprocess_kwargs())
+                ] + _pip_index_args(), **_hidden_subprocess_kwargs())
                 print(f"[AutoInstall] 成功安装 {pip_name} {required_version}")
             except Exception as e:
                 print(f"[AutoInstall] 安装 {pip_name} 失败: {e}")

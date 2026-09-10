@@ -13,7 +13,7 @@ from cfquant.protocol import decode_value, loads_message, pack_request, pack_res
 from cfquant.tx_trade_bridge import TxTradeBridge
 from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import (
-    CreditAssure, CreditSloCode, CreditSubjects, StockAccount, XtPositionStatistics,
+    CreditAssure, CreditSloCode, CreditSubjects, StockAccount, XtCreditDetail, XtPositionStatistics,
 )
 
 
@@ -289,6 +289,134 @@ def test_slo_source_enum_and_missing_fields():
     assert result.cashgroup_prop == 49
     assert result.enable_amount == 0
     assert not hasattr(result, "slo_ratio")
+
+
+@pytest.mark.parametrize("cls", [TxTradeBridge, NormalQmtBridge, PipeTradeBridge, PipeNormalQmtBridge])
+def test_credit_detail_uses_credit_account_query_and_preserves_cpp_fields(monkeypatch, cls):
+    calls = []
+    raw = type("CCreditAccountDetail", (), {
+        "__slots__": (), "m_strAccountID": b"A123", "m_nBrokerType": 3,
+        "m_dTotalDebit": 123.5, "m_dFinEnableQuota": 200.0,
+        "m_dSloEnableQuota": 0.0, "m_dPerAssurescaleValue": 2.5,
+        "m_dEnableBailBalance": 80.0,
+    })()
+    _, trader = wire_sdk(monkeypatch, {
+        "get_trade_detail_data": lambda *args: calls.append(args) or [raw],
+        "query_credit_detail": lambda *args: pytest.fail("unexpected legacy query"),
+    }, cls)
+    account = StockAccount("A123", "CREDIT")
+    result = trader.query_credit_detail(account)
+    assert calls == [("A123", "credit", "account")]
+    assert isinstance(result[0], XtCreditDetail)
+    assert result[0].account_id == "A123"
+    assert result[0].account_type == xtconstant.CREDIT_ACCOUNT
+    assert result[0].m_dTotalDebt == result[0].m_dTotalDebit == 123.5
+    assert result[0].m_dFinEnableQuota == 200.0
+    assert result[0].m_dSloEnableQuota == 0.0
+    assert result[0].m_dPerAssurescaleValue == 2.5
+    assert result[0].m_dEnableBailBalance == 80.0
+    received = []
+    done = threading.Event()
+    try:
+        assert trader.query_credit_detail_async(account, lambda data: (received.append(data), done.set())) == 1
+        assert done.wait(2)
+        assert isinstance(received[0][0], XtCreditDetail)
+        assert vars(received[0][0]) == vars(result[0])
+    finally:
+        trader.stop()
+
+
+@pytest.mark.parametrize("rows", [None, []])
+def test_credit_detail_preserves_none_and_empty_results(monkeypatch, rows):
+    _, trader = wire_sdk(monkeypatch, {"get_trade_detail_data": lambda *args: rows})
+    assert trader.query_credit_detail(StockAccount("A123", "CREDIT")) == rows
+
+
+def test_web_credit_detail_routes_to_native_credit_account_query(monkeypatch):
+    calls = []
+    client = LoopbackClient(make_bridge({
+        "get_trade_detail_data": lambda *args: calls.append(args) or [{
+            "m_strAccountID": "A123", "m_nBrokerType": 3, "m_dFinEnableQuota": 200.0,
+        }],
+    }, cls=PipeNormalQmtBridge))
+
+    def request(account_id, bridge_id, channel, action, params, **kwargs):
+        assert account_id == "A123"
+        assert bridge_id == "credit_bridge"
+        assert kwargs["account_type"] == "CREDIT"
+        assert kwargs["default_channel"] == "normal"
+        return {
+            "bridge_id": bridge_id, "channel": "normal", "mode": "ctypes",
+            "fallback": False, "fallback_reason": "",
+            "result": client.request(action, params),
+        }
+
+    monkeypatch.setattr(web, "resolve_bridge_id", lambda **kwargs: "credit_bridge")
+    monkeypatch.setattr(web, "bridge_config", lambda bridge_id: {"name": "Credit QMT"})
+    monkeypatch.setattr(web, "account_request", request)
+    result = web.query_credit_account({
+        "account_id": "A123", "account_type": "CREDIT", "action": "detail",
+        "account_key": "credit_bridge:CREDIT:A123",
+    })
+    assert calls == [("A123", "credit", "account")]
+    assert result["action"] == "xttrader.query_credit_detail"
+    assert result["result"][0]["m_dFinEnableQuota"] == 200.0
+    assert result["result"][0]["account_id"] == result["account_id"] == "A123"
+
+
+def test_credit_detail_supports_required_strategy_argument(monkeypatch):
+    calls = []
+    raw = {"m_strAccountID": "A123", "m_dFinUsedQuota": 0.0}
+
+    def query(account_id, account_type, detail_type, strategy):
+        calls.append((account_id, account_type, detail_type, strategy))
+        return [raw]
+
+    _, trader = wire_sdk(monkeypatch, {"get_trade_detail_data": query})
+    result = trader.query_credit_detail(StockAccount("A123", "CREDIT"))
+    assert calls == [("A123", "credit", "account", "")]
+    assert result[0].cfquant_qmt_fields["m_dFinUsedQuota"] == 0.0
+    assert not hasattr(result[0], "m_dFinUsedQuota")
+    assert not hasattr(result[0], "m_dFinEnableQuota")
+    assert "account_id" not in raw
+
+
+def test_credit_detail_rejects_wrong_account_type_before_query(monkeypatch):
+    _, trader = wire_sdk(monkeypatch, {"get_trade_detail_data": lambda *args: pytest.fail("unexpected query")})
+    with pytest.raises(ValueError, match="requires a CREDIT account"):
+        trader.query_credit_detail(StockAccount("A123"))
+
+
+@pytest.mark.parametrize("row,error", [
+    ({"m_strAccountID": "OTHER"}, "different account"),
+    ({"account_id": "A123", "m_strAccountID": "OTHER"}, "different account"),
+    ({"m_strAccountID": "A123", "m_nBrokerType": 2}, "non-CREDIT account"),
+    ({}, "invalid credit account row"),
+])
+def test_credit_detail_rejects_mismatched_or_invalid_rows(monkeypatch, row, error):
+    _, trader = wire_sdk(monkeypatch, {"get_trade_detail_data": lambda *args: [row]})
+    with pytest.raises(ValueError, match=error):
+        trader.query_credit_detail(StockAccount("A123", "CREDIT"))
+
+
+def test_credit_detail_does_not_hide_qmt_query_failure(monkeypatch):
+    def query(*args):
+        raise RuntimeError("credit account is not logged in")
+
+    _, trader = wire_sdk(monkeypatch, {
+        "get_trade_detail_data": query,
+        "query_credit_detail": lambda *args: pytest.fail("unexpected fallback"),
+    })
+    with pytest.raises(RuntimeError, match="not logged in"):
+        trader.query_credit_detail(StockAccount("A123", "CREDIT"))
+
+
+@pytest.mark.parametrize("source", ["query_credit_detail", "get_credit_detail"])
+def test_credit_detail_keeps_legacy_callable_without_trade_detail(monkeypatch, source):
+    _, trader = wire_sdk(monkeypatch, {source: lambda *args: [{"account_id": "A123"}]})
+    result = trader.query_credit_detail(StockAccount("A123", "CREDIT"))
+    assert isinstance(result[0], XtCreditDetail)
+    assert result[0].account_id == "A123"
 
 
 @pytest.mark.parametrize("rows", [None, []])

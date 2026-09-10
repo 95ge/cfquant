@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Explicit opt-in live bridge checks. Orders are restricted to the confirmed paper account."""
-import argparse
+from types import SimpleNamespace
 import datetime as dt
 import json
 from pathlib import Path
@@ -18,6 +18,16 @@ from cfquant.client import LTtxRpcClient
 from cfquant.protocol import encode_value
 from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
 from cfquant.xttype import StockAccount, XtAsset, XtOrder, XtPosition, XtTrade
+
+
+# ======================== 用户配置区 ========================
+# 直接修改下面的配置，然后运行本文件；不读取命令行参数。
+ACCOUNT_ID = ""          # 必填，须与 Web 中默认启用的高级模式账号一致
+SKIP_ORDER = True        # 默认仅查询、订阅和下载，不下单、不撤单
+CONFIRM_SIMULATION = ""  # 下单前确认是模拟账号，并在这里填写同一个 ACCOUNT_ID
+OUTPUT_DIR = ""          # 留空在 private_docs 下自动创建唯一报告目录
+# 关闭 SKIP_ORDER 后：买入 000001.SZ 100 股，限价 11.6，10 秒后尝试撤单。
+# ===========================================================
 
 
 def now():
@@ -103,7 +113,7 @@ class Run:
         counts = {}
         for row in self.rows:
             counts[row["status"]] = counts.get(row["status"], 0) + 1
-        lines = ["# 高级模式接口与回调实机联调报告", "", "- 开始时间：" + self.started, "- 结束时间：" + report["finished_at"], "- 账号：" + self.account_id + "，用户在本次会话明确确认是模拟账号。", "- 当前测试包含非交易时段；无推送不自动等于回调损坏。", "- 结果计数：" + json.dumps(counts, ensure_ascii=False), "", "## 模拟委托", "", "```json", json.dumps(self.order, ensure_ascii=False, indent=2, default=str), "```", "", "## 接口结果", "", "| 接口或检查 | 结果 | 耗时毫秒 | 说明 |", "| --- | --- | ---: | --- |"]
+        lines = ["# 高级模式接口与回调实机联调报告", "", "- 开始时间：" + self.started, "- 结束时间：" + report["finished_at"], "- 账号：" + self.account_id + ("，操作者通过代码配置确认是模拟账号。" if self.order.get("simulation_confirmed") else "，本次未确认模拟账号属性。"), "- 当前测试包含非交易时段；无推送不自动等于回调损坏。", "- 结果计数：" + json.dumps(counts, ensure_ascii=False), "", "## 模拟委托", "", "```json", json.dumps(self.order, ensure_ascii=False, indent=2, default=str), "```", "", "## 接口结果", "", "| 接口或检查 | 结果 | 耗时毫秒 | 说明 |", "| --- | --- | ---: | --- |"]
         for row in self.rows:
             detail = str(row["detail"]).replace("|", "/").replace("\n", " ")
             lines.append("| `%s` | %s | %s | %s |" % (row["name"], row["status"], row.get("latency_ms", ""), detail))
@@ -339,22 +349,30 @@ def readonly_checks(run, trader, account):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--account-id", required=True)
-    parser.add_argument("--confirm-simulation", default="")
-    parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--skip-order", action="store_true")
-    args = parser.parse_args()
+    settings = SimpleNamespace(
+        account_id=str(ACCOUNT_ID or "").strip(),
+        skip_order=SKIP_ORDER,
+        confirm_simulation=str(CONFIRM_SIMULATION or "").strip(),
+        output_dir=OUTPUT_DIR,
+    )
+    if not settings.account_id:
+        raise ValueError("请在顶部用户配置区填写 ACCOUNT_ID")
+    if not settings.skip_order and settings.confirm_simulation != settings.account_id:
+        raise ValueError("下单测试须确认模拟账号，并将 CONFIRM_SIMULATION 设置为同一个 ACCOUNT_ID")
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     config = json.loads((ROOT / "runtime/config/cfquant_web_config.json").read_text(encoding="utf-8"))
-    selected = (config.get("account_configs") or {}).get("default:STOCK:" + args.account_id, {})
-    if args.account_id != config.get("default_account_id") or selected.get("mode") != "lttx" or not selected.get("enabled"):
+    selected = (config.get("account_configs") or {}).get("default:STOCK:" + settings.account_id, {})
+    if settings.account_id != config.get("default_account_id") or selected.get("mode") != "lttx" or not selected.get("enabled"):
         raise RuntimeError("Default enabled account and advanced mode do not match the explicit test target")
-    directory = Path(args.output_dir)
+    output_dir = str(settings.output_dir or "").strip()
+    directory = Path(output_dir).expanduser() if output_dir else ROOT / "private_docs" / (
+        "高级模式联调_" + dt.datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    )
     check_output_directory(directory)
-    run = Run(directory, args.account_id)
+    run = Run(directory, settings.account_id)
+    run.order["simulation_confirmed"] = settings.confirm_simulation == settings.account_id
     configure(transport="auto", bridge_id="default", timeout=12)
-    account = StockAccount(args.account_id, "STOCK", bridge_id="default")
+    account = StockAccount(settings.account_id, "STOCK", bridge_id="default")
     trader = XtQuantTrader(account=account, callback=make_trader_callback(run))
     trader.set_timeout(8)
     direct = LTtxRpcClient(request_channel="cfquant.trade.request", timeout=6)
@@ -365,7 +383,7 @@ def main():
         for channel, client in (("trade", direct), ("normal", normal)):
             status = run.call("bridge_status_" + channel, lambda client=client: client.request("cfquant.status", {}), nonempty)
             run.environment[channel] = status
-            if not status or (status.get("runtime") or {}).get("account_id") != args.account_id:
+            if not status or (status.get("runtime") or {}).get("account_id") != settings.account_id:
                 raise RuntimeError("Bridge account identity does not match")
         run.environment["sdk_client"] = type(get_client()).__name__
         if run.environment["sdk_client"] != "WebLttxRpcClient":
@@ -377,10 +395,10 @@ def main():
             raise RuntimeError("Trader connection failed")
         trader._get_client().add_callback("__event__", lambda event: run.event(str(event.get("event")), event, "trader_web_wire"))
         before = run.call("asset_before_order", lambda: trader.query_stock_asset(account), typed(XtAsset))
-        if not args.skip_order:
-            if before is None or before.account_id != args.account_id or float(before.cash) < 1160:
+        if not settings.skip_order:
+            if before is None or before.account_id != settings.account_id or float(before.cash) < 1160:
                 raise RuntimeError("Paper account identity or available cash check failed")
-            paper_order(run, trader, account, direct, args.confirm_simulation)
+            paper_order(run, trader, account, direct, settings.confirm_simulation)
         for label, subscribe in (
             ("subscribe_quote_tick", lambda: xtdata.subscribe_quote("000001.SZ", "tick", callback=lambda data: run.event("quote_tick", data))),
             ("subscribe_whole_quote", lambda: xtdata.subscribe_whole_quote(["000001.SZ"], callback=lambda data: run.event("whole_quote", data))),

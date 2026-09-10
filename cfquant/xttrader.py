@@ -17,6 +17,8 @@ from .xttype import (
     CreditAssure,
     CreditSloCode,
     CreditSubjects,
+    StkCompacts,
+    XtCreditDetail,
     XtAsset,
     XtAccountStatus,
     XtBankTransferResponse,
@@ -245,6 +247,9 @@ class XtQuantTrader(object):
         self._client = None
         self._clients = {}
         self.connected = False
+        self.last_connect_error = ""
+        self.last_connect_error_type = ""
+        self.last_connect_stage = ""
         self._registered_events = set()
         self._subscribed_accounts = {}
         self._pending_async_orders = []
@@ -294,13 +299,20 @@ class XtQuantTrader(object):
             self._emit_noarg_callback("on_disconnected")
 
     def connect(self):
+        self.last_connect_error = ""
+        self.last_connect_error_type = ""
+        self.last_connect_stage = "start"
         try:
             self.start()
+            self.last_connect_stage = "ping"
             self._trade_request("cfquant.ping", timeout=3)
             self.connected = True
+            self.last_connect_stage = ""
             self._emit_noarg_callback("on_connected")
             return 0
-        except Exception:
+        except Exception as error:
+            self.last_connect_error = str(error) or repr(error)
+            self.last_connect_error_type = type(error).__name__
             self.connected = False
             return -1
 
@@ -865,6 +877,8 @@ class XtQuantTrader(object):
         result = self._trade_request("xttrader.%s" % method, params or {})
         cls = {
             "query_position_statistics": XtPositionStatistics,
+            "query_credit_detail": XtCreditDetail,
+            "query_stk_compacts": StkCompacts,
             "query_credit_subjects": CreditSubjects,
             "query_credit_slo_code": CreditSloCode,
             "query_credit_assure": CreditAssure,
@@ -887,6 +901,15 @@ class XtQuantTrader(object):
         body["seq"] = seq
         if method.startswith("query_"):
             return self._submit_query(self._compat_request, (method, body), callback, seq=seq)
+        if method.startswith("smt_"):
+            result = self._compat_request(method, body)
+            if not isinstance(result, dict) or result.get("accepted") is not True:
+                return -1
+            if result.get("seq") != seq:
+                raise RuntimeError("SMT bridge returned a different request seq")
+            # The bridge delivers the actual business response through the
+            # registered trader event; the request acknowledgement is not a callback.
+            return seq
         result = self._compat_request(method, body)
         if callable_callback(callback):
             callback(result)

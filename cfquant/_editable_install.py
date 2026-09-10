@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 PACKAGE_NAME = "cfquant"
+DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+PIP_INDEX_URL_ENV = "CFQUANT_PIP_INDEX_URL"
 INSTALLED_CHECK_CODE = (
     "import importlib.metadata as metadata; "
     "metadata.distribution(%r)"
@@ -34,19 +36,117 @@ def installed_check_args(python_exe=None):
     return [python_exe or sys.executable, "-c", INSTALLED_CHECK_CODE]
 
 
+def pip_index_args():
+    """Return the configured pip index, defaulting to the Tsinghua mirror."""
+    index_url = os.environ.get(PIP_INDEX_URL_ENV, DEFAULT_PIP_INDEX_URL).strip()
+    return ["--index-url", index_url] if index_url else []
+
+
 def editable_install_args(project_root, python_exe=None):
     # The caller runs pip with cwd=project_root; "." stays a separate argv item
     # and avoids cmd/path quoting problems in Windows Chinese directories.
-    return [
+    command = [
         python_exe or sys.executable,
         "-m",
         "pip",
         "install",
         "--disable-pip-version-check",
         "--no-input",
-        "--editable",
-        ".",
     ]
+    command.extend(pip_index_args())
+    command.append("--editable")
+    command.append(".")
+    return command
+
+
+def _output_tail(value, limit=6000):
+    text = str(value or "")
+    if len(text) <= int(limit):
+        return text
+    return "...(output truncated)...\n" + text[-int(limit):]
+
+
+def run_editable_install(
+    project_root,
+    python_exe=None,
+    timeout=180.0,
+    output_limit=6000,
+    subprocess_kwargs=None,
+):
+    """Run pip editable installation and return a serializable result."""
+    project_root = Path(project_root).resolve()
+    result = {
+        "attempted": False,
+        "ok": True,
+        "skipped": False,
+        "project_dir": str(project_root),
+        "python_executable": str(python_exe or sys.executable),
+        "command": [],
+        "command_text": "",
+        "returncode": None,
+        "timed_out": False,
+        "output": "",
+        "installed_version": "",
+        "message": "",
+    }
+    if not (project_root / "pyproject.toml").is_file():
+        result.update({
+            "skipped": True,
+            "message": "pyproject.toml not found; skipped editable source install",
+        })
+        return result
+
+    command = editable_install_args(project_root, python_exe=python_exe)
+    result.update({
+        "attempted": True,
+        "command": [str(item) for item in command],
+        "command_text": subprocess.list2cmdline([str(item) for item in command]),
+    })
+    kwargs = {
+        "cwd": str(project_root),
+        "env": python_environment(clear_pythonpath=True),
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": float(timeout),
+    }
+    if subprocess_kwargs:
+        kwargs.update(dict(subprocess_kwargs))
+    try:
+        completed = subprocess.run(command, **kwargs)
+        output = _output_tail(completed.stdout, output_limit)
+        result["returncode"] = completed.returncode
+        result["output"] = output
+        result["ok"] = completed.returncode == 0
+        if result["ok"]:
+            try:
+                try:
+                    from importlib import metadata as importlib_metadata
+                except ImportError:
+                    import importlib_metadata
+                result["installed_version"] = str(importlib_metadata.version(PACKAGE_NAME))
+            except Exception:
+                pass
+            result["message"] = "cfquant 源码可编辑安装已完成"
+        else:
+            result["message"] = "cfquant 源码可编辑安装失败，退出码 %s" % completed.returncode
+    except subprocess.TimeoutExpired as error:
+        output = error.output if error.output is not None else error.stdout
+        result.update({
+            "ok": False,
+            "timed_out": True,
+            "output": _output_tail(output, output_limit),
+            "message": "cfquant 源码可编辑安装超时",
+        })
+    except Exception as error:
+        result.update({
+            "ok": False,
+            "output": _output_tail(error, output_limit),
+            "message": "cfquant 源码可编辑安装异常：%s" % error,
+        })
+    return result
 
 
 def python_environment(clear_pythonpath=False):

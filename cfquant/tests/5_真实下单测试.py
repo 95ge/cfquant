@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import argparse
+from types import SimpleNamespace
 import contextlib
 import io
 import json
@@ -13,13 +13,34 @@ from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback, close_trade_c
 from cfquant.xttype import StockAccount
 
 
-DEFAULT_ACCOUNT_ID = "8885060548"
-DEFAULT_STOCK_CODE = "000001.SZ"
-DEFAULT_PRICE = 11.5
-DEFAULT_VOLUME = 100
-DEFAULT_SIDE = "buy"
-DEFAULT_STRATEGY_NAME = "cfquant_real_order_latency"
-DEFAULT_TRANSPORT = "auto"
+# ======================== 用户配置区 ========================
+# 直接修改下面的配置，然后运行本文件；不读取命令行参数。
+TRANSPORT = "auto"       # auto 自动发现；也可填写 ctypes、web_lttx 或 lttx
+BRIDGE_ID = "default"
+REQUEST_TIMEOUT = 15.0    # 请求超时，单位秒
+ACCOUNT_ID = "8885060548"
+ACCOUNT_TYPE = "STOCK"
+STOCK_CODE = "000001.SZ"
+SIDE = "buy"              # buy=买入，sell=卖出
+PRICE = 11.5
+VOLUME = 100
+PRICE_TYPE = FIX_PRICE
+STRATEGY_NAME = "cfquant_real_order_latency"
+ORDER_REMARK = ""         # 留空自动生成唯一备注
+FIND_ORDER_TIMEOUT = 5.0
+CALLBACK_TIMEOUT = 5.0
+QUERY_INTERVAL = 0.05
+JSON_OUTPUT = False
+SHOW_TRANSPORT_LOG = False
+DRY_RUN = False           # True 只预览配置，不连接
+CONNECT_ONLY = False      # True 只连接并订阅账号，不下单、不撤单
+REQUIRE_CONFIRM = False   # True 开启确认文本保护
+CONFIRM_TEXT = ""         # 开启保护时须匹配 required_confirm_text
+ALLOW_STOCK_FALLBACK = False  # 无订单号和备注时是否按账号+证券匹配
+# 注意：DRY_RUN 和 CONNECT_ONLY 都为 False 时会按以上配置提交真实委托。
+# ===========================================================
+
+
 LOG_PREFIX = "【真实下单测试】"
 JSON_OUTPUT_ENABLED = False
 
@@ -95,7 +116,7 @@ def print_external_logs(stage, captured, show=False):
     if not captured:
         return
     if not show:
-        print_info("外部日志已收起", stage=stage, lines=len(captured), show_with="--show-transport-log")
+        print_info("外部日志已收起", stage=stage, lines=len(captured), show_with="SHOW_TRANSPORT_LOG = True")
         return
     for stream_name, line in captured:
         print_info("外部日志", stage=stage, stream=stream_name, line=line)
@@ -496,82 +517,83 @@ def print_callback_result(callback, event_name, deadline_perf):
 
 def main():
     configure_stdout()
-    parser = argparse.ArgumentParser(
-        description="cfquant 真实下单延迟测试。默认通过 cfquant 库买入 000001.SZ 100 股，价格 10.2。"
+    config = SimpleNamespace(
+        transport=TRANSPORT,
+        bridge_id=BRIDGE_ID,
+        timeout=REQUEST_TIMEOUT,
+        account_id=ACCOUNT_ID,
+        account_type=ACCOUNT_TYPE,
+        stock_code=STOCK_CODE,
+        side=SIDE,
+        price=PRICE,
+        volume=VOLUME,
+        price_type=PRICE_TYPE,
+        strategy_name=STRATEGY_NAME,
+        order_remark=ORDER_REMARK,
+        find_order_timeout=FIND_ORDER_TIMEOUT,
+        callback_timeout=CALLBACK_TIMEOUT,
+        query_interval=QUERY_INTERVAL,
+        json=JSON_OUTPUT,
+        show_transport_log=SHOW_TRANSPORT_LOG,
+        dry_run=DRY_RUN,
+        connect_only=CONNECT_ONLY,
+        require_confirm=REQUIRE_CONFIRM,
+        confirm_text=CONFIRM_TEXT,
+        allow_stock_fallback=ALLOW_STOCK_FALLBACK,
     )
-    parser.add_argument("--transport", default=DEFAULT_TRANSPORT, help="cfquant 通信模式，默认 auto；可传 ctypes、web_lttx 或 lttx。")
-    parser.add_argument("--bridge-id", default="default", help="桥接 ID，默认 default。")
-    parser.add_argument("--timeout", type=float, default=15.0, help="请求超时时间，输入单位秒，输出显示为毫秒。")
-    parser.add_argument("--account-id", default=DEFAULT_ACCOUNT_ID, help="真实委托资金账号。")
-    parser.add_argument("--account-type", default="STOCK", help="账号类型，默认 STOCK。")
-    parser.add_argument("--side", default=DEFAULT_SIDE, choices=("buy", "sell"), help="委托方向，默认 buy。")
-    parser.add_argument("--stock-code", default=DEFAULT_STOCK_CODE, help="委托标的，默认 000001.SZ。")
-    parser.add_argument("--price", type=float, default=DEFAULT_PRICE, help="委托价格，默认 10.2。")
-    parser.add_argument("--volume", type=int, default=DEFAULT_VOLUME, help="委托数量，默认 100。")
-    parser.add_argument("--price-type", type=int, default=FIX_PRICE, help="报价类型，默认 FIX_PRICE=11。")
-    parser.add_argument("--strategy-name", default=DEFAULT_STRATEGY_NAME, help="策略名称。")
-    parser.add_argument("--order-remark", default="", help="委托备注；留空时自动生成唯一备注。")
-    parser.add_argument("--find-order-timeout", type=float, default=5.0, help="下单后轮询委托表的最长等待时间，输入单位秒，输出显示为毫秒。")
-    parser.add_argument("--callback-timeout", type=float, default=5.0, help="下单后等待交易回调的最长等待时间，输入单位秒，输出显示为毫秒。")
-    parser.add_argument("--query-interval", type=float, default=0.05, help="轮询委托表间隔时间，输入单位秒，输出显示为毫秒。")
-    parser.add_argument("--json", action="store_true", help="同时输出机器可读 JSON 行；默认只输出标准化人工日志。")
-    parser.add_argument("--show-transport-log", action="store_true", help="显示 LTtx/PipeHub 等底层库原始输出；默认收起。")
-    parser.add_argument("--dry-run", action="store_true", help="只打印本次下单参数，不连接也不下单。")
-    parser.add_argument("--require-confirm", action="store_true", help="开启确认文本保护。")
-    parser.add_argument("--confirm-text", default="", help="当传 --require-confirm 时，必须与 required_confirm_text 完全一致。")
-    parser.add_argument("--allow-stock-fallback", action="store_true", help="找不到订单号和备注时，允许用账号+标的匹配回调/委托。")
-    args = parser.parse_args()
     global JSON_OUTPUT_ENABLED
-    JSON_OUTPUT_ENABLED = bool(args.json)
+    JSON_OUTPUT_ENABLED = bool(config.json)
 
-    requested_transport = str(args.transport or "").strip().lower() or DEFAULT_TRANSPORT
-    args.transport = requested_transport
+    requested_transport = str(config.transport or "").strip().lower() or "auto"
+    config.transport = requested_transport
 
-    account_id = str(args.account_id or "").strip()
-    account_type = str(args.account_type or "STOCK").strip().upper()
-    side = str(args.side or DEFAULT_SIDE).strip().lower()
-    stock_code = normalize_stock_code(args.stock_code)
-    price = float(args.price or 0)
-    volume = int(args.volume or 0)
-    strategy_name = str(args.strategy_name or DEFAULT_STRATEGY_NAME).strip()
-    order_remark = str(args.order_remark or "").strip()
+    account_id = str(config.account_id or "").strip()
+    account_type = str(config.account_type or "STOCK").strip().upper()
+    side = str(config.side or "buy").strip().lower()
+    stock_code = normalize_stock_code(config.stock_code)
+    price = float(config.price or 0)
+    volume = int(config.volume or 0)
+    strategy_name = str(config.strategy_name or "cfquant_real_order_latency").strip()
+    order_remark = str(config.order_remark or "").strip()
     if not order_remark:
         order_remark = "real_order_%s_%s" % (stock_code.replace(".", ""), int(time.time() * 1000))
     required_confirm_text = build_confirm_text(side, account_id, stock_code, volume, price)
 
     order_config = {
-        "api": "cfquant.xttrader.XtQuantTrader.order_stock",
+        "api": "cfquant.xttrader.XtQuantTrader.connect" if config.connect_only else "cfquant.xttrader.XtQuantTrader.order_stock",
         "account_id": account_id,
         "account_type": account_type,
-        "bridge_id": args.bridge_id,
-        "transport": args.transport,
+        "bridge_id": config.bridge_id,
+        "transport": config.transport,
         "requested_transport": requested_transport,
-        "default_transport": DEFAULT_TRANSPORT,
+        "default_transport": "auto",
         "side": side,
         "stock_code": stock_code,
         "price": price,
         "volume": volume,
-        "price_type": args.price_type,
+        "price_type": config.price_type,
         "strategy_name": strategy_name,
         "order_remark": order_remark,
         "required_confirm_text": required_confirm_text,
-        "request_timeout_ms": seconds_to_ms(args.timeout),
-        "find_order_timeout_ms": seconds_to_ms(args.find_order_timeout),
-        "callback_timeout_ms": seconds_to_ms(args.callback_timeout),
-        "query_interval_ms": seconds_to_ms(args.query_interval),
-        "json_output": bool(args.json),
-        "show_transport_log": bool(args.show_transport_log),
-        "dry_run": bool(args.dry_run),
-        "require_confirm": bool(args.require_confirm),
-        "allow_stock_fallback": bool(args.allow_stock_fallback),
+        "request_timeout_ms": seconds_to_ms(config.timeout),
+        "find_order_timeout_ms": seconds_to_ms(config.find_order_timeout),
+        "callback_timeout_ms": seconds_to_ms(config.callback_timeout),
+        "query_interval_ms": seconds_to_ms(config.query_interval),
+        "json_output": bool(config.json),
+        "show_transport_log": bool(config.show_transport_log),
+        "dry_run": bool(config.dry_run),
+        "connect_only": bool(config.connect_only),
+        "require_confirm": bool(config.require_confirm),
+        "allow_stock_fallback": bool(config.allow_stock_fallback),
     }
     print_json({"type": "start", "order_config": order_config})
     print_info(
         "测试启动",
-        api="XtQuantTrader.order_stock",
-        json_output=bool(args.json),
-        show_transport_log=bool(args.show_transport_log),
-        dry_run=bool(args.dry_run),
+        api="XtQuantTrader.connect" if config.connect_only else "XtQuantTrader.order_stock",
+        json_output=bool(config.json),
+        show_transport_log=bool(config.show_transport_log),
+        dry_run=bool(config.dry_run),
+        connect_only=bool(config.connect_only),
     )
     print_info(
         "委托参数",
@@ -586,17 +608,21 @@ def main():
     )
     print_info(
         "计时参数",
-        request_timeout_ms=seconds_to_ms(args.timeout),
-        find_order_timeout_ms=seconds_to_ms(args.find_order_timeout),
-        callback_timeout_ms=seconds_to_ms(args.callback_timeout),
-        query_interval_ms=seconds_to_ms(args.query_interval),
+        request_timeout_ms=seconds_to_ms(config.timeout),
+        find_order_timeout_ms=seconds_to_ms(config.find_order_timeout),
+        callback_timeout_ms=seconds_to_ms(config.callback_timeout),
+        query_interval_ms=seconds_to_ms(config.query_interval),
     )
-    if args.transport == DEFAULT_TRANSPORT:
-        print_info("通信模式使用默认 auto，将按 cfquant 运行时自动发现和账号路由选择实际链路", transport=args.transport)
+    if config.transport == "auto":
+        print_info("通信模式使用默认 auto，将按 cfquant 运行时自动发现和账号路由选择实际链路", transport=config.transport)
     else:
-        print_info("通信模式使用命令行指定值", transport=args.transport)
-    print_info(requested_transport_text(args.transport))
+        print_info("通信模式使用代码配置值", transport=config.transport)
+    print_info(requested_transport_text(config.transport))
 
+    if side not in ("buy", "sell"):
+        print_info("配置校验失败：SIDE 必须为 buy 或 sell")
+        print_json({"case": "validate", "ok": False, "error": "SIDE must be buy or sell"})
+        return 2
     if not account_id:
         print_info("参数校验失败：资金账号为空")
         print_json({"case": "validate", "ok": False, "error": "account_id is required"})
@@ -613,11 +639,11 @@ def main():
         print_info("参数校验失败：委托价格必须大于 0")
         print_json({"case": "validate", "ok": False, "error": "price must be positive"})
         return 2
-    if args.dry_run:
-        print_info("dry-run 模式：只打印参数，不连接也不下单")
+    if config.dry_run:
+        print_info("DRY_RUN = True：只打印配置，不连接也不下单")
         print_json({"case": "dry_run", "ok": True, "message": "real order was not submitted"})
         return 0
-    if args.require_confirm and str(args.confirm_text or "").strip() != required_confirm_text:
+    if not config.connect_only and config.require_confirm and str(config.confirm_text or "").strip() != required_confirm_text:
         print_info("确认文本不匹配，未提交真实委托", required_confirm_text=required_confirm_text)
         print_json({
             "case": "confirmation",
@@ -628,13 +654,13 @@ def main():
         })
         return 2
 
-    configure_cfquant(args)
-    account = StockAccount(account_id, account_type, args.bridge_id)
+    configure_cfquant(config)
+    account = StockAccount(account_id, account_type, config.bridge_id)
     callback = OrderLatencyCallback(
         account_id,
         stock_code,
         order_remark,
-        allow_stock_fallback=args.allow_stock_fallback,
+        allow_stock_fallback=config.allow_stock_fallback,
     )
     trader = XtQuantTrader(callback=callback, account=account)
 
@@ -643,7 +669,7 @@ def main():
         connect_started = time.perf_counter()
         with capture_external_output() as external_logs:
             connect_result = trader.connect()
-        print_external_logs("connect", external_logs, show=args.show_transport_log)
+        print_external_logs("connect", external_logs, show=config.show_transport_log)
         connect_latency = elapsed_ms(connect_started)
         connection_info = client_connection_info(trader)
         print_connection_info(connection_info)
@@ -659,10 +685,22 @@ def main():
             "result": connect_result,
             "latency_ms": connect_latency,
             "connection": connection_info,
+            "error": trader.last_connect_error,
+            "error_type": trader.last_connect_error_type,
+            "stage": trader.last_connect_stage,
         })
         if connect_result != 0:
-            print_info("连接失败，停止测试")
+            print_info(
+                "连接失败，未提交委托",
+                stage=trader.last_connect_stage,
+                error_type=trader.last_connect_error_type,
+                error=trader.last_connect_error or "未提供底层异常详情",
+            )
             return 1
+        if config.connect_only:
+            print_info("连接检查完成，未下单、未撤单")
+            print_json({"case": "connect_only", "ok": True, "order_submitted": False})
+            return 0
 
         print_info(
             "开始调用 cfquant 下单接口",
@@ -680,17 +718,17 @@ def main():
                     stock_code,
                     order_type_for_side(side),
                     volume,
-                    args.price_type,
+                    config.price_type,
                     price,
                     strategy_name,
                     order_remark,
                 )
-            print_external_logs("order_stock", external_logs, show=args.show_transport_log)
+            print_external_logs("order_stock", external_logs, show=config.show_transport_log)
             order_ended = time.perf_counter()
             callback.mark_order_returned(order_id, order_ended)
         except Exception as error:
             failed_at = time.perf_counter()
-            print_external_logs("order_stock", external_logs, show=args.show_transport_log)
+            print_external_logs("order_stock", external_logs, show=config.show_transport_log)
             print_info(
                 "下单接口异常",
                 latency_ms=elapsed_ms(order_started, failed_at),
@@ -726,8 +764,8 @@ def main():
 
         print_info(
             "开始轮询委托表，统计从下单发起到查询到委托的耗时",
-            timeout_ms=seconds_to_ms(args.find_order_timeout),
-            interval_ms=seconds_to_ms(args.query_interval),
+            timeout_ms=seconds_to_ms(config.find_order_timeout),
+            interval_ms=seconds_to_ms(config.query_interval),
         )
         with capture_external_output() as external_logs:
             visible = query_until_order_visible(
@@ -739,11 +777,11 @@ def main():
                 order_remark,
                 order_started,
                 order_ended,
-                args.find_order_timeout,
-                args.query_interval,
-                allow_stock_fallback=args.allow_stock_fallback,
+                config.find_order_timeout,
+                config.query_interval,
+                allow_stock_fallback=config.allow_stock_fallback,
             )
-        print_external_logs("query_stock_orders", external_logs, show=args.show_transport_log)
+        print_external_logs("query_stock_orders", external_logs, show=config.show_transport_log)
         if visible.get("ok"):
             print_info(
                 "委托表已查询到本次委托",
@@ -761,8 +799,8 @@ def main():
             )
         print_json({"case": "query_stock_orders_until_found", **visible})
 
-        callback_deadline = order_started + max(float(args.callback_timeout or 0), 0.0)
-        print_info("等待委托回调 on_stock_order", timeout_ms=seconds_to_ms(args.callback_timeout))
+        callback_deadline = order_started + max(float(config.callback_timeout or 0), 0.0)
+        print_info("等待委托回调 on_stock_order", timeout_ms=seconds_to_ms(config.callback_timeout))
         stock_order_event = print_callback_result(callback, "on_stock_order", callback_deadline)
         order_error_event = callback.first_event("on_order_error")
         trade_event = callback.first_event("on_stock_trade")
@@ -828,13 +866,13 @@ def main():
                 trader.disconnect()
         except Exception:
             pass
-        print_external_logs("disconnect", external_logs, show=args.show_transport_log)
+        print_external_logs("disconnect", external_logs, show=config.show_transport_log)
         external_logs = []
         try:
             with capture_external_output() as external_logs:
                 close_trade_client()
         finally:
-            print_external_logs("close_trade_client", external_logs, show=args.show_transport_log)
+            print_external_logs("close_trade_client", external_logs, show=config.show_transport_log)
 
 
 if __name__ == "__main__":

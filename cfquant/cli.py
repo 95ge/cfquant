@@ -109,6 +109,8 @@ def _serve_parser(prog="cfquant"):
         epilog = (
             "常用命令:\n"
             "  cfquant                                启动本地 Web 控制台。\n"
+            "  cfquant run                            启动本地 Web 控制台。\n"
+            "  cfquant serve                          启动本地 Web 控制台。\n"
             "  cfquant qmt-scripts                    查看已安装的 QMT 入口脚本目录。\n"
             "  cfquant qmt-scripts --open             在资源管理器中打开 QMT 入口脚本目录。\n"
             "  cfquant qmt-scripts --output DIRECTORY 导出 QMT 入口脚本到指定目录。\n"
@@ -349,7 +351,7 @@ def main(argv=None):
     if not argv:
         return _serve([])
     command = argv[0]
-    if command in ("serve", "web"):
+    if command in ("run", "serve", "web"):
         return _serve(argv[1:])
     if command == "pipe-hub":
         from cfquant_pipe_hub import main as pipe_hub_main

@@ -7,13 +7,15 @@ import threading
 import time
 
 from .protocol import loads_message, pack_event, pack_response
+from .level2 import L2_GET_PERIODS, L2_PERIODS, l2_query, quote_plain, require_l2_callable, thousand_price
 from .version import __version__ as CORE_VERSION
 from . import account_routing
 from . import order_meta
 from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, set_log_language, translate_log
 from .runtime_report import build_qmt_runtime_report, module_source_state, source_sha256, write_qmt_runtime_marker
 from .xttype import (
-    CreditAssure, CreditSloCode, CreditSubjects, XtPositionStatistics,
+    CreditAssure, CreditSloCode, CreditSubjects, StkCompacts, XtCreditDetail, XtPositionStatistics,
+    XtSmtAppointmentResponse,
     filter_cancelable_orders, normalize_order_price_type,
 )
 
@@ -57,6 +59,15 @@ XTTRADER_COMPAT_CANDIDATES = {
 }
 
 
+SMT_ASYNC_ARGUMENT_COUNTS = {
+    "smt_appointment_order": 4,
+    "smt_appointment_cancel": 1,
+    "smt_negotiate_order": 6,
+    "smt_compact_return": 4,
+    "smt_compact_renewal": 5,
+}
+
+
 XTDATA_COMPAT_CANDIDATES = {
     "get_trading_calendar": ("get_trading_calendar",),
     "get_trading_period": ("get_trading_period",),
@@ -73,11 +84,6 @@ XTDATA_COMPAT_CANDIDATES = {
     "subscribe_formula": ("subscribe_formula",),
     "unsubscribe_formula": ("unsubscribe_formula",),
     "get_formula_result": ("get_formula_result",),
-    "get_l2_quote": ("get_l2_quote",),
-    "get_l2_order": ("get_l2_order",),
-    "get_l2_transaction": ("get_l2_transaction",),
-    "subscribe_l2thousand": ("subscribe_l2thousand",),
-    "get_l2thousand_queue": ("get_l2thousand_queue",),
     "get_tabular_data": ("get_tabular_data",),
     "download_tabular_data": ("download_tabular_data", "down_tabular_data"),
     "push_custom_data": ("push_custom_data",),
@@ -1439,11 +1445,26 @@ class TxTradeBridge(object):
 
     def _dispatch_xttrader_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
+        if method in SMT_ASYNC_ARGUMENT_COUNTS:
+            return self._smt_request(params, msg, method)
+        if method in ("smt_query_quoter", "smt_query_compact", "smt_query_order"):
+            self._credit_account_id(params)
+            rows = self._generic_xttrader_call(method, params)
+            if rows is None:
+                return None
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError("%s requires a list of SMT result dictionaries" % method)
+            return self._plain_value(rows)
         if method == "query_position_statistics":
             if self._get_callable("get_trade_detail_data"):
                 return self._query_qmt_objects(params, XtPositionStatistics, "get_trade_detail_data", "FUTURE")
             return self._generic_xttrader_call(method, params)
+        if method == "query_credit_detail":
+            return self._query_credit_detail(params)
+        if method == "query_stk_compacts":
+            return self._query_stk_compacts(params)
         if method in ("query_credit_assure", "query_credit_subjects", "query_credit_slo_code"):
+            self._credit_account_id(params)
             cls, source = {
                 "query_credit_assure": (CreditAssure, "get_assure_contract"),
                 "query_credit_subjects": (CreditSubjects, "get_assure_contract"),
@@ -1451,7 +1472,8 @@ class TxTradeBridge(object):
             }[method]
             if self._get_callable(source):
                 return self._query_qmt_objects(params, cls, source, "CREDIT")
-            return self._generic_xttrader_call(method, params)
+            rows = self._generic_xttrader_call(method, params)
+            return self._format_credit_rows(rows, params, cls, method)
         if method == "query_new_purchase_limit":
             func = self._get_callable("get_new_purchase_limit")
             if func:
@@ -1482,6 +1504,123 @@ class TxTradeBridge(object):
             raise ValueError("account_id must be a non-empty string")
         return account_id
 
+    def _query_credit_detail(self, params):
+        account_id = self._credit_account_id(params)
+        func = self._get_callable("get_trade_detail_data")
+        if not func:
+            rows = self._generic_xttrader_call("query_credit_detail", params)
+            return self._format_credit_rows(rows, params, XtCreditDetail, "query_credit_detail")
+        rows = self._call_trade_detail_data(func, account_id, "credit", "account")
+        return self._format_credit_rows(rows, params, XtCreditDetail, "get_trade_detail_data")
+
+    def _smt_request(self, params, msg, method):
+        account_id = self._credit_account_id(params)
+        seq = params.get("seq")
+        client_id = msg.get("client_id") or msg.get("reply_channel")
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq <= 0 or not client_id:
+            raise ValueError("SMT request requires a positive seq and client_id")
+        args = list(params.get("args") or [])
+        if len(args) != SMT_ASYNC_ARGUMENT_COUNTS[method] or params.get("kwargs"):
+            raise ValueError("invalid arguments for %s" % method)
+        func = self._get_callable(method)
+        if not func:
+            raise NotImplementedError(
+                "xttrader.%s_async is unavailable: this QMT does not expose %s with a final SMT business response"
+                % (method, method)
+            )
+        # A broker extension must return its final business response. Do not
+        # retry a mutating call with alternative signatures or treat an ACK as success.
+        raw = func(account_id, *args)
+        if raw is False or (isinstance(raw, int) and not isinstance(raw, bool) and raw == -1):
+            return {"seq": -1, "accepted": False}
+        response = XtSmtAppointmentResponse.from_any(raw)
+        if not isinstance(response, XtSmtAppointmentResponse):
+            raise RuntimeError("%s returned no final business response; outcome unknown, reconcile before retrying" % method)
+        data = self._plain_value(vars(response))
+        for name in ("account_id", "m_strAccountID"):
+            if data.get(name) not in (None, "", account_id):
+                raise ValueError("%s returned a different account" % method)
+        for name in ("account_type", "m_nAccountType", "m_strAccountType", "m_nBrokerType"):
+            if data.get(name) not in (None, "") and str(data[name]).upper() not in ("3", "CREDIT"):
+                raise ValueError("%s returned a non-CREDIT account" % method)
+        apply_id = data.get("apply_id")
+        valid_apply_id = isinstance(apply_id, str) and bool(apply_id.strip())
+        if isinstance(apply_id, int) and not isinstance(apply_id, bool) and apply_id == -1:
+            valid_apply_id = data.get("success") is False
+        if (not isinstance(data.get("success"), bool)
+                or not valid_apply_id
+                or not isinstance(data.get("msg"), str)):
+            raise RuntimeError("%s returned an incomplete business response; outcome unknown, reconcile before retrying" % method)
+        if data["success"] and str(data["apply_id"]) == "-1":
+            raise RuntimeError("%s returned success without a valid apply_id" % method)
+        data.update(seq=seq, account_id=account_id, account_type=3)
+        self._send_trader_event(client_id, "on_smt_appointment_async_response", data)
+        return {"seq": seq, "accepted": True}
+
+    def _credit_account_id(self, params):
+        account_id = self._query_account_id(params)
+        account = params.get("account") or {}
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        if account_type.upper() != "CREDIT":
+            raise ValueError("credit query requires a CREDIT account")
+        return account_id
+
+    def _query_stk_compacts(self, params):
+        account_id = self._credit_account_id(params)
+        func = self._get_callable("get_unclosed_compacts")
+        if func:
+            rows = func(account_id, "CREDIT")
+            source = "get_unclosed_compacts"
+        else:
+            func = self._get_callable("get_debt_contract")
+            if func:
+                rows = func(account_id)
+                source = "get_debt_contract"
+            else:
+                rows = self._generic_xttrader_call("query_stk_compacts", params)
+                source = "query_stk_compacts"
+        return self._format_credit_rows(rows, params, StkCompacts, source)
+
+    def _format_credit_rows(self, rows, params, cls, source):
+        account_id = self._credit_account_id(params)
+        if rows is None:
+            return None
+        if isinstance(rows, (str, bytes, dict)):
+            raise ValueError("%s returned an invalid credit query result" % source)
+        result = []
+        for row in rows:
+            if isinstance(row, dict):
+                data = self._plain_value(row)
+            else:
+                data = {}
+                for name in dir(row):
+                    if not name.startswith("m_") and name not in ("account_id", "account_type") and name not in cls._field_aliases:
+                        continue
+                    value = getattr(row, name)
+                    if not callable(value):
+                        data[name] = self._plain_value(value)
+            if not data:
+                raise ValueError("%s returned an invalid credit account row" % source)
+            for name in ("account_id", "m_strAccountID"):
+                if data.get(name) not in (None, "", account_id):
+                    raise ValueError("%s returned a different account" % source)
+            for name in ("account_type", "m_nAccountType", "m_strAccountType", "m_nBrokerType"):
+                if data.get(name) not in (None, "") and str(data[name]).upper() not in ("3", "CREDIT"):
+                    raise ValueError("%s returned a non-CREDIT account" % source)
+            data["account_id"] = account_id
+            data["account_type"] = 3
+            if cls is XtCreditDetail and source == "get_trade_detail_data":
+                # Cached QMT quotas mean "used", whereas XtCreditDetail defines
+                # these two names as "frozen". Preserve them outside SDK fields.
+                raw_quotas = {name: data.pop(name) for name in ("m_dFinUsedQuota", "m_dSloUsedQuota") if name in data}
+                if raw_quotas:
+                    data["cfquant_qmt_fields"] = raw_quotas
+            data = dict(vars(cls.from_any(data)))
+            data["cfquant_source"] = source
+            data["cfquant_missing_fields"] = [name for name in cls._field_aliases if data.get(name) is None]
+            result.append(data)
+        return result
+
     def _query_qmt_objects(self, params, cls, source, required_account_type):
         account_id = self._query_account_id(params)
         account = params.get("account") or {}
@@ -1495,6 +1634,8 @@ class TxTradeBridge(object):
             rows = self._call_trade_detail_data(func, account_id, "future", "position_statistics")
         else:
             rows = func(account_id)
+        if required_account_type == "CREDIT":
+            return self._format_credit_rows(rows, params, cls, source)
         if rows is None:
             return None
         result = []
@@ -1512,6 +1653,11 @@ class TxTradeBridge(object):
 
     def _dispatch_xtdata_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
+        if method in L2_GET_PERIODS:
+            return l2_query(self._get_callable("get_market_data_ex"), L2_GET_PERIODS[method], params)
+        if method == "get_l2thousand_queue":
+            func = require_l2_callable(self._get_callable(method), method)
+            return quote_plain(func(params.get("stock_code", ""), gear_num=params.get("gear_num"), price=thousand_price(params)))
         adapters = {
             "get_cb_info": self._get_cb_info,
             "get_divid_factors": self._get_divid_factors,
@@ -1659,6 +1805,8 @@ class TxTradeBridge(object):
         return self._call_variants(func, variants)
 
     def _get_market_data(self, params):
+        if params.get("period") in L2_PERIODS:
+            return self._get_market_data_ex(params)
         func = self._get_callable("get_market_data")
         if not func:
             return self._get_market_data_ex(params)
@@ -1685,7 +1833,7 @@ class TxTradeBridge(object):
             params.get("end_time", ""),
             params.get("count", -1),
             params.get("dividend_type", "none"),
-            params.get("fill_data", True),
+            False if params.get("period") in L2_PERIODS else params.get("fill_data", True),
         )
 
     def _get_local_data(self, params):

@@ -25,6 +25,7 @@ python -m pip install --editable .
 安装后可直接启动本地控制台：
 
 ```powershell
+cfquant run
 cfquant --help
 cfquant --host 127.0.0.1 --port 8765 --open-browser
 ```

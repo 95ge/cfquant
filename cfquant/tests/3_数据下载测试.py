@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-import argparse
+from types import SimpleNamespace
 import time
 
 from _helpers import (
-    add_runtime_args,
     close_default_client,
     configure_cfquant,
     configure_stdout,
@@ -17,26 +16,46 @@ from _helpers import (
 from cfquant import xtdata
 
 
+# ======================== 用户配置区 ========================
+# 直接修改下面的配置，然后运行本文件；不读取命令行参数。
+TRANSPORT = "auto"       # auto 自动发现；也可填写 ctypes、web_lttx 或 lttx
+BRIDGE_ID = "default"
+REQUEST_TIMEOUT = 15.0    # 请求超时，单位秒
+STOCK_LIST = "000001.SZ"   # 多个证券用逗号分隔
+PERIOD = "1d"
+START_TIME = ""           # 例如 20260101；留空使用 QMT 默认范围
+END_TIME = ""
+WAIT_SECONDS = 5.0        # 提交下载后等待回调的秒数
+VERIFY_COUNT = 5          # 下载后读取的本地数据条数，0 不验证
+INCLUDE_FINANCIAL = False
+FINANCIAL_TABLES = "ASHAREBALANCESHEET"  # 多个表名用逗号分隔
+FINANCIAL_FIELDS = "ASHAREBALANCESHEET.fix_assets"  # 留空只下载不读取
+FINANCIAL_REPORT_TYPE = "announce_time"
+# ===========================================================
+
+
 def main():
     configure_stdout()
-    parser = argparse.ArgumentParser(description="cfquant 历史行情下载测试。")
-    add_runtime_args(parser)
-    parser.add_argument("--stock-list", default="000001.SZ", help="要下载的证券列表，逗号分隔。")
-    parser.add_argument("--period", default="1d", help="周期，默认 1d。")
-    parser.add_argument("--start-time", default="", help="开始时间，例如 20260101，可留空。")
-    parser.add_argument("--end-time", default="", help="结束时间，例如 20260821，可留空。")
-    parser.add_argument("--wait-seconds", type=float, default=5.0, help="提交下载后继续等待回调的秒数。")
-    parser.add_argument("--verify-count", type=int, default=5, help="下载后读取几条本地数据验证。0 表示不验证。")
-    parser.add_argument("--include-financial", action="store_true", help="同时演示财务数据下载/读取调用。")
-    parser.add_argument("--financial-tables", default="ASHAREBALANCESHEET", help="财务下载表名，逗号分隔，默认 ASHAREBALANCESHEET。")
-    parser.add_argument("--financial-fields", default="ASHAREBALANCESHEET.fix_assets", help="财务读取字段，逗号分隔；留空则只演示下载。")
-    parser.add_argument("--financial-report-type", default="announce_time", help="财务读取报告口径，默认 announce_time。")
-    args = parser.parse_args()
-    configure_cfquant(args)
+    config = SimpleNamespace(
+        transport=TRANSPORT,
+        bridge_id=BRIDGE_ID,
+        timeout=REQUEST_TIMEOUT,
+        stock_list=STOCK_LIST,
+        period=PERIOD,
+        start_time=START_TIME,
+        end_time=END_TIME,
+        wait_seconds=WAIT_SECONDS,
+        verify_count=VERIFY_COUNT,
+        include_financial=INCLUDE_FINANCIAL,
+        financial_tables=FINANCIAL_TABLES,
+        financial_fields=FINANCIAL_FIELDS,
+        financial_report_type=FINANCIAL_REPORT_TYPE,
+    )
+    configure_cfquant(config)
 
-    stock_list = parse_csv(args.stock_list, default=["000001.SZ"], upper=True)
-    financial_tables = parse_csv(args.financial_tables, default=[])
-    financial_fields = parse_csv(args.financial_fields, default=[])
+    stock_list = parse_csv(config.stock_list, default=["000001.SZ"], upper=True)
+    financial_tables = parse_csv(config.financial_tables, default=[])
+    financial_fields = parse_csv(config.financial_fields, default=[])
     progress_events = []
     financial_progress_events = []
 
@@ -60,12 +79,12 @@ def main():
 
     print_json({
         "type": "start",
-        "transport": args.transport,
-        "bridge_id": args.bridge_id,
+        "transport": config.transport,
+        "bridge_id": config.bridge_id,
         "stock_list": stock_list,
-        "period": args.period,
-        "start_time": args.start_time,
-        "end_time": args.end_time,
+        "period": config.period,
+        "start_time": config.start_time,
+        "end_time": config.end_time,
     })
     try:
         download_ok = False
@@ -75,9 +94,9 @@ def main():
             # 优先演示批量下载接口，和 xtquant.download_history_data2 的调用方式保持接近。
             result = xtdata.download_history_data2(
                 stock_list,
-                args.period,
-                start_time=args.start_time,
-                end_time=args.end_time,
+                config.period,
+                start_time=config.start_time,
+                end_time=config.end_time,
                 callback=on_download_progress,
                 keep_callback=True,
             )
@@ -107,9 +126,9 @@ def main():
                 # 兼容老版本 QMT：批量接口不可用时，用单证券 download_history_data 兜底。
                 result = xtdata.download_history_data(
                     stock_list[0],
-                    args.period,
-                    start_time=args.start_time,
-                    end_time=args.end_time,
+                    config.period,
+                    start_time=config.start_time,
+                    end_time=config.end_time,
                 )
                 download_ok = True
                 print_json({
@@ -130,18 +149,18 @@ def main():
                     "error": str(fallback_error),
                     "example": "xtdata.download_history_data(stock_code, period, start_time, end_time)",
                 })
-        if args.wait_seconds > 0:
-            print_json({"type": "wait_callbacks", "seconds": args.wait_seconds})
-            time.sleep(args.wait_seconds)
-        if args.verify_count > 0 and stock_list:
+        if config.wait_seconds > 0:
+            print_json({"type": "wait_callbacks", "seconds": config.wait_seconds})
+            time.sleep(config.wait_seconds)
+        if config.verify_count > 0 and stock_list:
             started = time.perf_counter()
             try:
                 # 下载完成后立即读本地行情做验证，返回非空通常说明 QMT 本地数据已落地。
                 verify_result = xtdata.get_market_data(
                     field_list=["open", "high", "low", "close", "volume"],
                     stock_list=[stock_list[0]],
-                    period=args.period,
-                    count=args.verify_count,
+                    period=config.period,
+                    count=config.verify_count,
                     dividend_type="none",
                     fill_data=True,
                 )
@@ -161,14 +180,14 @@ def main():
                     "error": str(error),
                     "example": "xtdata.get_market_data(field_list, [stock_code], period, count=verify_count)",
                 })
-        if args.include_financial and stock_list:
+        if config.include_financial and stock_list:
             emit_call(
                 "download_financial_data",
                 lambda: xtdata.download_financial_data(
                     stock_list,
                     table_list=financial_tables,
-                    start_time=args.start_time,
-                    end_time=args.end_time,
+                    start_time=config.start_time,
+                    end_time=config.end_time,
                     callback=on_financial_progress,
                     keep_callback=True,
                 ),
@@ -180,18 +199,18 @@ def main():
                     lambda: xtdata.get_financial_data(
                         financial_fields,
                         stock_list,
-                        start_time=args.start_time,
-                        end_time=args.end_time,
-                        report_type=args.financial_report_type,
+                        start_time=config.start_time,
+                        end_time=config.end_time,
+                        report_type=config.financial_report_type,
                     ),
                     example="xtdata.get_financial_data(financial_fields, stock_list, start_time, end_time)",
                 )
             else:
-                emit_skip("get_financial_data", "未传 --financial-fields，财务读取验证已跳过。")
+                emit_skip("get_financial_data", "FINANCIAL_FIELDS 为空，财务读取验证已跳过。")
         else:
             emit_skip(
                 "download_financial_data",
-                "未传 --include-financial，默认只测试历史行情下载。",
+                "INCLUDE_FINANCIAL = False，默认只测试历史行情下载。",
                 example="xtdata.download_financial_data(stock_list, table_list, start_time, end_time, callback=on_financial_progress)",
             )
         print_json({

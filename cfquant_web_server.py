@@ -70,6 +70,7 @@ _prepend_import_path(_PROJECT_DIR)
 _prepend_import_path(_LTTX_TX_DIR)
 
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
+from cfquant import _editable_install
 from cfquant import xtconstant as cf_xtconstant
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
@@ -348,7 +349,9 @@ QMT_RUNTIME_VERSION_FILE = os.environ.get("CFQUANT_QMT_RUNTIME_VERSION_FILE") or
     RUNTIME_STATUS_DIR,
     "cfquant_qmt_runtime_versions.json",
 )
-ACCOUNT_CACHE_REFRESH_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5"))
+ACCOUNT_CACHE_REFRESH_SECONDS = max(1.0, float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "30")))
+ACCOUNT_CACHE_IDLE_SECONDS = max(1.0, float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_IDLE_SECONDS", "90")))
+ACCOUNT_CACHE_EVENT_REFRESH_SECONDS = 2.0
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
 ACCOUNT_CACHE_BACKGROUND_TIMEOUT_SECONDS = max(
     0.5,
@@ -359,7 +362,7 @@ ACCOUNT_CACHE_BACKGROUND_TIMEOUT_SECONDS = max(
 )
 ACCOUNT_CACHE_PREWARM_SECTIONS = tuple(
     section.strip().lower()
-    for section in os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_PREWARM_SECTIONS", "asset,positions").split(",")
+    for section in os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_PREWARM_SECTIONS", "").split(",")
     if section.strip()
 )
 UPDATE_UPLOAD_MAX_BYTES = int(os.environ.get("CFQUANT_UPDATE_UPLOAD_MAX_BYTES", str(80 * 1024 * 1024)))
@@ -369,6 +372,9 @@ DEFAULT_OFFICIAL_SITE_URL = os.environ.get("CFQUANT_OFFICIAL_SITE_URL", "https:/
 DEFAULT_UPDATE_REF = os.environ.get("CFQUANT_UPDATE_REF", "main").strip()
 UPDATE_REMOTE_CACHE_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_CACHE_SECONDS", "300"))
 UPDATE_REMOTE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_UPDATE_REMOTE_TIMEOUT_SECONDS", "12"))
+SOURCE_EDITABLE_INSTALL_TIMEOUT_SECONDS = float(
+    os.environ.get("CFQUANT_SOURCE_EDITABLE_INSTALL_TIMEOUT_SECONDS", "180")
+)
 PROJECT_UPDATE_DIR = os.path.join(
     BASE_DIR if _RUNNING_FROM_SOURCE else STATE_DIR,
     ".cfquant_project_updates",
@@ -485,6 +491,7 @@ NORMAL_QMT_ACTIONS = {
     "xtdata.subscribe_formula",
     "xtdata.unsubscribe_formula",
     "xtdata.subscribe_l2thousand",
+    "xtdata.subscribe_l2thousand_queue",
 }
 XTDATA_NORMAL_METHOD_PREFIXES = ("subscribe_", "unsubscribe_", "download_")
 MARKET_ACCOUNT_ROW_SECTIONS = {"positions", "orders", "trades"}
@@ -722,8 +729,8 @@ TEST_SOURCE_META = {
     "1_行情接收测试.py": (
         "全市场行情接收测试",
         "行情测试",
-        "订阅全推行情，验证 cfquant 能否持续收到 SH/SZ 行情回调。",
-        'python -X utf8 "cfquant/tests/1_行情接收测试.py" --seconds 10',
+        "按配置的市场或证券代码订阅全推行情，验证 cfquant 行情回调。",
+        'python -X utf8 "cfquant/tests/1_行情接收测试.py"',
     ),
     "2_数据获取测试.py": (
         "历史数据获取测试",
@@ -5115,7 +5122,9 @@ class LttxWebRouteServer(object):
         self.tx = None
         self.thread = None
         self._lock = threading.RLock()
-        self._quote_subscribers = {}
+        self._quote_event_routes = {}
+        self._quote_routes = {}
+        self._quote_sequence = int(new_id("quote").rsplit("_", 1)[-1], 16)
         self._account_subscribers = {}
         self._last_registry_put = 0.0
 
@@ -5135,6 +5144,15 @@ class LttxWebRouteServer(object):
         self.running = False
         CLIENTS.remove_callback("quote", self._on_quote_event)
         CLIENTS.remove_callback("__event__", self._on_client_event)
+        with self._lock:
+            quote_routes = list(self._quote_routes.values())
+            self._quote_routes.clear()
+            self._quote_event_routes.clear()
+        for row in quote_routes:
+            try:
+                self._release_external_quote(row, timeout=2.0)
+            except Exception as error:
+                safe_print("cfquant quote cleanup failed: %s" % error)
         tx = self.tx
         self.tx = None
         if tx is not None:
@@ -5200,11 +5218,47 @@ class LttxWebRouteServer(object):
         request_id = msg.get("id")
         client_id = msg.get("client_id") or msg.get("reply_channel")
         action = str(msg.get("action") or "")
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        callback_event = params.get("callback_event")
+        quote_subscribe = action in (
+            "xtdata.subscribe_quote", "xtdata.subscribe_whole_quote",
+            "xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue",
+        )
+        # QMT may emit a first snapshot before returning its subscription ID.
+        quote_route = None
+        if quote_subscribe and client_id:
+            with self._lock:
+                self._quote_sequence += 1
+                quote_route = {"subscribe_id": self._quote_sequence, "client_id": client_id,
+                               "callback_event": callback_event or "quote:%s" % self._quote_sequence}
+                callback_event = "quote:%s" % new_id("web_subscription")
+                self._quote_event_routes[callback_event] = quote_route
+            msg = dict(msg, params=dict(params, callback_event=callback_event))
         try:
-            result, meta = route_external_lttx_request(msg)
+            if action == "xtdata.unsubscribe_quote":
+                with self._lock:
+                    row = self._quote_routes.get((str(params.get("subscribe_id")), client_id))
+                if row is None:
+                    raise ValueError("unknown quote subscription for this client")
+                result = self._release_external_quote(row, timeout=float(msg.get("timeout") or 12.0))
+                meta = row["route"]
+            else:
+                result, meta = route_external_lttx_request(msg)
+            if quote_route is not None:
+                native_id = result.get("subscribe_id") if isinstance(result, dict) else result
+                if native_id is None or isinstance(native_id, bool) or int(native_id) <= 0:
+                    raise RuntimeError("QMT quote subscription failed: %r" % native_id)
+                quote_route.update(native_id=native_id, route=dict(meta), wire_event=callback_event)
+                result = dict(result) if isinstance(result, dict) else {}
+                result.update(subscribe_id=quote_route["subscribe_id"], callback_event=quote_route["callback_event"])
+                with self._lock:
+                    self._quote_routes[(str(quote_route["subscribe_id"]), client_id)] = quote_route
             response = pack_response(request_id, ok=True, result=result, meta=meta)
             self._remember_external_subscription(action, msg, result)
         except Exception as e:
+            if quote_subscribe and callback_event:
+                with self._lock:
+                    self._quote_event_routes.pop(callback_event, None)
             response = pack_response(request_id, ok=False, error=e, meta={"route": "web_lttx"})
             safe_print("cfquant LTtx 统一路由请求失败 action=%s id=%s error=%s" % (action, request_id, e))
         if client_id and self.tx is not None:
@@ -5213,29 +5267,28 @@ class LttxWebRouteServer(object):
             except Exception as e:
                 safe_print("cfquant LTtx 统一路由回包失败 client=%s error=%s" % (client_id, e))
 
+    def _release_external_quote(self, row, timeout):
+        route = row["route"]
+        return CLIENTS.request(
+            route["bridge_id"], route["channel"], "xtdata.unsubscribe_quote",
+            {"subscribe_id": row["native_id"]}, timeout=timeout,
+            ignore_cooldown=True, mode=route.get("mode"),
+        )
+
     def _remember_external_subscription(self, action, msg, result):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         params = msg.get("params") or {}
         if not client_id:
             return
-        if action in ("xtdata.subscribe_quote", "xtdata.subscribe_whole_quote"):
-            subscribe_id = ""
-            if isinstance(result, dict):
-                subscribe_id = str(result.get("subscribe_id") or "")
-            else:
-                subscribe_id = str(result or "")
-            if subscribe_id:
-                with self._lock:
-                    self._quote_subscribers.setdefault(subscribe_id, set()).add(client_id)
-        elif action == "xtdata.unsubscribe_quote":
+        if action == "xtdata.unsubscribe_quote":
+            if result is False or (isinstance(result, (int, float)) and result < 0):
+                return
             subscribe_id = str(params.get("subscribe_id") or "")
             if subscribe_id:
                 with self._lock:
-                    subscribers = self._quote_subscribers.get(subscribe_id)
-                    if subscribers:
-                        subscribers.discard(client_id)
-                        if not subscribers:
-                            self._quote_subscribers.pop(subscribe_id, None)
+                    row = self._quote_routes.pop((subscribe_id, client_id), None)
+                    if row:
+                        self._quote_event_routes.pop(row["wire_event"], None)
         elif action == "xttrader.subscribe":
             account_id = _external_account_id(params) or configured_default_account_id()
             account_type = _external_account_type(params)
@@ -5286,10 +5339,11 @@ class LttxWebRouteServer(object):
         if not isinstance(msg, dict):
             return
         subscribe_id = str(msg.get("subscription_id") or msg.get("subscribe_id") or "")
+        event = msg.get("event") or "quote:%s" % subscribe_id
         with self._lock:
-            client_ids = sorted(self._quote_subscribers.get(subscribe_id, set()))
-        for client_id in client_ids:
-            self._push_event(client_id, msg.get("event") or "quote:%s" % subscribe_id, msg.get("data"), subscribe_id)
+            route = self._quote_event_routes.get(event)
+        if route:
+            self._push_event(route["client_id"], route["callback_event"], msg.get("data"), route["subscribe_id"])
 
     def _on_client_event(self, msg):
         if not isinstance(msg, dict):
@@ -5857,6 +5911,7 @@ class QuoteSubscriptionStore(object):
     def __init__(self, max_events=1000):
         self.max_events = int(max_events)
         self._lock = threading.RLock()
+        self._subscribe_lock = threading.Lock()
         self._subscriptions = {}
         self._events = []
         self._seq = 0
@@ -5879,18 +5934,28 @@ class QuoteSubscriptionStore(object):
                 self._callback_registered = False
 
     def subscribe_whole(self, body):
+        with self._subscribe_lock:
+            return self._subscribe_whole(body)
+
+    def _subscribe_whole(self, body):
         body = body or {}
-        markets = self._normalize_markets(body.get("markets") or body.get("code_list") or ["SH", "SZ"])
+        markets = self._normalize_markets(body.get("markets", body.get("code_list", ["SH", "SZ"])))
         requested_channel = body.get("channel")
         timeout = request_timeout_value(body.get("timeout"), default=12.0)
         started = time.perf_counter()
         self.start()
+        replace_id = None
         with self._lock:
             existing_id = self._whole_subscribe_id
             if existing_id and existing_id in self._subscriptions:
                 row = self._subscriptions[existing_id]
-                if WS_QUOTES.count() <= 0:
-                    self._remove_subscription_locked(existing_id)
+                same_request = (
+                    row.get("markets") == markets
+                    and (not body.get("bridge_id") or normalize_bridge_id(body["bridge_id"]) == row.get("bridge_id"))
+                    and (not requested_channel or requested_channel == row.get("channel"))
+                )
+                if not same_request or WS_QUOTES.count() <= 0:
+                    replace_id = existing_id
                     existing_id = None
                 else:
                     self._clear_events_locked(existing_id)
@@ -5908,13 +5973,15 @@ class QuoteSubscriptionStore(object):
                         "account_type": row.get("account_type") or "",
                         "account_key": row.get("account_key") or "",
                         "kind": "whole_quote",
-                        "markets": row.get("markets") or markets,
+                        "markets": row.get("markets", markets),
                         "already_subscribed": True,
                         "event_count": row.get("event_count", 0),
                         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                     }
             if existing_id is None:
                 self._clear_events_locked(None)
+        if replace_id is not None:
+            self.unsubscribe({"subscribe_id": replace_id, "timeout": timeout})
         route = data_provider_request(
             "xtdata.subscribe_whole_quote",
             {"code_list": markets},
@@ -6151,18 +6218,10 @@ class QuoteSubscriptionStore(object):
 
     def _normalize_markets(self, value):
         if isinstance(value, str):
-            items = [item.strip().upper() for item in value.replace("，", ",").split(",") if item.strip()]
+            return [item.strip() for item in value.replace("，", ",").split(",") if item.strip()]
         elif isinstance(value, (list, tuple, set)):
-            items = [str(item).strip().upper() for item in value if str(item).strip()]
-        else:
-            items = []
-        result = []
-        for item in items or ["SH", "SZ"]:
-            if item not in ("SH", "SZ"):
-                raise ValueError("markets only supports SH/SZ for whole quote")
-            if item not in result:
-                result.append(item)
-        return result
+            return list(value)
+        return value
 
 
 QUOTES = QuoteSubscriptionStore()
@@ -6381,6 +6440,10 @@ class CallbackEventStore(object):
             self._events.append(row)
             if len(self._events) > self.max_events:
                 self._events = self._events[-self.max_events:]
+        try:
+            ACCOUNT_CACHE.update_from_event(row)
+        except Exception as e:
+            safe_print("account cache callback update failed: %s" % e)
         WS_CALLBACKS.broadcast(row)
         if source == "channel":
             self._forward_to_lttx_route(row)
@@ -8381,8 +8444,20 @@ class CfquantProjectUpdater(object):
                 label="rollback",
             )
             entry_info = self._entry_rollback_info(selected)
-            self._restore_backup(selected)
-            qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
+            editable_install = None
+            try:
+                self._restore_backup(selected)
+                editable_install = self._run_editable_install("project_rollback")
+                self._require_editable_install(editable_install)
+                qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
+            except Exception:
+                self._restore_backup(rollback_backup)
+                try:
+                    recovery_install = self._run_editable_install("project_rollback_recovery")
+                    self._require_editable_install(recovery_install)
+                except Exception as recovery_error:
+                    safe_print("project rollback editable install recovery failed: %s" % recovery_error)
+                raise
             removed = self._prune_backups()
             return {
                 "updated": True,
@@ -8392,6 +8467,7 @@ class CfquantProjectUpdater(object):
                 "removed_backups": removed,
                 "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
                 "backups": self._list_backups(),
+                "editable_install": editable_install,
                 "qmt_core_deploy": qmt_core_deploy,
                 "update_completed": bool(
                     (qmt_core_deploy.get("summary") or {}).get("ok", True)
@@ -8413,6 +8489,7 @@ class CfquantProjectUpdater(object):
         backup = self._backup_project(rel_files, label="backup")
         copied = []
         changed = []
+        editable_install = None
         try:
             for rel_path in rel_files:
                 src = os.path.join(source_root, rel_path.replace("/", os.sep))
@@ -8429,7 +8506,17 @@ class CfquantProjectUpdater(object):
                 shutil.copy2(src, dst)
                 copied.append(rel_path)
             entry_info = self._entry_update_info(changed)
-            self._write_install_meta(meta, source_root, backup, copied, changed, entry_info)
+            editable_install = self._run_editable_install("project_update")
+            self._require_editable_install(editable_install)
+            self._write_install_meta(
+                meta,
+                source_root,
+                backup,
+                copied,
+                changed,
+                entry_info,
+                editable_install=editable_install,
+            )
             qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
             qmt_deploy_summary = qmt_core_deploy.get("summary") or {}
             removed = self._prune_backups()
@@ -8445,6 +8532,7 @@ class CfquantProjectUpdater(object):
                 "removed_backups": removed,
                 "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
                 "backups": self._list_backups(),
+                "editable_install": editable_install,
                 "qmt_core_deploy": qmt_core_deploy,
                 "update_completed": bool(qmt_deploy_summary.get("ok", True)),
                 "qmt_restart_required": qmt_restart_required_info(
@@ -8459,7 +8547,47 @@ class CfquantProjectUpdater(object):
             }
         except Exception:
             self._restore_backup(backup)
+            if editable_install and editable_install.get("attempted"):
+                try:
+                    recovery_install = self._run_editable_install("project_update_recovery")
+                    self._require_editable_install(recovery_install)
+                except Exception as recovery_error:
+                    safe_print("project update editable install recovery failed: %s" % recovery_error)
             raise
+
+    def _run_editable_install(self, reason):
+        result = _editable_install.run_editable_install(
+            BASE_DIR,
+            python_exe=sys.executable,
+            timeout=SOURCE_EDITABLE_INSTALL_TIMEOUT_SECONDS,
+        )
+        result["reason"] = reason
+        safe_print(
+            "cfquant editable source install reason=%s attempted=%s ok=%s returncode=%s version=%s"
+            % (
+                reason,
+                result.get("attempted"),
+                result.get("ok"),
+                result.get("returncode"),
+                result.get("installed_version") or "",
+            )
+        )
+        if result.get("output"):
+            safe_print("cfquant editable source install output: %s" % result["output"][-2000:])
+        return result
+
+    def _require_editable_install(self, result):
+        if not result:
+            raise RuntimeError("cfquant 源码可编辑安装没有返回结果")
+        if result.get("skipped"):
+            raise RuntimeError(result.get("message") or "未找到 pyproject.toml，无法刷新源码安装")
+        if result.get("ok"):
+            return
+        detail = result.get("message") or "cfquant 源码可编辑安装失败"
+        output = str(result.get("output") or "").strip()
+        if output:
+            detail = "%s\n%s" % (detail, output[-4000:])
+        raise RuntimeError(detail)
 
     def _find_source_project(self, source_dir):
         source_dir = os.path.abspath(source_dir)
@@ -8600,7 +8728,16 @@ class CfquantProjectUpdater(object):
             ),
         )
 
-    def _write_install_meta(self, meta, source_root, backup, copied, changed, entry_info):
+    def _write_install_meta(
+        self,
+        meta,
+        source_root,
+        backup,
+        copied,
+        changed,
+        entry_info,
+        editable_install=None,
+    ):
         payload = {
             "updated_at": time.time(),
             "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -8611,6 +8748,7 @@ class CfquantProjectUpdater(object):
             "copied_files": copied,
             "changed_files": changed,
             "entry_manual_update": entry_info,
+            "editable_install": editable_install or {},
             "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
         }
         os.makedirs(PROJECT_UPDATE_DIR, exist_ok=True)
@@ -10513,14 +10651,47 @@ def merge_market_child_channel_results(primary, fallback, market, sections):
     return result
 
 
+ACCOUNT_CALLBACK_FIELDS = {
+    "asset": (
+        ("available", "cash", "m_dAvailable", "m_dEnableBalance"),
+        ("balance", "total_asset", "m_dBalance"),
+        ("assure_asset", "m_dAssureAsset"),
+        ("market_value", "m_dInstrumentValue", "m_dMarketValue"),
+        ("total_debit", "m_dTotalDebit"),
+        ("position_profit", "m_dPositionProfit"),
+        ("frozen_cash", "m_dFrozenCash", "m_dFrozenBalance"),
+    ),
+    "positions": (
+        ("volume", "m_nVolume", "m_nPosition"),
+        ("can_use_volume", "m_nCanUseVolume", "m_nAvailableVolume"),
+        ("open_price", "m_dOpenPrice"),
+        ("market_value", "m_dInstrumentValue", "m_dMarketValue"),
+        ("position_cost", "m_dPositionCost"),
+        ("position_profit", "m_dPositionProfit"),
+        ("frozen_volume", "m_nFrozenVolume"),
+        ("on_road_volume", "m_nOnRoadVolume"),
+        ("yesterday_volume", "m_nYesterdayVolume"),
+        ("last_price", "m_dLastPrice"),
+        ("profit_rate", "m_dProfitRate"),
+    ),
+}
+
+
 class AccountDataCache(object):
-    def __init__(self, interval=ACCOUNT_CACHE_REFRESH_SECONDS, background_timeout=ACCOUNT_CACHE_BACKGROUND_TIMEOUT_SECONDS):
-        self.interval = float(interval)
+    def __init__(self, interval=ACCOUNT_CACHE_REFRESH_SECONDS, background_timeout=ACCOUNT_CACHE_BACKGROUND_TIMEOUT_SECONDS, idle_seconds=ACCOUNT_CACHE_IDLE_SECONDS):
+        self.interval = max(1.0, float(interval))
         self.background_timeout = float(background_timeout)
+        self.idle_seconds = max(1.0, float(idle_seconds))
         self._lock = threading.RLock()
         self._entries = {}
         self._subscriptions = {}
+        self._subscription_seen = {}
         self._prewarm_subscriptions = {}
+        self._refreshing = {}
+        self._versions = {}
+        self._dirty = {}
+        self._last_attempt = {}
+        self._event_fingerprints = {}
         self._thread = None
         self._running = False
         self._stop_event = threading.Event()
@@ -10564,27 +10735,12 @@ class AccountDataCache(object):
             }
             return live
         self._subscribe(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
-        if force:
-            live = query_account_live(bridge_id, channel, account_id, sections, timeout=timeout, account_type=account_type, account_key=account_key)
-            self._store_result(bridge_id, channel, account_id, live, sections, account_type=account_type, account_key=account_key)
-            return self._build_result(bridge_id, channel, account_id, sections, force=True, account_type=account_type, account_key=account_key)
-
         missing = self._missing_sections(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key)
-        if missing:
-            self._wake()
-            return self._build_result(
-                bridge_id,
-                channel,
-                account_id,
-                sections,
-                force=False,
-                refresh_queued=True,
-                account_type=account_type,
-                account_key=account_key,
-            )
+        if force or missing:
+            self._refresh(bridge_id, channel, account_id, sections, account_type, account_key, timeout=timeout, force=force, wait=True)
         elif self._needs_refresh(bridge_id, channel, account_id, sections, account_type=account_type, account_key=account_key):
             self._wake()
-        return self._build_result(bridge_id, channel, account_id, sections, force=False, account_type=account_type, account_key=account_key)
+        return self._build_result(bridge_id, channel, account_id, sections, force=force, account_type=account_type, account_key=account_key)
 
     def get_market_routed(self, bridge_id, channel, account_id, sections, force=False, subscribe=True, account_type="STOCK", account_key=None, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS):
         base_bridge_id = normalize_bridge_id(bridge_id)
@@ -10698,6 +10854,128 @@ class AccountDataCache(object):
             account_key=account_key,
         )
 
+    def update_from_event(self, event):
+        sections = {
+            "trader:on_stock_asset": ("asset",),
+            "trader:on_stock_position": ("positions",),
+            "trader:on_stock_order": ("asset", "positions", "orders"),
+            "trader:on_stock_trade": ("asset", "positions", "orders", "trades"),
+            "trader:on_account_status": ("asset", "positions", "orders", "trades"),
+            "trader:on_order_error": ("asset", "orders"),
+            "trader:on_cancel_error": ("orders",),
+        }.get(event.get("event"))
+        data = event.get("data")
+        if not sections or not isinstance(data, dict):
+            return
+        bridge_id = CallbackEventStore.event_bridge_id_static(event)
+        account_id = CallbackEventStore.event_account_id_static(event)
+        account_type = CallbackEventStore.event_account_type_static(event)
+        if not bridge_id or not account_id:
+            return
+        if any(str(data[name]).strip() != account_id for name in ("account_id", "m_strAccountID") if data.get(name)):
+            return
+        bridge_id = normalize_bridge_id(bridge_id)
+        if not account_type and account_identity_is_ambiguous(bridge_id, account_id):
+            return
+        fingerprint = hashlib.sha256(json.dumps(to_jsonable(data), sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+        identity = (bridge_id, account_id, account_type, event["event"], str(
+            data.get("traded_id") or data.get("m_strTradeID") or data.get("order_id") or data.get("m_nRef")
+            or data.get("stock_code") or data.get("m_strInstrumentID") or ""
+        ), str(data.get("m_strExchangeID") or ""), str(data.get("m_nDirection") or ""),
+            str(data.get("stock_holder") or data.get("m_strStockHolder") or ""))
+        try:
+            timestamp = float(event.get("ts") or 0)
+            if not math.isfinite(timestamp):
+                timestamp = 0
+        except (ValueError, TypeError):
+            timestamp = 0
+        with self._lock:
+            previous = self._event_fingerprints.get(identity)
+            if previous:
+                if timestamp and previous[0] > timestamp:
+                    return
+                if previous[1] == fingerprint:
+                    self._event_fingerprints[identity] = (max(timestamp, previous[0]), fingerprint)
+                    return
+            self._event_fingerprints[identity] = (timestamp, fingerprint)
+            while len(self._event_fingerprints) > 1000:
+                self._event_fingerprints.pop(next(iter(self._event_fingerprints)))
+            keys = set(key[:-1] for key in self._entries) | set(self._subscriptions) | set(self._prewarm_subscriptions)
+            keys = [key for key in keys if key[0] == bridge_id and key[3] == account_id and (not account_type or key[4] == account_type)]
+            if not account_type and len({key[4] for key in keys}) != 1:
+                return
+            wake = False
+            for key in keys:
+                for section in sections:
+                    section_key = key + (section,)
+                    merged = None
+                    if event["event"] in ("trader:on_stock_asset", "trader:on_stock_position"):
+                        merged = self._merge_callback(section_key, data)
+                    if merged is False:
+                        continue
+                    self._versions[section_key] = self._versions.get(section_key, 0) + 1
+                    if merged is None:
+                        self._dirty.setdefault(section_key, max(
+                            time.monotonic() + 0.2,
+                            self._last_attempt.get(section_key, 0) + ACCOUNT_CACHE_EVENT_REFRESH_SECONDS,
+                        ))
+                        wake = True
+            if wake:
+                self._wake()
+
+    def _merge_callback(self, section_key, data):
+        entry = self._entries.get(section_key)
+        if not entry or not entry.get("ok"):
+            return None
+        section = section_key[-1]
+        patch = {}
+        for names in ACCOUNT_CALLBACK_FIELDS[section]:
+            value = next((data[name] for name in names if data.get(name) not in (None, "")), None)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                if not math.isfinite(float(value)):
+                    continue
+            except (ValueError, TypeError):
+                continue
+            patch.update({name: value for name in names})
+        if not patch:
+            return None
+        original = entry.get("data")
+        rows = original if isinstance(original, list) else [original]
+        if section == "asset":
+            matches = [0] if len(rows) == 1 and isinstance(rows[0], dict) else []
+        else:
+            # A position event is a delta, not an entire account snapshot. Ambiguous
+            # units and derivative positions must be reconciled by a full query.
+            if section_key[4] not in ("STOCK", "CREDIT") or not isinstance(original, list):
+                return None
+            code = str(data.get("stock_code") or "").strip().upper()
+            if not code:
+                instrument = str(data.get("m_strInstrumentID") or "").strip()
+                market = market_account_row_market(data)
+                code = instrument + "." + market if instrument and market else ""
+            if "." not in code:
+                return None
+            matches = [index for index, row in enumerate(rows) if isinstance(row, dict) and str(row.get("stock_code") or "").upper() == code]
+        if len(matches) != 1:
+            return None
+        index = matches[0]
+        row = rows[index]
+        for names in (("stock_holder", "secu_account", "m_strStockHolder"), ("direction", "m_nDirection")):
+            incoming = next((data[name] for name in names if data.get(name) not in (None, "")), None)
+            existing = next((row[name] for name in names if row.get(name) not in (None, "")), None)
+            if incoming is not None and (existing is None or str(incoming) != str(existing)):
+                return None
+        if all(row.get(name) == value for name, value in patch.items()):
+            return False
+        updated = dict(row, **patch)
+        rows = list(rows)
+        rows[index] = updated
+        self._entries[section_key] = dict(entry, data=rows if isinstance(original, list) else updated,
+                                        updated_at=time.time(), update_source="callback")
+        return True
+
     def _cache_key(self, bridge_id, channel, account_id, section=None, account_type="STOCK", account_key=None):
         account_type = normalize_account_type(account_type)
         account_key = account_key or account_key_for(account_id, account_type, bridge_id)
@@ -10709,6 +10987,9 @@ class AccountDataCache(object):
         with self._lock:
             current = self._subscriptions.setdefault(key, set())
             current.update(sections)
+            seen = self._subscription_seen.setdefault(key, {})
+            for section in sections:
+                seen[section] = time.monotonic()
 
     def prime_configured_accounts(self, sections=None):
         sections = sections if sections is not None else ACCOUNT_CACHE_PREWARM_SECTIONS
@@ -10721,7 +11002,8 @@ class AccountDataCache(object):
         ))
         desired = {}
         account_count = 0
-        for configured_key, config in enabled_account_configs().items():
+        configs = enabled_account_configs()
+        for configured_key, config in (configs.items() if sections else []):
             config = config if isinstance(config, dict) else {}
             account_id = str(config.get("account_id") or "").strip()
             if not account_id:
@@ -10789,6 +11071,10 @@ class AccountDataCache(object):
 
         with self._lock:
             self._prewarm_subscriptions = desired
+            for key in list(self._subscriptions):
+                if key[2] not in configs:
+                    self._subscriptions.pop(key, None)
+                    self._subscription_seen.pop(key, None)
         self._wake()
         return {
             "account_count": account_count,
@@ -10805,18 +11091,57 @@ class AccountDataCache(object):
             ]
 
     def _needs_refresh(self, bridge_id, channel, account_id, sections, account_type="STOCK", account_key=None):
-        now = time.time()
         with self._lock:
-            for section in sections:
-                entry = self._entries.get(self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key))
-                if not entry or now - entry.get("checked_at", 0) >= self.interval:
-                    return True
-        return False
+            key = self._cache_key(bridge_id, channel, account_id, account_type=account_type, account_key=account_key)
+            return bool(self._due_sections(key, sections))
+
+    def _due_sections(self, key, sections):
+        now = time.monotonic()
+        due = []
+        for section in sections:
+            section_key = key + (section,)
+            entry = self._entries.get(section_key)
+            if now - self._last_attempt.get(section_key, -float("inf")) < ACCOUNT_CACHE_EVENT_REFRESH_SECONDS:
+                continue
+            if (not entry or time.time() - entry.get("checked_at", 0) >= self.interval
+                    or self._dirty.get(section_key, float("inf")) <= now):
+                due.append(section)
+        return due
+
+    def _refresh(self, bridge_id, channel, account_id, sections, account_type, account_key, timeout, force=False, wait=False):
+        key = self._cache_key(bridge_id, channel, account_id, account_type=account_type, account_key=account_key)
+        deadline = time.monotonic() + timeout
+        waited = False
+        while True:
+            with self._lock:
+                pending = self._refreshing.get(key)
+                if pending is None:
+                    due = list(sections) if force and not waited else self._due_sections(key, sections)
+                    if not due:
+                        return
+                    pending = threading.Event()
+                    self._refreshing[key] = pending
+                    versions = {section: self._versions.get(key + (section,), 0) for section in due}
+                    for section in due:
+                        self._last_attempt[key + (section,)] = time.monotonic()
+                    break
+            if not wait:
+                return
+            if not pending.wait(max(0, deadline - time.monotonic())):
+                raise CfquantTimeout("account cache refresh already in progress")
+            waited = True
+        try:
+            live = query_account_live(bridge_id, channel, account_id, due, timeout=timeout, account_type=account_type, account_key=account_key)
+            self._store_result(bridge_id, channel, account_id, live, due, account_type=account_type, account_key=account_key, versions=versions)
+        finally:
+            with self._lock:
+                self._refreshing.pop(key, None)
+                pending.set()
 
     def _wake(self):
         self._stop_event.set()
 
-    def _store_result(self, bridge_id, channel, account_id, result, sections, account_type="STOCK", account_key=None):
+    def _store_result(self, bridge_id, channel, account_id, result, sections, account_type="STOCK", account_key=None, versions=None):
         now = time.time()
         checked_at_text = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
         account_type = normalize_account_type(account_type)
@@ -10827,6 +11152,9 @@ class AccountDataCache(object):
                 if row is None:
                     continue
                 cache_key = self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)
+                # A callback received during the RPC must not be overwritten by its older snapshot.
+                if versions is not None and versions[section] != self._versions.get(cache_key, 0):
+                    continue
                 if isinstance(row, dict) and not row.get("ok") and is_pipe_client_closed_error(row.get("error")):
                     previous = self._entries.get(cache_key)
                     if isinstance(previous, dict) and is_pipe_client_closed_error(previous.get("error")):
@@ -10838,6 +11166,7 @@ class AccountDataCache(object):
                 stored["account_type"] = account_type
                 stored["account_key"] = account_key
                 self._entries[cache_key] = stored
+                self._dirty.pop(cache_key, None)
 
     def _build_result(self, bridge_id, channel, account_id, sections, force=False, refresh_queued=False, account_type="STOCK", account_key=None):
         now = time.time()
@@ -10856,6 +11185,7 @@ class AccountDataCache(object):
                 "force": bool(force),
                 "interval_seconds": self.interval,
                 "background_timeout_seconds": self.background_timeout,
+                "idle_seconds": self.idle_seconds,
                 "refresh_queued": bool(refresh_queued),
             },
         }
@@ -10893,10 +11223,20 @@ class AccountDataCache(object):
         while self._running:
             self._stop_event.clear()
             self._refresh_subscriptions()
-            self._stop_event.wait(self.interval)
+            self._stop_event.wait(min(self.interval, 1.0))
 
     def _refresh_subscriptions(self):
         with self._lock:
+            now = time.monotonic()
+            for key, sections in list(self._subscriptions.items()):
+                seen = self._subscription_seen.get(key, {})
+                active = {section for section in sections if now - seen.get(section, -float("inf")) < self.idle_seconds}
+                if active:
+                    self._subscriptions[key] = active
+                    self._subscription_seen[key] = {section: seen[section] for section in active}
+                else:
+                    self._subscriptions.pop(key, None)
+                    self._subscription_seen.pop(key, None)
             combined = {}
             for subscriptions_by_key in (self._prewarm_subscriptions, self._subscriptions):
                 for key, sections in subscriptions_by_key.items():
@@ -10910,7 +11250,7 @@ class AccountDataCache(object):
             if not self._running:
                 break
             try:
-                live = query_account_live(
+                self._refresh(
                     bridge_id,
                     channel,
                     account_id,
@@ -10919,7 +11259,6 @@ class AccountDataCache(object):
                     account_type=account_type,
                     account_key=account_key,
                 )
-                self._store_result(bridge_id, channel, account_id, live, sections, account_type=account_type, account_key=account_key)
             except Exception as e:
                 safe_print(
                     "account data cache refresh failed bridge=%s channel=%s account=%s type=%s error=%s"

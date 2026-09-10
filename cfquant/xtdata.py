@@ -3,6 +3,8 @@ import datetime
 import time
 
 from .client import configure, get_client
+from .level2 import l2_array
+from .protocol import new_id
 
 
 _subscription_callbacks = {}
@@ -87,57 +89,110 @@ def get_local_data(
 
 
 def subscribe_quote(stock_code, period="1d", start_time="", end_time="", count=0, callback=None):
-    result = get_client().request("xtdata.subscribe_quote", {
+    return _subscribe_quote_request("xtdata.subscribe_quote", {
         "stock_code": stock_code,
         "period": period,
         "start_time": start_time,
         "end_time": end_time,
         "count": count,
-    })
-    subscribe_id = result.get("subscribe_id") if isinstance(result, dict) else result
-    if callback and subscribe_id is not None:
-        event_name = "quote:%s" % subscribe_id
-        _subscription_callbacks[subscribe_id] = (event_name, callback)
-        get_client().add_callback(event_name, callback)
-    return subscribe_id
+    }, callback)
 
 
 def subscribe_whole_quote(code_list, callback=None):
-    result = get_client().request("xtdata.subscribe_whole_quote", {
+    return _subscribe_quote_request("xtdata.subscribe_whole_quote", {
         "code_list": code_list,
-    })
-    subscribe_id = result.get("subscribe_id") if isinstance(result, dict) else result
-    if callback and subscribe_id is not None:
-        event_name = "quote:%s" % subscribe_id
-        _subscription_callbacks[subscribe_id] = (event_name, callback)
-        get_client().add_callback(event_name, callback)
-    return subscribe_id
+    }, callback)
 
 
 def subscribe_quote2(stock_code, period="1d", start_time="", end_time="", count=0, dividend_type=None, callback=None):
-    result = get_client().request("xtdata.subscribe_quote", {
+    return _subscribe_quote_request("xtdata.subscribe_quote", {
         "stock_code": stock_code,
         "period": period,
         "start_time": start_time,
         "end_time": end_time,
         "count": count,
         "dividend_type": dividend_type,
-    })
-    subscribe_id = result.get("subscribe_id") if isinstance(result, dict) else result
-    if callback and subscribe_id is not None:
-        event_name = "quote:%s" % subscribe_id
+    }, callback)
+
+
+def _subscribe_quote_request(action, params, callback):
+    if callback is not None and not callable(callback):
+        raise TypeError("callback must be callable")
+    client = get_client()
+    event_name = "quote:%s" % new_id("subscription") if callback is not None else None
+    if event_name:
+        params["callback_event"] = event_name
+        client.add_callback(event_name, callback)
+    try:
+        result = client.request(action, params)
+        subscribe_id = result.get("subscribe_id") if isinstance(result, dict) else result
+        if subscribe_id is None or isinstance(subscribe_id, bool) or int(subscribe_id) <= 0:
+            raise RuntimeError("%s failed: invalid subscription ID %r" % (action, subscribe_id))
+    except Exception:
+        if event_name:
+            client.remove_callback(event_name, callback)
+        raise
+    if event_name:
+        # Older bridges name events by ID, so retain their callback contract as well.
+        actual_event = result.get("callback_event") if isinstance(result, dict) else None
+        if actual_event != event_name:
+            client.remove_callback(event_name, callback)
+            event_name = "quote:%s" % subscribe_id
+            client.add_callback(event_name, callback)
         _subscription_callbacks[subscribe_id] = (event_name, callback)
-        get_client().add_callback(event_name, callback)
     return subscribe_id
 
 
 def unsubscribe_quote(seq):
+    result = get_client().request("xtdata.unsubscribe_quote", {"subscribe_id": seq})
+    if result is False or (isinstance(result, (int, float)) and result < 0):
+        return result
     item = _subscription_callbacks.pop(seq, None)
     if item:
         event_name, callback = item
         get_client().remove_callback(event_name, callback)
-    return get_client().request("xtdata.unsubscribe_quote", {
-        "subscribe_id": seq,
+    return result
+
+
+def get_l2_quote(field_list=[], stock_code="", start_time="", end_time="", count=-1):
+    return _get_l2_data("get_l2_quote", field_list, stock_code, start_time, end_time, count)
+
+
+def get_l2_order(field_list=[], stock_code="", start_time="", end_time="", count=-1):
+    return _get_l2_data("get_l2_order", field_list, stock_code, start_time, end_time, count)
+
+
+def get_l2_transaction(field_list=[], stock_code="", start_time="", end_time="", count=-1):
+    return _get_l2_data("get_l2_transaction", field_list, stock_code, start_time, end_time, count)
+
+
+def _get_l2_data(method, fields, code, start, end, count):
+    result = get_client().request("xtdata." + method, {
+        "field_list": fields, "stock_code": code,
+        "start_time": start, "end_time": end, "count": count,
+    })
+    return l2_array(result)
+
+
+def subscribe_l2thousand(stock_code, gear_num=None, callback=None):
+    return _subscribe_quote_request("xtdata.subscribe_l2thousand", {
+        "stock_code": stock_code, "gear_num": gear_num,
+    }, callback)
+
+
+def subscribe_l2thousand_queue(stock_code, callback=None, gear_num=None, price=None):
+    if gear_num is not None and price is not None:
+        raise ValueError("gear_num and price cannot both be specified")
+    return _subscribe_quote_request("xtdata.subscribe_l2thousand_queue", {
+        "stock_code": stock_code, "gear_num": gear_num,
+        "price": price, "price_is_range": isinstance(price, tuple),
+    }, callback)
+
+
+def get_l2thousand_queue(stock_code, gear_num=None, price=None):
+    return get_client().request("xtdata.get_l2thousand_queue", {
+        "stock_code": stock_code, "gear_num": gear_num,
+        "price": price, "price_is_range": isinstance(price, tuple),
     })
 
 
@@ -505,11 +560,6 @@ _CONDITIONAL_XTDATA_METHODS = [
     "subscribe_formula",
     "unsubscribe_formula",
     "get_formula_result",
-    "get_l2_quote",
-    "get_l2_order",
-    "get_l2_transaction",
-    "subscribe_l2thousand",
-    "get_l2thousand_queue",
     "get_tabular_data",
     "download_tabular_data",
     "push_custom_data",

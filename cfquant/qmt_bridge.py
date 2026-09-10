@@ -8,6 +8,7 @@ import time
 from .config import get_config
 from .logging_i18n import get_log_language, set_log_language, translate_log
 from .protocol import loads_message, pack_event, pack_response
+from .level2 import L2_GET_PERIODS, L2_PERIODS, l2_query, quote_plain, require_l2_callable, thousand_price
 from .xttype import filter_cancelable_orders
 
 
@@ -49,6 +50,7 @@ class CfquantQmtBridge(object):
         self.main_thread_queue = queue.Queue(maxsize=10000)
         self.subscriptions = {}
         self.client_subscriptions = {}
+        self._quote_bridge = None
         self.auto_trade_callback_enabled = False
         self.pending_async_orders = []
         self.pending_async_orders_lock = threading.RLock()
@@ -82,6 +84,10 @@ class CfquantQmtBridge(object):
 
     def close(self):
         self.running = False
+        if self._quote_bridge is not None:
+            self._quote_bridge._close_quote_subscriptions()
+        self.subscriptions.clear()
+        self.client_subscriptions.clear()
         tx = self.tx
         self.tx = None
         if tx is not None:
@@ -177,6 +183,9 @@ class CfquantQmtBridge(object):
         )
 
     def _requires_qmt_thread(self, action):
+        if action in {"xtdata.subscribe_quote", "xtdata.subscribe_whole_quote", "xtdata.unsubscribe_quote",
+                      "xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"}:
+            return True
         return action in {
             "xttrader.query_stock_asset",
             "xttrader.query_stock_orders",
@@ -232,6 +241,14 @@ class CfquantQmtBridge(object):
             }
         if self.context is None:
             raise RuntimeError("QMT ContextInfo尚未绑定")
+        method = action.split(".", 1)[-1]
+        if action.startswith("xtdata.") and method in L2_GET_PERIODS:
+            return l2_query(self._get_callable("get_market_data_ex"), L2_GET_PERIODS[method], params)
+        if action == "xtdata.get_l2thousand_queue":
+            func = require_l2_callable(self._get_callable(method), method)
+            return quote_plain(func(params.get("stock_code", ""), gear_num=params.get("gear_num"), price=thousand_price(params)))
+        if action in ("xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"):
+            return self._quote_dispatch(action, params, msg)
         if action == "xtdata.get_market_data":
             return self._get_market_data(params)
         if action == "xtdata.get_market_data_ex":
@@ -275,6 +292,8 @@ class CfquantQmtBridge(object):
         raise ValueError("暂不支持的cfquant动作:%s" % action)
 
     def _get_market_data(self, params):
+        if params.get("period") in L2_PERIODS:
+            return self._get_market_data_ex(params)
         func = getattr(self.context, "get_market_data", None)
         if not func:
             return self._get_market_data_ex(params)
@@ -298,65 +317,27 @@ class CfquantQmtBridge(object):
             params.get("end_time", ""),
             params.get("count", -1),
             params.get("dividend_type", "none"),
-            params.get("fill_data", True),
+            False if params.get("period") in L2_PERIODS else params.get("fill_data", True),
         )
 
     def _subscribe_quote(self, params, msg):
-        stock_code = params.get("stock_code", "")
-        period = params.get("period", "1d")
-        dividend_type = params.get("dividend_type") or "none"
-        client_id = msg.get("client_id")
-        holder = {"id": None}
-
-        def callback(data):
-            subscribe_id = holder.get("id")
-            event = pack_event(
-                "quote:%s" % subscribe_id,
-                data=data,
-                client_id=client_id,
-                subscription_id=subscribe_id,
-            )
-            self._push("event", event, client_id)
-
-        func = getattr(self.context, "subscribe_quote")
-        subscribe_id = self._call_variants(
-            func,
-            [
-                ((stock_code, period, dividend_type, "", callback), {}),
-                ((stock_code, period, params.get("start_time", ""), params.get("end_time", ""), params.get("count", 0), callback), {}),
-                ((stock_code, period, callback), {}),
-            ],
-        )
-        holder["id"] = subscribe_id
-        self._remember_subscription(subscribe_id, client_id, "quote", params)
-        return {"subscribe_id": subscribe_id}
+        return self._quote_dispatch("xtdata.subscribe_quote", params, msg)
 
     def _subscribe_whole_quote(self, params, msg):
-        code_list = params.get("code_list", params.get("stock_list", []))
-        client_id = msg.get("client_id")
-        holder = {"id": None}
+        return self._quote_dispatch("xtdata.subscribe_whole_quote", params, msg)
 
-        def callback(data):
-            subscribe_id = holder.get("id")
-            event = pack_event(
-                "quote:%s" % subscribe_id,
-                data=data,
-                client_id=client_id,
-                subscription_id=subscribe_id,
-            )
-            self._push("event", event, client_id)
-
-        func = getattr(self.context, "subscribe_whole_quote")
-        subscribe_id = self._call_variants(
-            func,
-            [
-                ((code_list,), {"callback": callback}),
-                ((code_list, callback), {}),
-            ],
-        )
-        holder["id"] = subscribe_id
-        self._remember_subscription(subscribe_id, client_id, "whole_quote", params)
-        return {"subscribe_id": subscribe_id}
+    def _quote_dispatch(self, action, params, msg):
+        if self._quote_bridge is None:
+            from .normal_bridge import NormalQmtBridge
+            self._quote_bridge = NormalQmtBridge(self.context, globals_dict=self.globals_dict,
+                                                show=False, schedule_timer=False, order_meta_enabled=False)
+            self._quote_bridge._log = self._log
+        bridge = self._quote_bridge
+        bridge.context, bridge.tx = self.context, self.tx
+        result = bridge._dispatch(action, params, msg)
+        if action != "xtdata.unsubscribe_quote":
+            self._remember_subscription(result["subscribe_id"], msg.get("client_id"), action, params)
+        return result
 
     def _remember_subscription(self, subscribe_id, client_id, kind, params):
         self.subscriptions[subscribe_id] = {
@@ -369,14 +350,13 @@ class CfquantQmtBridge(object):
     def _unsubscribe_quote(self, params):
         subscribe_id = params.get("subscribe_id")
         try:
-            func = getattr(self.context, "unsubscribe_quote")
-            result = func(subscribe_id)
-        finally:
-            info = self.subscriptions.pop(subscribe_id, None)
-            if info:
-                client_id = info.get("client_id")
-                if client_id in self.client_subscriptions:
-                    self.client_subscriptions[client_id].discard(subscribe_id)
+            subscribe_id = int(subscribe_id)
+        except (TypeError, ValueError):
+            pass
+        result = self._quote_dispatch("xtdata.unsubscribe_quote", params, {})
+        info = self.subscriptions.pop(subscribe_id, None)
+        if info:
+            self.client_subscriptions.get(info.get("client_id"), set()).discard(subscribe_id)
         return result
 
     def _download_event_meta(self, params, kind, stage):

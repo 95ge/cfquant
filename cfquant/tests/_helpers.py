@@ -167,16 +167,6 @@ def emit_skip(name, reason, example=None):
     return None
 
 
-def add_runtime_args(parser, default_transport="auto"):
-    parser.add_argument(
-        "--transport",
-        default=default_transport,
-        help="cfquant 通信模式，默认 %s，优先自动发现 Web LTtx 路由。" % default_transport,
-    )
-    parser.add_argument("--bridge-id", default="default", help="桥接 ID，默认 default。")
-    parser.add_argument("--timeout", type=float, default=15.0, help="请求超时时间，单位秒。")
-
-
 def _internal_api_key_paths():
     configured_file = str(os.environ.get("CFQUANT_INTERNAL_API_KEY_FILE") or "").strip()
     if configured_file:
@@ -232,13 +222,13 @@ def discover_data_provider_route(timeout=1.5):
     return route if isinstance(route, dict) else {}
 
 
-def configure_cfquant(args):
+def configure_cfquant(config):
     from cfquant import configure
 
     configure(
-        transport=args.transport,
-        bridge_id=args.bridge_id,
-        timeout=args.timeout,
+        transport=config.transport,
+        bridge_id=config.bridge_id,
+        timeout=config.timeout,
     )
 
 

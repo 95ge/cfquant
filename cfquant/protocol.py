@@ -96,6 +96,8 @@ def encode_error(error):
 def encode_value(value):
     if value is None or isinstance(value, (str, bool, int)):
         return value
+    if type(value).__module__.startswith("pandas.") and type(value).__name__ in ("NAType", "NaTType"):
+        return None
     if isinstance(value, float):
         if math.isnan(value) or math.isinf(value):
             return None
@@ -109,6 +111,8 @@ def encode_value(value):
         return {str(k): encode_value(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [encode_value(v) for v in value]
+    if type(value).__module__.split(".", 1)[0] == "numpy":
+        return encode_value(value.tolist())
     if _looks_like_dataframe(value):
         return _encode_dataframe(value)
     if _looks_like_series(value):
@@ -168,9 +172,12 @@ def _clean_cell(value):
 
 def _encode_dataframe(value):
     try:
-        raw_rows = value.values.tolist()
+        raw_rows = list(value.itertuples(index=False, name=None))
     except Exception:
-        raw_rows = []
+        try:
+            raw_rows = value.values.tolist()
+        except Exception:
+            raw_rows = []
     rows = []
     for row in raw_rows:
         rows.append([_clean_cell(v) for v in row])
@@ -181,6 +188,8 @@ def _encode_dataframe(value):
         "index": [str(i) for i in getattr(value, "index", [])],
         "data": rows,
         "index_name": str(index_name) if index_name is not None else None,
+        "object_columns": [str(name) for name, dtype in getattr(value, "dtypes", {}).items()
+                           if str(dtype) == "object" or str(dtype).startswith(("Int", "UInt"))],
     }
 
 
@@ -208,7 +217,16 @@ def decode_value(value):
         return base64.b64decode(value.get("data", ""))
     if value_type == "dataframe":
         import pandas as pd
-        df = pd.DataFrame(value.get("data", []), columns=value.get("columns", []))
+        columns = value.get("columns", [])
+        rows = [[decode_value(cell) for cell in row] for row in value.get("data", [])]
+        object_columns = value.get("object_columns", [])
+        if object_columns and columns:
+            # Construct columns independently, preserving duplicate field labels too.
+            df = pd.concat([pd.Series([row[i] for row in rows], dtype=object if name in object_columns else None)
+                            for i, name in enumerate(columns)], axis=1)
+            df.columns = columns
+        else:
+            df = pd.DataFrame(rows, columns=columns)
         index = value.get("index", [])
         if len(index) == len(df):
             df.index = index

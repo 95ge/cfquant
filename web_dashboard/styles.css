@@ -5314,8 +5314,26 @@ input[type="file"] {
 }
 
 .api-doc-detail table {
+  table-layout: fixed;
+  width: 100%;
   border: 1px solid #edf1f5;
   border-radius: 6px;
+}
+
+.api-doc-detail > div {
+  min-width: 0;
+}
+
+.api-doc-detail th,
+.api-doc-detail td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+}
+
+.api-doc-detail th:first-child,
+.api-doc-detail td:first-child {
+  width: 32%;
 }
 
 .api-doc-extra {
@@ -5869,7 +5887,7 @@ tr.order-row-updated td {
 
 .test-source-viewer {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 12px;
   min-width: 0;
   padding: 14px;
@@ -5914,6 +5932,49 @@ tr.order-row-updated td {
 
 .test-source-actions button {
   min-width: 88px;
+}
+
+.tests-config-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #d8e4ef;
+  border-radius: 6px;
+  background: #f4f8fc;
+  color: #52606d;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tests-config-summary:empty {
+  display: none;
+}
+
+.tests-config-summary span,
+.tests-config-summary code {
+  max-width: 100%;
+  min-height: 24px;
+  padding: 3px 7px;
+  border: 1px solid #dfe8f1;
+  border-radius: 999px;
+  background: #fbfdff;
+  overflow-wrap: anywhere;
+}
+
+.tests-config-summary code {
+  color: #254463;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  white-space: normal;
+}
+
+.tests-config-summary .configured,
+.test-selected-meta .configured {
+  border-color: #b9d3fb;
+  background: #eaf3ff;
+  color: #1557a6;
+  font-weight: 650;
 }
 
 .test-selected-meta {

@@ -76,6 +76,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
     def close(self):
         self.running = False
         self.worker_event.set()
+        self._close_quote_subscriptions()
         if self.context is not None and self.schedule_key:
             try:
                 self.context.cancel_schedule_run(self.schedule_key)

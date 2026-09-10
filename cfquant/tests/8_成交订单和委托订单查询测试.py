@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 """查询成交和委托记录，并检查每条记录是否能正常返回 order_id。"""
 
-import argparse
+from types import SimpleNamespace
 
 from _helpers import (
-    add_runtime_args,
     configure_cfquant,
     configure_stdout,
     default_account_id,
@@ -13,6 +12,19 @@ from _helpers import (
 
 from cfquant.xttrader import XtQuantTrader, close_trade_client
 from cfquant.xttype import StockAccount
+
+
+# ======================== 用户配置区 ========================
+# 直接修改下面的配置，然后运行本文件；不读取命令行参数。
+TRANSPORT = "auto"       # auto 自动发现；也可填写 ctypes、web_lttx 或 lttx
+BRIDGE_ID = "default"
+REQUEST_TIMEOUT = 15.0    # 请求超时，单位秒
+ACCOUNT_ID = ""           # 留空读取 CFQUANT_ACCOUNT_ID 或 Web 默认账号
+ACCOUNT_TYPE = "STOCK"
+ORDER_ID = ""             # 留空显示全部，否则按委托号或系统编号筛选
+CANCELABLE_ONLY = False
+MAX_ROWS = 100            # 每类显示条数，0 不显示明细
+# ===========================================================
 
 
 ORDER_ID_FIELDS = (
@@ -141,61 +153,42 @@ def query_and_print(name, query, order_id_filter="", max_rows=100):
 
 def main():
     configure_stdout()
-    parser = argparse.ArgumentParser(
-        description="只读查询指定账号的成交和委托记录，显示每条记录的 order_id。"
+    config = SimpleNamespace(
+        transport=TRANSPORT,
+        bridge_id=BRIDGE_ID,
+        timeout=REQUEST_TIMEOUT,
+        account_id=ACCOUNT_ID,
+        account_type=ACCOUNT_TYPE,
+        order_id=ORDER_ID,
+        cancelable_only=CANCELABLE_ONLY,
+        max_rows=MAX_ROWS,
     )
-    add_runtime_args(parser)
-    parser.add_argument(
-        "--account-id",
-        default=default_account_id(),
-        help="资金账号；默认读取 CFQUANT_ACCOUNT_ID 或 Web 配置。",
-    )
-    parser.add_argument(
-        "--account-type",
-        default="STOCK",
-        help="账号类型，默认 STOCK，也可填写 CREDIT。",
-    )
-    parser.add_argument(
-        "--order-id",
-        default="",
-        help="可选，只显示该 order_id 对应的委托和成交记录。",
-    )
-    parser.add_argument(
-        "--cancelable-only",
-        action="store_true",
-        help="委托查询只返回当前可撤单的委托。",
-    )
-    parser.add_argument(
-        "--max-rows",
-        type=int,
-        default=100,
-        help="每类最多显示多少条记录，默认 100；0 表示不显示明细。",
-    )
-    args = parser.parse_args()
-    if args.max_rows < 0:
-        parser.error("--max-rows 不能小于 0")
+    config.account_id = str(config.account_id or "").strip() or default_account_id()
+    if config.max_rows < 0:
+        print_json({"case": "配置检查", "ok": False, "error": "MAX_ROWS 不能小于 0"})
+        return 2
 
-    account_id = str(args.account_id or "").strip()
+    account_id = str(config.account_id or "").strip()
     if not account_id:
         print_json({
             "case": "参数检查",
             "ok": False,
-            "error": "缺少 account_id，请传 --account-id 或设置 CFQUANT_ACCOUNT_ID。",
+            "error": "缺少资金账号，请在顶部用户配置区填写 ACCOUNT_ID。",
         })
         return 2
 
-    configure_cfquant(args)
-    account_type = str(args.account_type or "STOCK").strip().upper()
-    account = StockAccount(account_id, account_type, args.bridge_id)
+    configure_cfquant(config)
+    account_type = str(config.account_type or "STOCK").strip().upper()
+    account = StockAccount(account_id, account_type, config.bridge_id)
     trader = XtQuantTrader(account=account)
     print_json({
         "case": "开始",
         "ok": True,
-        "transport": args.transport,
-        "bridge_id": args.bridge_id,
+        "transport": config.transport,
+        "bridge_id": config.bridge_id,
         "account_id": account_id,
         "account_type": account_type,
-        "order_id_filter": str(args.order_id or "").strip(),
+        "order_id_filter": str(config.order_id or "").strip(),
         "read_only": True,
     })
 
@@ -213,16 +206,16 @@ def main():
             "委托订单",
             lambda: trader.query_stock_orders(
                 account,
-                cancelable_only=args.cancelable_only,
+                cancelable_only=config.cancelable_only,
             ),
-            order_id_filter=args.order_id,
-            max_rows=args.max_rows,
+            order_id_filter=config.order_id,
+            max_rows=config.max_rows,
         )
         trade_result = query_and_print(
             "成交订单",
             lambda: trader.query_stock_trades(account),
-            order_id_filter=args.order_id,
-            max_rows=args.max_rows,
+            order_id_filter=config.order_id,
+            max_rows=config.max_rows,
         )
         overall_ok = bool(
             order_result["ok"]

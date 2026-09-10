@@ -117,6 +117,8 @@ MARKET_BODIES = {
 }
 
 QUERY_BODIES = {
+    "query_credit_detail": 'records = trader.query_credit_detail(account)\nif records is None:\n    print("No result from the terminal")\nelse:\n    for record in records:\n        print(record.account_id, getattr(record, "m_dTotalDebt", None),\n              getattr(record, "m_dMarketValue", None))\n        print("missing fields:", getattr(record, "cfquant_missing_fields", []))',
+    "query_stk_compacts": 'records = trader.query_stk_compacts(account)\nif records is None:\n    print("No result from the terminal")\nelse:\n    for record in records:\n        print(getattr(record, "compact_id", None),\n              getattr(record, "real_compact_balance", None),\n              getattr(record, "repaid_fare", None))\n        print("missing fields:", getattr(record, "cfquant_missing_fields", []))',
     "query_stock_asset": 'asset = trader.query_stock_asset(account)\nif asset is None:\n    print("No asset record")\nelse:\n    print(asset.account_id, asset.cash, asset.total_asset)',
     "query_stock_orders": 'orders = trader.query_stock_orders(account, cancelable_only=False)\nfor order in orders or []:\n    print(order.order_id, order.stock_code, order.order_status)',
     "query_stock_trades": 'for trade in trader.query_stock_trades(account) or []:\n    print(trade.order_id, trade.stock_code, trade.traded_price, trade.traded_volume)',
@@ -156,6 +158,7 @@ def callback_class(name):
 
 
 TYPE_QUERIES = {
+    "XtCreditDetail": "query_credit_detail", "StkCompacts": "query_stk_compacts",
     "XtAsset": "query_stock_asset", "XtOrder": "query_stock_orders", "XtTrade": "query_stock_trades",
     "XtPosition": "query_stock_positions", "XtPositionStatistics": "query_position_statistics",
     "CreditSubjects": "query_credit_subjects", "CreditSloCode": "query_credit_slo_code", "CreditAssure": "query_credit_assure",
@@ -196,7 +199,7 @@ def example_for(entry):
         usage += " 回调由事件触发，注册和订阅本身不会生成成交或报错事件；异步报单回报只关联本实例提交的异步订单。"
     elif module == "trader":
         if name in QUERY_BODIES:
-            account_type = "FUTURE" if name == "query_position_statistics" else "CREDIT" if name.startswith("query_credit_") else "STOCK"
+            account_type = "FUTURE" if name == "query_position_statistics" else "CREDIT" if name.startswith("query_credit_") or name == "query_stk_compacts" else "STOCK"
             code = trader_example(QUERY_BODIES[name], account_type=account_type)
         elif name.startswith("order_stock"):
             body = 'ENABLE_TRADING = False\nif not ENABLE_TRADING:\n    raise RuntimeError("Confirm account, security, volume and price before enabling trading")\n'
@@ -228,7 +231,7 @@ def example_for(entry):
             code = 'from cfquant.xttype import StockAccount\n\naccount = StockAccount("YOUR_ACCOUNT_ID", "STOCK")\ncredit = StockAccount("YOUR_CREDIT_ACCOUNT_ID", "CREDIT")\nprint(account.account_id, account.account_type)\nprint(credit.account_id, credit.account_type)'
         elif name in TYPE_QUERIES:
             query = TYPE_QUERIES[name]
-            code = trader_example(QUERY_BODIES[query], account_type="FUTURE" if name == "XtPositionStatistics" else "CREDIT" if name.startswith("Credit") else "STOCK")
+            code = trader_example(QUERY_BODIES[query], account_type="FUTURE" if name == "XtPositionStatistics" else "CREDIT" if name.startswith("Credit") or name in ("XtCreditDetail", "StkCompacts") else "STOCK")
         elif name in TYPE_CALLBACKS:
             code = trader_example('print("Waiting for events carrying ' + name + '")', callback=callback_class(TYPE_CALLBACKS[name]), wait=True)
         else:
@@ -268,6 +271,10 @@ def example_for(entry):
         result_help = "回调由事件系统调用，无需向终端返回业务结果。回调内尽快完成处理，耗时任务交给独立队列。"
     elif name.startswith("cancel_order_stock"):
         result_help = "异步形式返回请求序号，通过撤单应答与委托事件确认结果；同步形式返回撤单请求结果，最终是否撤成仍以委托状态为准。"
+    elif name in ("query_credit_detail", "XtCreditDetail"):
+        result_help = "XtCreditDetail 列表或 None；取自终端缓存，缺失字段见 cfquant_missing_fields。缓存已用额度保存在 cfquant_qmt_fields，不当作官网冻结额度。"
+    elif name in ("query_stk_compacts", "StkCompacts"):
+        result_help = "StkCompacts 列表或 None；返回未了结负债，旧终端缺少的息费字段保持缺失，不能当成 0。"
     elif name.startswith("query_credit_"):
         result_help = "返回对应的 Credit 数据对象列表。未提供的字段保持缺失；状态和券源覆盖仍需按目标券商核对。"
     return {"example": code, "originalExample": original_example(code, name) if module != "type" or name == "StockAccount" else "", "usage": usage, "resultHelp": result_help}
@@ -290,8 +297,13 @@ def reference_solution(ref):
         result.update(description="官方财务表与大 QMT 财务字段标识存在差异。迁移时需将表级查询转换为当前终端支持的字段列表，并明确报告期或披露时间口径。",
                       related=["xtdata.get_financial_data", "xtdata.download_financial_data"],
                       example='from cfquant import xtdata\n\n' + MARKET_BODIES["get_financial_data"])
-    elif "level2" in name or "l2" in name or "现金替代" in name:
-        result.update(usage="尚未支持完整替代保证。清单未确认本节数据产品及全部字段的适配，普通行情接口已适配不能代替 Level2 或 ETF 清单能力验证。",
+    elif "level2" in name or "l2" in name:
+        result.update(description="已接入大 QMT 的六类 Level2 原生周期查询和订阅，逐笔编号与深度数组在 Python 协议中保留。",
+                      usage="支持 l2quote、l2quoteaux、l2order、l2transaction、l2transactioncount、l2orderqueue，实际数据需要行情权限。千档另需原生 callable，不能用一档队列替代；历史缓存与回调时序以终端为准。",
+                      related=["xtdata.get_market_data_ex", "xtdata.subscribe_quote", "xtdata.unsubscribe_quote"],
+                      example='from cfquant import xtdata\nimport time\n\nSTOCK_CODE = "000001.SZ"\nPERIOD = "l2transaction"\n\ndef on_quote(data):\n    for code, rows in data.items():\n        print(code, rows)\n\nseq = xtdata.subscribe_quote(STOCK_CODE, period=PERIOD, callback=on_quote)\ntry:\n    time.sleep(10)\n    data = xtdata.get_market_data_ex([], [STOCK_CODE], period=PERIOD, count=10, fill_data=False)\n    print(data)\nfinally:\n    xtdata.unsubscribe_quote(seq)')
+    elif "现金替代" in name:
+        result.update(usage="尚未支持完整替代保证。普通行情及 Level2 周期查询已适配，不代表 ETF 清单及其现金替代字段已经适配。",
                       related=["xtdata.get_market_data_ex", "xtdata.get_etf_info"])
     elif "合约信息" in name:
         result.update(related=["xtdata.get_instrument_detail"], example='from cfquant import xtdata\n\n' + MARKET_BODIES["get_instrument_detail"])

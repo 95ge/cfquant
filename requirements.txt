@@ -1,3 +1,6 @@
+# Use the Tsinghua PyPI mirror by default for faster installs in mainland China.
+--index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
 pandas
 packaging
 psutil

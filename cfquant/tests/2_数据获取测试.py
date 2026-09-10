@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-import argparse
+from types import SimpleNamespace
 import json
 import time
 
 from _helpers import (
-    add_runtime_args,
     close_default_client,
     configure_cfquant,
     configure_stdout,
@@ -15,6 +14,30 @@ from _helpers import (
 )
 
 from cfquant import xtdata
+
+
+# ======================== 用户配置区 ========================
+# 直接修改下面的配置，然后运行本文件；不读取命令行参数。
+TRANSPORT = "auto"       # auto 自动发现；也可填写 ctypes、web_lttx 或 lttx
+BRIDGE_ID = "default"
+REQUEST_TIMEOUT = 15.0    # 请求超时，单位秒
+STOCK_LIST = "000001.SZ,600000.SH"  # 多个证券用逗号分隔
+STOCK_CODE = "000001.SZ"
+PERIOD = "1d"
+COUNT = 5
+START_TIME = ""           # 例如 20260101；留空使用 QMT 默认范围
+END_TIME = ""
+SECTOR_NAME = "沪深A股"
+INDEX_CODE = "000300.SH"
+ETF_MARKET = "SH"
+FINANCIAL_FIELDS = "ASHAREBALANCESHEET.fix_assets"  # 逗号分隔，留空跳过
+FINANCIAL_REPORT_TYPE = "announce_time"
+FACTOR_FIELDS = ""        # 逗号分隔，留空跳过因子查询
+OPTION_CODE = ""          # 留空跳过期权详情
+OPTION_UNDERLYING = "510050.SH"
+OPTION_DATE = ""          # 例如 202609；留空跳过期权列表
+JSON_OUTPUT = False
+# ===========================================================
 
 
 TOTAL_CASES = 22
@@ -205,49 +228,51 @@ class ChineseReporter:
 
 def main():
     configure_stdout()
-    parser = argparse.ArgumentParser(description="cfquant 行情和基础数据获取测试。")
-    add_runtime_args(parser, default_transport="auto")
-    parser.add_argument("--stock-list", default="000001.SZ,600000.SH", help="证券列表，逗号分隔。")
-    parser.add_argument("--stock-code", default="000001.SZ", help="用于合约详情和日线查询的单个证券。")
-    parser.add_argument("--period", default="1d", help="周期，默认 1d。")
-    parser.add_argument("--count", type=int, default=5, help="返回条数，默认 5。")
-    parser.add_argument("--start-time", default="", help="开始时间，例如 20260101；留空表示由 QMT 使用默认范围。")
-    parser.add_argument("--end-time", default="", help="结束时间，例如 20260821；留空表示由 QMT 使用默认范围。")
-    parser.add_argument("--sector-name", default="沪深A股", help="板块名称，默认 沪深A股。")
-    parser.add_argument("--index-code", default="000300.SH", help="指数权重示例使用的指数代码，默认 000300.SH。")
-    parser.add_argument("--etf-market", default="SH", help="ETF 列表示例使用的市场，默认 SH。")
-    parser.add_argument("--financial-fields", default="ASHAREBALANCESHEET.fix_assets", help="财务查询字段，逗号分隔；留空则跳过财务示例。")
-    parser.add_argument("--financial-report-type", default="announce_time", help="财务查询报告口径，默认 announce_time。")
-    parser.add_argument("--factor-fields", default="", help="因子字段，逗号分隔；留空则跳过因子示例。")
-    parser.add_argument("--option-code", default="", help="期权详情示例使用的期权代码；留空则跳过期权详情。")
-    parser.add_argument("--option-underlying", default="510050.SH", help="期权列表示例使用的标的代码，默认 510050.SH。")
-    parser.add_argument("--option-date", default="", help="期权列表到期月份，例如 202609；留空则跳过期权列表示例。")
-    parser.add_argument("--json", action="store_true", help="使用原有的逐行 JSON 格式输出，便于自动化处理。")
-    args = parser.parse_args()
-    runtime_route = discover_data_provider_route() if args.transport == "auto" else {}
-    if runtime_route.get("bridge_id") and args.bridge_id == "default":
-        args.bridge_id = runtime_route["bridge_id"]
-    configure_cfquant(args)
+    config = SimpleNamespace(
+        transport=TRANSPORT,
+        bridge_id=BRIDGE_ID,
+        timeout=REQUEST_TIMEOUT,
+        stock_list=STOCK_LIST,
+        stock_code=STOCK_CODE,
+        period=PERIOD,
+        count=COUNT,
+        start_time=START_TIME,
+        end_time=END_TIME,
+        sector_name=SECTOR_NAME,
+        index_code=INDEX_CODE,
+        etf_market=ETF_MARKET,
+        financial_fields=FINANCIAL_FIELDS,
+        financial_report_type=FINANCIAL_REPORT_TYPE,
+        factor_fields=FACTOR_FIELDS,
+        option_code=OPTION_CODE,
+        option_underlying=OPTION_UNDERLYING,
+        option_date=OPTION_DATE,
+        json=JSON_OUTPUT,
+    )
+    runtime_route = discover_data_provider_route() if config.transport == "auto" else {}
+    if runtime_route.get("bridge_id") and config.bridge_id == "default":
+        config.bridge_id = runtime_route["bridge_id"]
+    configure_cfquant(config)
 
-    stock_list = parse_csv(args.stock_list, default=["000001.SZ", "600000.SH"], upper=True)
-    stock_code = str(args.stock_code or stock_list[0]).strip().upper()
-    financial_fields = parse_csv(args.financial_fields, default=[])
-    factor_fields = parse_csv(args.factor_fields, default=[])
-    option_code = str(args.option_code or "").strip().upper()
-    option_date = str(args.option_date or "").strip()
+    stock_list = parse_csv(config.stock_list, default=["000001.SZ", "600000.SH"], upper=True)
+    stock_code = str(config.stock_code or stock_list[0]).strip().upper()
+    financial_fields = parse_csv(config.financial_fields, default=[])
+    factor_fields = parse_csv(config.factor_fields, default=[])
+    option_code = str(config.option_code or "").strip().upper()
+    option_date = str(config.option_date or "").strip()
 
-    reporter = ChineseReporter(json_output=args.json)
+    reporter = ChineseReporter(json_output=config.json)
     reporter.start({
         "type": "start",
-        "transport": args.transport,
-        "bridge_id": args.bridge_id,
+        "transport": config.transport,
+        "bridge_id": config.bridge_id,
         "runtime_route": runtime_route,
         "stock_list": stock_list,
         "stock_code": stock_code,
-        "period": args.period,
-        "count": args.count,
-        "start_time": args.start_time,
-        "end_time": args.end_time,
+        "period": config.period,
+        "count": config.count,
+        "start_time": config.start_time,
+        "end_time": config.end_time,
     })
     try:
         reporter.section(1, "实时行情快照", "检查能否一次获取多只证券的最新 Tick 数据。")
@@ -263,14 +288,14 @@ def main():
         reporter.call(
             "get_market_data",
             "读取标准 K 线数据",
-            f"读取 {stock_code} 的 {args.period} 行情，字段为开高低收和成交量。",
+            f"读取 {stock_code} 的 {config.period} 行情，字段为开高低收和成交量。",
             lambda: xtdata.get_market_data(
                 field_list=["open", "high", "low", "close", "volume"],
                 stock_list=[stock_code],
-                period=args.period,
-                start_time=args.start_time,
-                end_time=args.end_time,
-                count=args.count,
+                period=config.period,
+                start_time=config.start_time,
+                end_time=config.end_time,
+                count=config.count,
                 dividend_type="none",
                 fill_data=True,
             ),
@@ -283,10 +308,10 @@ def main():
             lambda: xtdata.get_market_data_ex(
                 field_list=["open", "high", "low", "close", "volume"],
                 stock_list=[stock_code],
-                period=args.period,
-                start_time=args.start_time,
-                end_time=args.end_time,
-                count=args.count,
+                period=config.period,
+                start_time=config.start_time,
+                end_time=config.end_time,
+                count=config.count,
                 dividend_type="none",
                 fill_data=True,
             ),
@@ -299,10 +324,10 @@ def main():
             lambda: xtdata.get_local_data(
                 field_list=["open", "high", "low", "close", "volume"],
                 stock_list=[stock_code],
-                period=args.period,
-                start_time=args.start_time,
-                end_time=args.end_time,
-                count=args.count,
+                period=config.period,
+                start_time=config.start_time,
+                end_time=config.end_time,
+                count=config.count,
                 dividend_type="none",
                 fill_data=True,
             ),
@@ -320,8 +345,8 @@ def main():
         reporter.call(
             "get_stock_list_in_sector",
             "查询板块成分股",
-            f"获取“{args.sector_name}”板块中的证券列表。",
-            lambda: xtdata.get_stock_list_in_sector(args.sector_name),
+            f"获取“{config.sector_name}”板块中的证券列表。",
+            lambda: xtdata.get_stock_list_in_sector(config.sector_name),
             example="xtdata.get_stock_list_in_sector(sector_name)",
         )
         reporter.call(
@@ -330,10 +355,10 @@ def main():
             f"获取 {stock_code} 对应市场最近的交易日期。",
             lambda: xtdata.get_trading_dates(
                 stock_code,
-                start_date=args.start_time,
-                end_date=args.end_time,
-                count=args.count,
-                period=args.period,
+                start_date=config.start_time,
+                end_date=config.end_time,
+                count=config.count,
+                period=config.period,
             ),
             example="xtdata.get_trading_dates(stock_code, start_date, end_date, count, period)",
         )
@@ -384,22 +409,22 @@ def main():
         reporter.call(
             "get_weight_in_index",
             "查询指数成分权重",
-            f"查询 {stock_code} 在指数 {args.index_code} 中的权重。",
-            lambda: xtdata.get_weight_in_index(args.index_code, stock_code),
+            f"查询 {stock_code} 在指数 {config.index_code} 中的权重。",
+            lambda: xtdata.get_weight_in_index(config.index_code, stock_code),
             example="xtdata.get_weight_in_index(index_code, stock_code)",
         )
         reporter.call(
             "get_turnover_rate",
             "查询换手率",
             f"查询 {stock_code} 在指定时间范围内的换手率。",
-            lambda: xtdata.get_turnover_rate(stock_code, start_time=args.start_time, end_time=args.end_time),
+            lambda: xtdata.get_turnover_rate(stock_code, start_time=config.start_time, end_time=config.end_time),
             example="xtdata.get_turnover_rate(stock_code, start_time, end_time)",
         )
         reporter.call(
             "get_ETF_list",
             "查询 ETF 列表",
-            f"获取 {args.etf_market} 市场的 ETF 证券列表。",
-            lambda: xtdata.get_ETF_list(market=args.etf_market),
+            f"获取 {config.etf_market} 市场的 ETF 证券列表。",
+            lambda: xtdata.get_ETF_list(market=config.etf_market),
             example="xtdata.get_ETF_list(market=etf_market)",
         )
 
@@ -412,14 +437,14 @@ def main():
                 lambda: xtdata.get_financial_data(
                     financial_fields,
                     [stock_code],
-                    start_time=args.start_time,
-                    end_time=args.end_time,
-                    report_type=args.financial_report_type,
+                    start_time=config.start_time,
+                    end_time=config.end_time,
+                    report_type=config.financial_report_type,
                 ),
                 example="xtdata.get_financial_data(financial_fields, [stock_code], start_time, end_time)",
             )
         else:
-            reporter.skip("get_financial_data", "读取财务数据", "未传 --financial-fields，无法确定要查询的财务字段。")
+            reporter.skip("get_financial_data", "读取财务数据", "FINANCIAL_FIELDS 为空，无法确定要查询的财务字段。")
         if factor_fields:
             reporter.call(
                 "get_factor_data",
@@ -428,13 +453,13 @@ def main():
                 lambda: xtdata.get_factor_data(
                     factor_fields,
                     [stock_code],
-                    start_date=args.start_time,
-                    end_date=args.end_time,
+                    start_date=config.start_time,
+                    end_date=config.end_time,
                 ),
                 example="xtdata.get_factor_data(factor_fields, [stock_code], start_date, end_date)",
             )
         else:
-            reporter.skip("get_factor_data", "读取因子数据", "未传 --factor-fields，无法确定要查询的因子字段。")
+            reporter.skip("get_factor_data", "读取因子数据", "FACTOR_FIELDS 为空，无法确定要查询的因子字段。")
 
         reporter.section(6, "期权数据", "使用现场有效的期权合约检查期权详情、标的和合约列表。")
         if option_code:
@@ -453,26 +478,26 @@ def main():
                 example="xtdata.get_option_undl(option_code)",
             )
         else:
-            reporter.skip("get_option_detail_data", "查询期权合约详情", "未传 --option-code，无法确定期权合约。")
-            reporter.skip("get_option_undl", "查询期权对应标的", "未传 --option-code，无法确定期权合约。")
+            reporter.skip("get_option_detail_data", "查询期权合约详情", "OPTION_CODE 为空，无法确定期权合约。")
+            reporter.skip("get_option_undl", "查询期权对应标的", "OPTION_CODE 为空，无法确定期权合约。")
         if option_date:
             reporter.call(
                 "get_option_list",
                 "查询期权合约列表",
-                f"查询标的 {args.option_underlying} 在 {option_date} 到期的期权合约。",
-                lambda: xtdata.get_option_list(args.option_underlying, option_date),
+                f"查询标的 {config.option_underlying} 在 {option_date} 到期的期权合约。",
+                lambda: xtdata.get_option_list(config.option_underlying, option_date),
                 example="xtdata.get_option_list(option_underlying, option_date)",
             )
             reporter.call(
                 "get_option_undl_data",
                 "查询期权标的资料",
-                f"读取期权标的 {args.option_underlying} 的相关资料。",
-                lambda: xtdata.get_option_undl_data(args.option_underlying),
+                f"读取期权标的 {config.option_underlying} 的相关资料。",
+                lambda: xtdata.get_option_undl_data(config.option_underlying),
                 example="xtdata.get_option_undl_data(option_underlying)",
             )
         else:
-            reporter.skip("get_option_list", "查询期权合约列表", "未传 --option-date，无法确定期权到期月份。")
-            reporter.skip("get_option_undl_data", "查询期权标的资料", "未传 --option-date，本组期权列表示例不执行。")
+            reporter.skip("get_option_list", "查询期权合约列表", "OPTION_DATE 为空，无法确定期权到期月份。")
+            reporter.skip("get_option_undl_data", "查询期权标的资料", "OPTION_DATE 为空，本组期权列表示例不执行。")
     finally:
         close_default_client()
     reporter.finish()

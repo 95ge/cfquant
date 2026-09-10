@@ -84,6 +84,14 @@
 
 自动安装失败时，启动窗口会保持打开，并把安装日志写入 `log\cfquant_startup.log`，修复 Python、网络或权限问题后重新启动即可。
 
+项目默认使用清华 PyPI 镜像安装依赖，适合中国大陆网络环境。启动脚本、网页源码更新、`requirements.txt` 安装以及 LTtx 缺失依赖自动安装都会遵循这个设置。需要切换到企业私有源或其他镜像时，可在启动前设置 `CFQUANT_PIP_INDEX_URL` 环境变量。
+
+通过 PyPI 安装后，可以使用下面任一命令启动本地 Web 控制台；`run` 和 `serve` 等价：
+
+```powershell
+cfquant run
+```
+
 启动后打开 <http://127.0.0.1:8765/>，按网页中的“新手初始化向导”完成账号、模式和 QMT 目录配置。然后在 QMT 中加载对应的入口脚本，回到网页验证资金、持仓、委托和行情。
 
 重点：
@@ -157,6 +165,7 @@ restart_cfquant.bat     重启
 | 账号和 QMT 目录配置 | [Web 账号运行配置说明](docs/Web账号运行配置说明.md) |
 | 从 miniQMT 迁移 | [miniQMT 迁移到大 QMT 指南](docs/miniQMT迁移到大QMT指南.md) |
 | 官网 nativeApi 接口功能及适配状态 | [xtquant 原版接口适配清单](docs/xtquant原版接口适配清单.md) |
+| Level2 六类行情、订阅回调与千档边界 | [Level2 行情适配说明](docs/Level2行情适配说明.md) |
 | `xtdata` 兼容性 | [xtdata 平替追踪](docs/xtdata平替追踪.md) |
 | `xttrader` 兼容性 | [xttrader 平替追踪](docs/xttrader平替追踪.md) |
 | 接口能力范围 | [QMT 函数封装能力清单](docs/QMT函数封装能力清单.md) |

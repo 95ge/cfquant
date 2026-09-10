@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260909_02';
+const FRONTEND_VERSION = 'web_20260910_02';
 
 const state = {
   accountId: '',
@@ -13,6 +13,7 @@ const state = {
   currentView: 'overview',
   settingsTab: 'api-key',
   statusTimer: null,
+  accountCacheRefreshInFlight: false,
   lastOrderConfirm: '',
   callbackSeq: 0,
   orderSnapshot: new Map(),
@@ -527,6 +528,409 @@ async function copyTextWithFallback(text) {
   if (!ok) throw new Error('浏览器拒绝复制');
 }
 
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function pythonStringLiteral(value) {
+  return JSON.stringify(String(value == null ? '' : value));
+}
+
+function commandValue(value) {
+  return `"${String(value == null ? '' : value).replace(/"/g, '\\"')}"`;
+}
+
+function testSourceKind(item = {}) {
+  const name = String(item.name || '');
+  const category = String(item.category || '');
+  if (/^(1|2|3|21)_/.test(name) || category.includes('行情')) return 'quote';
+  if (/^(4|5|6|7|8|18)_/.test(name) || category.includes('交易') || category.includes('联调')) return 'trade';
+  return 'generic';
+}
+
+function testSourceKindLabel(kind) {
+  if (kind === 'quote') return '行情测试';
+  if (kind === 'trade') return '交易测试';
+  return '通用测试';
+}
+
+function testSourceHasOption(source, option) {
+  const pattern = new RegExp(`["']${escapeRegExp(option)}["']`);
+  return pattern.test(String(source || ''));
+}
+
+function activeDataProviderEntry() {
+  const entries = accountConfigEntries();
+  const setupKey = String(state.setup && state.setup.data_provider_account_key || '').trim();
+  if (setupKey) {
+    const exact = entries.find((item) => item.accountKey === setupKey && item.enabled);
+    if (exact) return exact;
+  }
+  const selected = selectedAccountInfo();
+  if (selected && selected.config && selected.config.data_provider && accountConfigEnabled(selected.config)) {
+    return {
+      accountKey: selected.accountKey,
+      accountId: selected.accountId,
+      accountType: selected.accountType,
+      bridgeId: selected.bridgeId,
+      displayName: String(selected.config.display_name || selected.config.account_name || '').trim(),
+      enabled: true,
+      config: selected.config,
+    };
+  }
+  return entries.find((item) => item.enabled && item.config && item.config.data_provider) || null;
+}
+
+function testRuntimeHostInfo() {
+  const lttx = state.lttxStatus || {};
+  const pageHost = String(window.location && window.location.hostname || '').trim();
+  const localHosts = new Set(['', '127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0']);
+  let host = String(lttx.host || '').trim();
+  if (!host || (pageHost && !localHosts.has(pageHost) && localHosts.has(host))) {
+    host = pageHost || host || '127.0.0.1';
+  }
+  const port = Number(lttx.port || 2049);
+  return {
+    host: host || '127.0.0.1',
+    port: Number.isFinite(port) && port > 0 ? port : 2049,
+  };
+}
+
+function defaultTestStockCodeForSource(item = {}) {
+  const name = String(item.name || '');
+  if (name.startsWith('5_') || name.startsWith('7_')) return '000001.SZ';
+  return '000001.SZ';
+}
+
+function accountEntryLabel(entry) {
+  if (!entry) return '';
+  const name = String(entry.displayName || (entry.config && (entry.config.display_name || entry.config.account_name)) || '').trim();
+  const id = String(entry.accountId || '').trim();
+  return name && id ? `${name}（${id}）` : (name || id || '');
+}
+
+function marketRouteText(config = {}) {
+  if (!isMarketRoutingEnabled(config)) return '';
+  const routes = normalizeMarketRoutes(config);
+  return ['SH', 'SZ'].map((market) => {
+    const route = routes[market] || {};
+    const queryAccount = route.position_account_key || route.position_account_id || route.query_account_id || '';
+    return `${market}:${route.bridge_id || '自动'}${queryAccount ? `/查询Key ${queryAccount}` : ''}`;
+  }).join('；');
+}
+
+function testRuntimeConfigForSource(item = {}) {
+  const kind = testSourceKind(item);
+  const selected = selectedAccountInfo();
+  const provider = activeDataProviderEntry();
+  const runtimeEntry = kind === 'quote' && provider ? provider : selected;
+  const runtimeConfig = runtimeEntry && runtimeEntry.config ? runtimeEntry.config : {};
+  const tradeConfig = selected && selected.config ? selected.config : {};
+  const hostInfo = testRuntimeHostInfo();
+  return {
+    kind,
+    transport: 'auto',
+    bridgeId: String(runtimeEntry && runtimeEntry.bridgeId || state.bridgeId || state.defaultBridgeId || 'default').trim() || 'default',
+    accountId: String(selected && selected.accountId || state.defaultAccountId || '').trim(),
+    accountType: normalizeAccountType(selected && selected.accountType || state.defaultAccountType || 'STOCK'),
+    accountKey: String(selected && selected.accountKey || '').trim(),
+    runtimeAccountId: String(runtimeEntry && runtimeEntry.accountId || '').trim(),
+    runtimeAccountType: normalizeAccountType(runtimeEntry && runtimeEntry.accountType || 'STOCK'),
+    runtimeAccountLabel: accountEntryLabel(runtimeEntry),
+    dataProviderAccountId: provider ? String(provider.accountId || '').trim() : '',
+    dataProviderAccountType: provider ? normalizeAccountType(provider.accountType || 'STOCK') : '',
+    dataProviderBridgeId: provider ? String(provider.bridgeId || '').trim() : '',
+    dataProviderLabel: accountEntryLabel(provider),
+    dataProviderEnabled: !!provider,
+    mode: normalizeTransportMode(runtimeConfig.mode || tradeConfig.mode || state.transportMode || 'ctypes'),
+    stockCode: defaultTestStockCodeForSource(item),
+    markets: 'SH,SZ',
+    host: hostInfo.host,
+    port: hostInfo.port,
+    tradeMarketRoutes: marketRouteText(tradeConfig),
+  };
+}
+
+function replacePythonConstant(source, name, literal) {
+  const pattern = new RegExp(`^(\\s*${escapeRegExp(name)}\\s*=\\s*)(?:["'][^"']*["']|-?\\d+(?:\\.\\d+)?|None|True|False)`, 'm');
+  return source.replace(pattern, `$1${literal}`);
+}
+
+function replacePythonArgDefault(source, option, literal) {
+  const lines = String(source || '').split(/\r?\n/);
+  const optionDouble = `"${option}"`;
+  const optionSingle = `'${option}'`;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.includes(optionDouble) && !line.includes(optionSingle)) continue;
+    for (let next = index; next < Math.min(lines.length, index + 18); next += 1) {
+      if (next > index && /^\s*parser\.add_argument\s*\(/.test(lines[next])) break;
+      if (/\bdefault\s*=/.test(lines[next])) {
+        lines[next] = lines[next].replace(
+          /(\bdefault\s*=\s*)(default_account_id\(\)|DEFAULT_[A-Z0-9_]+|None|True|False|["'][^"']*["']|-?\d+(?:\.\d+)?)/,
+          `$1${literal}`,
+        );
+        break;
+      }
+      if (/\)\s*$/.test(lines[next])) break;
+    }
+  }
+  return lines.join('\n');
+}
+
+function replacePythonRequiredArgWithDefault(source, option, literal) {
+  const lines = String(source || '').split(/\r?\n/);
+  const optionDouble = `"${option}"`;
+  const optionSingle = `'${option}'`;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (!line.includes(optionDouble) && !line.includes(optionSingle)) continue;
+    for (let next = index; next < Math.min(lines.length, index + 18); next += 1) {
+      if (next > index && /^\s*parser\.add_argument\s*\(/.test(lines[next])) break;
+      if (/\brequired\s*=\s*True/.test(lines[next])) {
+        lines[next] = lines[next].replace(/\brequired\s*=\s*True/, `default=${literal}`);
+        break;
+      }
+      if (/\bdefault\s*=/.test(lines[next]) || /\)\s*$/.test(lines[next])) break;
+    }
+  }
+  return lines.join('\n');
+}
+
+function splitPythonPreamble(source) {
+  const lines = String(source || '').split(/\r?\n/);
+  const preamble = [];
+  let index = 0;
+  if (lines[index] && lines[index].startsWith('#!')) {
+    preamble.push(lines[index]);
+    index += 1;
+  }
+  if (lines[index] && /coding[:=]\s*[-\w.]+/.test(lines[index])) {
+    preamble.push(lines[index]);
+    index += 1;
+  }
+  return {
+    preamble,
+    body: lines.slice(index).join('\n'),
+  };
+}
+
+function testHelperSource() {
+  const helper = (state.tests || []).find((item) => item && item.name === '_helpers.py');
+  return String(helper && helper.source || '');
+}
+
+function stripPythonPreamble(source) {
+  return splitPythonPreamble(source).body.replace(/^\s+/, '').replace(/\s+$/, '');
+}
+
+function removeHelperImport(source) {
+  return String(source || '')
+    .replace(/^\s*from\s+_helpers\s+import\s+\([\s\S]*?^\s*\)\s*\r?\n?/m, '')
+    .replace(/^\s*from\s+_helpers\s+import\s+.*\r?\n?/m, '');
+}
+
+function inlineHelperImportForStandalone(source) {
+  const text = String(source || '');
+  if (!/^\s*from\s+_helpers\s+import\b/m.test(text)) {
+    return { source: text, inlined: false };
+  }
+  const helper = testHelperSource();
+  if (!helper) return { source: text, inlined: false };
+  const { preamble, body } = splitPythonPreamble(text);
+  const helperBody = stripPythonPreamble(helper);
+  const originalBody = removeHelperImport(body).replace(/^\s+/, '');
+  return {
+    source: [
+      ...preamble,
+      '',
+      '# ===== 网页复制版：内联 _helpers.py，避免单文件运行时找不到辅助模块 =====',
+      helperBody,
+      '',
+      '# ===== 原测试脚本开始 =====',
+      originalBody,
+    ].join('\n'),
+    inlined: true,
+  };
+}
+
+function addConfiguredSourceHeader(source, runtime) {
+  const lines = String(source || '').split(/\r?\n/);
+  let insertAt = 0;
+  if (lines[insertAt] && lines[insertAt].startsWith('#!')) insertAt += 1;
+  if (lines[insertAt] && /coding[:=]\s*[-\w.]+/.test(lines[insertAt])) insertAt += 1;
+  const header = [
+    '# 页面显示源码已根据当前 Web 配置自动替换；cfquant/tests 原文件未修改。',
+    `# 当前测试类型: ${testSourceKindLabel(runtime.kind)}`,
+    `# 运行桥接: ${runtime.bridgeId}; transport=${runtime.transport}`,
+    `# 当前交易账号: ${runtime.accountId || '未选择'} / ${runtime.accountType}`,
+    `# 当前行情源: ${runtime.dataProviderLabel || '未单独配置，使用当前账号或默认路由'}${runtime.dataProviderBridgeId ? ` / ${runtime.dataProviderBridgeId}` : ''}`,
+    runtime.tradeMarketRoutes ? `# 同账号独立市场路由: ${runtime.tradeMarketRoutes}` : '',
+  ].filter(Boolean);
+  lines.splice(insertAt, 0, ...header, '');
+  return lines.join('\n');
+}
+
+function configurePythonTestSource(source, item, runtime) {
+  const inlineResult = inlineHelperImportForStandalone(source);
+  let text = inlineResult.source;
+  const bridgeLiteral = pythonStringLiteral(runtime.bridgeId || 'default');
+  const transportLiteral = pythonStringLiteral(runtime.transport || 'auto');
+  const name = String(item.name || '');
+  const shouldReplaceStockCode = !name.startsWith('1_') && (runtime.kind === 'quote' || name.startsWith('5_') || name.startsWith('7_'));
+  text = replacePythonArgDefault(text, '--transport', transportLiteral);
+  text = replacePythonArgDefault(text, '--bridge-id', bridgeLiteral);
+  text = replacePythonArgDefault(text, '--markets', pythonStringLiteral(runtime.markets));
+  if (shouldReplaceStockCode) {
+    text = replacePythonArgDefault(text, '--stock-code', pythonStringLiteral(runtime.stockCode));
+  }
+  if (testSourceHasOption(text, '--host') && runtime.host) {
+    text = replacePythonArgDefault(text, '--host', pythonStringLiteral(runtime.host));
+  }
+  if (testSourceHasOption(text, '--port') && runtime.port) {
+    text = replacePythonArgDefault(text, '--port', String(runtime.port));
+  }
+  if (runtime.accountId) {
+    const accountLiteral = pythonStringLiteral(runtime.accountId);
+    text = replacePythonArgDefault(text, '--account-id', accountLiteral);
+    text = replacePythonRequiredArgWithDefault(text, '--account-id', accountLiteral);
+    text = replacePythonConstant(text, 'ACCOUNT_ID', accountLiteral);
+    text = replacePythonConstant(text, 'DEFAULT_ACCOUNT_ID', accountLiteral);
+  }
+  if (runtime.accountType) {
+    const accountTypeLiteral = pythonStringLiteral(runtime.accountType);
+    text = replacePythonArgDefault(text, '--account-type', accountTypeLiteral);
+    text = replacePythonConstant(text, 'ACCOUNT_TYPE', accountTypeLiteral);
+  }
+  text = replacePythonConstant(text, 'BRIDGE_ID', bridgeLiteral);
+  text = replacePythonConstant(text, 'TRANSPORT', transportLiteral);
+  text = replacePythonConstant(text, 'DEFAULT_TRANSPORT', transportLiteral);
+  if (shouldReplaceStockCode) {
+    text = replacePythonConstant(text, 'STOCK_CODE', pythonStringLiteral(runtime.stockCode));
+    text = replacePythonConstant(text, 'DEFAULT_STOCK_CODE', pythonStringLiteral(runtime.stockCode));
+  }
+  if (name.startsWith('18_')) {
+    text = replacePythonRequiredArgWithDefault(text, '--output-dir', pythonStringLiteral('.\\private_docs\\高级模式复测'));
+    text = text.replace(/\bbridge_id\s*=\s*["']default["']/g, `bridge_id=${bridgeLiteral}`);
+  }
+  text = addConfiguredSourceHeader(text, runtime);
+  if (inlineResult.inlined) {
+    text = text.replace(
+      '# 页面显示源码已根据当前 Web 配置自动替换；cfquant/tests 原文件未修改。',
+      '# 页面显示源码已根据当前 Web 配置自动替换，并已内联 _helpers.py；cfquant/tests 原文件未修改。',
+    );
+  }
+  return text;
+}
+
+function configureMarkdownTestSource(source, runtime) {
+  let text = String(source || '');
+  if (runtime.accountId) {
+    text = text
+      .replace(/你的模拟账号/g, runtime.accountId)
+      .replace(/你的资金账号/g, runtime.accountId)
+      .replace(/你的信用资金账号/g, runtime.accountId);
+  }
+  text = text.replace(/--bridge-id\s+default/g, `--bridge-id ${runtime.bridgeId || 'default'}`);
+  text = text.replace(/--stock-code\s+000001\.SZ/g, `--stock-code ${runtime.stockCode || '000001.SZ'}`);
+  const header = [
+    '> 页面显示内容已根据当前 Web 配置补齐示例参数，源文件未修改。',
+    `> 当前交易账号：${runtime.accountId || '未选择'} / ${runtime.accountType}；运行桥接：${runtime.bridgeId || 'default'}；行情源：${runtime.dataProviderLabel || '未单独配置'}`,
+    '',
+  ].join('\n');
+  return `${header}${text}`;
+}
+
+function configuredTestSource(item, runtime) {
+  const source = String(item && item.source || '');
+  if (!source) return '';
+  const name = String(item.name || '');
+  if (name.endsWith('.py')) return configurePythonTestSource(source, item, runtime);
+  if (name.endsWith('.md')) return configureMarkdownTestSource(source, runtime);
+  return source;
+}
+
+function testCommandArgs(args) {
+  const output = [];
+  args.forEach((arg) => {
+    if (!arg) return;
+    if (Array.isArray(arg)) {
+      const [name, value] = arg;
+      if (!name || value === undefined || value === null || value === '') return;
+      output.push(name, commandValue(value));
+      return;
+    }
+    output.push(String(arg));
+  });
+  return output.join(' ');
+}
+
+function configuredTestCommand(item, runtime) {
+  if (!item || !item.command || item.dangerous) return '';
+  const source = String(item.source || '');
+  const name = String(item.name || '');
+  if (!name.endsWith('.py')) return item.command || '';
+  if (item.command.includes('-m pytest')) return item.command;
+  const args = [];
+  if (testSourceHasOption(source, '--transport') || /add_runtime_args\s*\(/.test(source)) {
+    args.push(['--transport', runtime.transport || 'auto']);
+    args.push(['--bridge-id', runtime.bridgeId || 'default']);
+    args.push(['--timeout', '15']);
+  }
+  if (testSourceHasOption(source, '--host') && runtime.host) args.push(['--host', runtime.host]);
+  if (testSourceHasOption(source, '--port') && runtime.port) args.push(['--port', String(runtime.port)]);
+  if (testSourceHasOption(source, '--account-id') && runtime.accountId) args.push(['--account-id', runtime.accountId]);
+  if (testSourceHasOption(source, '--account-type') && runtime.accountType) args.push(['--account-type', runtime.accountType]);
+  if (testSourceHasOption(source, '--markets')) args.push(['--markets', runtime.markets || 'SH,SZ']);
+  if (testSourceHasOption(source, '--stock-code') && runtime.kind === 'quote' && !name.startsWith('1_')) args.push(['--stock-code', runtime.stockCode || '000001.SZ']);
+  if (testSourceHasOption(source, '--period') && name.startsWith('21_')) args.push(['--period', 'tick']);
+  if (testSourceHasOption(source, '--seconds') && (name.startsWith('1_') || name.startsWith('21_'))) args.push(['--seconds', '10']);
+  if (testSourceHasOption(source, '--output-dir') && name.startsWith('18_')) args.push(['--output-dir', '.\\private_docs\\高级模式复测']);
+  if (testSourceHasOption(source, '--skip-order') && name.startsWith('18_')) args.push('--skip-order');
+  const suffix = testCommandArgs(args);
+  return `python -X utf8 "cfquant/tests/${name}"${suffix ? ` ${suffix}` : ''}`;
+}
+
+function selectedTestSourceViewModel(selected) {
+  if (!selected) return { source: '', command: '', runtime: testRuntimeConfigForSource({}) };
+  const runtime = testRuntimeConfigForSource(selected);
+  const source = configuredTestSource(selected, runtime);
+  const command = configuredTestCommand(selected, runtime);
+  return {
+    source,
+    command,
+    runtime,
+    helperInlined: source.includes('内联 _helpers.py'),
+    sourceAdjusted: source !== String(selected.source || ''),
+    commandAdjusted: command !== String(selected.command || ''),
+  };
+}
+
+function renderTestConfigSummary(model, selected) {
+  const runtime = model && model.runtime ? model.runtime : testRuntimeConfigForSource(selected || {});
+  const accountText = runtime.accountId
+    ? `${runtime.accountId} / ${accountTypeLabel(runtime.accountType)}`
+    : '未选择账号';
+  const providerText = runtime.dataProviderLabel
+    ? `${runtime.dataProviderLabel} / ${runtime.dataProviderBridgeId || 'default'}`
+    : '未单独配置，使用当前账号或 Web 默认路由';
+  const chips = [
+    `<span class="configured">显示源码已套用当前配置</span>`,
+    `<span>${esc(testSourceKindLabel(runtime.kind))}</span>`,
+    `<code>account_id=${esc(accountText)}</code>`,
+    `<code>bridge_id=${esc(runtime.bridgeId || 'default')}</code>`,
+    `<code>transport=${esc(runtime.transport || 'auto')}</code>`,
+    `<span>行情源：${esc(providerText)}</span>`,
+  ];
+  if (runtime.host && testSourceHasOption(selected && selected.source || '', '--host')) {
+    chips.push(`<code>LTtx=${esc(runtime.host)}:${esc(runtime.port)}</code>`);
+  }
+  if (runtime.tradeMarketRoutes) {
+    chips.push(`<span>独立市场：${esc(runtime.tradeMarketRoutes)}</span>`);
+  }
+  return chips.join('');
+}
+
 function formatTestSourceSize(value) {
   const size = Number(value || 0);
   if (!Number.isFinite(size) || size <= 0) return '--';
@@ -597,6 +1001,7 @@ function renderSelectedTestSource() {
   const selected = selectedTestSource();
   const title = $('testSourceTitle');
   const desc = $('testSourceDesc');
+  const configSummary = $('testConfigSummary');
   const meta = $('testSourceMeta');
   const code = $('testSourceCode');
   const copyCodeButton = $('copyTestSourceBtn');
@@ -604,12 +1009,14 @@ function renderSelectedTestSource() {
   if (!selected) {
     if (title) title.textContent = state.testSourceBusy ? '正在读取测试脚本' : '暂无测试脚本';
     if (desc) desc.textContent = state.testSourceBusy ? '请稍候。' : 'cfquant/tests 目录下未找到可展示的 .py 或 .md 文件。';
+    if (configSummary) configSummary.innerHTML = '';
     if (meta) meta.innerHTML = '';
     if (code) code.innerHTML = `<code>${state.testSourceBusy ? '正在读取测试脚本...' : '暂无内容'}</code>`;
     if (copyCodeButton) copyCodeButton.disabled = true;
     if (copyCommandButton) copyCommandButton.disabled = true;
     return;
   }
+  const model = selectedTestSourceViewModel(selected);
   if (title) title.textContent = selected.title || selected.name;
   if (desc) desc.textContent = selected.description || '';
   const parts = [
@@ -619,12 +1026,16 @@ function renderSelectedTestSource() {
     `<span>${esc(formatTestSourceSize(selected.size))}</span>`,
   ];
   if (selected.updated_at_text) parts.push(`<span>更新 ${esc(selected.updated_at_text)}</span>`);
-  if (selected.command) parts.push(`<code>${esc(selected.command)}</code>`);
+  if (model.sourceAdjusted) parts.push('<span class="configured">源码已按当前配置替换</span>');
+  if (model.helperInlined) parts.push('<span class="configured">已内联 _helpers.py</span>');
+  if (model.command) parts.push(`<code>${esc(model.command)}</code>`);
+  if (selected.command && !model.command && selected.dangerous) parts.push('<span class="danger">真实委托脚本不提供一键运行命令</span>');
   if (selected.warning) parts.push(`<span class="danger">${esc(selected.warning)}</span>`);
+  if (configSummary) configSummary.innerHTML = renderTestConfigSummary(model, selected);
   if (meta) meta.innerHTML = parts.join('');
-  if (code) code.innerHTML = `<code>${esc(selected.source || '')}</code>`;
-  if (copyCodeButton) copyCodeButton.disabled = !selected.source;
-  if (copyCommandButton) copyCommandButton.disabled = !selected.command;
+  if (code) code.innerHTML = `<code>${esc(model.source || '')}</code>`;
+  if (copyCodeButton) copyCodeButton.disabled = !model.source;
+  if (copyCommandButton) copyCommandButton.disabled = !model.command;
 }
 
 function renderTestsView() {
@@ -635,6 +1046,10 @@ function renderTestsView() {
       setTestSourceSummary(`测试脚本读取失败：${error.message}`);
     });
   }
+}
+
+function refreshTestsIfVisible() {
+  if (state.currentView === 'tests') renderSelectedTestSource();
 }
 
 async function loadTestSources(options = {}) {
@@ -681,9 +1096,11 @@ function selectTestSource(name) {
 async function copySelectedTestSource() {
   const selected = selectedTestSource();
   if (!selected || !selected.source) return;
+  const model = selectedTestSourceViewModel(selected);
+  if (!model.source) return;
   try {
-    await copyTextWithFallback(selected.source);
-    setTestSourceSummary(`${selected.title || selected.name} 代码已复制`);
+    await copyTextWithFallback(model.source);
+    setTestSourceSummary(`${selected.title || selected.name} 已复制套用配置后的代码`);
   } catch (error) {
     setTestSourceSummary(`复制失败：${error.message}`);
   }
@@ -691,10 +1108,12 @@ async function copySelectedTestSource() {
 
 async function copySelectedTestCommand() {
   const selected = selectedTestSource();
-  if (!selected || !selected.command) return;
+  if (!selected) return;
+  const model = selectedTestSourceViewModel(selected);
+  if (!model.command) return;
   try {
-    await copyTextWithFallback(selected.command);
-    setTestSourceSummary(`${selected.title || selected.name} 运行命令已复制`);
+    await copyTextWithFallback(model.command);
+    setTestSourceSummary(`${selected.title || selected.name} 已复制套用配置后的运行命令`);
   } catch (error) {
     setTestSourceSummary(`复制失败：${error.message}`);
   }
@@ -843,6 +1262,7 @@ const QUOTE_EVENT_PROCESS_LIMIT = 160;
 const LOG_ENTRY_LIMIT = 180;
 const LOG_REPEAT_WINDOW_MS = 5000;
 const STATUS_REFRESH_INTERVAL_MS = 30000;
+const ACCOUNT_CACHE_POLL_INTERVAL_MS = 15000;
 const ONBOARDING_BRIDGE_POLL_MS = 3000;
 const CALLBACK_POLL_INTERVAL_MS = 3000;
 const ORDER_SNAPSHOT_LIMIT = 500;
@@ -864,7 +1284,7 @@ const API_ENDPOINTS = [
     title: '订阅全推行情',
     method: 'POST',
     path: '/api/quotes/whole/subscribe',
-    desc: '通过当前模式订阅全推行情。同一时间只允许一个全推订阅，成功后可通过 WebSocket 实时接收行情事件；通用模式由 ctypes 单桥统一转发。',
+    desc: '按市场或证券代码列表订阅全推行情，支持 WebSocket 行情回调；通用模式由 ctypes 单桥转发，高级模式由普通 QMT 桥接转发。',
     defaults: { channel: 'normal', markets: 'SH,SZ', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['bridge_id', 'whole_quote_channel', 'markets', 'timeout'],
   },
@@ -1311,7 +1731,7 @@ const API_FIELD_META = {
   order_id: { label: '委托编号', type: 'text' },
   since: { label: '起始序号', type: 'number', placeholder: '0' },
   limit: { label: '条数', type: 'number', placeholder: '50' },
-  markets: { label: '市场', type: 'text', placeholder: 'SH,SZ' },
+  markets: { label: '市场 / 证券代码', type: 'text', placeholder: 'SH,SZ,BJ,000001.SZ' },
   quote_subscribe_id: { label: '订阅 ID', type: 'text', placeholder: '订阅成功后返回的 subscribe_id', param: 'subscribe_id' },
   code_list: { label: '证券列表', type: 'text', placeholder: '000001.SZ,600000.SH' },
   stock_list: { label: '证券列表', type: 'text', placeholder: '000001.SZ,600000.SH' },
@@ -1357,7 +1777,7 @@ const API_PARAM_DOCS = {
   confirm_text: '确认文本；普通下单格式为 BUY/SELL code volume @ price，信用和派生品下单格式为 ACTION code volume @ price，撤单格式为 CANCEL order_id。',
   orders_json: '批量委托数组，每项包含 stock_code、price、volume；信用账户可选 credit_action，期货和期权账户可选 order_action。',
   order_id: '委托编号。',
-  markets: '全推行情市场列表，支持 SH、SZ，多个市场用英文逗号分隔。',
+  markets: '市场或证券代码列表，无预设白名单，多个值用英文逗号分隔。',
   subscribe_id: '行情订阅 ID，由订阅接口返回；为空时读取或接收全部行情事件。',
   code_list: '证券代码列表，多个代码用英文逗号分隔。',
   stock_list: '证券代码列表，多个代码用英文逗号分隔。',
@@ -1912,6 +2332,15 @@ function syncAdvancedQmtDirField(inputId, mode) {
 function qmtDirsAreSame(first, second) {
   const normalize = (value) => String(value || '').trim().replace(/[\\/]+$/, '').toLowerCase();
   return normalize(first) && normalize(first) === normalize(second);
+}
+
+function editableInstallSummaryText(payload) {
+  const install = payload && payload.editable_install ? payload.editable_install : {};
+  if (!install.attempted) return '';
+  if (!install.ok) return install.message || 'cfquant 源码可编辑安装失败';
+  const version = install.installed_version ? `安装后版本 ${install.installed_version}` : '安装后版本已刷新';
+  const details = install.python_executable ? `Python：${install.python_executable}，${version}` : version;
+  return `cfquant 源码可编辑安装已执行（${details}）`;
 }
 
 function qmtCoreDeploySummaryText(deploy) {
@@ -3494,7 +3923,7 @@ function xttraderCompatDocHtml() {
     ['交易日历/交易时段', 'get_trading_calendar、get_trading_period、get_kline_trading_period、get_all_trading_periods、get_period_list 已补同名条件入口；当前 QMT 暴露对应 callable 时可直接转发。'],
     ['板块维护', 'create_sector、add_sector、remove_sector、reset_sector、remove_stock_from_sector 已补同名条件入口；实际可用性取决于 QMT 策略环境权限和 callable。'],
     ['公式系统', 'create_formula、call_formula、subscribe_formula、unsubscribe_formula、get_formula_result 已补同名条件入口；订阅类 callback 会通过 cfquant 事件通道转发。'],
-    ['L2 行情', 'get_l2_quote、get_l2_order、get_l2_transaction、subscribe_l2thousand、get_l2thousand_queue 已补同名条件入口；需要券商 QMT 环境本身支持 L2 callable。'],
+    ['L2 行情', '已接入六类 Level2 周期查询、原生订阅回调与退订，get_l2_quote/get_l2_order/get_l2_transaction 使用大 QMT 扩展行情查询；仍需对应数据权限。千档入口单独依赖原生 callable，不能以一档队列替代。'],
     ['下载类补充', 'download_sector_data、download_index_weight、download_history_contracts、download_holiday_data、download_etf_info、download_cb_data、download_his_st_data、download_metatable_data、download_tabular_data 已补同名条件入口。'],
     ['外部/表格数据', 'get_tabular_data、push_custom_data 已补同名条件入口；read_feather、write_feather 属于本地文件工具，暂不放入 QMT 桥接主链路。'],
   ];
@@ -3858,6 +4287,7 @@ function renderTransport(info) {
   const lttxLabel = $('lttxStatusLabel');
   if (lttxLabel) lttxLabel.textContent = 'LTtx（库通信）';
   syncTransportChannelControls();
+  refreshTestsIfVisible();
 }
 
 function syncTopStatusDisplay() {
@@ -4450,6 +4880,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'upload', label: '上传项目源码 zip', percent: 42 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
       { key: 'install', label: '替换 Web 项目文件', percent: 82 },
+      { key: 'editable-install', label: '刷新源码可编辑安装', percent: 88 },
       { key: 'restart', label: '重启 Web 服务', percent: 94 },
       { key: 'done', label: '更新完成', percent: 100 },
     ];
@@ -4459,6 +4890,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'prepare', label: '确认 Web 回滚目标', percent: 12 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 36 },
       { key: 'restore', label: '恢复选中备份', percent: 76 },
+      { key: 'editable-install', label: '刷新源码可编辑安装', percent: 88 },
       { key: 'restart', label: '重启 Web 服务', percent: 94 },
       { key: 'done', label: '回滚完成', percent: 100 },
     ];
@@ -4469,6 +4901,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'download', label: '连接官网并下载发布包', percent: 38 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
       { key: 'install', label: '替换 Web 项目文件', percent: 82 },
+      { key: 'editable-install', label: '刷新源码可编辑安装', percent: 88 },
       { key: 'restart', label: '重启 Web 服务', percent: 94 },
       { key: 'done', label: '更新完成', percent: 100 },
     ];
@@ -4642,6 +5075,7 @@ function buildUpdateNoticeLines(payload, options = {}) {
   if (!payload) return [];
   const deploy = payload.qmt_core_deploy || {};
   const deploySummary = deploy.summary || {};
+  const editableInstall = payload.editable_install || {};
   const restart = payload.qmt_restart_required || {};
   const entry = payload.entry_manual_update || restart.entry_manual_update || {};
   const restartRequired = !!restart.required || !!options.forceQmtRestart;
@@ -4657,6 +5091,12 @@ function buildUpdateNoticeLines(payload, options = {}) {
     lines.push({
       strong: '核心同步完成',
       text: `最新 cfquant 核心已同步到 ${deploySummary.target_count} 个已绑定 QMT 目录。`,
+    });
+  }
+  if (editableInstall.attempted) {
+    lines.push({
+      strong: editableInstall.ok ? '源码包安装已刷新' : '源码包安装异常',
+      text: editableInstallSummaryText(payload),
     });
   }
   if (restartRequired) {
@@ -4719,6 +5159,7 @@ function buildUpdateNoticeModel(payload, options = {}) {
     entryRequired,
     entryFiles,
     modeFiles,
+    editableInstall,
   };
 }
 
@@ -4727,6 +5168,9 @@ function renderUpdateNoticeCard(model, options = {}) {
   const meta = [
     model.version ? `版本 ${model.version}` : '',
     model.bridgeId ? `桥接 ${model.bridgeId}` : '',
+    model.editableInstall && model.editableInstall.attempted
+      ? (model.editableInstall.ok ? `源码安装 ${model.editableInstall.installed_version || '已刷新'}` : '源码安装失败')
+      : '',
   ].filter(Boolean);
   const entryText = model.entryFiles.length ? `入口：${model.entryFiles.join('、')}` : '';
   const compactClass = options.compact ? ' compact' : '';
@@ -5054,8 +5498,10 @@ function projectReloadProgressText(data, actionText) {
   const deploy = data && data.qmt_core_deploy ? data.qmt_core_deploy : {};
   const summary = deploy.summary || {};
   const deployText = summary.message ? ` ${summary.message}。` : '';
-  if (reloadInfo) return `${actionText}${version}。${deployText} 服务即将重启，页面会自动跳转；请随后完全退出并重启 QMT。`;
-  return `${actionText}${version}。${deployText} 请完全退出并重启 QMT 加载新版本。`;
+  const editableText = editableInstallSummaryText(data);
+  const installText = editableText ? ` ${editableText}。` : '';
+  if (reloadInfo) return `${actionText}${version}。${installText}${deployText} 服务即将重启，页面会自动跳转；请随后完全退出并重启 QMT。`;
+  return `${actionText}${version}。${installText}${deployText} 请完全退出并重启 QMT 加载新版本。`;
 }
 
 function uploadProjectUpdateZip(formData, onProgress) {
@@ -5618,9 +6064,9 @@ function currentApiRequest() {
   delete params.credit_order_action;
   if (endpoint.id === 'quote_subscribe_whole') {
     params.channel = 'normal';
-    params.markets = String(params.markets || 'SH,SZ')
-      .split(',')
-      .map((item) => item.trim().toUpperCase())
+    params.markets = String(params.markets ?? 'SH,SZ')
+      .split(/[,，]/)
+      .map((item) => item.trim())
       .filter(Boolean);
   }
   if (endpoint.id === 'data_export') {
@@ -6210,6 +6656,7 @@ function setView(view) {
     stopQuoteLive();
   }
   state.currentView = view;
+  if (state.appStarted) refreshVisibleAccountCache();
   localStorage.setItem('cfquant.view', view);
   document.body.dataset.view = view;
   const titleMap = {
@@ -7046,6 +7493,7 @@ async function setBindingEnabled(accountId, bridgeId, accountType = 'STOCK', acc
     syncBindingForm();
     renderCachedBindingStatuses();
     saveAccountConfigCache(data);
+    refreshTestsIfVisible();
     try {
       await refreshBindingStatuses();
     } catch (error) {
@@ -7087,6 +7535,7 @@ async function updateBindingCfquant(accountId, bridgeId, accountType = 'STOCK', 
     renderAccountPairs();
     renderCachedBindingStatuses();
     saveAccountConfigCache(data);
+    refreshTestsIfVisible();
     const deployIssue = qmtCoreDeployHasIssues(data.qmt_core_deploy);
     const identityIssue = !!(data.qmt_bridge_identity && data.qmt_bridge_identity.error);
     const message = qmtCoreDeploySummaryText(data.qmt_core_deploy) || 'cfquant 核心更新请求已完成。';
@@ -7444,6 +7893,7 @@ async function saveCurrentAccountPair() {
     renderAccountPairs();
     renderCachedBindingStatuses();
     saveAccountConfigCache(data);
+    refreshTestsIfVisible();
     let refreshError = null;
     try {
       await refreshBindingStatuses();
@@ -7523,6 +7973,7 @@ async function removeBindingAccount(accountId, accountType = 'STOCK', accountKey
   renderCachedBindingStatuses();
   saveAccountConfigCache(data);
   await refreshBindingStatuses();
+  refreshTestsIfVisible();
   log('账号配置已删除', { account_id: accountId, account_type: accountType });
 }
 
@@ -7547,6 +7998,7 @@ function applyAccountPair(accountKeyOrId) {
     state.accountType = normalizeAccountType(entry.accountType || 'STOCK');
   }
   selectedBridge();
+  refreshTestsIfVisible();
   return !!entry || !!loadAccountPairs()[value];
 }
 
@@ -7667,6 +8119,7 @@ function selectAccountPair(accountId, bridgeId, accountType = 'STOCK', accountKe
   }
   syncBindingForm();
   resetSelectionState();
+  refreshTestsIfVisible();
   restartOrderCallbackSocket();
   refreshStatus().catch((error) => log('账号配置状态刷新失败', { error: error.message }));
   refreshAccount('asset,positions').catch((error) => log('账号配置资产刷新失败', { error: error.message }));
@@ -7943,6 +8396,7 @@ async function refreshConfig() {
   renderApiDocs(state.apiEndpointId);
   renderCachedBindingStatuses();
   saveAccountConfigCache(data);
+  refreshTestsIfVisible();
   await refreshBindingStatuses();
   await refreshUpdateStatus({ log: false }).catch((error) => log('更新状态刷新失败', { error: error.message }));
 }
@@ -8389,7 +8843,10 @@ function renderLttxStatus(data) {
   }
 
   const runtime = $('lttxRuntime');
-  if (!runtime) return;
+  if (!runtime) {
+    refreshTestsIfVisible();
+    return;
+  }
   if (running && managed) {
     runtime.textContent = `LTtx 运行中，cfquant Python 库可通过 ${addressText} 发现 Web 统一路由。Web 重启和定时重启会保留 LTtx。`;
   } else if (running) {
@@ -8399,6 +8856,7 @@ function renderLttxStatus(data) {
   } else {
     runtime.textContent = `LTtx 未运行，cfquant Python 库自动发现不可用；可通过网页或 cfquant\\start_cfquant.bat 启动。`;
   }
+  refreshTestsIfVisible();
 }
 
 async function refreshLttxStatus(options = {}) {
@@ -8541,6 +8999,7 @@ async function loadConfig() {
   }
   syncOnboardingWizard();
   if (!data.auth_required) saveAccountConfigCache(data);
+  refreshTestsIfVisible();
   log('Web TX', { reply_channel: data.reply_channel || '', auth_required: !!data.auth_required });
   return data;
 }
@@ -8806,6 +9265,7 @@ function handleAccountChange() {
   syncTopStatusDisplay();
   syncTransportChannelControls();
   syncCreditOrderControls();
+  refreshTestsIfVisible();
   refreshCurrentSelection('账号');
 }
 
@@ -9615,7 +10075,12 @@ function runOrderCallbackRefresh() {
   state.orderCallbackRefreshSections.clear();
   if (!sections.length) return;
   state.orderCallbackRefreshInFlight = true;
-  refreshAccount(sections.join(','), { force: true, subscribe: false })
+  const snapshots = sections.filter((section) => section === 'asset' || section === 'positions');
+  const live = sections.filter((section) => section !== 'asset' && section !== 'positions');
+  Promise.all([
+    snapshots.length && accountSnapshotVisible() ? refreshVisibleAccountCache() : Promise.resolve(),
+    live.length ? refreshAccount(live.join(','), { force: true, subscribe: false }) : Promise.resolve(),
+  ])
     .catch((error) => log('回调刷新交易数据失败', { sections, error: error.message }))
     .finally(() => {
       state.orderCallbackRefreshInFlight = false;
@@ -9645,6 +10110,8 @@ function handleOrderCallbackEvent(event, options = {}) {
   const name = callbackEventName(event);
   if (name.includes('stock_trade')) {
     scheduleOrderCallbackRefresh('asset,positions,orders,trades');
+  } else if (name.includes('stock_asset') || name.includes('stock_position')) {
+    refreshVisibleAccountCache();
   } else if (!merged && callbackEventIsTradeRelated(event)) {
     scheduleOrderCallbackRefresh('orders');
   }
@@ -9912,6 +10379,7 @@ async function refreshAccount(sections = 'asset,positions', options = {}) {
   if (options.force) params.set('force', '1');
   if (options.subscribe === false) params.set('subscribe', '0');
   const data = await api(`/api/account?${params.toString()}`);
+  if (selectedAccount() !== accountId || selectedAccountType() !== accountType || selectedAccountKey() !== accountKey) return;
   if (data.asset) {
     if (data.asset.ok) renderAsset(data.asset);
     else log('资产查询失败', data.asset);
@@ -11544,6 +12012,22 @@ function visiblePage() {
   return !document.hidden;
 }
 
+function accountSnapshotVisible() {
+  return visiblePage() && ['overview', 'trade'].includes(state.currentView);
+}
+
+async function refreshVisibleAccountCache() {
+  if (!state.appStarted || !accountSnapshotVisible() || state.accountCacheRefreshInFlight) return;
+  state.accountCacheRefreshInFlight = true;
+  try {
+    await refreshAccount('asset,positions');
+  } catch (error) {
+    log('账户缓存读取失败', { error: error.message });
+  } finally {
+    state.accountCacheRefreshInFlight = false;
+  }
+}
+
 function shouldPollRouteStatus() {
   return visiblePage();
 }
@@ -11558,6 +12042,8 @@ function shouldPollBindingStatuses() {
 
 function startTimers() {
   if (state.statusTimer) return;
+  setInterval(refreshVisibleAccountCache, ACCOUNT_CACHE_POLL_INTERVAL_MS);
+  document.addEventListener('visibilitychange', refreshVisibleAccountCache);
   setInterval(() => {
     $('clock').textContent = nowText();
   }, 1000);

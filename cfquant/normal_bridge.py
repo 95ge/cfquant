@@ -6,6 +6,7 @@ import threading
 import time
 
 from . import order_meta
+from .level2 import L2_THOUSAND_SUBSCRIPTIONS, quote_callback_data, quote_plain, require_l2_callable, thousand_price
 from .protocol import loads_message, pack_event, pack_response
 from .tx_trade_bridge import TxTradeBridge
 
@@ -118,7 +119,6 @@ class NormalQmtBridge(TxTradeBridge):
         self._enable_auto_trade_callback()
         if self.order_meta_enabled and self.account_id:
             self._ensure_order_meta_account_subscription(self.account_id, self.account_type)
-        self._subscribe_internal_whole_quote()
         if self.dispatch_on_qmt_thread:
             self._log("normal bridge QMT-thread dispatch enabled")
         else:
@@ -136,6 +136,7 @@ class NormalQmtBridge(TxTradeBridge):
     def close(self):
         self.running = False
         self.worker_event.set()
+        self._close_quote_subscriptions()
         with self.order_meta_subscription_lock:
             meta_txs = list(self.order_meta_txs.values())
             self.order_meta_txs.clear()
@@ -176,15 +177,6 @@ class NormalQmtBridge(TxTradeBridge):
             return
         if action == "cfquant.status":
             self._send_response(msg, self._status())
-            return
-        if action == "xtdata.subscribe_whole_quote":
-            self._handle_whole_quote_publish_subscribe(msg)
-            return
-        if action == "xtdata.subscribe_quote":
-            self._handle_quote_subscribe(msg, kind="quote")
-            return
-        if action == "xtdata.unsubscribe_quote":
-            self._handle_quote_unsubscribe(msg)
             return
         if self._try_enqueue_coalesced_request(msg):
             return
@@ -420,56 +412,140 @@ class NormalQmtBridge(TxTradeBridge):
         self.worker_thread.start()
         self._log("normal bridge worker thread started in init context")
 
+    def _dispatch(self, action, params, msg):
+        if action in ("xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"):
+            return self._subscribe_native_quote(dict(msg, params=params), "thousand", action.split(".", 1)[1])
+        if action in ("xtdata.subscribe_whole_quote", "xtdata.subscribe_quote", "xtdata.unsubscribe_quote"):
+            msg = dict(msg, params=params)
+        if action == "xtdata.subscribe_whole_quote":
+            return self._handle_whole_quote_publish_subscribe(msg)
+        if action == "xtdata.subscribe_quote":
+            return self._handle_quote_subscribe(msg, kind="quote")
+        if action == "xtdata.unsubscribe_quote":
+            return self._handle_quote_unsubscribe(msg)
+        return super(NormalQmtBridge, self)._dispatch(action, params, msg)
+
     def _handle_quote_subscribe(self, msg, kind):
+        params = msg.get("params") or {}
+        if params.get("start_time") or params.get("end_time") or params.get("count", 0) != 0:
+            self._get_market_data_ex(dict(params, stock_list=[params.get("stock_code", "")]))
+        return self._subscribe_native_quote(msg, kind, "subscribe_quote")
+
+    def _handle_whole_quote_publish_subscribe(self, msg):
+        return self._subscribe_native_quote(msg, "whole_quote", "subscribe_whole_quote")
+
+    def _subscribe_native_quote(self, msg, kind, method):
         self.subscription_seq += 1
         sub_id = self.subscription_seq
         params = msg.get("params") or {}
-        self.quote_subscriptions[sub_id] = {
+        sub = {
             "kind": kind,
-            "client_id": msg.get("client_id"),
-            "stock_code": params.get("stock_code", ""),
+            "client_id": msg.get("client_id") or msg.get("reply_channel"),
             "code_list": params.get("code_list", params.get("stock_list", [])),
+            "stock_code": params.get("stock_code", ""),
+            "period": params.get("period", "1d"),
+            "callback_event": params.get("callback_event") or "quote:%s" % sub_id,
+            "publish_existing": False,
         }
-        self._send_response(msg, {"subscribe_id": sub_id})
-        self._log("normal bridge quote subscribed id=%s kind=%s" % (sub_id, kind))
+        pending = []
+        callback_lock = threading.RLock()
+        initializing = [True]
 
-    def _handle_whole_quote_publish_subscribe(self, msg):
-        if self.whole_quote_publish_sub_id is None:
-            self.subscription_seq += 1
-            self.whole_quote_publish_sub_id = self.subscription_seq
-        sub_id = self.whole_quote_publish_sub_id
-        params = msg.get("params") or {}
-        self.quote_subscriptions[sub_id] = {
-            "kind": "whole_quote",
-            "client_id": msg.get("client_id"),
-            "code_list": params.get("code_list", params.get("stock_list", ["SH", "SZ"])),
-            "internal_subscribe_id": self.whole_quote_sub_id,
-            "publish_existing": True,
-        }
-        self.whole_quote_publish_enabled = True
-        self._send_response(msg, {
+        def callback(data):
+            with callback_lock:
+                self._release_worker("quote")
+                if self.quote_subscriptions.get(sub_id) is not sub or self.tx is None:
+                    return
+                payload = quote_plain(data) if kind == "whole_quote" else quote_callback_data(data)
+                if initializing[0]:
+                    pending.append(payload)
+                    return
+                client_id = sub.get("client_id")
+                if client_id:
+                    event = pack_event(sub["callback_event"], data=payload, client_id=client_id, subscription_id=sub_id)
+                    self.tx.push("event", event, client_id)
+
+        func = self._get_callable(method)
+        if method in L2_THOUSAND_SUBSCRIPTIONS:
+            func = require_l2_callable(func, method)
+        if not callable(func):
+            raise NotImplementedError("QMT %s not found" % method)
+        self.quote_subscriptions[sub_id] = sub
+        try:
+            if kind == "whole_quote":
+                internal_id = self._call_variants(func, [
+                    ((sub["code_list"],), {"callback": callback}),
+                    ((sub["code_list"], callback), {}),
+                ])
+            elif kind == "quote":
+                internal_id = func(sub["stock_code"], sub["period"], params.get("dividend_type") or "none", "dict", callback)
+            elif method == "subscribe_l2thousand":
+                internal_id = func(sub["stock_code"], gear_num=params.get("gear_num"), callback=callback)
+            else:
+                if params.get("gear_num") is not None and params.get("price") is not None:
+                    raise ValueError("gear_num and price cannot both be specified")
+                internal_id = func(sub["stock_code"], callback=callback, gear_num=params.get("gear_num"), price=thousand_price(params))
+            if internal_id is None or isinstance(internal_id, bool) or int(internal_id) <= 0:
+                raise RuntimeError("QMT %s failed: %r" % (method, internal_id))
+            sub["internal_subscribe_id"] = internal_id
+        except Exception:
+            self.quote_subscriptions.pop(sub_id, None)
+            raise
+        if kind == "whole_quote":
+            self.whole_quote_publish_sub_id = sub_id
+            self.whole_quote_publish_enabled = True
+        with callback_lock:
+            initializing[0] = False
+            try:
+                for payload in pending:
+                    callback(payload)
+            except Exception:
+                self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
+                raise
+            finally:
+                pending[:] = []
+        self._log("normal bridge quote subscribed id=%s kind=%s internal_id=%s" % (sub_id, kind, internal_id))
+        return {
             "subscribe_id": sub_id,
-            "internal_subscribe_id": self.whole_quote_sub_id,
-            "publish_existing": True,
-        })
-        self._log(
-            "normal bridge whole quote publish enabled id=%s internal_id=%s"
-            % (sub_id, self.whole_quote_sub_id)
-        )
+            "internal_subscribe_id": internal_id,
+            "callback_event": sub["callback_event"],
+            "publish_existing": False,
+        }
 
     def _handle_quote_unsubscribe(self, msg):
         params = msg.get("params") or {}
         sub_id = params.get("subscribe_id")
-        removed = self.quote_subscriptions.pop(sub_id, None)
-        if removed is None:
-            try:
-                removed = self.quote_subscriptions.pop(int(sub_id), None)
-            except Exception:
-                removed = None
-        if str(sub_id) == str(self.whole_quote_publish_sub_id):
-            self.whole_quote_publish_enabled = False
-        self._send_response(msg, True)
+        try:
+            sub_id = int(sub_id)
+        except (TypeError, ValueError):
+            pass
+        sub = self.quote_subscriptions.get(sub_id)
+        if sub and "internal_subscribe_id" in sub:
+            result = self._get_callable("unsubscribe_quote")(sub["internal_subscribe_id"])
+            if result is False or (isinstance(result, (int, float)) and result < 0):
+                raise RuntimeError("QMT unsubscribe_quote failed: %r" % (result,))
+        self.quote_subscriptions.pop(sub_id, None)
+        whole_ids = [key for key, row in self.quote_subscriptions.items() if row.get("kind") == "whole_quote"]
+        self.whole_quote_publish_enabled = bool(whole_ids)
+        self.whole_quote_publish_sub_id = whole_ids[-1] if whole_ids else None
         self._log("normal bridge quote unsubscribed id=%s" % sub_id)
+        return True
+
+    def _close_quote_subscriptions(self):
+        with self.dispatch_lock:
+            internal_ids = [sub["internal_subscribe_id"] for sub in self.quote_subscriptions.values()
+                            if "internal_subscribe_id" in sub]
+            if self.whole_quote_sub_id is not None:
+                internal_ids.append(self.whole_quote_sub_id)
+            self.quote_subscriptions.clear()
+            self.whole_quote_publish_enabled = False
+            self.whole_quote_publish_sub_id = None
+            self.whole_quote_sub_id = None
+            for internal_id in internal_ids:
+                try:
+                    self._get_callable("unsubscribe_quote")(internal_id)
+                except Exception as e:
+                    self._log("normal bridge quote cleanup failed id=%s error=%s" % (internal_id, e))
 
     def _try_enqueue_coalesced_request(self, msg):
         coalesce_key = self._coalesce_key(msg)
@@ -625,29 +701,6 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _on_whole_quote(self, data):
         self._release_worker("whole_quote")
-        if not self.quote_subscriptions:
-            return
-        for sub_id, sub in list(self.quote_subscriptions.items()):
-            if sub.get("kind") == "whole_quote" and not self.whole_quote_publish_enabled:
-                continue
-            client_id = sub.get("client_id")
-            if not client_id:
-                continue
-            event_data = data
-            if sub.get("kind") == "quote":
-                stock_code = sub.get("stock_code")
-                if stock_code and isinstance(data, dict):
-                    value = data.get(stock_code)
-                    if value is None:
-                        continue
-                    event_data = {stock_code: value}
-            event = pack_event(
-                "quote:%s" % sub_id,
-                data=event_data,
-                client_id=client_id,
-                subscription_id=sub_id,
-            )
-            self.tx.push("event", event, client_id)
 
     def _on_timer(self, *args, **kwargs):
         self.on_timer(*args, **kwargs)

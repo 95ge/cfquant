@@ -66,7 +66,9 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 异步下单响应 | `order_stock_async` | `passorder` + 本地事件转发 | 已实现为桥接事件。 |
 | 异步撤单响应 | `cancel_order_stock_async` | `cancel` + 本地事件转发 | 已实现为桥接事件。 |
 | 交易回调转发 | WebSocket `/ws/callbacks` | QMT 策略回调函数 | 已实现资金、持仓、委托、成交、错误等回调转发。 |
-| 信用专项查询 | `query_credit_detail` / `query_credit_subjects` / `query_credit_slo_code` / `query_credit_assure` / `query_stk_compacts` / `POST /api/credit/query` | QMT 信用账户 callable 候选 | 已实现；实际可用性取决于当前券商 QMT 是否暴露对应 callable。 |
+| 信用资金明细 | `query_credit_detail` / `query_credit_detail_async` / `POST /api/credit/query` (`action=detail`) | `get_trade_detail_data(account_id, "credit", "account")` | SDK 返回 `XtCreditDetail`，Web 返回 JSON；校验账号和信用类型，映射负债、市值别名，标记缺失字段；缓存已用额度单独保存在 `cfquant_qmt_fields`，不当作官网冻结额度。不主动发起柜台异步查询。 |
+| 信用负债合约 | `query_stk_compacts` / `query_stk_compacts_async` | `get_unclosed_compacts(account_id, "CREDIT")`，缺失时使用旧 `get_debt_contract(account_id)` | SDK 返回 `StkCompacts`；保留合约编号和缺失字段，不混入已了结合约，不猜算旧终端缺失的息费。 |
+| 其他信用专项查询 | `query_credit_subjects` / `query_credit_slo_code` / `query_credit_assure` | `get_assure_contract` / `get_enable_short_contract` | 返回对应专用对象，统一账号校验和缺失字段标记；实际范围、券源枚举仍需券商终端核对。 |
 | 信用能力探测 | `POST /api/credit/probe` | 只读调用资产、持仓、委托、成交和信用专项查询 | 已实现；用于部署后确认当前信用账户能力，不触发交易委托。 |
 
 ### 行情与基础数据
@@ -100,7 +102,8 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 交易日历/交易时段补充 | `get_trading_calendar` / `get_trading_period` / `get_kline_trading_period` / `get_all_trading_periods` / `get_period_list` | 同名 QMT callable | 条件可实现；`get_trading_calendar` 还依赖本地节假日数据是否已通过 QMT 界面或原生 xtquant 下载。 |
 | 板块维护 | `create_sector` / `add_sector` / `remove_sector` / `reset_sector` / `remove_stock_from_sector` | 同名 QMT callable | 条件可实现；实际取决于 QMT 策略环境权限和 callable。 |
 | 公式系统 | `create_formula` / `call_formula` / `subscribe_formula` / `unsubscribe_formula` / `get_formula_result` | 同名 QMT callable | 条件可实现；订阅 callback 通过 cfquant 事件通道转发。 |
-| L2 行情 | `get_l2_quote` / `get_l2_order` / `get_l2_transaction` / `subscribe_l2thousand` / `get_l2thousand_queue` | 同名 QMT callable | 条件可实现；需要券商 QMT 本身支持 L2。 |
+| L2 行情 | `get_l2_quote` / `get_l2_order` / `get_l2_transaction`；`get_market_data_ex`、`subscribe_quote` 的六类 L2 周期 | `ContextInfo.get_market_data_ex` / `subscribe_quote` / `unsubscribe_quote` | 已实现周期查询、原生订阅及回调、真实退订；保留大整数与深度数组，仍需券商行情权限。见 [Level2 行情适配说明](Level2行情适配说明.md)。 |
+| 千档盘口与队列 | `subscribe_l2thousand` / `subscribe_l2thousand_queue` / `get_l2thousand_queue` | 终端实际暴露的原生 callable | 条件待验证；已提供参数、回调与退订链路，但大 QMT 内置文档无已确认的等价来源。缺失时报错，不用一档队列替代。 |
 | 其他下载类补充 | `download_sector_data` / `download_index_weight` / `download_history_contracts` / `download_etf_info` / `download_cb_data` / `download_his_st_data` / `download_metatable_data` / `download_tabular_data` | 同名或 `down_*` QMT callable | 条件可实现；返回结构以 QMT callable 为准。 |
 
 ## 条件实现与兼容入口
@@ -109,7 +112,7 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | --- | --- | --- |
 | `xttrader` 扩展查询 | `query_account_info`、`query_account_infos`、`query_account_status`、`query_secu_account`、`query_data`、`export_data` 等已通过候选 callable 转发。 | 用真实券商 QMT 逐项确认 callable 名称、参数和返回结构；稳定后再提升为明确签名。 |
 | 银证/资金/证券划转 | `query_bank_info`、`query_bank_amount`、`query_bank_transfer_stream`、`bank_transfer_in`、`bank_transfer_out`、`fund_transfer`、`secu_transfer`、CTP 相关划转入口已有转发。 | 只在客户 QMT 明确暴露对应 callable 且已完成小额验证后开放给页面操作。 |
-| SMT 兼容入口 | `smt_query_compact`、`smt_query_order`、`smt_query_quoter`、`smt_appointment_order`、`smt_appointment_cancel`、`smt_negotiate_order`、`smt_compact_return`、`smt_compact_renewal` 已有转发入口。 | 需要 SMT 实盘环境逐项验证，不应只按函数名推断完全可用。 |
+| SMT 兼容入口 | 查询要求字典列表；申请、撤销、归还和展期仅在扩展函数返回明确业务结果时派发 `XtSmtAppointmentResponse`，关联本地 seq，不自动重复提交。 | 内置 API 尚无可确认的对应调用及异步协议；缺失函数明确报未支持，仅有受理编号报结果未知。不能视为原生 SMT 完整适配。 |
 | `xtdata` 泛化条件入口 | `cfquant.xtdata` 已导出公式、L2、表格、板块维护、若干下载类条件方法，桥接端用 `*args/**kwargs` 透传到 QMT callable。 | 高频接口应在真实 QMT 验证后补明确签名、错误提示和 Web 表单。 |
 
 ## 部分实现或待补强

@@ -695,6 +695,63 @@ class XtPositionStatistics(_QmtQueryObject):
     }
 
 
+class XtCreditDetail(_QmtQueryObject):
+    _field_aliases = {
+        "m_nStatus": (),
+        "m_nUpdateTime": (),
+        "m_nCalcConfig": (),
+        "m_dFrozenCash": (),
+        "m_dBalance": (),
+        "m_dAvailable": (),
+        "m_dPositionProfit": (),
+        "m_dMarketValue": ("m_dInstrumentValue",),
+        "m_dFetchBalance": (),
+        "m_dStockValue": (),
+        "m_dFundValue": (),
+        "m_dTotalDebt": ("m_dTotalDebit",),
+        "m_dEnableBailBalance": (),
+        "m_dPerAssurescaleValue": (),
+        "m_dAssureAsset": (),
+        "m_dFinDebt": (),
+        "m_dFinDealAvl": (),
+        "m_dFinFee": (),
+        "m_dSloDebt": (),
+        "m_dSloMarketValue": (),
+        "m_dSloFee": (),
+        "m_dOtherFare": (),
+        "m_dFinMaxQuota": (),
+        "m_dFinEnableQuota": (),
+        "m_dFinUsedQuota": (),
+        "m_dSloMaxQuota": (),
+        "m_dSloEnableQuota": (),
+        "m_dSloUsedQuota": (),
+        "m_dSloSellBalance": (),
+        "m_dUsedSloSellBalance": (),
+        "m_dSurplusSloSellBalance": (),
+    }
+
+
+class StkCompacts(_QmtQueryObject):
+    _field_aliases = {
+        "compact_type": ("m_eCompactType",),
+        "cashgroup_prop": ("m_eCashgroupProp",),
+        "exchange_id": ("m_strExchangeID",),
+        "open_date": ("m_nOpenDate",),
+        "business_vol": ("m_nBusinessVol",),
+        "real_compact_vol": ("m_nRealCompactVol",),
+        "ret_end_date": ("m_nRetEndDate",),
+        "business_balance": ("m_dBusinessBalance",),
+        "businessFare": ("m_dBusinessFare",),
+        "real_compact_balance": ("m_dRealCompactBalance",),
+        "real_compact_fare": ("m_dRealCompactFare",),
+        "repaid_fare": ("m_dRepaidFare",),
+        "repaid_balance": ("m_dRepaidBalance",),
+        "instrument_id": ("m_strInstrumentID",),
+        "compact_id": ("m_strCompactId", "m_strCompactID"),
+        "position_str": ("m_strPositionStr",),
+    }
+
+
 class CreditSubjects(_QmtQueryObject):
     _field_aliases = {
         "exchange_id": ("m_strExchangeID",),
@@ -803,7 +860,27 @@ class XtBankTransferResponse(DictObject):
 
 
 class XtSmtAppointmentResponse(DictObject):
-    pass
+    @classmethod
+    def from_any(cls, value):
+        if value is None:
+            return None
+        data = _dict_from_any(value) or {}
+        aliases = {
+            "seq": ("m_nSeq",),
+            "success": ("m_bSuccess",),
+            "msg": ("m_strMsg", "m_strError", "error"),
+            "apply_id": ("m_strApplyID", "m_strApplyId", "applyId"),
+        }
+        if not isinstance(value, dict):
+            for name in [name for target, sources in aliases.items() for name in (target,) + sources]:
+                field = getattr(value, name, _MISSING)
+                if field is not _MISSING:
+                    data[name] = field
+        if not data:
+            return value
+        for target, sources in aliases.items():
+            _set_first(data, target, sources)
+        return cls(**data)
 
 
 def to_objects(values, cls=DictObject):

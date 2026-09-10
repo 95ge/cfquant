@@ -20,6 +20,14 @@ import importlib
 import pandas as pd
 
 
+DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+
+
+def _pip_index_args():
+    index_url = os.environ.get("CFQUANT_PIP_INDEX_URL", DEFAULT_PIP_INDEX_URL).strip()
+    return ["--index-url", index_url] if index_url else []
+
+
 def _hidden_subprocess_kwargs():
     if os.name != "nt":
         return {}
@@ -114,7 +122,9 @@ class txl:
         except ImportError:
             self.sys_price(f"[TxLink自动安装] 缺少依赖 {package_name}，正在安装...请不要退出，安装完成后程序将正常运行")
             try:
-                subprocess.check_call([sys.executable, "-m", "pip", "install", package_name], **_hidden_subprocess_kwargs())
+                subprocess.check_call([
+                    sys.executable, "-m", "pip", "install", package_name,
+                ] + _pip_index_args(), **_hidden_subprocess_kwargs())
                 self.orjson_on = True
                 return importlib.import_module(import_name)            
             except:
