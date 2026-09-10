@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 import cfquant_web_server as web
+import cfquant.tx_trade_bridge as tx_trade_bridge_module
 from cfquant import xtconstant
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.pipe_bridge import PipeNormalQmtBridge, PipeTradeBridge
@@ -16,6 +17,112 @@ from cfquant.runtime_report import module_source_state, source_sha256
 from cfquant.tx_trade_bridge import TxTradeBridge
 from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
 from cfquant.xttype import StockAccount, XtAsset, XtOrder, XtPosition, XtTrade, normalize_order_price_type
+
+
+def test_shared_qmt_context_registers_auto_trade_callback_once():
+    class CallbackContext(object):
+        def __init__(self):
+            self.calls = []
+
+        def set_auto_trade_callback(self, enabled):
+            self.calls.append(bool(enabled))
+            return "registered"
+
+    context = CallbackContext()
+    normal = NormalQmtBridge(
+        context=None,
+        show=False,
+        dispatch_on_qmt_thread=True,
+        schedule_timer=False,
+    )
+    trade = TxTradeBridge(context=None, show=False)
+    try:
+        normal.set_context(context)
+        trade.set_context(context)
+
+        # The QMT entry refreshes both bridge objects again in after_init.
+        normal.auto_trade_callback_enabled = False
+        trade.auto_trade_callback_enabled = False
+        normal._enable_auto_trade_callback()
+        trade._enable_auto_trade_callback()
+
+        assert context.calls == [True]
+        assert normal.auto_trade_callback_enabled is True
+        assert trade.auto_trade_callback_enabled is True
+    finally:
+        normal.close()
+        trade.close()
+        tx_trade_bridge_module._AUTO_TRADE_CALLBACK_REGISTRY.pop(id(context), None)
+
+
+def test_web_lttx_route_dedupes_same_trader_event_payload():
+    route = web.LttxWebRouteServer()
+    client_id = "external_trade_client"
+    account_id = "8885060548"
+    account_type = "STOCK"
+    bridge_id = "default"
+    account_key = web.account_key_for(account_id, account_type, bridge_id)
+    pushed = []
+
+    def capture_push(item_client_id, event, data=None, subscription_id=None):
+        pushed.append((item_client_id, event, dict(data or {}), subscription_id))
+
+    route._push_event = capture_push
+    route._account_subscribers[account_key] = {client_id}
+
+    first_order = {
+        "account_id": account_id,
+        "account_type": 2,
+        "stock_code": "002148.SZ",
+        "order_id": 1082130908,
+        "order_sysid": "1602193470177586775",
+        "order_time": "212423",
+        "order_type": 24,
+        "order_volume": 100,
+        "price": 6.8,
+        "traded_volume": 0,
+        "traded_price": 0.0,
+        "order_status": 50,
+        "m_strAccountID": account_id,
+        "m_strExchangeID": "SZ",
+        "m_strInstrumentID": "002148",
+        "m_strOrderID": "1602193470177586775",
+        "m_strOrderSysID": "",
+        "m_nVolumeTotal": 0,
+    }
+
+    def make_event(data, source=None, seq=None):
+        row = {
+            "type": "event",
+            "event": "trader:on_stock_order",
+            "bridge_id": bridge_id,
+            "account_id": account_id,
+            "account_type": account_type,
+            "data": dict(data),
+        }
+        if source:
+            row["source"] = source
+        if seq is not None:
+            row["seq"] = seq
+            row["received_at"] = time.time()
+        return row
+
+    route._on_client_event(make_event(first_order, source="client"))
+    route._on_client_event(make_event(first_order, source="channel", seq=1))
+    assert len(pushed) == 1
+
+    second_order = dict(
+        first_order,
+        order_sysid="958",
+        order_time="212421",
+        m_strOrderSysID="958",
+        m_nVolumeTotal=100,
+    )
+    route._on_client_event(make_event(second_order, source="client"))
+    route._on_client_event(make_event(second_order, source="channel", seq=2))
+    assert len(pushed) == 2
+    assert pushed[0][2]["order_sysid"] == "1602193470177586775"
+    assert pushed[1][2]["order_sysid"] == "958"
 
 
 @pytest.mark.parametrize("raw,market,expected", [

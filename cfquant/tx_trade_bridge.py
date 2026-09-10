@@ -7,6 +7,7 @@ import threading
 import time
 
 from .protocol import loads_message, pack_event, pack_response
+from .batch_orders import CFTRADER_BATCH_ACTIONS, execute_qmt_batch
 from .level2 import L2_GET_PERIODS, L2_PERIODS, l2_query, quote_plain, require_l2_callable, thousand_price
 from .version import __version__ as CORE_VERSION
 from . import account_routing
@@ -21,6 +22,14 @@ from .xttype import (
 
 
 _LOADED_SOURCE_SHA256 = source_sha256(__file__)
+
+
+# A single all-in-one QMT entry can create both a normal bridge and a trade
+# bridge against the same ContextInfo. QMT treats every
+# set_auto_trade_callback(True) call as a new registration, so keep the
+# registration state shared across bridge instances.
+_AUTO_TRADE_CALLBACK_LOCK = threading.RLock()
+_AUTO_TRADE_CALLBACK_REGISTRY = {}
 
 
 XTTRADER_COMPAT_CANDIDATES = {
@@ -153,6 +162,8 @@ class TxTradeBridge(object):
         self.order_meta_store_initialized = set()
 
     def set_context(self, context):
+        if self.context is not None and self.context is not context:
+            self._release_auto_trade_callback(self.context)
         self.context = context
         if self.account_id:
             self._set_context_account(self.account_id, self.account_type)
@@ -179,6 +190,7 @@ class TxTradeBridge(object):
 
     def close(self):
         self.running = False
+        self._release_auto_trade_callback()
         tx = self.tx
         self.tx = None
         if tx is not None:
@@ -230,6 +242,8 @@ class TxTradeBridge(object):
             )
 
     def _dispatch(self, action, params, msg):
+        if action in CFTRADER_BATCH_ACTIONS:
+            return execute_qmt_batch(self, params, msg, action.endswith("_async"))
         if action == "cfquant.ping":
             return {
                 "pong": True,
@@ -862,7 +876,7 @@ class TxTradeBridge(object):
             "stock_option_secu_unlock": 59,
         }
 
-    def _order_stock(self, params, msg, resolve_order_id=True):
+    def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True):
         passorder = self._get_callable("passorder")
         if not passorder:
             raise NotImplementedError("passorder not found")
@@ -892,7 +906,7 @@ class TxTradeBridge(object):
                 strategy_name,
             )
             self._publish_order_meta_record(order_meta_record, push=True, persist=True)
-        previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
+        previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name) if capture_previous_id else None
         if order_meta_record is not None:
             order_meta_record["previous_order_id"] = previous_order_id
         try:
@@ -1006,9 +1020,8 @@ class TxTradeBridge(object):
                         return order_id
             except Exception:
                 pass
-            latest_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
-            if latest_order_id is not None and latest_order_id != previous_order_id:
-                return latest_order_id
+            # QMT's latest order number is a broker sysid, not the internal ID
+            # returned by order queries/callbacks. Wait for the matching detail.
             if time.time() >= deadline:
                 return None
             time.sleep(0.05)
@@ -3132,36 +3145,70 @@ class TxTradeBridge(object):
                 self._log("context account set failed account=%s account_type=%s error=%s fallback_error=%s" % (account_id, account_type_text or "-", e, fallback_error))
                 raise
 
+    def _release_auto_trade_callback(self, context=None):
+        context = context or self.context
+        if context is None:
+            self.auto_trade_callback_enabled = False
+            return
+        context_key = id(context)
+        owner_key = id(self)
+        with _AUTO_TRADE_CALLBACK_LOCK:
+            record = _AUTO_TRADE_CALLBACK_REGISTRY.get(context_key)
+            if record is not None and record.get("context") is context:
+                owners = record.get("owners") or set()
+                owners.discard(owner_key)
+                # There is no portable QMT API to unregister this callback.
+                # Keep the enabled marker even when all bridge objects close,
+                # so a later bridge for the same ContextInfo does not register
+                # the QMT callback a second time.
+                record["owners"] = owners
+        self.auto_trade_callback_enabled = False
+
     def _enable_auto_trade_callback(self):
         if self.context is None or self.auto_trade_callback_enabled:
             return
-        func = getattr(self.context, "set_auto_trade_callback", None)
-        if callable(func):
-            try:
-                result = func(True)
+
+        context = self.context
+        context_key = id(context)
+        owner_key = id(self)
+        with _AUTO_TRADE_CALLBACK_LOCK:
+            record = _AUTO_TRADE_CALLBACK_REGISTRY.get(context_key)
+            if record is not None and record.get("context") is context and record.get("enabled"):
+                record.setdefault("owners", set()).add(owner_key)
                 self.auto_trade_callback_enabled = True
-                self._log("auto trade callback enabled result=%s" % result)
+                self._log("auto trade callback already enabled; reused shared registration")
                 return
+            if record is not None and record.get("context") is not context:
+                _AUTO_TRADE_CALLBACK_REGISTRY.pop(context_key, None)
+
+            func = getattr(context, "set_auto_trade_callback", None)
+            call_with_context = False
+            if not callable(func):
+                func = self._get_callable("set_auto_trade_callback")
+                call_with_context = True
+            if not callable(func):
+                self._log("auto trade callback enable skipped: set_auto_trade_callback not found")
+                return
+
+            try:
+                if call_with_context:
+                    try:
+                        result = func(context, True)
+                    except TypeError:
+                        result = func(True)
+                else:
+                    result = func(True)
             except Exception as e:
                 self._log("auto trade callback enable failed:%s" % e)
                 return
-        func = self._get_callable("set_auto_trade_callback")
-        if not callable(func):
-            self._log("auto trade callback enable skipped: set_auto_trade_callback not found")
-            return
-        try:
-            result = func(self.context, True)
+
+            _AUTO_TRADE_CALLBACK_REGISTRY[context_key] = {
+                "context": context,
+                "enabled": True,
+                "owners": {owner_key},
+            }
             self.auto_trade_callback_enabled = True
             self._log("auto trade callback enabled result=%s" % result)
-        except TypeError:
-            try:
-                result = func(True)
-                self.auto_trade_callback_enabled = True
-                self._log("auto trade callback enabled result=%s" % result)
-            except Exception as e:
-                self._log("auto trade callback enable failed:%s" % e)
-        except Exception as e:
-            self._log("auto trade callback enable failed:%s" % e)
 
     def _send_trader_event(self, client_id, name, data):
         if client_id:

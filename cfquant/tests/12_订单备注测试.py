@@ -118,13 +118,12 @@ def test_tx_trade_bridge_order_remark_precedes_strategy_name():
     assert calls[0][9] == "remark-a"
 
 
-def test_tx_trade_bridge_resolves_zero_passorder_result_to_new_order_id():
-    last_order_ids = iter(("700001", "700002"))
+def test_tx_trade_bridge_resolves_zero_passorder_result_from_matching_detail():
     calls = []
 
     def get_last_order_id(*args):
         calls.append(args)
-        return next(last_order_ids)
+        return "900001"
 
     bridge = TxTradeBridge(
         DummyContext(),
@@ -132,6 +131,10 @@ def test_tx_trade_bridge_resolves_zero_passorder_result_to_new_order_id():
         globals_dict={
             "passorder": lambda *args: 0,
             "get_last_order_id": get_last_order_id,
+            "get_trade_detail_data": lambda *args: [{
+                "m_nRef": 700002, "m_strOrderSysID": "900002", "m_strRemark": "remark",
+                "m_strInstrumentID": "000001", "m_strExchangeID": "SZ",
+            }],
         },
     )
 
@@ -144,19 +147,20 @@ def test_tx_trade_bridge_resolves_zero_passorder_result_to_new_order_id():
     assert result["order_id"] == 700002
     assert calls == [
         ("A123", "stock", "order", "hxy"),
-        ("A123", "stock", "order", "hxy"),
     ]
 
 
-def test_qmt_bridge_resolves_zero_passorder_result_to_new_order_id():
-    last_order_ids = iter(("800001", "800002"))
-
+def test_qmt_bridge_resolves_zero_passorder_result_from_matching_detail():
     bridge = CfquantQmtBridge(
         DummyContext(),
         show=False,
         globals_dict={
             "passorder": lambda *args: 0,
-            "get_last_order_id": lambda *args: next(last_order_ids),
+            "get_last_order_id": lambda *args: "900001",
+            "get_trade_detail_data": lambda *args: [{
+                "m_nRef": 800002, "m_strOrderSysID": "900002", "m_strRemark": "remark",
+                "m_strInstrumentID": "000001", "m_strExchangeID": "SZ",
+            }],
         },
     )
 
@@ -166,6 +170,37 @@ def test_qmt_bridge_resolves_zero_passorder_result_to_new_order_id():
 
     assert result["request_result"] == 0
     assert result["order_id"] == 800002
+
+
+def test_qmt_bridge_waits_for_delayed_internal_id_instead_of_returning_sysid():
+    last_ids = iter(("898", "899"))
+    snapshots = iter(([], [{
+        "m_nRef": 1082130604, "m_strOrderSysID": "899", "m_strRemark": "remark",
+        "m_strInstrumentID": "000001", "m_strExchangeID": "SZ",
+    }]))
+    bridge = CfquantQmtBridge(
+        DummyContext(), show=False, globals_dict={
+            "passorder": lambda *args: None,
+            "get_last_order_id": lambda *args: next(last_ids),
+            "get_trade_detail_data": lambda *args: next(snapshots),
+        },
+    )
+    result = bridge._order_stock(_base_order_params(order_remark="remark"))
+    assert result["order_id"] == 1082130604
+
+
+def test_qmt_bridge_missing_detail_does_not_expose_latest_sysid_as_order_id():
+    last_ids = iter(("898", "899"))
+    bridge = CfquantQmtBridge(
+        DummyContext(), show=False, globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: next(last_ids),
+            "get_trade_detail_data": lambda *args: [],
+        },
+    )
+    result = bridge._order_stock(_base_order_params(order_remark="remark", find_order_wait=0))
+    assert result["order_id"] == -1
+    assert result["request_result"] == 0
 
 
 def test_tx_trade_bridge_async_zero_is_accepted_without_sync_order_lookup():

@@ -66,46 +66,47 @@ class PipeRpcClient(object):
         self._fail_pending("cfquant pipe client closed")
 
     def request(self, action, params=None, timeout=None, request_channel=None):
-        self.start()
         effective_timeout = float(timeout or self.timeout)
         request_id = new_id("req")
-        q = queue.Queue(maxsize=1)
-        with self._pending_lock:
-            self._pending[request_id] = q
         raw = pack_request(
             action,
-            params=params or {},
+            params=params,
             reply_channel=self.reply_channel,
             client_id=self.client_id,
             request_id=request_id,
             timeout=effective_timeout,
         )
+        self.start()
+        q = queue.Queue(maxsize=1)
+        with self._pending_lock:
+            self._pending[request_id] = q
         try:
-            self._send_request(raw, request_channel or self.request_channel)
-        except Exception:
+            try:
+                self._send_request(raw, request_channel or self.request_channel)
+            except Exception:
+                self.close()
+                raise
+            try:
+                msg = q.get(timeout=effective_timeout)
+            except queue.Empty:
+                self.close()
+                from .client import CfquantTimeout
+
+                raise CfquantTimeout("cfquant pipe request timeout: %s" % action)
+            if not msg.get("ok"):
+                err = msg.get("error") or {}
+                from .client import CfquantError
+
+                raise CfquantError(err.get("message") or str(err))
+            return decode_value(msg.get("result"))
+        finally:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
-            self.close()
-            raise
-        try:
-            msg = q.get(timeout=effective_timeout)
-        except queue.Empty:
-            with self._pending_lock:
-                self._pending.pop(request_id, None)
-            self.close()
-            from .client import CfquantTimeout
-
-            raise CfquantTimeout("cfquant pipe request timeout: %s" % action)
-        if not msg.get("ok"):
-            err = msg.get("error") or {}
-            from .client import CfquantError
-
-            raise CfquantError(err.get("message") or str(err))
-        return decode_value(msg.get("result"))
 
     def publish_event(self, channel, payload):
+        raw = dumps_message(payload)
         self.start()
-        self._send_request(dumps_message(payload), channel)
+        self._send_request(raw, channel)
 
     def add_callback(self, event, callback):
         if callback is None:

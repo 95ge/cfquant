@@ -2,6 +2,8 @@
 
 本文说明外部程序如何通过 `cfquant` 调用 QMT 行情、查询和交易能力。新用户建议先在 Web 控制台完成初始化向导，并确认 QMT 侧入口脚本在线。
 
+批量同步、批量异步下单使用 [cftrader 批量交易](cftrader批量交易.md)，复用已有 `XtQuantTrader` 连接和回调。
+
 ## 安装
 
 推荐直接从 PyPI 安装：
@@ -223,6 +225,16 @@ CFQUANT_LTTX_TOKEN=LTtx
 ```
 
 ## 排查要点
+
+### 下单参数与 JSON 类型
+
+从 DataFrame 用 `df.at[...]`、`df.iat[...]` 取出的单个数字可能是 `numpy.int64`、`numpy.float32` 等类型。cfquant 在请求进入 LTtx 或 PipeHub 之前统一转换为 Python `int`、`float`、`bool`、`str`，也会递归处理字典、列表和元组中的数值。整数不会先转浮点数，避免丢失大编号精度；不修改原始参数对象。
+
+整张 DataFrame、Series、非零维 NumPy 数组不能当作单个价格或数量，需明确选出一个标量；真正需要集合参数的接口可显式使用 `.tolist()` 或字典。`NaN`、正负无穷、`pd.NA/NaT` 及无法识别的对象会在发送前报错，并标明如 `message.params.price` 的字段位置，不自动取第一项、补零或转为字符串。此检查是传输类型校验，不代替具体接口的价格、数量及业务规则校验。
+
+本次修复位于 cfquant 调用 LTtx 的共用协议边界，不修改 LTtx 的全局 JSON 行为。高级模式、Web LTtx 路由、通用管道及三份自包含 LITE 入口同步更新；升级后重启使用 SDK 的 Python 进程，Web/QMT 侧更新后也需重启相应进程以加载新协议代码。离线回归见 [JSON 序列化测试](../cfquant/tests/test_json_serialization.py)，不执行真实下单。
+
+### 连接与路由
 
 - 通用模式下，需要 `cfquant_pipe_hub.py` 和 QMT 里的 `CFQUANT_CTYPE_ALL_LOWLAT.py` 在线。
 - 高级模式下，需要普通 QMT 的 `CFQUANT.py` 和极速交易端 QMT 的 `CFQUANT_TRADE_LOWLAT.py` 在线。

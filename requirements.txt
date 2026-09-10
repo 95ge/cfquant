@@ -4,6 +4,7 @@
 pandas
 packaging
 psutil
+pycryptodome>=3.20
 pytz
 tabulate
 pandas_market_calendars

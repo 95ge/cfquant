@@ -20,12 +20,59 @@ def new_id(prefix="req"):
     return "%s_%s_%s" % (prefix, now_ms(), uuid.uuid4().hex[:12])
 
 
+def normalize_json_value(value, path="message", _active=None):
+    """Normalize numeric scalars without guessing the meaning of arbitrary objects."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        value = float(value)
+        if not math.isfinite(value):
+            raise ValueError("%s: NaN and infinity are not valid JSON numbers" % path)
+        return value
+    value_type = type(value)
+    if value_type.__module__.split(".", 1)[0] == "numpy" and getattr(value, "ndim", None) == 0:
+        kind = getattr(getattr(value, "dtype", None), "kind", None)
+        convert = {"b": bool, "i": int, "u": int, "f": float, "U": str}.get(kind)
+        if convert is not None:
+            return normalize_json_value(convert(value), path)
+    if not isinstance(value, (dict, list, tuple)):
+        raise TypeError(
+            "%s: unsupported JSON type %s.%s; select a scalar with .at/.iat/.item(), "
+            "or explicitly convert a collection to a list/dict for collection-valued parameters"
+            % (path, value_type.__module__, value_type.__name__)
+        )
+    active = set() if _active is None else _active
+    identity = id(value)
+    if identity in active:
+        raise ValueError("%s: circular reference is not valid JSON data" % path)
+    active.add(identity)
+    try:
+        if isinstance(value, dict):
+            result = {}
+            for key, item in value.items():
+                normalized_key = normalize_json_value(key, "%s.<key>" % path, active)
+                if normalized_key is not None and not isinstance(normalized_key, (str, int, float, bool)):
+                    raise TypeError("%s: JSON object keys must be strings or scalar numbers" % path)
+                item_path = "%s.%s" % (path, normalized_key) if isinstance(normalized_key, str) else "%s[%r]" % (path, normalized_key)
+                result[normalized_key] = normalize_json_value(item, item_path, active)
+            return result
+        return [normalize_json_value(item, "%s[%s]" % (path, index), active) for index, item in enumerate(value)]
+    finally:
+        active.remove(identity)
+
+
 def dumps_message(payload):
     data = dict(payload)
     data.setdefault("protocol", "cfquant")
     data.setdefault("version", PROTOCOL_VERSION)
     data.setdefault("ts", now_ms())
-    return MESSAGE_PREFIX + json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return MESSAGE_PREFIX + json.dumps(normalize_json_value(data), ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
 def loads_message(raw):
@@ -51,7 +98,7 @@ def pack_request(action, params=None, reply_channel=None, client_id=None, reques
         "type": "request",
         "id": request_id or new_id("req"),
         "action": action,
-        "params": params or {},
+        "params": {} if params is None else params,
         "reply_channel": reply_channel,
         "client_id": client_id,
     }

@@ -95,7 +95,25 @@ def test_first_setup_can_read_without_saving_and_preserves_draft(page, frontend_
     assert page.evaluate("state.setup.setup_required && !state.appStarted")
     page.locator('#tutorialReader [data-guide="python"]').click()
     expect(page.locator("#python-prepare")).to_be_visible()
-    expect(page.locator('#tutorialReader pre[data-language="python"]')).to_have_count(15)
+    expect(page.locator("#tutorialReader .tutorial-menu")).to_be_visible()
+    assert page.locator('#tutorialReader .tutorial-menu-item[data-guide="python"]').evaluate(
+        "node => node.classList.contains('active')"
+    )
+    menu_position = page.locator("#tutorialReader .tutorial-layout").evaluate("""layout => {
+        const menu = layout.querySelector('.tutorial-menu').getBoundingClientRect();
+        const content = layout.querySelector('.tutorial-content').getBoundingClientRect();
+        return {
+            menuRight: menu.right,
+            menuBottom: menu.bottom,
+            contentLeft: content.left,
+            contentTop: content.top,
+        };
+    }""")
+    if page.viewport_size["width"] > 980:
+        assert menu_position["menuRight"] <= menu_position["contentLeft"] + 1
+    else:
+        assert menu_position["menuBottom"] <= menu_position["contentTop"] + 1
+    expect(page.locator('#tutorialReader [data-guide-panel="python"] pre[data-language="python"]')).to_have_count(15)
     page.screenshot(path=str(tmp_path / "tutorial-start.png"))
     page.locator('#tutorialReader a[href="#python-order"]').click()
     top = page.locator("#python-order").evaluate("node => node.getBoundingClientRect().top")
@@ -207,6 +225,17 @@ def test_python_api_search_status_examples_and_deep_links(page, frontend_url, tm
     page.locator('#setupOverlay [data-open-tutorial]').click()
     page.locator('#tutorialReader [data-guide="python"]').click()
     python_directory(page)
+    group_toggle = page.locator('[data-python-groups-toggle]')
+    group_count = page.locator('.python-nav-group').count()
+    assert group_count > 0
+    expect(group_toggle).to_have_text('全部收起')
+    expect(page.locator('.python-nav-group[open]')).to_have_count(group_count)
+    group_toggle.click()
+    expect(group_toggle).to_have_text('全部展开')
+    expect(page.locator('.python-nav-group[open]')).to_have_count(0)
+    group_toggle.click()
+    expect(group_toggle).to_have_text('全部收起')
+    expect(page.locator('.python-nav-group[open]')).to_have_count(group_count)
     page.locator('#pythonApiSearch').fill('get_financial_data')
     expect(page.locator('.python-api-nav [data-python-entry^="xtdata."]')).to_have_count(1)
     page.locator('.python-api-nav [data-python-entry="xtdata.get_financial_data"]').click()

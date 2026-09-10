@@ -1,15 +1,17 @@
-/* Offline Python reference; no setup, authentication or live trading requests. */
+/* Python reference stays offline until an explicit online-test submission. */
 (() => {
   'use strict';
   const data = window.CFQUANT_PYTHON_API;
   if (!data) return;
-  const entries = [...data.entries, ...data.references];
+  const extensions = window.CFQUANT_CFTRADER_API || [];
+  const entries = [...extensions, ...data.entries, ...data.references];
   const byId = new Map(entries.map(entry => [entry.id, entry]));
-  const modules = { xtdata: 'XtData 行情', trader: 'XtQuantTrader 交易', callback: 'XtQuantTraderCallback', type: '交易数据结构', reference: '概述与附录' };
-  const labels = { supported: '已适配', partial: '部分适配', unverified: '尚未支持 · 条件待验证', unsupported: '尚未支持', reference: '参考资料' };
+  const modules = { cftrader: 'cftrader', xtdata: 'XtData 行情', trader: 'XtQuantTrader 交易', callback: 'XtQuantTraderCallback', type: '交易数据结构', reference: '概述与附录' };
+  const labels = { extension: 'cfquant 独立接口', supported: '已适配', partial: '部分适配', unverified: '尚未支持 · 条件待验证', unsupported: '尚未支持', reference: '参考资料' };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const inline = value => esc(value).replace(/`([^`]+)`/g, '<code>$1</code>');
   let root, nav, doc, legacy, article, current = 'guide', query = '', filter = '', codeIndex = 0;
+  let groupsExpanded = true;
   const codeValues = new Map();
   const codeBlock = (value, title) => {
     const id = String(++codeIndex);
@@ -30,25 +32,41 @@
     codeValues.clear();
     codeIndex = 0;
     const api = entry.module !== 'reference';
-    const supported = ['supported', 'partial'].includes(entry.status);
+    const extension = entry.status === 'extension';
+    const supported = ['supported', 'partial', 'extension'].includes(entry.status);
     let reference = `<p>${inline(entry.description)}</p>`;
-    if (entry.signature) reference += codeBlock(entry.signature, '原版接口签名');
-    if (entry.parameters?.length) reference += '<h4>原版参数</h4>' + table(['参数', '默认值', '含义'], entry.parameters.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
+    if (entry.signature) reference += codeBlock(entry.signature, extension ? 'cftrader 接口签名' : '原版接口签名');
+    if (entry.parameters?.length) reference += `<h4>${extension ? '调用参数' : '原版参数'}</h4>` + table(['参数', '默认值', '含义'], entry.parameters.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
+    if (entry.orderFields?.length) reference += '<h4>orders 逐笔字段</h4>' + table(['字段', '默认值', '含义'], entry.orderFields.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
     if (entry.fields?.length) reference += '<h4>原版字段 / 类型</h4>' + table(['字段', '类型 / 含义'], entry.fields.map(row => ['`' + row[0] + '`', row[1]]));
     if (entry.originalReturns) reference += `<h4>原版返回</h4><p>${inline(entry.originalReturns)}</p>`;
     if (api && !entry.signature && entry.module !== 'type') reference += '<p class="python-muted">官方在版本说明或示例中提及此名称，未提供独立的完整签名。下方 cfquant 签名来自当前 SDK。</p>';
     if (entry.originalExample) reference += `<details class="python-old-example"><summary>原来：xtquant 调用示例</summary>${codeBlock(entry.originalExample, 'xtquant 示例')}</details>`;
-    reference += sourceBlock(entry);
-    let solution = `<div class="python-section-title"><h3>cfquant 解决方案</h3>${badge(entry)}</div>`;
+    if (!extension) reference += sourceBlock(entry);
+    let solution = `<div class="python-section-title"><h3>${extension ? '调用示例与结果' : 'cfquant 解决方案'}</h3>${badge(entry)}</div>`;
     if (entry.note) solution += `<p class="python-compat-note ${entry.status}">${inline(entry.note)}</p>`;
     if (entry.sdkSignature) solution += codeBlock(entry.sdkSignature, '当前 cfquant 签名');
     if (entry.resultHelp) solution += `<h4>返回值与处理</h4><p>${inline(entry.resultHelp)}</p>`;
+    if (entry.resultRows?.length) solution += table(['字段 / 状态', '含义'], entry.resultRows);
     solution += `<p>${inline(entry.usage)}</p>`;
     if (entry.example) solution += codeBlock(entry.example, '现在：cfquant 示例');
+    if (extension) solution += '<button type="button" data-python-cftrader-guide>cftrader 完整教程</button>';
     if (api && !supported) solution += '<p class="python-unavailable">尚未支持</p>';
     if (entry.related?.length) solution += `<div class="python-related">${entry.related.map(id => `<button type="button" data-python-entry="${esc(id)}">${esc(byId.get(id)?.name || id)}</button>`).join('')}</div>`;
     const index = entries.indexOf(entry);
-    doc.innerHTML = `<header class="python-document-head"><div class="python-breadcrumb">${esc(modules[entry.module])} / ${esc(entry.group)}</div><h2 tabindex="-1">${esc(entry.name)}</h2>${entry.title ? `<p>${esc(entry.title)}</p>` : ''}<div class="python-document-meta">${badge(entry)}<a href="${esc(entry.source)}" target="_blank" rel="noopener noreferrer">讯投来源</a><button type="button" data-python-link>复制链接</button></div></header><section class="python-reference-section"><h3>讯投 API 参考</h3>${reference}</section><section class="python-reference-section python-solution">${solution}</section><footer class="python-document-footer">${index > 0 ? `<button type="button" data-python-entry="${esc(entries[index - 1].id)}">上一节：${esc(entries[index - 1].name)}</button>` : '<span></span>'}${index < entries.length - 1 ? `<button type="button" data-python-entry="${esc(entries[index + 1].id)}">下一节：${esc(entries[index + 1].name)}</button>` : ''}</footer>`;
+    doc.innerHTML = `<header class="python-document-head"><div class="python-breadcrumb">${esc(modules[entry.module])} / ${esc(entry.group)}</div><h2 tabindex="-1">${esc(entry.name)}</h2>${entry.title ? `<p>${esc(entry.title)}</p>` : ''}<div class="python-document-meta">${badge(entry)}${extension ? '' : `<a href="${esc(entry.source)}" target="_blank" rel="noopener noreferrer">讯投来源</a>`}<button type="button" data-python-link>复制链接</button></div></header><section class="python-reference-section"><h3>${extension ? 'cftrader 独立接口' : '讯投 API 参考'}</h3>${reference}</section><section class="python-reference-section python-solution">${solution}</section><footer class="python-document-footer">${index > 0 ? `<button type="button" data-python-entry="${esc(entries[index - 1].id)}">上一节：${esc(entries[index - 1].name)}</button>` : '<span></span>'}${index < entries.length - 1 ? `<button type="button" data-python-entry="${esc(entries[index + 1].id)}">下一节：${esc(entries[index + 1].name)}</button>` : ''}</footer>`;
+    doc.querySelector('.python-document-meta').insertAdjacentHTML('beforeend', window.CfquantApiTester?.button(entry) || '');
+    const testHost = document.createElement('section');
+    testHost.className = 'api-inline-test';
+    testHost.hidden = true;
+    doc.querySelector('header').after(testHost);
+    doc.querySelector('[data-python-test]')?.addEventListener('click', event => {
+      const open = testHost.hidden;
+      if (open) window.CfquantApiTester.mount(testHost, entry);
+      testHost.hidden = !open;
+      event.currentTarget.setAttribute('aria-expanded', String(open));
+      if (open) testHost.querySelector('h3')?.focus({ preventScroll: true });
+    });
     doc.querySelectorAll('.python-original').forEach(details => details.addEventListener('toggle', () => {
       const holder = details.querySelector('[data-python-original]');
       if (!details.open || holder.firstChild) return;
@@ -76,7 +94,27 @@
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(entry);
     }
-    nav.innerHTML = `<button type="button" class="python-nav-entry ${current === 'guide' ? 'active' : ''}" data-python-entry="guide" ${current === 'guide' ? 'aria-current="page"' : ''}><strong>接入与迁移</strong><span>安装、查询、交易及多账号示例</span></button><p class="python-nav-count" role="status">${visible.length} 个条目</p>` + (visible.length ? [...groups].map(([name, list]) => `<details class="python-nav-group" open><summary>${esc(name)} <span>${list.length}</span></summary>${list.map(entry => `<button type="button" class="python-nav-entry ${current === entry.id ? 'active' : ''}" data-python-entry="${esc(entry.id)}" ${current === entry.id ? 'aria-current="page"' : ''}><strong><i class="python-status-dot ${entry.status}" aria-label="${labels[entry.status]}"></i>${esc(entry.name)}</strong><span>${esc(entry.title || entry.description)}</span></button>`).join('')}</details>`).join('') : '<p class="python-empty">没有匹配的接口</p><button type="button" data-python-reset>清除筛选</button>');
+    nav.innerHTML = `<button type="button" class="python-nav-entry ${current === 'guide' ? 'active' : ''}" data-python-entry="guide" ${current === 'guide' ? 'aria-current="page"' : ''}><strong>接入与迁移</strong><span>安装、查询、交易及多账号示例</span></button><p class="python-nav-count" role="status">${visible.length} 个条目</p>` + (visible.length ? [...groups].map(([name, list]) => `<details class="python-nav-group"${groupsExpanded ? ' open' : ''}><summary>${esc(name)} <span>${list.length}</span></summary>${list.map(entry => `<button type="button" class="python-nav-entry ${current === entry.id ? 'active' : ''}" data-python-entry="${esc(entry.id)}" ${current === entry.id ? 'aria-current="page"' : ''}><strong><i class="python-status-dot ${entry.status}" aria-label="${labels[entry.status]}"></i>${esc(entry.name)}</strong><span>${esc(entry.title || entry.description)}</span></button>`).join('')}</details>`).join('') : '<p class="python-empty">没有匹配的接口</p><button type="button" data-python-reset>清除筛选</button>');
+    syncGroupToggle();
+  }
+
+  function syncGroupToggle() {
+    const button = root?.querySelector('[data-python-groups-toggle]');
+    if (!button || !nav) return;
+    const groups = [...nav.querySelectorAll('.python-nav-group')];
+    const allExpanded = groups.length > 0 && groups.every(group => group.open);
+    button.disabled = groups.length === 0;
+    button.textContent = allExpanded ? '全部收起' : '全部展开';
+    button.setAttribute('aria-label', allExpanded ? '收起全部 API 分组' : '展开全部 API 分组');
+  }
+
+  function toggleAllGroups() {
+    const groups = [...nav.querySelectorAll('.python-nav-group')];
+    if (!groups.length) return;
+    const shouldExpand = groups.some(group => !group.open);
+    groups.forEach(group => { group.open = shouldExpand; });
+    groupsExpanded = shouldExpand;
+    syncGroupToggle();
   }
 
   function select(id, { focus = true, history = true } = {}) {
@@ -141,19 +179,36 @@
     const counts = data.entries.reduce((result, entry) => { result[entry.status] = (result[entry.status] || 0) + 1; return result; }, {});
     root = document.createElement('div');
     root.className = 'python-reference';
-    root.innerHTML = `<header class="python-reference-head"><button type="button" data-python-back>返回教程</button><h2>Python 接入</h2><span class="python-reference-version">适配清单 ${esc(data.updated)}</span><button type="button" data-python-menu aria-expanded="false" aria-controls="pythonReferenceSidebar">API 目录</button></header><div class="python-reference-body"><aside id="pythonReferenceSidebar" class="python-reference-sidebar"><div class="python-search"><label for="pythonApiSearch">API 文档</label><input id="pythonApiSearch" type="search" placeholder="搜索接口或中文功能" autocomplete="off"><label class="python-filter-label" for="pythonApiFilter">适配状态</label><select id="pythonApiFilter"><option value="">全部状态</option><option value="supported">已适配 (${counts.supported || 0})</option><option value="partial">部分适配 (${counts.partial || 0})</option><option value="unavailable">尚未支持 (${(counts.unverified || 0) + (counts.unsupported || 0)})</option><option value="reference">概述与附录</option></select></div><nav class="python-api-nav" aria-label="Python API 目录"></nav></aside><div class="python-reading-pane"><div class="python-reference-scope">${data.entries.length} 个接口、回调与数据结构。${counts.supported || 0} 已适配，${counts.partial || 0} 部分适配，${(counts.unverified || 0) + (counts.unsupported || 0)} 尚未支持。当前清单覆盖高级 / 通用模式共用桥，独立内嵌旧桥另行核对。</div><div class="python-api-document"></div></div></div>`;
+    root.innerHTML = `<header class="python-reference-head"><button type="button" data-python-back>返回教程</button><h2>Python 接入</h2><span class="python-reference-version">适配清单 ${esc(data.updated)}</span><button type="button" data-python-menu aria-expanded="false" aria-controls="pythonReferenceSidebar">API 目录</button></header><div class="python-reference-body"><aside id="pythonReferenceSidebar" class="python-reference-sidebar"><div class="python-search"><div class="python-search-head"><label for="pythonApiSearch">API 文档</label><button type="button" class="python-groups-toggle" data-python-groups-toggle aria-controls="pythonApiNav">全部收起</button></div><input id="pythonApiSearch" type="search" placeholder="搜索接口或中文功能" autocomplete="off"><label class="python-filter-label" for="pythonApiFilter">适配状态</label><select id="pythonApiFilter"><option value="">全部状态</option><option value="supported">已适配 (${counts.supported || 0})</option><option value="partial">部分适配 (${counts.partial || 0})</option><option value="unavailable">尚未支持 (${(counts.unverified || 0) + (counts.unsupported || 0)})</option><option value="reference">概述与附录</option></select></div><nav id="pythonApiNav" class="python-api-nav" aria-label="Python API 目录"></nav></aside><div class="python-reading-pane"><div class="python-reference-scope">${data.entries.length} 个接口、回调与数据结构。${counts.supported || 0} 已适配，${counts.partial || 0} 部分适配，${(counts.unverified || 0) + (counts.unsupported || 0)} 尚未支持。当前清单覆盖高级 / 通用模式共用桥，独立内嵌旧桥另行核对。</div><div class="python-api-document"></div></div></div>`;
     article.append(root);
+    const extensionFilter = document.createElement('option');
+    extensionFilter.value = 'extension';
+    extensionFilter.textContent = `cfquant 独立接口 (${extensions.length})`;
+    root.querySelector('#pythonApiFilter').append(extensionFilter);
+    root.querySelector('.python-reference-scope').append(` cftrader 另提供 ${extensions.length} 个独立下单接口，包含批量同步与批量异步。`);
     nav = root.querySelector('.python-api-nav');
     doc = root.querySelector('.python-api-document');
     doc.before(legacy);
     root.querySelector('#pythonApiSearch').addEventListener('input', event => { query = event.target.value; renderNav(); });
     root.querySelector('#pythonApiFilter').addEventListener('change', event => { filter = event.target.value; renderNav(); });
     root.addEventListener('click', event => {
+      const summary = event.target.closest('summary');
+      if (summary && summary.closest('.python-nav-group')) {
+        window.setTimeout(syncGroupToggle, 0);
+        return;
+      }
       const button = event.target.closest('button');
       if (!button) return;
       if (button.hasAttribute('data-python-entry')) select(button.dataset.pythonEntry);
       else if (button.hasAttribute('data-python-copy')) copy(codeValues.get(button.dataset.pythonCopy), button);
       else if (button.hasAttribute('data-python-link')) copy(location.href, button);
+      else if (button.hasAttribute('data-python-cftrader-guide')) {
+        setTutorialTopic('cftrader');
+        const heading = document.querySelector('[data-guide-panel="cftrader"] h3');
+        heading.setAttribute('tabindex', '-1');
+        heading.scrollIntoView({ block: 'start' });
+        heading.focus({ preventScroll: true });
+      }
       else if (button.hasAttribute('data-python-back')) {
         setTutorialTopic('deploy');
         document.querySelector('.tutorial-menu-item[data-guide="python"]')?.focus({ preventScroll: true });
@@ -161,6 +216,8 @@
         const open = root.classList.toggle('python-nav-open');
         button.setAttribute('aria-expanded', String(open));
         if (open) root.querySelector('#pythonApiSearch').focus();
+      } else if (button.hasAttribute('data-python-groups-toggle')) {
+        toggleAllGroups();
       } else if (button.hasAttribute('data-python-reset')) {
         query = filter = '';
         root.querySelector('#pythonApiSearch').value = '';
@@ -178,5 +235,20 @@
     mount();
     select(id, { history: false });
   });
-  window.CfquantPythonReference = { mount, idFromHash };
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[href^="#python-api="]');
+    if (!link) return;
+    event.preventDefault();
+    let id;
+    try { id = decodeURIComponent(link.hash.slice(12)); } catch { return; }
+    window.CfquantPythonReference.open(id);
+  });
+  window.CfquantPythonReference = { mount, idFromHash, open(id) {
+    setTutorialTopic('python');
+    mount();
+    query = filter = '';
+    root.querySelector('#pythonApiSearch').value = '';
+    root.querySelector('#pythonApiFilter').value = '';
+    select(id);
+  } };
 })();

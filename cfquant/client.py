@@ -151,35 +151,38 @@ class LTtxRpcClient(object):
                 self._pending.clear()
 
     def request(self, action, params=None, timeout=None, request_channel=None):
-        self.start()
         effective_timeout = float(timeout or self.timeout)
         request_id = new_id("req")
-        q = queue.Queue(maxsize=1)
-        with self._pending_lock:
-            self._pending[request_id] = q
         raw = pack_request(
             action,
-            params=params or {},
+            params=params,
             reply_channel=self.reply_channel,
             client_id=self.client_id,
             request_id=request_id,
             timeout=effective_timeout,
         )
-        self._push("request", raw, request_channel or self.request_channel)
+        self.start()
+        q = queue.Queue(maxsize=1)
+        with self._pending_lock:
+            self._pending[request_id] = q
         try:
-            msg = q.get(timeout=effective_timeout)
-        except queue.Empty:
+            self._push("request", raw, request_channel or self.request_channel)
+            try:
+                msg = q.get(timeout=effective_timeout)
+            except queue.Empty:
+                raise CfquantTimeout("cfquant request timeout: %s" % action)
+            if not msg.get("ok"):
+                err = msg.get("error") or {}
+                raise CfquantError(err.get("message") or str(err))
+            return decode_value(msg.get("result"))
+        finally:
             with self._pending_lock:
                 self._pending.pop(request_id, None)
-            raise CfquantTimeout("cfquant request timeout: %s" % action)
-        if not msg.get("ok"):
-            err = msg.get("error") or {}
-            raise CfquantError(err.get("message") or str(err))
-        return decode_value(msg.get("result"))
 
     def publish_event(self, channel, payload):
+        raw = dumps_message(payload)
         self.start()
-        self._push("event", dumps_message(payload), channel)
+        self._push("event", raw, channel)
 
     def add_callback(self, event, callback):
         if callback is None:

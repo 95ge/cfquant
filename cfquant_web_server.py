@@ -8,6 +8,7 @@ import email.parser
 import email.policy
 import fnmatch
 import hashlib
+import itertools
 import json
 import math
 import mimetypes
@@ -30,6 +31,7 @@ import urllib.request
 import zipfile
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from functools import wraps
 try:
     import psutil
 except Exception:
@@ -70,8 +72,13 @@ _prepend_import_path(_PROJECT_DIR)
 _prepend_import_path(_LTTX_TX_DIR)
 
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
+from cfquant.batch_orders import (
+    CFTRADER_BATCH_ACTIONS, batch_result, batch_result_rows, batch_unknown,
+    prepare_batch_orders, prepare_batch_request, validate_batch_response,
+)
 from cfquant import _editable_install
 from cfquant import xtconstant as cf_xtconstant
+from cfquant.qmt_strategy_deploy import QmtStrategyManager, account_qmt_roots, normalize_strategy_settings, qmt_root
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
@@ -1088,6 +1095,7 @@ DOWNLOAD_CALLBACK_EVENT = "xtdata:download_progress"
 DOWNLOAD_EVENT_PREFIX = "xtdata:download"
 MARKET_ROUTE_MARKETS = ("SH", "SZ")
 MARKET_ROUTE_TRADE_ACTIONS = {
+    *CFTRADER_BATCH_ACTIONS,
     "xttrader.order_stock",
     "xttrader.order_stock_async",
     "xttrader.order_stock_batch",
@@ -2420,8 +2428,9 @@ class WebRuntimeConfig(object):
         mode="ctypes",
         data_provider=False,
         enabled=True,
-        market_routing_enabled=False,
+        market_routing_enabled=None,
         market_bridges=None,
+        qmt_strategy=None,
     ):
         account_id = str(account_id or "").strip()
         if not account_id:
@@ -2437,7 +2446,7 @@ class WebRuntimeConfig(object):
                 raise ValueError("高级模式需要填写普通 QMT 核心目录")
             if not qmt_trade_dir:
                 raise ValueError("高级模式需要填写极速交易端 QMT 核心目录")
-            if os.path.normcase(os.path.normpath(qmt_dir)) == os.path.normcase(os.path.normpath(qmt_trade_dir)):
+            if os.path.normcase(str(qmt_root(qmt_dir))) == os.path.normcase(str(qmt_root(qmt_trade_dir))):
                 raise ValueError("高级模式的两个 QMT 核心目录必须不同")
         if mode != "lttx":
             qmt_trade_dir = ""
@@ -2447,6 +2456,14 @@ class WebRuntimeConfig(object):
             bridge_id = self._account_bridge_id_locked(account_id, account_type, bridge_id, qmt_dir)
             account_key = account_key_for(account_id, account_type, bridge_id)
             existing = configs.get(account_key)
+            strategy_settings = normalize_strategy_settings(
+                qmt_strategy if qmt_strategy is not None else (existing or {}).get("qmt_strategy")
+            )
+            if strategy_settings["enabled"] and not qmt_dir:
+                raise ValueError("自动导入策略需要填写 QMT 目录")
+            if strategy_settings["enabled"] and self._bridge_has_other_account_locked(bridge_id, account_key):
+                bridge_id = self._new_account_bridge_id_locked(account_id, account_type)
+                account_key = account_key_for(account_id, account_type, bridge_id)
             if display_name is None and isinstance(existing, dict):
                 display_name = str(existing.get("display_name") or existing.get("account_name") or "").strip()
             display_name = display_name or ""
@@ -2456,9 +2473,10 @@ class WebRuntimeConfig(object):
             data_provider = bool(data_provider and enabled)
             if market_bridges is None and isinstance(existing, dict):
                 market_bridges = existing.get("market_bridges") or {}
+            if market_routing_enabled is None and isinstance(existing, dict):
                 market_routing_enabled = parse_config_bool(
                     existing.get("market_routing_enabled"),
-                    market_routing_enabled,
+                    False,
                 )
             market_routing_enabled = parse_config_bool(market_routing_enabled, False)
             market_routes = normalize_market_bridge_config(
@@ -2469,6 +2487,20 @@ class WebRuntimeConfig(object):
                 enabled=market_routing_enabled,
             )
             market_routing_enabled = bool(market_routing_enabled and market_routes)
+            if strategy_settings["enabled"] and market_routing_enabled:
+                missing_markets = [market for market, route in market_routes.items()
+                                   if route.get("enabled", True) and not route.get("qmt_dir")]
+                if enabled and missing_markets:
+                    raise ValueError("自动导入策略需要填写 %s 市场的 QMT 目录；单个 QMT 请关闭同账号独立市场路由"
+                                     % "/".join(missing_markets))
+                requested_channels = {route["bridge_id"] for route in market_routes.values() if route.get("enabled", True)}
+                for other in configs.values():
+                    if not isinstance(other, dict) or other.get("account_id") == account_id:
+                        continue
+                    occupied = {other.get("bridge_id")}
+                    occupied.update(route.get("bridge_id") for route in (other.get("market_bridges") or {}).values())
+                    if requested_channels.intersection(occupied):
+                        raise ValueError("自动导入的市场入口需要独立 bridge_id，请清空市场 bridge_id 后重试")
             if bridge_id not in self.bridges():
                 self._data.setdefault("bridges", {})[bridge_id] = self._bridge_row(
                     bridge_id,
@@ -2517,8 +2549,21 @@ class WebRuntimeConfig(object):
                 "enabled": bool(enabled),
                 "market_routing_enabled": market_routing_enabled,
                 "market_bridges": market_routes if market_routing_enabled else {},
+                "qmt_strategy": strategy_settings,
                 "updated_at": now,
             }
+            if enabled:
+                target_roots = account_qmt_roots(row)
+                for other_key, other in configs.items():
+                    if (other_key != account_key and isinstance(other, dict)
+                            and other.get("account_id") == account_id
+                            and (other.get("mode") != mode or strategy_settings["enabled"])
+                            and target_roots.intersection(account_qmt_roots(other))):
+                        other["enabled"] = False
+                        other["data_provider"] = False
+                        pair = self._data.setdefault("account_pairs", {}).get(other_key)
+                        if isinstance(pair, dict):
+                            pair["enabled"] = False
             if data_provider:
                 for item in configs.values():
                     if isinstance(item, dict):
@@ -3266,6 +3311,7 @@ class WebRuntimeConfig(object):
                 "qmt_dir": qmt_dir,
                 "qmt_trade_dir": qmt_trade_dir,
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
+                "qmt_strategy": normalize_strategy_settings(item.get("qmt_strategy")),
                 "data_provider": bool(item.get("data_provider")),
                 "enabled": item.get("enabled", True) is not False,
                 "market_routing_enabled": parse_config_bool(item.get("market_routing_enabled"), False),
@@ -3759,7 +3805,7 @@ def forced_channel_for_action(action, mode=None, params=None):
     mode = normalize_transport_mode(mode or default_runtime_client_mode())
     if xtdata_action_requires_normal_bridge(action, params=params):
         return "normal"
-    if mode == "lttx" and action.startswith("xttrader."):
+    if mode == "lttx" and (action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS):
         return "trade"
     return None
 
@@ -3867,7 +3913,10 @@ class GlobalTxClient(object):
                 return result
             except CfquantError as e:
                 last_error = e
-                if attempt == 0 and is_pipe_client_closed_error(e):
+                if action in CFTRADER_BATCH_ACTIONS and is_pipe_client_closed_error(e):
+                    self._drop_client(mode, client)
+                    raise
+                if attempt == 0 and action not in CFTRADER_BATCH_ACTIONS and is_pipe_client_closed_error(e):
                     self._drop_client(mode, client)
                     continue
                 raise
@@ -4019,7 +4068,7 @@ def account_request(
     )
     preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=base_bridge_id, account_key=resolved_account_key)
     modes = [preferred_mode]
-    if preferred_mode == "lttx":
+    if preferred_mode == "lttx" and action not in CFTRADER_BATCH_ACTIONS:
         modes.append("ctypes")
     attempts = []
     last_error = None
@@ -4089,6 +4138,58 @@ def account_request(
     raise RuntimeError(
         "%s failed for account %s: %s" % (action, account_id or "--", detail or "no route attempted")
     )
+
+
+def account_cftrader_batch_request(account_id, bridge_id, requested_channel, action, params,
+                                  default_channel="trade", timeout=12.0, account_type=None, account_key=None):
+    asynchronous = action.endswith("_async")
+    orders = prepare_batch_request(params, asynchronous)
+    _, market_routes = account_market_route_config(
+        account_id=account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key,
+    )
+    # Preserve input order when independently routed SH/SZ terminals alternate.
+    # Each consecutive segment is sent as one batch to its destination QMT.
+    segments = []
+    for index, order in enumerate(orders):
+        market = request_params_market(order) if market_routes else None
+        if market_routes:
+            route = market_routes.get(market) or {}
+            if not route.get("bridge_id") or route.get("enabled", True) is False:
+                raise ValueError("No enabled QMT market route for orders[%s]" % index)
+        if not segments or segments[-1][0] != market:
+            segments.append((market, []))
+        segments[-1][1].append(index)
+    combined = batch_result_rows(orders, params.get("seqs") if asynchronous else None)
+    routes = []
+    deadline = time.monotonic() + timeout
+    submit_ms = 0.0
+    for market, indices in segments:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        body = dict(params, orders=[orders[index] for index in indices])
+        if asynchronous:
+            body["seqs"] = [params["seqs"][index] for index in indices]
+        try:
+            routed = account_request(
+                account_id, bridge_id, requested_channel, action, body,
+                default_channel=default_channel, timeout=remaining, mark_offline_on_timeout=True,
+                account_type=account_type, account_key=account_key, route_market=market,
+            )
+            response = validate_batch_response(routed["result"], body, asynchronous)
+            submit_ms += float(response.get("qmt_submit_ms") or 0)
+            routes.append({key: value for key, value in routed.items() if key != "result"})
+            for index, row in zip(indices, response["results"]):
+                combined[index] = dict(row, index=index)
+        except Exception as error:
+            batch_unknown([combined[index] for index in indices], error)
+            break
+        if response["unknown"] or (params.get("stop_on_error", False) and response["failed"]):
+            break
+    result = batch_result(params["account"], params["batch_id"], asynchronous, combined)
+    result["qmt_submit_ms"] = round(submit_ms, 3)
+    meta = dict(routes[0]) if routes else {}
+    return dict(meta, result=result, groups=routes)
 
 
 def account_batch_order_request(
@@ -4720,6 +4821,7 @@ def binding_status_snapshot():
             rows.append(dict(entry, status=status))
         except Exception as error:
             rows.append(dict(entry, error=str(error)))
+        rows[-1]["qmt_strategy_deploy"] = QMT_STRATEGIES.status(entry["account_key"])
     now = time.time()
     return {
         "bindings": rows,
@@ -5054,9 +5156,14 @@ def route_external_lttx_request(msg):
     account_type = _external_account_type(params)
     account_key = _external_account_key(params)
     timeout = float(params.get("timeout") or msg.get("timeout") or 12.0)
-    if action.startswith("xttrader."):
+    if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS:
         account_id = account_id or configured_default_account_id()
-        if action == "xttrader.order_stock_batch":
+        if action in CFTRADER_BATCH_ACTIONS:
+            route = account_cftrader_batch_request(
+                account_id, params.get("bridge_id"), requested_channel, action, params,
+                default_channel=default_channel, timeout=timeout, account_type=account_type, account_key=account_key,
+            )
+        elif action == "xttrader.order_stock_batch":
             route = account_batch_order_request(
                 account_id,
                 params.get("bridge_id"),
@@ -5126,6 +5233,8 @@ class LttxWebRouteServer(object):
         self._quote_routes = {}
         self._quote_sequence = int(new_id("quote").rsplit("_", 1)[-1], 16)
         self._account_subscribers = {}
+        self._trader_event_dedupe = {}
+        self._trader_event_dedupe_ttl = float(os.environ.get("CFQUANT_WEB_LTTX_TRADER_EVENT_DEDUPE_SECONDS", "2.0") or 2.0)
         self._last_registry_put = 0.0
 
     def start(self):
@@ -5148,6 +5257,7 @@ class LttxWebRouteServer(object):
             quote_routes = list(self._quote_routes.values())
             self._quote_routes.clear()
             self._quote_event_routes.clear()
+            self._trader_event_dedupe.clear()
         for row in quote_routes:
             try:
                 self._release_external_quote(row, timeout=2.0)
@@ -5364,7 +5474,47 @@ class LttxWebRouteServer(object):
                 client_ids_set.update(self._account_subscribers.get(account_key, set()))
             client_ids = sorted(client_ids_set)
         for client_id in client_ids:
-            self._push_event(client_id, event, msg.get("data"))
+            if self._should_push_trader_event(client_id, event, msg):
+                self._push_event(client_id, event, msg.get("data"))
+
+    def _should_push_trader_event(self, client_id, event, msg):
+        ttl = max(0.0, float(self._trader_event_dedupe_ttl or 0.0))
+        if ttl <= 0:
+            return True
+        key = self._trader_event_dedupe_key(client_id, event, msg)
+        now = time.time()
+        with self._lock:
+            if len(self._trader_event_dedupe) > 4096:
+                cutoff = now - ttl
+                self._trader_event_dedupe = {
+                    item_key: seen_at
+                    for item_key, seen_at in self._trader_event_dedupe.items()
+                    if seen_at >= cutoff
+                }
+            last_seen = self._trader_event_dedupe.get(key)
+            if last_seen is not None and now - last_seen < ttl:
+                return False
+            self._trader_event_dedupe[key] = now
+            return True
+
+    def _trader_event_dedupe_key(self, client_id, event, msg):
+        account_id = CallbackEventStore.event_account_id_static(msg)
+        account_type = CallbackEventStore.event_account_type_static(msg)
+        bridge_id = CallbackEventStore.event_bridge_id_static(msg) or DEFAULT_BRIDGE_ID
+        data = msg.get("data") if isinstance(msg, dict) else None
+        if not account_id and isinstance(data, dict):
+            account_id = _external_account_id(data)
+            account_type = _external_account_type(data)
+        key_payload = {
+            "client_id": str(client_id or ""),
+            "event": str(event or ""),
+            "bridge_id": normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID),
+            "account_id": str(account_id or ""),
+            "account_type": normalize_account_type(account_type) if account_type not in (None, "") else "",
+            "data": data,
+        }
+        raw = json.dumps(to_jsonable(key_payload), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
 
     def _push_event(self, client_id, event, data=None, subscription_id=None):
         tx = self.tx
@@ -8872,6 +9022,33 @@ class CfquantProjectUpdater(object):
 
 UPDATER = CfquantUpdater(WEB_CONFIG)
 PROJECT_UPDATER = CfquantProjectUpdater()
+QMT_STRATEGIES = QmtStrategyManager(
+    os.path.join(RUNTIME_CONFIG_DIR, "qmt_strategy_jobs.json"),
+    os.path.join(_SOURCE_ROOT, "qmt_scripts"),
+)
+
+
+def configure_account_qmt_strategies(row, identity):
+    identities = [identity]
+    if identity.get("trade_identity"):
+        identities.append(identity["trade_identity"])
+    identities.extend(identity.get("market_identities") or [])
+    try:
+        QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
+        return QMT_STRATEGIES.configure(row, identities)
+    except Exception as error:
+        return QMT_STRATEGIES.report_error(row["account_key"], error)
+
+
+ACCOUNT_CONFIGURATION_LOCK = threading.RLock()
+
+
+def serialized_account_configuration(function):
+    @wraps(function)
+    def serialized(*args, **kwargs):
+        with ACCOUNT_CONFIGURATION_LOCK:
+            return function(*args, **kwargs)
+    return serialized
 
 
 def _write_qmt_bridge_identity_for_dir(row, qmt_dir_override=None, qmt_role="normal"):
@@ -9056,7 +9233,7 @@ def write_qmt_market_bridge_identities(row):
             results.append(result)
             continue
         if not qmt_dir:
-            result["warning"] = "market QMT dir is empty"
+            result["warning"] = "%s 市场 QMT 目录未填写" % market
             results.append(result)
             continue
         try:
@@ -11269,6 +11446,63 @@ class AccountDataCache(object):
 ACCOUNT_CACHE = AccountDataCache()
 
 
+CFTRADER_WEB_METHODS = frozenset(("order_stock", "order_stock_async", "order_stock_batch", "order_stock_batch_async"))
+_CFTRADER_WEB_SEQS = itertools.count(int(time.time() * 1000))
+
+
+def submit_cftrader_order(body, method):
+    """Authenticated web testing of the same QMT order actions used by the SDK."""
+    if method not in CFTRADER_WEB_METHODS:
+        raise ValueError("unsupported cftrader method")
+    row = account_config_for_request(body)
+    if row.get("enabled") is False:
+        raise ValueError("account binding is disabled")
+    account_id = row["account_id"]
+    account_type = normalize_account_type(row["account_type"])
+    bridge_id = row["bridge_id"]
+    account_key = row.get("account_key") or account_key_for(account_id, account_type, bridge_id)
+    if str(body.get("account_id") or "").strip() != account_id or normalize_account_type(body.get("account_type")) != account_type:
+        raise ValueError("account does not match the selected binding")
+    if body.get("bridge_id") and body["bridge_id"] != bridge_id:
+        raise ValueError("bridge_id does not match the selected binding")
+    if body.get("account_key") and body["account_key"] != account_key:
+        raise ValueError("account_key does not match the selected binding")
+    batch = "batch" in method
+    asynchronous = method.endswith("_async")
+    batch_id = new_id("webcfbatch")
+    fields = ("stock_code", "order_type", "order_volume", "price_type", "price", "strategy_name", "order_remark")
+    raw_orders = body.get("orders") if batch else [{key: body[key] for key in fields if key in body}]
+    stop_on_error = body.get("stop_on_error", False)
+    orders = prepare_batch_orders(raw_orders, batch_id, body.get("strategy_name", ""),
+                                  body.get("order_remark", ""), stop_on_error)
+    for order in orders:
+        order["stock_code"] = normalize_stock_code(order["stock_code"])
+        if order["price_type"] == FIX_PRICE and order["price"] <= 0:
+            raise ValueError("fixed-price orders require price > 0")
+    expected = "CFTRADER %s %s" % (account_id, len(orders))
+    if str(body.get("confirm_text") or "").strip() != expected:
+        raise ValueError("confirmation mismatch, expected: %s" % expected)
+    account = dict(account_id=account_id, account_type=account_type)
+    timeout = request_timeout_value(body.get("timeout"), default=30.0, maximum=120.0)
+    started = time.perf_counter()
+    if batch:
+        params = dict(account=account, batch_id=batch_id, orders=orders, stop_on_error=stop_on_error,
+                      seqs=[next(_CFTRADER_WEB_SEQS) for _ in orders] if asynchronous else [])
+        route = account_cftrader_batch_request(account_id, bridge_id, None, "cftrader." + method, params,
+                                             timeout=timeout, account_type=account_type, account_key=account_key)
+    else:
+        params = dict(orders[0], account=account)
+        if asynchronous:
+            params["seq"] = next(_CFTRADER_WEB_SEQS)
+        route = account_request(account_id, bridge_id, None, "xttrader." + method, params,
+                                default_channel="trade", timeout=timeout,
+                                account_type=account_type, account_key=account_key)
+    return dict(api_method="cftrader." + method, account_id=account_id, account_type=account_type,
+                account_key=account_key, bridge_id=bridge_id, channel=route.get("channel"),
+                mode=route.get("mode"), result=route["result"],
+                latency_ms=round((time.perf_counter() - started) * 1000, 3))
+
+
 def submit_order(body, credit_only=False):
     account_id = str(body.get("account_id") or "").strip()
     account_type = normalize_account_type(body.get("account_type") or ("CREDIT" if credit_only else "STOCK"))
@@ -11683,6 +11917,7 @@ def ensure_account_runtime(mode):
     return results
 
 
+@serialized_account_configuration
 def save_account_runtime_config(body):
     body = body or {}
     account_id = str(body.get("account_id") or "").strip()
@@ -11712,6 +11947,7 @@ def save_account_runtime_config(body):
         enabled=account_enabled,
         market_routing_enabled=market_routing_enabled,
         market_bridges=market_bridges,
+        qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
     )
     row_enabled = account_config_is_enabled(row)
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
@@ -11720,6 +11956,7 @@ def save_account_runtime_config(body):
     )
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
+    qmt_strategy_deploy = configure_account_qmt_strategies(row, identity)
     runtime = ensure_account_runtime(row["mode"])
     ACCOUNT_CACHE.prime_configured_accounts()
     STATUS_MONITOR.wake()
@@ -11728,6 +11965,7 @@ def save_account_runtime_config(body):
         "account": row,
         "qmt_core_deploy": qmt_core_deploy,
         "qmt_bridge_identity": identity,
+        "qmt_strategy_deploy": qmt_strategy_deploy,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
         "account_pairs": WEB_CONFIG.account_pairs(),
@@ -11758,11 +11996,13 @@ def account_config_for_request(body):
     return row
 
 
+@serialized_account_configuration
 def update_account_qmt_core(body):
     row = account_config_for_request(body)
     qmt_core_deploy = auto_deploy_qmt_core_for_account(row, enabled=True)
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
+    qmt_strategy_deploy = configure_account_qmt_strategies(row, identity)
     ACCOUNT_CACHE.prime_configured_accounts()
     STATUS_MONITOR.wake()
     CALLBACKS.refresh_channels(callback_channels())
@@ -11770,6 +12010,7 @@ def update_account_qmt_core(body):
         "account": row,
         "qmt_core_deploy": qmt_core_deploy,
         "qmt_bridge_identity": identity,
+        "qmt_strategy_deploy": qmt_strategy_deploy,
         "setup": WEB_CONFIG.setup_info(),
         "account_pairs": WEB_CONFIG.account_pairs(),
         "account_configs": WEB_CONFIG.account_configs(),
@@ -11777,6 +12018,7 @@ def update_account_qmt_core(body):
     }
 
 
+@serialized_account_configuration
 def delete_account_runtime_config(body):
     account_id = str((body or {}).get("account_id") or "").strip()
     account_type = normalize_account_type((body or {}).get("account_type") or "STOCK")
@@ -11815,6 +12057,7 @@ def delete_account_runtime_config(body):
                 WEB_CONFIG._data["default_account_id"] = ""
                 WEB_CONFIG._data["default_account_type"] = "STOCK"
         WEB_CONFIG._save_locked()
+    QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
     ACCOUNT_CACHE.prime_configured_accounts()
     STATUS_MONITOR.wake()
     CALLBACKS.refresh_channels(callback_channels())
@@ -11825,6 +12068,7 @@ def delete_account_runtime_config(body):
     }
 
 
+@serialized_account_configuration
 def initialize_web_setup(body):
     body = body or {}
     account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
@@ -11871,6 +12115,7 @@ def initialize_web_setup(body):
         enabled=True,
         market_routing_enabled=body.get("market_routing_enabled") if "market_routing_enabled" in body else None,
         market_bridges=body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None,
+        qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
     )
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
         row,
@@ -11878,6 +12123,7 @@ def initialize_web_setup(body):
     )
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
+    qmt_strategy_deploy = configure_account_qmt_strategies(row, identity)
     runtime = ensure_account_runtime(row["mode"])
     web_auth = None
     server_access = None
@@ -11896,6 +12142,7 @@ def initialize_web_setup(body):
         "account": row,
         "qmt_core_deploy": qmt_core_deploy,
         "qmt_bridge_identity": identity,
+        "qmt_strategy_deploy": qmt_strategy_deploy,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
         "server_access": server_access or server_access_info(include_auth_details=True),
@@ -11906,8 +12153,11 @@ def initialize_web_setup(body):
     }
 
 
+@serialized_account_configuration
 def reset_web_setup():
-    return WEB_CONFIG.reset_setup()
+    result = WEB_CONFIG.reset_setup()
+    QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
+    return result
 
 
 def set_data_provider(body):
@@ -13485,7 +13735,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self._write_json(fail("invalid json: %s" % e, 400), status=400)
             return
         try:
-            if parsed.path == "/api/order":
+            if parsed.path.startswith("/api/cftrader/"):
+                self._write_json(ok(submit_cftrader_order(body, parsed.path.rsplit("/", 1)[-1])))
+            elif parsed.path == "/api/order":
                 self._write_json(ok(submit_order(body)))
             elif parsed.path == "/api/credit/order":
                 self._write_json(ok(submit_credit_order(body)))
@@ -14448,6 +14700,8 @@ def main(argv=None):
         CLIENTS.close()
         safe_print("cfquant web global tx start failed: %s" % e)
     STATUS_MONITOR.start()
+    QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
+    QMT_STRATEGIES.start()
     ACCOUNT_CACHE.start()
     CALLBACKS.start()
     QUOTES.start()
@@ -14458,6 +14712,7 @@ def main(argv=None):
     finally:
         LOG_CLEANUP.close()
         STATUS_MONITOR.close()
+        QMT_STRATEGIES.close()
         ACCOUNT_CACHE.close()
         CALLBACKS.close()
         QUOTES.close()

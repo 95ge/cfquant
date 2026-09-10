@@ -14,6 +14,43 @@
   --warn: #a15c07;
 }
 
+.api-inline-test { min-width: 0; padding: 20px 0; margin: 20px 0; border-top: 2px solid var(--accent); border-bottom: 1px solid var(--line); }
+.api-inline-test[hidden] { display: none; }
+.api-test-heading, .api-test-result-heading, .api-test-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.api-test-heading { margin-bottom: 16px; }
+.api-test-heading h3, .api-test-result-heading h3 { margin: 0; font-size: 16px; }
+.api-test-heading code { font-size: 12px; overflow-wrap: anywhere; }
+.api-inline-form.api-form { display: block; }
+.api-test-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+.api-test-fields .field { min-width: 0; }
+.api-test-fields .wide { grid-column: 1 / -1; }
+.api-test-fields input, .api-test-fields select, .api-test-fields textarea { max-width: 100%; min-width: 0; }
+.api-test-fields .code-textarea { min-height: 140px; }
+.api-form .api-checkbox { display: flex; flex-direction: row; align-items: center; gap: 8px; }
+.api-checkbox input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; padding: 0; flex: 0 0 16px; }
+.api-test-request { margin: 18px 0; }
+.api-test-request summary { cursor: pointer; color: var(--muted); }
+.api-test-result-heading { margin: 16px 0 10px; }
+.api-test-result-heading > span { font-size: 12px; color: var(--muted); }
+.api-test-result-heading > button:first-of-type { margin-left: auto; }
+.api-test-metrics { display: flex; flex-wrap: wrap; gap: 14px 24px; margin: 10px 0 16px; }
+.api-test-metrics div { min-width: 64px; }
+.api-test-metrics dt { color: var(--muted); font-size: 12px; }
+.api-test-metrics dd { margin: 4px 0 0; font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.api-inline-test .json-box { max-width: 100%; max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.api-inline-test .api-test-output { min-height: 90px; }
+.api-test-orders { max-height: 340px; overflow: auto; margin-bottom: 14px; }
+.api-test-orders table { width: 100%; min-width: 640px; table-layout: auto; font-size: 12px; }
+.api-test-orders th, .api-test-orders td { white-space: nowrap; }
+.api-test-orders td:last-child { white-space: normal; overflow-wrap: anywhere; min-width: 140px; }
+@media (max-width: 600px) {
+  .api-test-fields { grid-template-columns: minmax(0, 1fr); }
+  .api-test-heading { align-items: flex-start; flex-direction: column; }
+  .api-test-actions button { flex: 1 1 auto; }
+  .api-test-result-heading > span { width: 100%; }
+  .api-test-result-heading > button:first-of-type { margin-left: 0; }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -5256,10 +5293,27 @@ input[type="file"] {
 
 .api-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
+}
+
+.api-head > div {
+  flex: 1 1 280px;
+  min-width: 0;
+}
+
+#apiRoute {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.api-preview.hidden,
+.api-settings-tip.hidden {
+  display: none;
 }
 
 .api-head strong,
@@ -5286,6 +5340,16 @@ input[type="file"] {
 
 .api-form .field.wide {
   grid-column: 1 / -1;
+}
+
+.api-form .field,
+.api-preview > div {
+  min-width: 0;
+}
+
+.api-workbench :not(pre) > code {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .api-form-actions {
@@ -6177,13 +6241,21 @@ tr.order-row-updated td {
 }
 
 .tutorial-layout.python-reference-active {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   min-height: 0;
 }
 
-.python-reference-active > .tutorial-menu { display: none; }
-.python-reference-active > .tutorial-content { padding: 0; overflow: hidden; }
+.python-reference-active > .tutorial-menu {
+  min-height: 0;
+  overflow: auto;
+}
+.python-reference-active > .tutorial-content {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
 .python-reference-active .tutorial-topic[data-guide-panel="python"] { height: 100%; min-height: 0; }
 .python-reference {
   display: grid;
@@ -6222,6 +6294,11 @@ tr.order-row-updated td {
   background: #f8fafb;
 }
 .python-search { display: grid; gap: 8px; padding: 16px 14px 12px; border-bottom: 1px solid var(--line); }
+.python-search-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.python-search-head label { min-width: 0; }
+.python-groups-toggle { flex: 0 0 auto; height: 28px; padding: 0 8px; border-color: #c8d4df; color: #40566d; font-size: 11px; white-space: nowrap; }
+.python-groups-toggle:hover:not(:disabled) { border-color: #8fb4d3; background: #eef6fc; color: #1f5f8f; }
+.python-groups-toggle:disabled { opacity: 0.5; }
 .python-search label { font-size: 13px; font-weight: 650; }
 .python-search .python-filter-label { font-size: 12px; color: var(--muted); font-weight: 400; }
 .python-search input, .python-search select { width: 100%; min-width: 0; }
@@ -6248,6 +6325,7 @@ tr.order-row-updated td {
 .python-nav-entry span { display: block; margin-top: 3px; font-size: 11px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
 .python-status-dot { display: inline-block; width: 6px; height: 6px; margin: 0 7px 2px 0; background: #8b95a3; border-radius: 50%; }
 .python-status-dot.supported { background: #168060; }
+.python-status-dot.extension { background: #247b81; }
 .python-status-dot.partial { background: #b87613; }
 .python-status-dot.unverified, .python-status-dot.unsupported { background: #b34646; }
 .python-reading-pane { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 20px 26px 32px; }
@@ -6263,6 +6341,7 @@ tr.order-row-updated td {
 .python-document-meta button { margin-left: auto; }
 .python-status { display: inline-flex; align-items: center; padding: 3px 7px; border-radius: 3px; font-size: 11px; line-height: 1.6; background: #edf0f3; color: #485465; }
 .python-status.supported { color: #14674d; background: #e8f5ee; }
+.python-status.extension { color: #1b666b; background: #e9f5f4; }
 .python-status.partial { color: #885c12; background: #fff5db; }
 .python-status.unverified, .python-status.unsupported { color: #9d3434; background: #fcecec; }
 .python-reference-section { padding: 24px 0; border-bottom: 1px solid var(--line); min-width: 0; }
@@ -6273,6 +6352,7 @@ tr.order-row-updated td {
 .python-section-title h3 { margin: 0; }
 .python-compat-note { border-left: 3px solid #b87613; padding: 10px 14px; background: #fffaf0; }
 .python-compat-note.supported { border-color: #168060; background: #f3faf6; }
+.python-compat-note.extension { border-color: #247b81; background: #f1f8f8; }
 .python-compat-note.unsupported, .python-compat-note.unverified { border-color: #b34646; background: #fff7f7; }
 .python-reference .guide-table-wrap { max-width: 100%; margin: 12px 0; }
 .python-reference .guide-table-wrap table { min-width: 0; width: 100%; table-layout: fixed; }
@@ -6316,6 +6396,13 @@ tr.order-row-updated td {
   .python-code .guide-code { padding: 12px; }
   .python-original iframe { height: 480px; }
   .python-document-footer { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 980px) {
+  .tutorial-layout.python-reference-active {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
 }
 
 .tutorial-topic {
@@ -9062,6 +9149,47 @@ tr.order-row-updated td {
 
   .download-progress-events div {
     grid-template-columns: 1fr;
+  }
+}
+
+.qmt-strategy-settings,
+.qmt-strategy-account-keys {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+.qmt-strategy-settings {
+  grid-column: 1 / -1;
+  padding-block: 16px;
+  border-top: 1px solid var(--line, #dce2e5);
+}
+
+.qmt-strategy-settings .wide {
+  grid-column: 1 / -1;
+}
+
+.qmt-strategy-settings input,
+.qmt-strategy-settings select,
+.qmt-strategy-settings .field {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.qmt-strategy-account-keys {
+  margin-top: 12px;
+}
+
+.qmt-strategy-progress {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .qmt-strategy-settings,
+  .qmt-strategy-account-keys {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

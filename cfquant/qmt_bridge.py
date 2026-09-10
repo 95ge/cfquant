@@ -1343,9 +1343,8 @@ class CfquantQmtBridge(object):
                         return order_id
             except Exception:
                 pass
-            latest_order_id = self._get_last_order_id(account_id, account_type, strategy_name)
-            if latest_order_id is not None and latest_order_id != previous_order_id:
-                return latest_order_id
+            # QMT's latest order number is a broker sysid, not the internal ID
+            # returned by order queries/callbacks. Wait for the matching detail.
             if time.time() >= deadline:
                 return None
             time.sleep(0.05)
