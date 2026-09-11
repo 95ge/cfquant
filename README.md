@@ -207,7 +207,7 @@ restart_cfquant.bat     重启
 
 
 ## 项目交流群
-<img src="ba67bb2fcfa8a067d2c8249656248449.jpg" alt="cfquant 项目交流群二维码" width="280" />
+<img src="631c6525c1a95aaf22ea46aeda3297f7.jpg" alt="cfquant 项目交流群二维码" width="280" />
 
 
 ## 联系作者
