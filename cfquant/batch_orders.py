@@ -7,10 +7,16 @@ from collections.abc import Mapping
 from numbers import Integral, Real
 
 
-CFTRADER_BATCH_ACTIONS = frozenset(("cftrader.order_stock_batch", "cftrader.order_stock_batch_async"))
+CFTRADER_BATCH_ORDER_ACTIONS = frozenset(("cftrader.order_stock_batch", "cftrader.order_stock_batch_async"))
+CFTRADER_BATCH_CANCEL_ACTIONS = frozenset((
+    "cftrader.cancel_order_stock_batch",
+    "cftrader.cancel_order_stock_batch_async",
+))
+CFTRADER_BATCH_ACTIONS = frozenset(tuple(CFTRADER_BATCH_ORDER_ACTIONS) + tuple(CFTRADER_BATCH_CANCEL_ACTIONS))
 _BATCH_ORDER_FIELDS = {"stock_code", "order_type", "order_volume", "price_type", "price",
                        "strategy_name", "order_remark"}
 _BATCH_REQUIRED_FIELDS = {"stock_code", "order_type", "order_volume", "price_type", "price"}
+_BATCH_CANCEL_FIELDS = {"order_id", "stock_code", "market", "order_remark"}
 
 
 def batch_positive_id(value):
@@ -75,6 +81,63 @@ def prepare_batch_orders(orders, batch_id, strategy_name="", order_remark="", st
     return rows
 
 
+def _infer_stock_market(stock_code):
+    text = str(stock_code or "").strip().upper()
+    if "." in text:
+        suffix = text.rsplit(".", 1)[1]
+        if suffix in ("SH", "SZ", "BJ"):
+            return suffix
+    code = text.split(".", 1)[0]
+    if len(code) >= 2:
+        if code.startswith(("60", "68", "51", "56", "58", "11", "50", "90")):
+            return "SH"
+        if code.startswith(("00", "30", "15", "16", "18", "12", "20")):
+            return "SZ"
+        if code.startswith(("43", "83", "87", "88", "92")):
+            return "BJ"
+    return ""
+
+
+def prepare_batch_cancels(cancels, batch_id, stop_on_error=False):
+    if not isinstance(stop_on_error, bool):
+        raise ValueError("stop_on_error must be a boolean")
+    if not isinstance(batch_id, str):
+        raise ValueError("batch_id must be a string")
+    if not batch_id:
+        raise ValueError("batch_id is required")
+    if not isinstance(cancels, (list, tuple)) or not cancels:
+        raise ValueError("cancels must be a non-empty list or tuple")
+    rows, seen = [], set()
+    for index, cancel in enumerate(cancels):
+        label = "cancels[%s]" % index
+        if isinstance(cancel, Mapping):
+            unexpected = cancel.keys() - _BATCH_CANCEL_FIELDS
+            if unexpected:
+                raise ValueError("%s: unexpected fields=%s" % (label, sorted(str(key) for key in unexpected)))
+            row = dict(cancel)
+        else:
+            row = {"order_id": cancel}
+        order_id = row.get("order_id")
+        if isinstance(order_id, bool) or order_id is None or not str(order_id).strip():
+            raise ValueError("%s.order_id is required" % label)
+        row["order_id"] = str(order_id).strip()
+        stock_code = str(row.get("stock_code") or "").strip().upper()
+        market = str(row.get("market") or "").strip().upper()
+        if market and market not in ("SH", "SZ", "BJ"):
+            raise ValueError("%s.market must be SH, SZ or BJ" % label)
+        if not market:
+            market = _infer_stock_market(stock_code)
+        row["stock_code"] = stock_code
+        row["market"] = market
+        row["order_remark"] = str(row.get("order_remark") or "")
+        key = (row["order_id"], row["market"] or "")
+        if key in seen:
+            raise ValueError("%s repeats order_id and market" % label)
+        seen.add(key)
+        rows.append(row)
+    return rows
+
+
 def prepare_batch_request(params, asynchronous):
     account = params.get("account")
     if not isinstance(account, dict) or not str(account.get("account_id") or "").strip():
@@ -93,6 +156,26 @@ def prepare_batch_request(params, asynchronous):
     return rows
 
 
+def prepare_batch_cancel_request(params, asynchronous):
+    account = params.get("account")
+    if not isinstance(account, dict) or not str(account.get("account_id") or "").strip():
+        raise ValueError("account_id is required")
+    rows = prepare_batch_cancels(
+        params.get("cancels", params.get("orders", params.get("order_ids"))),
+        params.get("batch_id"),
+        params.get("stop_on_error", False),
+    )
+    seqs = params.get("seqs", [])
+    if asynchronous:
+        if (not isinstance(seqs, list) or len(seqs) != len(rows)
+                or any(isinstance(seq, bool) or not isinstance(seq, int) or seq <= 0 for seq in seqs)
+                or len(set(seqs)) != len(seqs)):
+            raise ValueError("seqs must contain one distinct positive integer per cancel")
+    elif seqs:
+        raise ValueError("synchronous batches must not include seqs")
+    return rows
+
+
 def batch_result_rows(orders, seqs=None):
     return [{"index": index, "stock_code": row["stock_code"], "status": "skipped", "ok": None,
              "order_id": None, "seq": seqs[index] if seqs else None,
@@ -100,11 +183,18 @@ def batch_result_rows(orders, seqs=None):
             for index, row in enumerate(orders)]
 
 
-def batch_result(account, batch_id, asynchronous, results):
+def batch_cancel_result_rows(cancels, seqs=None):
+    return [{"index": index, "order_id": row["order_id"], "stock_code": row.get("stock_code", ""),
+             "market": row.get("market", ""), "status": "skipped", "ok": None,
+             "seq": seqs[index] if seqs else None, "cancel_result": None, "error": ""}
+            for index, row in enumerate(cancels)]
+
+
+def batch_result(account, batch_id, asynchronous, results, operation="order"):
     counts = {name: sum(row["status"] == name for row in results)
               for name in ("submitted", "failed", "unknown", "skipped")}
     return dict(counts, batch_id=batch_id, account=account, asynchronous=asynchronous,
-                execution="qmt", total=len(results), attempted=len(results) - counts["skipped"],
+                operation=operation, execution="qmt", total=len(results), attempted=len(results) - counts["skipped"],
                 ok=counts["submitted"] == len(results), results=results)
 
 
@@ -134,6 +224,57 @@ def validate_batch_response(result, params, asynchronous):
         if row["status"] == "submitted" and not batch_positive_id(row.get("seq" if asynchronous else "order_id")):
             raise ValueError("QMT batch returned an invalid order ID or seq")
     verified = batch_result(params["account"], params["batch_id"], asynchronous, result["results"])
+    if "qmt_submit_ms" in result:
+        verified["qmt_submit_ms"] = result["qmt_submit_ms"]
+    return verified
+
+
+def batch_cancel_result_value(result):
+    if isinstance(result, Mapping):
+        if "cancel_result" in result:
+            return result.get("cancel_result")
+        if "request_result" in result:
+            return batch_cancel_result_value(result.get("request_result"))
+    return result
+
+
+def batch_cancel_accepted(result):
+    value = batch_cancel_result_value(result)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, Integral):
+        return int(value) >= 0
+    text = str(value).strip().lower()
+    return bool(text) and text not in ("-1", "false", "none", "null")
+
+
+def validate_batch_cancel_response(result, params, asynchronous):
+    expected = params["cancels"]
+    if (not isinstance(result, dict) or result.get("execution") != "qmt"
+            or result.get("batch_id") != params["batch_id"] or result.get("asynchronous") is not asynchronous
+            or result.get("account") != params["account"]
+            or not isinstance(result.get("results"), list) or len(result["results"]) != len(expected)):
+        raise ValueError("Invalid QMT batch cancel response; update the Web service and QMT bridge")
+    for index, (row, cancel) in enumerate(zip(result["results"], expected)):
+        if (not isinstance(row, dict) or row.get("index") != index
+                or str(row.get("order_id")) != str(cancel["order_id"])
+                or row.get("stock_code", "") != cancel.get("stock_code", "")
+                or row.get("market", "") != cancel.get("market", "")
+                or not {"ok", "seq", "cancel_result", "error"}.issubset(row)
+                or row.get("status") not in ("submitted", "failed", "unknown", "skipped")):
+            raise ValueError("Invalid QMT batch cancel row; reconcile orders before retrying")
+        if row["ok"] is not {"submitted": True, "failed": False, "unknown": None, "skipped": None}[row["status"]]:
+            raise ValueError("QMT batch cancel returned an inconsistent row status")
+        if asynchronous and (isinstance(row["seq"], bool) or row["seq"] != params["seqs"][index]):
+            raise ValueError("QMT batch cancel returned a different seq")
+        if row["status"] == "submitted":
+            if asynchronous and not batch_positive_id(row.get("seq")):
+                raise ValueError("QMT batch cancel returned an invalid seq")
+            if not batch_cancel_accepted(row.get("cancel_result")):
+                raise ValueError("QMT batch cancel returned an invalid cancel result")
+    verified = batch_result(params["account"], params["batch_id"], asynchronous, result["results"], operation="cancel")
     if "qmt_submit_ms" in result:
         verified["qmt_submit_ms"] = result["qmt_submit_ms"]
     return verified
@@ -191,6 +332,33 @@ def execute_qmt_batch(bridge, params, msg, asynchronous):
             batch_unknown(unresolved, "Order ID resolution failed: %s" % error)
     result = batch_result(account, params["batch_id"], asynchronous, results)
     result["qmt_submit_ms"] = submit_ms
+    return result
+
+
+def execute_qmt_cancel_batch(bridge, params, msg, asynchronous):
+    cancels = prepare_batch_cancel_request(params, asynchronous)
+    account = params["account"]
+    results = batch_cancel_result_rows(cancels, params.get("seqs") if asynchronous else None)
+    started = time.perf_counter()
+    for index, (cancel, row) in enumerate(zip(cancels, results)):
+        request = dict(cancel, account=account)
+        if asynchronous:
+            request["seq"] = params["seqs"][index]
+        try:
+            native = bridge._cancel_order_stock_async(request, msg) if asynchronous else bridge._cancel_order_stock(request)
+            cancel_result = batch_cancel_result_value(native)
+            if batch_cancel_accepted(native):
+                row.update(status="submitted", ok=True, cancel_result=cancel_result)
+            else:
+                row.update(status="failed", ok=False, cancel_result=cancel_result,
+                           error="QMT rejected the cancel request")
+        except Exception as error:
+            batch_unknown([row], error)
+            break
+        if row["status"] == "failed" and params.get("stop_on_error", False):
+            break
+    result = batch_result(account, params["batch_id"], asynchronous, results, operation="cancel")
+    result["qmt_submit_ms"] = round((time.perf_counter() - started) * 1000, 3)
     return result
 
 

@@ -185,7 +185,7 @@
     extensionFilter.value = 'extension';
     extensionFilter.textContent = `cfquant 独立接口 (${extensions.length})`;
     root.querySelector('#pythonApiFilter').append(extensionFilter);
-    root.querySelector('.python-reference-scope').append(` cftrader 另提供 ${extensions.length} 个独立下单接口，包含批量同步与批量异步。`);
+    root.querySelector('.python-reference-scope').append(` cftrader 另提供 ${extensions.length} 个独立下单/撤单接口，包含批量同步与批量异步。`);
     nav = root.querySelector('.python-api-nav');
     doc = root.querySelector('.python-api-document');
     doc.before(legacy);

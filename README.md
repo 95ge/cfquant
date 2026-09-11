@@ -80,7 +80,7 @@
 新用户和生产环境优先使用源码包部署。原因很简单：cfquant 的 Web 控制台、QMT 入口脚本和本地配置是一起工作的，源码包保留完整项目目录，后续在网页里检查更新、更新 Web、回滚版本、提示 QMT 入口脚本变更都更方便。
 
 1. 将项目解压到固定目录，例如 `D:\cfquant`。
-2. 直接双击项目目录中的 `start_cfquant.bat`。启动脚本会使用项目 `.venv`（如果存在）或当前 Python，先检查当前环境是否已经安装 `cfquant`；已通过 PyPI 或其他方式安装时直接跳过，缺失时会用等价于 `python -m pip install --editable .` 的参数列表自动安装当前源码版本，不需要用户手动执行安装命令。
+2. 直接双击项目目录中的 `start_cfquant.bat`。启动脚本会使用项目 `.venv`（如果存在）或当前 Python，先检查当前环境是否已经安装 `cfquant`；已通过 PyPI 或其他方式安装时直接跳过，缺失时会用等价于 `python -m pip install --editable .` 的参数列表自动安装当前源码版本，不需要用户手动执行安装命令。若 Web 端口上已经运行 cfquant，会直接复用已有实例并打开页面；若端口被其他程序占用，会提示换端口或停止占用进程。
 
 自动安装失败时，启动窗口会保持打开，并把安装日志写入 `log\cfquant_startup.log`，修复 Python、网络或权限问题后重新启动即可。
 
@@ -154,12 +154,36 @@ stop_cfquant.bat        停止
 restart_cfquant.bat     重启
 ```
 
+## cftrader 100 单本地基准
+
+2026-09-11 使用本地假 QMT 交易桥复测 100 单，5 次预热、30 次采样；该基准不连接 Web、LTtx、PipeHub 或真实 QMT，不产生真实委托，只衡量 SDK 到桥接分发和本地 `passorder` 循环的协议开销。
+
+| 路径 | RPC 次数 | 中位耗时 | 平均耗时 |
+|---|---:|---:|---:|
+| 批量同步 `order_stock_batch` | 1 | 4.802 ms | 4.901 ms |
+| 单笔同步循环 `order_stock` x100 | 100 | 9.169 ms | 8.930 ms |
+| 批量异步 `order_stock_batch_async` | 1 | 7.093 ms | 7.122 ms |
+| 单笔异步循环 `order_stock_async` x100 | 100 | 9.053 ms | 9.186 ms |
+
+批量接口用于组合调仓、批量止盈止损和撤掉一组未成委托。它的原理是外部 Python 只发一次批量 RPC，Web/LTtx/ctypes 将整批请求路由到 QMT 后，由 QMT 本地连续调用 `passorder` 或 `cancel`，减少逐笔跨进程往返。`cftrader` 目前提供 `order_stock_batch`、`order_stock_batch_async`、`cancel_order_stock_batch` 和 `cancel_order_stock_batch_async`；批量返回只表示请求提交情况，最终成交或撤成仍以委托查询和回调为准。
+
+## cftrader 模拟账号实测
+
+2026-09-11 02:45 使用模拟信用账号 `900010001595` 通过 Web LTtx 统一路由连接 `acct_4b2b38c167`，对 `600000.SH` 以 8.88 元买入价、每笔 100 股测试。四条路径各提交 100 单，均返回 `submitted=100`；02:48 只读复核该批 400 笔委托状态均为 `54`（已撤），可撤数量为 0。
+
+| 路径 | RPC 次数 | 提交耗时 | 单笔均摊 |
+|---|---:|---:|---:|
+| 批量同步 `order_stock_batch` | 1 | 963.252 ms | 9.6325 ms |
+| 单笔同步循环 `order_stock` x100 | 100 | 23250.174 ms | 232.5017 ms |
+| 批量异步 `order_stock_batch_async` | 1 | 52.578 ms | 0.5258 ms |
+| 单笔异步循环 `order_stock_async` x100 | 100 | 2952.912 ms | 29.5291 ms |
+
 ## 文档
 
 | 需求 | 文档 |
 |---|---|
 | QMT 综合部署教程 | [QMT 部署教程](docs/QMT部署教程.md) |
-| cftrader 批量同步与异步下单 | [cftrader 批量交易](docs/cftrader批量交易.md) |
+| cftrader 批量同步/异步下单与撤单 | [cftrader 批量交易与撤单](docs/cftrader批量交易.md)，含 100 单本地基准 |
 | 通用模式部署 | [通用模式部署指南](docs/通用模式部署指南.md) |
 | 极致模式部署 | [极致模式部署指南](docs/极致模式部署指南.md) |
 | 高级模式部署 | [高级模式部署指南](docs/高级模式部署指南.md) |

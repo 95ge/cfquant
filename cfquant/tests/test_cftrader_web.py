@@ -5,7 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 import cfquant_web_server as web
-from cfquant.batch_orders import batch_result, batch_result_rows, prepare_batch_orders
+from cfquant.batch_orders import (
+    batch_cancel_result_rows,
+    batch_result,
+    batch_result_rows,
+    prepare_batch_cancels,
+    prepare_batch_orders,
+)
 from cfquant.cftrader import CfQuantTrader
 from cfquant.client import CfquantError, CfquantTimeout
 from cfquant.tx_trade_bridge import TxTradeBridge
@@ -22,6 +28,13 @@ def payload(asynchronous=False, codes=('600000.SH', '000001.SZ')):
                 seqs=list(range(10, 10 + len(codes))) if asynchronous else [])
 
 
+def cancel_payload(asynchronous=False, cancels=None):
+    rows = cancels or [dict(order_id='1001', stock_code='600000.SH'), dict(order_id='1002', market='SZ')]
+    return dict(account=dict(account_id='TEST_ONLY', account_type='STOCK'), batch_id='cancel-route-test',
+                cancels=prepare_batch_cancels(rows, 'cancel-route-test'),
+                seqs=list(range(20, 20 + len(rows))) if asynchronous else [])
+
+
 @pytest.fixture
 def routing(monkeypatch):
     monkeypatch.setattr(web, 'WEB_CONFIG', None)
@@ -33,10 +46,15 @@ def routing(monkeypatch):
     def request(bridge_id, channel, action, params, **kwargs):
         calls.append((bridge_id, channel, action, params, kwargs))
         asynchronous = action.endswith('_async')
-        rows = batch_result_rows(params['orders'], params.get('seqs'))
+        cancel_batch = action.startswith('cftrader.cancel_order_stock_batch')
+        rows = batch_cancel_result_rows(params['cancels'], params.get('seqs')) if cancel_batch else batch_result_rows(params['orders'], params.get('seqs'))
         for index, row in enumerate(rows):
-            row.update(status='submitted', ok=True, order_id=None if asynchronous else 1000 + index)
-        return batch_result(params['account'], params['batch_id'], asynchronous, rows)
+            if cancel_batch:
+                row.update(status='submitted', ok=True, cancel_result=0)
+            else:
+                row.update(status='submitted', ok=True, order_id=None if asynchronous else 1000 + index)
+        return batch_result(params['account'], params['batch_id'], asynchronous, rows,
+                            operation='cancel' if cancel_batch else 'order')
     clients = SimpleNamespace(request=request)
     monkeypatch.setattr(web, 'CLIENTS', clients)
     return clients, calls
@@ -66,6 +84,38 @@ def test_external_sdk_batch_is_forwarded_once_and_executed_inside_qmt(routing, m
         assert len(outer) == len(calls) == 1
         assert calls[0][0:2] == ('test_bridge', 'trade')
         assert len(calls[0][3]['orders']) == len(native) == 2
+        assert calls[0][4]['mode'] == 'lttx'
+    finally:
+        bridge.close()
+        trader.stop()
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_external_sdk_cancel_batch_is_forwarded_once_and_executed_inside_qmt(routing, monkeypatch, asynchronous):
+    clients, calls = routing
+    native = []
+    bridge = TxTradeBridge(None, show=False, globals_dict={'cancel': lambda *args: native.append(args) or True})
+    bridge.order_meta_enabled = False
+    bridge._send_trader_event = lambda *args: None
+    def request(bridge_id, channel, action, params, **kwargs):
+        calls.append((bridge_id, channel, action, params, kwargs))
+        return bridge._dispatch(action, params, {'client_id': 'test-caller', 'id': 'test-request'})
+    clients.request = request
+    trader = XtQuantTrader(account=dict(account_id='TEST_ONLY', account_type='STOCK', bridge_id='test_bridge'))
+    outer = []
+    def sdk_request(action, params):
+        outer.append((action, params))
+        return web.route_external_lttx_request(dict(action=action, params=params))[0]
+    monkeypatch.setattr(trader, '_trade_request', sdk_request)
+    try:
+        api = CfQuantTrader(trader)
+        method = api.cancel_order_stock_batch_async if asynchronous else api.cancel_order_stock_batch
+        result = method(None, [dict(order_id='1001', stock_code='600000.SH'), dict(order_id='1002', market='SZ')])
+        assert result['operation'] == 'cancel'
+        assert result['submitted'] == 2
+        assert len(outer) == len(calls) == 1
+        assert calls[0][0:2] == ('test_bridge', 'trade')
+        assert len(calls[0][3]['cancels']) == len(native) == 2
         assert calls[0][4]['mode'] == 'lttx'
     finally:
         bridge.close()
@@ -104,6 +154,33 @@ def test_closed_pipe_error_does_not_resend_batch(monkeypatch):
     assert dropped == [('ctypes', client)]
 
 
+def test_global_tx_timeout_does_not_drop_shared_pipe_client(monkeypatch):
+    calls, dropped, marked = [], [], []
+
+    def timeout(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise CfquantTimeout('slow QMT response')
+
+    client = SimpleNamespace(request=timeout)
+    manager = web.GlobalTxClient()
+    monkeypatch.setattr(manager, '_get_client', lambda mode: client)
+    monkeypatch.setattr(manager, '_drop_client', lambda *args: dropped.append(args))
+    monkeypatch.setattr(manager, '_mark_failed', lambda *args: marked.append(args))
+    monkeypatch.setattr(web, 'bridge_channels', lambda bridge_id: dict(trade='fake.trade', normal='fake.normal'))
+    with pytest.raises(CfquantTimeout):
+        manager.request(
+            'test_bridge',
+            'normal',
+            'xttrader.query_stock_asset',
+            {'account': {}},
+            mode='ctypes',
+            mark_offline_on_timeout=True,
+        )
+    assert len(calls) == 1
+    assert dropped == []
+    assert marked and marked[0][0] == ('ctypes', 'test_bridge', 'normal')
+
+
 @pytest.mark.parametrize('asynchronous', [False, True])
 def test_independent_market_batches_preserve_input_order_and_seqs(routing, monkeypatch, asynchronous):
     clients, calls = routing
@@ -126,6 +203,39 @@ def test_invalid_market_route_is_rejected_before_any_batch(routing, monkeypatch)
     monkeypatch.setattr(web, 'account_market_route_config', lambda **kwargs: ({}, {'SH': dict(bridge_id='qmt_sh')}))
     with pytest.raises(ValueError, match='No enabled QMT market route'):
         web.route_external_lttx_request(dict(action='cftrader.order_stock_batch', params=payload()))
+    assert calls == []
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_independent_market_cancel_batches_preserve_input_order_and_seqs(routing, monkeypatch, asynchronous):
+    clients, calls = routing
+    routes = dict(SH=dict(bridge_id='qmt_sh'), SZ=dict(bridge_id='qmt_sz'))
+    monkeypatch.setattr(web, 'account_market_route_config', lambda **kwargs: ({'market_routing_enabled': True}, routes))
+    action = 'cftrader.cancel_order_stock_batch' + ('_async' if asynchronous else '')
+    params = cancel_payload(asynchronous, [
+        dict(order_id='1001', stock_code='600000.SH'),
+        dict(order_id='1002', market='SH'),
+        dict(order_id='1003', stock_code='000001.SZ'),
+        dict(order_id='1004', market='SZ'),
+        dict(order_id='1005', stock_code='600001.SH'),
+    ])
+    result, meta = web.route_external_lttx_request(dict(action=action, params=params))
+    assert [call[0] for call in calls] == ['qmt_sh', 'qmt_sz', 'qmt_sh']
+    assert [len(call[3]['cancels']) for call in calls] == [2, 2, 1]
+    assert [row['index'] for row in result['results']] == list(range(5))
+    assert [row['order_id'] for row in result['results']] == [row['order_id'] for row in params['cancels']]
+    if asynchronous:
+        assert [row['seq'] for row in result['results']] == params['seqs']
+    assert result['operation'] == 'cancel'
+    assert result['submitted'] == 5
+
+
+def test_independent_market_cancel_requires_market_hint(routing, monkeypatch):
+    clients, calls = routing
+    monkeypatch.setattr(web, 'account_market_route_config', lambda **kwargs: ({}, {'SH': dict(bridge_id='qmt_sh')}))
+    with pytest.raises(ValueError, match='include market or stock_code'):
+        web.route_external_lttx_request(dict(action='cftrader.cancel_order_stock_batch',
+                                             params=cancel_payload(cancels=['1001'])))
     assert calls == []
 
 

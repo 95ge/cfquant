@@ -3939,6 +3939,64 @@ th.num .sort-header {
   gap: 6px;
 }
 
+.binding-qmt-autologin-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #d7dee8;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.binding-qmt-autologin-panel.hidden {
+  display: none;
+}
+
+.binding-qmt-autostart-settings {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #d7dee8;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.binding-qmt-autostart-settings.hidden {
+  display: none;
+}
+
+.binding-qmt-autostart-head {
+  display: grid;
+  gap: 4px;
+}
+
+.binding-qmt-autostart-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.binding-qmt-autostart-head span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.binding-qmt-restart-times {
+  display: grid;
+  gap: 8px;
+}
+
+.binding-qmt-restart-row {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.binding-qmt-restart-row input {
+  width: 100%;
+}
+
 .binding-qmt-status-row {
   display: grid;
   grid-template-columns: minmax(150px, 0.35fr) minmax(0, 1fr);

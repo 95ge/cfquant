@@ -274,6 +274,9 @@ class txl:
             print(msg)
         self.save_log(msg)
 
+    def sys_price(self,data,show_force=False):
+        return self.sys_print(data,show_force=show_force)
+
     def send_file(self,file_name,show_on=True):
         '''
         将本地文件上传至数据中心

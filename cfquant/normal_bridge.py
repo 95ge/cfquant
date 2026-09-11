@@ -765,7 +765,7 @@ class NormalQmtBridge(TxTradeBridge):
             data.setdefault("account_id", account_id)
         if account_type:
             data.setdefault("account_type", account_type)
-        if event_name == "trader:on_stock_order":
+        if event_name in ("trader:on_stock_order", "trader:on_stock_trade"):
             self._enrich_order_request_fields(data)
         self._enrich_callback_order_meta(event_name, data, account_id, account_type)
         if event_name == "trader:on_stock_order":

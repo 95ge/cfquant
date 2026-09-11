@@ -103,7 +103,7 @@ def transport(request, monkeypatch):
     if request.param is WebLttxRpcClient:
         kwargs["registry"] = {"web_request_channel": "offline.web"}
     client = request.param(**kwargs)
-    state = SimpleNamespace(client=client, starts=0, messages=[], error=None, respond=True)
+    state = SimpleNamespace(client=client, starts=0, messages=[], error=None, respond=True, closed=0)
 
     def start():
         state.starts += 1
@@ -122,11 +122,14 @@ def transport(request, monkeypatch):
         send(frame["payload"])
         return {"code": 0}
 
+    def close_fake():
+        state.closed += 1
+
     monkeypatch.setattr(client, "start", start)
     if isinstance(client, PipeRpcClient):
-        client._tx_conn = SimpleNamespace(write_frame=lambda raw: send(loads_pipe_message(raw)["payload"]), close=lambda: None)
+        client._tx_conn = SimpleNamespace(write_frame=lambda raw: send(loads_pipe_message(raw)["payload"]), close=close_fake)
     else:
-        client._tx = SimpleNamespace(push=push, Q=queue.Queue(), close=lambda: None)
+        client._tx = SimpleNamespace(push=push, Q=queue.Queue(), close=close_fake)
     yield state
     client.close()
 
@@ -170,6 +173,9 @@ def test_timeout_releases_pending_without_retry(transport):
     with pytest.raises(CfquantTimeout):
         transport.client.request("test", {"value": np.int64(100)})
     assert len(transport.messages) == 1 and transport.client._pending == {}
+    if isinstance(transport.client, PipeRpcClient):
+        assert transport.closed == 0
+        assert transport.client._tx_conn is not None
 
 
 def test_publish_event_normalizes_before_transport_start(transport):

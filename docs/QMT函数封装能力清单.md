@@ -65,6 +65,7 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 股票撤单 | `cancel_order_stock` / `POST /api/cancel` | `cancel` | 已实现。 |
 | 异步下单响应 | `order_stock_async` | `passorder` + 本地事件转发 | 已实现为桥接事件。 |
 | 异步撤单响应 | `cancel_order_stock_async` | `cancel` + 本地事件转发 | 已实现为桥接事件。 |
+| 批量撤单 | `cftrader.cancel_order_stock_batch` / `cftrader.cancel_order_stock_batch_async` | `cancel` | 已实现；一次批量 RPC 发到 QMT，QMT 内连续调用 `cancel`，支持同步和异步返回。 |
 | 交易回调转发 | WebSocket `/ws/callbacks` | QMT 策略回调函数 | 已实现资金、持仓、委托、成交、错误等回调转发。 |
 | 信用资金明细 | `query_credit_detail` / `query_credit_detail_async` / `POST /api/credit/query` (`action=detail`) | `get_trade_detail_data(account_id, "credit", "account")` | SDK 返回 `XtCreditDetail`，Web 返回 JSON；校验账号和信用类型，映射负债、市值别名，标记缺失字段；缓存已用额度单独保存在 `cfquant_qmt_fields`，不当作官网冻结额度。不主动发起柜台异步查询。 |
 | 信用负债合约 | `query_stk_compacts` / `query_stk_compacts_async` | `get_unclosed_compacts(account_id, "CREDIT")`，缺失时使用旧 `get_debt_contract(account_id)` | SDK 返回 `StkCompacts`；保留合约编号和缺失字段，不混入已了结合约，不猜算旧终端缺失的息费。 |
@@ -165,6 +166,7 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | `GET /api/account` | 已实现 | 资金、持仓、委托、成交。 |
 | `POST /api/order` | 已实现 | 单笔下单。 |
 | `POST /api/orders/batch` | 已实现 | 批量下单。 |
+| `POST /api/cftrader/cancel_order_stock_batch` / `POST /api/cftrader/cancel_order_stock_batch_async` | 已实现 | cftrader 批量同步/异步撤单。 |
 | `GET /api/order/actions` | 已实现 | 返回信用、期货、期货期权、股票期权委托动作和别名。 |
 | `GET /api/credit/actions` | 已实现 | 返回信用查询动作、信用委托动作和别名。 |
 | `POST /api/credit/query` / `POST /api/credit/probe` | 已实现 | 信用专项查询和只读能力探测。 |

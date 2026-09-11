@@ -1,8 +1,36 @@
-# cftrader 批量交易
+# cftrader 批量交易与撤单
 
-`cfquant.cftrader` 是项目扩展的下单接口。它复用已有 `XtQuantTrader` 实例，提供单笔同步、单笔异步、批量同步和批量异步下单。连接、账号订阅、查询、撤单以及交易回调继续由原实例管理。
+`cfquant.cftrader` 是项目扩展的交易接口。它复用已有 `XtQuantTrader` 实例，提供单笔同步、单笔异步、批量同步/异步下单，以及批量同步/异步撤单。连接、账号订阅、查询、单笔撤单以及交易回调继续由原实例管理。
 
-**批量的执行位置在大 QMT 内部。** 外部 Python 完整校验 `orders` 后，通过一个批量 RPC 将整批订单发送到 QMT；QMT 内部连续调用 `passorder`。100 笔订单对应一次批量通信、100 次本地下单，减少逐笔请求和响应的通信往返。
+**批量的执行位置在大 QMT 内部。** 外部 Python 完整校验 `orders` 或 `order_ids` 后，通过一个批量 RPC 将整批请求发送到 QMT；下单由 QMT 内部连续调用 `passorder`，撤单由 QMT 内部连续调用 `cancel`。100 笔操作对应一次批量通信、100 次本地调用，减少逐笔请求和响应的通信往返。
+
+做批量接口的主要目的，是让用户在组合调仓、批量止盈止损、撤掉一组未成委托时，不必在外部 Python 和 QMT 之间循环发送 100 次请求。它降低的是桥接通信和请求调度开销；不是柜台原子事务，也不保证全部同时成交或同时撤成。任何超时、断线或 `unknown` 结果都需要先查询委托和回调再决定是否重试。
+
+## 100 单本地基准
+
+2026-09-11 在本机通过 `cfquant/tests/30_cftrader批量下单性能基准.py` 复测，Python 3.12.4、Windows 10、本地假 QMT 交易桥，5 次预热、30 次采样。该基准不连接 Web、LTtx、PipeHub 或真实 QMT，不产生真实委托；它只衡量 SDK 到桥接分发和本地 `passorder` 循环的协议开销。真实券商终端耗时还会叠加网络、柜台、账号权限和 QMT 查询延迟。
+
+| 路径 | RPC 次数 | QMT 本地下单次数 | 异步回调数 | 中位耗时 | 平均耗时 | 最小-最大 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 批量同步 `order_stock_batch` | 1 | 100 | 0 | 4.802 ms | 4.901 ms | 3.724-6.484 ms |
+| 单笔同步循环 `order_stock` x100 | 100 | 100 | 0 | 9.169 ms | 8.930 ms | 6.171-11.151 ms |
+| 批量异步 `order_stock_batch_async` | 1 | 100 | 100 | 7.093 ms | 7.122 ms | 5.410-9.286 ms |
+| 单笔异步循环 `order_stock_async` x100 | 100 | 100 | 100 | 9.053 ms | 9.186 ms | 7.599-11.602 ms |
+
+批量同步相比 100 次单笔同步少 99 次 RPC，本地基准中中位耗时约下降 47.6%；批量异步相比 100 次单笔异步中位耗时约下降 21.6%。同步批量正常回包中的 `qmt_submit_ms` 只代表 QMT 内部提交循环耗时，不包含同步订单号解析；异步批量返回 `seq` 后仍需用原回调核对最终委托状态。
+
+## 100 单模拟账号实测
+
+2026-09-11 02:45 使用模拟信用账号 `900010001595`，通过 Web LTtx 统一路由连接 `acct_4b2b38c167`。测试标的 `600000.SH`，方向买入，价格 8.88 元（行情参考价 9.35 元的 95%），每笔 100 股；四条路径各提交 100 单。所有路径均返回 `submitted=100`，随后自动撤单；02:48 只读复核该批 400 笔委托状态均为 `54`（已撤），可撤数量为 0。本结果是模拟账号现场链路单次实测，不代表真实券商柜台或不同网络环境的稳定性能。
+
+| 路径 | RPC 次数 | 提交耗时 | 单笔均摊 | submitted | qmt_submit_ms | 清理结果 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 批量同步 `order_stock_batch` | 1 | 963.252 ms | 9.6325 ms | 100 | 6.703 ms | 已撤 |
+| 单笔同步循环 `order_stock` x100 | 100 | 23250.174 ms | 232.5017 ms | 100 | - | 已撤 |
+| 批量异步 `order_stock_batch_async` | 1 | 52.578 ms | 0.5258 ms | 100 | 7.940 ms | 已撤 |
+| 单笔异步循环 `order_stock_async` x100 | 100 | 2952.912 ms | 29.5291 ms | 100 | - | 已撤 |
+
+这次模拟账号实测中，批量同步相比 100 次单笔同步提交耗时约下降 95.9%；批量异步相比 100 次单笔异步提交耗时约下降 98.2%。本次 Web LTtx 路由未观察到异步下单反馈回调，但批量和单笔异步接口均返回有效提交结果，委托表也验证了 200 笔异步委托已进入模拟账号。
 
 ```python
 from cfquant import cftrader
@@ -22,6 +50,8 @@ orders_api = cftrader.CfQuantTrader(trader)
 | `order_stock_async` | 与 `order_stock` 相同 | 与原接口一致的请求序号 `seq` |
 | `order_stock_batch` | `account, orders, strategy_name="", order_remark="", stop_on_error=False` | 逐笔订单号及批量结果字典 |
 | `order_stock_batch_async` | 与 `order_stock_batch` 相同 | 逐笔请求序号及批量结果字典 |
+| `cancel_order_stock_batch` | `account, order_ids, stop_on_error=False` | 逐笔撤单调用结果及批量结果字典 |
+| `cancel_order_stock_batch_async` | 与 `cancel_order_stock_batch` 相同 | 逐笔请求序号、撤单调用结果及批量结果字典 |
 
 批量调用的 `account` 使用原来的 `StockAccount` 或账号字典；传 `None` 时使用原 `XtQuantTrader` 构造时绑定的账号。每次批量对应一个账号，多账号分别调用即可。`orders` 是非空列表或元组，每笔使用原接口字段：
 
@@ -36,6 +66,8 @@ orders_api = cftrader.CfQuantTrader(trader)
 | `order_remark` | 否 | 非空值原样使用；缺失或为空时使用“批次备注或自动批次 ID + 行号” |
 
 `stop_on_error` 必须为布尔值。不会在行内接受 `account`、`bridge_id` 或拼错的下单字段。参数错误、空批次、非有限价格、非整数数量，以及批次内重复的“代码 + 备注”都会在发送任何订单前抛出 `ValueError`。账号、品种和业务权限由现有 QMT 路径继续校验。
+
+批量撤单的 `order_ids` 可以是委托号列表，例如 `["1001", "1002"]`；也可以是字典列表，例如 `dict(order_id="1001", stock_code="600000.SH")` 或 `dict(order_id="1002", market="SZ")`。未启用独立市场路由时只需要 `order_id`；启用同账号 SH/SZ 独立交易端时，建议每笔带 `stock_code` 或 `market`，这样 Web 路由能把撤单请求发到正确的 QMT。
 
 ## 批量同步下单
 
@@ -130,6 +162,83 @@ else:
 
 信用账户使用 `StockAccount("YOUR_CREDIT_ACCOUNT_ID", "CREDIT")`，每笔的 `order_type` 改用原信用常量，例如融资买入 `xtconstant.CREDIT_FIN_BUY`、担保品卖出 `xtconstant.CREDIT_SELL`。同步、异步批量使用相同字段；期货、期货期权和股票期权也沿用原账号类型及对应下单常量。
 
+## 批量同步撤单
+
+批量撤单只提交撤单请求，不判断原委托最终是否已经撤成。返回 `submitted` 表示 QMT 的 `cancel` 调用已被接受；最终状态仍要查询委托表或等待撤单错误回调。
+
+```python
+from cfquant import cftrader
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+ENABLE_TRADING = False
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+order_ids = [
+    dict(order_id="1001", stock_code="600000.SH"),
+    dict(order_id="1002", market="SZ"),
+]
+trader = XtQuantTrader("", 0)
+orders_api = cftrader.CfQuantTrader(trader)
+if ENABLE_TRADING:
+    try:
+        trader.start()
+        if trader.connect() != 0 or trader.subscribe(account) != 0:
+            raise RuntimeError("Connection or subscription failed")
+        result = orders_api.cancel_order_stock_batch(
+            account, order_ids, stop_on_error=False,
+        )
+        for row in result["results"]:
+            print(row["index"], row["status"], row["order_id"], row["cancel_result"], row["error"])
+    finally:
+        trader.stop()
+else:
+    print("Preview only:", order_ids)
+```
+
+## 批量异步撤单与原回调
+
+异步批量撤单使用 `cancel_order_stock_batch_async`。SDK 为每笔撤单分配 `seq`，QMT 本地连续调用 `cancel` 后返回逐笔受理状态，并继续触发原 `on_cancel_order_stock_async_response` 和 `on_cancel_error` 回调。
+
+```python
+from cfquant import cftrader
+from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
+from cfquant.xttype import StockAccount
+
+class Callback(XtQuantTraderCallback):
+    def on_cancel_order_stock_async_response(self, response):
+        print("cancel response:", response.seq, response.order_id, response.cancel_result)
+
+    def on_cancel_error(self, error):
+        print("cancel error:", error)
+
+ENABLE_TRADING = False
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+order_ids = [
+    dict(order_id="1001", stock_code="600000.SH"),
+    dict(order_id="1002", market="SZ"),
+]
+trader = XtQuantTrader("", 0)
+orders_api = cftrader.CfQuantTrader(trader)
+if ENABLE_TRADING:
+    try:
+        trader.register_callback(Callback())
+        trader.start()
+        if trader.connect() != 0 or trader.subscribe(account) != 0:
+            raise RuntimeError("Connection or subscription failed")
+        result = orders_api.cancel_order_stock_batch_async(
+            account, order_ids, stop_on_error=False,
+        )
+        for row in result["results"]:
+            print(row["index"], row["status"], row["seq"], row["cancel_result"], row["error"])
+        trader.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        trader.stop()
+else:
+    print("Preview only:", order_ids)
+```
+
 ## 返回值与失败处理
 
 顶层字段包含 `batch_id`、`account`、`asynchronous`、`ok`、`total`、`attempted`、`submitted`、`failed`、`unknown`、`skipped` 和 `results`。四种状态计数之和等于 `total`，`attempted = total - skipped`；顶层 `ok` 仅在所有行都是 `submitted` 时为真。
@@ -137,6 +246,8 @@ else:
 `execution="qmt"` 标明批量采用 QMT 内执行协议。获得正常回包时，`qmt_submit_ms` 是 QMT 内部提交循环耗时，不含通信和同步编号解析耗时；并非成交延迟。整批请求失败时另有 `request_error`。回包丢失时无法确定真实执行笔数，`attempted` 包含执行情况未确认的订单，不能当作实际已下单数量。
 
 每行包含 `index`、`stock_code`、`status`、`ok`、`order_id`、`seq`、`strategy_name`、`order_remark`、`error`。同步成功行填充 `order_id`。异步所有行保留预分配的 `seq`，即使该行失败、未提交或结果未确认也可用于关联；只有 `status="submitted"` 才代表 QMT 已确认受理。另一种编号字段为 `None`。
+
+批量撤单结果的顶层字段相同，额外有 `operation="cancel"`。撤单行包含 `order_id`、可选的 `stock_code`/`market`、`seq`、`cancel_result` 和 `error`。当前桥接中，QMT `cancel` 调用返回真值会映射为 `cancel_result=0`；这只代表撤单请求提交成功，不代表原委托已经完成撤销。
 
 | 状态 | 行内 `ok` | 含义及后续处理 |
 | --- | --- | --- |
@@ -153,9 +264,9 @@ QMT 本地下单抛出异常时，停止该批尚未执行的订单。已提交�
 
 ## 部署与教程入口
 
-需要同时更新外部 Python SDK、Web 服务和 QMT 核心并重启加载。通用、高级模式加载新的 `cfquant/batch_orders.py` 与桥接模块；极致模式重新导入已同步新协议的 `CFQUANT_LITE*.py`。旧 QMT 桥不认识批量动作时会返回错误，不会自动拆成单笔请求。独立内嵌旧桥 `CfquantQmtBridge` 不支持此扩展。现有 `xttrader` 调用方式保持兼容。
+需要同时更新外部 Python SDK、Web 服务和 QMT 核心并重启加载。通用、高级模式加载新的 `cfquant/batch_orders.py` 与桥接模块；极致模式重新导入已同步新协议的 `CFQUANT_LITE*.py`。旧 QMT 桥不认识批量动作时会返回错误，不会自动拆成单笔请求。现有 `xttrader` 调用方式保持兼容。
 
-- “接口 → cftrader 独立下单接口”：查看四种下单方法的签名、参数、返回状态和 Python 示例，也可填写参数并点击“测试下单”；点击“教程与可复制示例”进入对应的 API 文档。
+- “接口 → cftrader 独立下单/撤单接口”：查看六种方法的签名、参数、返回状态和 Python 示例，也可填写参数并点击在线测试；点击“教程与可复制示例”进入对应的 API 文档。
 - “教程 → Python 接入”：搜索 `cftrader`、`order_stock_batch` 或“批量”，也可筛选“cfquant 独立接口”。
 - “教程 → cftrader 批量交易”：查看完整接入流程、同步与异步示例以及原回调处理。
 
@@ -163,7 +274,7 @@ QMT 本地下单抛出异常时，停止该批尚未执行的订单。已提交�
 
 “教程 → Python 接入”的接口详情提供“在线测试”按钮。已提供 HTTP 路由的行情、账户、信用查询和下单接口可直接填写参数、发送请求，并查看、复制或清空结果。回调接口通过“查看回调”读取原回调记录；没有网页路由的 Python 接口显示“仅 Python 调用”。打开文档不会自动执行测试。
 
-`cftrader` 四种下单方法均有对应的网页测试路由，沿用网页的鉴权和账号绑定配置：
+`cftrader` 下单和批量撤单方法均有对应的网页测试路由，沿用网页的鉴权和账号绑定配置：
 
 | 方法 | HTTP 路由 |
 | --- | --- |
@@ -171,11 +282,13 @@ QMT 本地下单抛出异常时，停止该批尚未执行的订单。已提交�
 | 单笔异步 | `POST /api/cftrader/order_stock_async` |
 | 批量同步 | `POST /api/cftrader/order_stock_batch` |
 | 批量异步 | `POST /api/cftrader/order_stock_batch_async` |
+| 批量同步撤单 | `POST /api/cftrader/cancel_order_stock_batch` |
+| 批量异步撤单 | `POST /api/cftrader/cancel_order_stock_batch_async` |
 
-请求使用 `account_id`、`account_type` 和可选的绑定 `account_key`。单笔参数沿用 SDK 的 `stock_code`、`order_type`、`order_volume`、`price_type`、`price`、`strategy_name`、`order_remark`；批量使用 `orders` 数组和布尔值 `stop_on_error`，公共策略名和备注仍可选填。`timeout` 默认 30 秒，上限 120 秒。
+请求使用 `account_id`、`account_type` 和可选的绑定 `account_key`。单笔参数沿用 SDK 的 `stock_code`、`order_type`、`order_volume`、`price_type`、`price`、`strategy_name`、`order_remark`；批量下单使用 `orders` 数组和布尔值 `stop_on_error`，公共策略名和备注仍可选填；批量撤单使用 `cancels` 数组，每项至少包含 `order_id`。`timeout` 默认 30 秒，上限 120 秒。
 
 下单测试会向所选账号提交委托。必须手动填写 `confirm_text="CFTRADER 账号 笔数"`，例如测试账号 `TEST_ONLY` 的两笔委托填写 `CFTRADER TEST_ONLY 2`。账号类型、绑定及确认笔数不匹配时，服务端在发送前拒绝请求。网页不会预填确认文本。
 
-响应的 `data.result` 为下单结果。批量页面同时显示逐笔状态、`order_id` 或 `seq`、失败原因、页面往返时间、服务端时间以及 QMT 内部提交耗时。异步 `seq` 由服务端分配，委托、成交、错误和异步下单回报继续进入原回调路径，可在回调界面查看。
+响应的 `data.result` 为下单或撤单结果。批量页面同时显示逐笔状态、`order_id` 或 `seq`、失败原因、页面往返时间、服务端时间以及 QMT 内部提交耗时。异步 `seq` 由服务端分配，委托、成交、错误、异步下单回报和异步撤单回报继续进入原回调路径，可在回调界面查看。
 
 “停止等待”仅终止浏览器等待，不能取消已经发送的委托。超时或断线后先查询委托与回调，核对后再决定是否重试。网页不会自动补发。批量路由使用上述 QMT 内部批量协议；原“交易 → 批量委托”的 `POST /api/orders/batch` 仍保留，其字段和返回结构以原 HTTP 文档为准。

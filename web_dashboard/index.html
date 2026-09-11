@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260911_01_api_test_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260911_03_api_test_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -728,10 +728,10 @@
                     <th>事件</th>
                     <th>账号</th>
                     <th>代码</th>
-                    <th>委托编号</th>
+                    <th>委托 / 成交编号</th>
                     <th class="num">价格</th>
                     <th class="num">数量</th>
-                    <th class="num">成交</th>
+                    <th class="num">成交量</th>
                     <th>状态 / 摘要</th>
                     <th>来源</th>
                     <th>完整信息</th>
@@ -1189,8 +1189,8 @@
                   <span>新旧调用对照、完整示例、迁移排查</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="cftrader">
-                  <strong>cftrader 批量交易</strong>
-                  <span>批量同步、批量异步、原回调</span>
+                  <strong>cftrader 批量交易与撤单</strong>
+                  <span>批量下单、批量撤单、原回调</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="same_account_market">
                   <strong>同账号独立市场</strong>
@@ -1943,12 +1943,39 @@ configure(
 
                 <article class="tutorial-topic" data-guide-panel="cftrader">
                   <div class="guide-section" id="cftrader-overview">
-                    <h3>cftrader 批量交易</h3>
-                    <p><code>cfquant.cftrader</code> 是项目扩展的下单模块。通过 <code>CfQuantTrader(trader)</code> 复用已有 <code>XtQuantTrader</code> 实例；连接、订阅、查询、撤单和回调继续交给原实例。</p>
-                    <p><strong>整批订单通过一次 RPC 发送到大 QMT，再由 QMT 内部连续调用 passorder。</strong> 100 笔订单对应一次批量通信、100 次本地下单，减少逐笔通信往返。需要更新并重启 Web 服务和 QMT 核心；极致模式需重新导入更新后的内置脚本。</p>
+                    <h3>cftrader 批量交易与撤单</h3>
+                    <p><code>cfquant.cftrader</code> 是项目扩展的交易模块。通过 <code>CfQuantTrader(trader)</code> 复用已有 <code>XtQuantTrader</code> 实例；连接、订阅、查询、单笔撤单和回调继续交给原实例。</p>
+                    <p><strong>整批请求通过一次 RPC 发送到大 QMT，再由 QMT 内部连续调用 passorder 或 cancel。</strong> 100 笔操作对应一次批量通信、100 次本地调用，减少逐笔通信往返。批量接口适合组合调仓、批量止盈止损，以及撤掉一组未成委托；最终成交或撤成仍以委托查询和回调为准。</p>
+                    <p>需要更新并重启 Web 服务和 QMT 核心；极致模式需重新导入更新后的内置脚本。启用同账号 SH/SZ 独立市场路由时，批量撤单建议每笔带 <code>stock_code</code> 或 <code>market</code>，便于路由到正确交易端。</p>
+                    <p>本机假 QMT 桥基准（2026-09-11，100 单，5 次预热、30 次采样）显示：批量同步中位 4.802 ms，100 次单笔同步中位 9.169 ms；批量异步中位 7.093 ms，100 次单笔异步中位 9.053 ms。该结果只衡量 SDK 到桥接分发开销，不代表真实券商柜台耗时。</p>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead><tr><th scope="col">100 单路径</th><th scope="col">RPC 次数</th><th scope="col">中位耗时</th><th scope="col">平均耗时</th></tr></thead>
+                        <tbody>
+                          <tr><td>批量同步 <code>order_stock_batch</code></td><td>1</td><td>4.802 ms</td><td>4.901 ms</td></tr>
+                          <tr><td>单笔同步循环 <code>order_stock</code></td><td>100</td><td>9.169 ms</td><td>8.930 ms</td></tr>
+                          <tr><td>批量异步 <code>order_stock_batch_async</code></td><td>1</td><td>7.093 ms</td><td>7.122 ms</td></tr>
+                          <tr><td>单笔异步循环 <code>order_stock_async</code></td><td>100</td><td>9.053 ms</td><td>9.186 ms</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                    <p>模拟账号实测（2026-09-11 02:45）：信用账号 <code>900010001595</code> 通过 Web LTtx 统一路由连接 <code>acct_4b2b38c167</code>，对 <code>600000.SH</code> 以 8.88 元、每笔 100 股测试；四条路径各 100 单均返回 <code>submitted=100</code>，复核 400 单均已撤。</p>
+                    <div class="guide-table-wrap">
+                      <table>
+                        <thead><tr><th scope="col">模拟账号 100 单路径</th><th scope="col">RPC 次数</th><th scope="col">提交耗时</th><th scope="col">单笔均摊</th></tr></thead>
+                        <tbody>
+                          <tr><td>批量同步 <code>order_stock_batch</code></td><td>1</td><td>963.252 ms</td><td>9.6325 ms</td></tr>
+                          <tr><td>单笔同步循环 <code>order_stock</code></td><td>100</td><td>23250.174 ms</td><td>232.5017 ms</td></tr>
+                          <tr><td>批量异步 <code>order_stock_batch_async</code></td><td>1</td><td>52.578 ms</td><td>0.5258 ms</td></tr>
+                          <tr><td>单笔异步循环 <code>order_stock_async</code></td><td>100</td><td>2952.912 ms</td><td>29.5291 ms</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
                     <nav class="python-guide-toc" aria-label="cftrader 章节">
                       <a href="#cftrader-sync">批量同步下单</a>
                       <a href="#cftrader-async">批量异步与回调</a>
+                      <a href="#cftrader-cancel-sync">批量同步撤单</a>
+                      <a href="#cftrader-cancel-async">批量异步撤单</a>
                       <a href="#cftrader-results">返回值与失败处理</a>
                     </nav>
                     <div class="guide-table-wrap">
@@ -1959,11 +1986,13 @@ configure(
                           <tr><td><a href="#python-api=cftrader.order_stock_async"><code>order_stock_async</code></a></td><td>保留原单笔参数顺序，返回请求序号 <code>seq</code>。</td></tr>
                           <tr><td><a href="#python-api=cftrader.order_stock_batch"><code>order_stock_batch</code></a></td><td><code>account, orders, strategy_name="", order_remark="", stop_on_error=False</code>；返回逐笔订单号和批量统计。</td></tr>
                           <tr><td><a href="#python-api=cftrader.order_stock_batch_async"><code>order_stock_batch_async</code></a></td><td>与同步批量参数相同；返回逐笔请求序号和批量统计。</td></tr>
+                          <tr><td><a href="#python-api=cftrader.cancel_order_stock_batch"><code>cancel_order_stock_batch</code></a></td><td><code>account, order_ids, stop_on_error=False</code>；返回逐笔撤单调用结果。</td></tr>
+                          <tr><td><a href="#python-api=cftrader.cancel_order_stock_batch_async"><code>cancel_order_stock_batch_async</code></a></td><td>与同步批量撤单参数相同；返回逐笔请求序号和撤单调用结果。</td></tr>
                         </tbody>
                       </table>
                     </div>
                     <p><code>orders</code> 是订单字典列表。每笔必填 <code>stock_code</code>、<code>order_type</code>、<code>order_volume</code>、<code>price_type</code>、<code>price</code>，沿用原常量和字段名。可单独指定 <code>strategy_name</code> 和 <code>order_remark</code>；未填备注时自动生成逐笔备注。</p>
-                    <p>每批对应一个账号，参数会在发送前整批校验。数量必须为正整数，价格必须为有限数值，字段拼写错误会直接报错。完整文档位于 <code>docs/cftrader批量交易.md</code>。</p>
+                    <p>每批对应一个账号，参数会在发送前整批校验。下单数量必须为正整数，价格必须为有限数值，字段拼写错误会直接报错；撤单列表每项至少包含 <code>order_id</code>。完整文档位于 <code>docs/cftrader批量交易.md</code>。</p>
                   </div>
                   <div class="guide-section" id="cftrader-sync">
                     <h3>批量同步下单</h3>
@@ -2050,6 +2079,77 @@ else:
                     <h4>信用与其他账号类型</h4>
                     <p>信用账户使用 <code>StockAccount("YOUR_CREDIT_ACCOUNT_ID", "CREDIT")</code>。融资买入使用 <code>xtconstant.CREDIT_FIN_BUY</code>，担保品卖出使用 <code>xtconstant.CREDIT_SELL</code>，同步和异步批量字段一致。期货、期货期权和股票期权沿用原账号类型、合约代码和对应常量。</p>
                   </div>
+                  <div class="guide-section" id="cftrader-cancel-sync">
+                    <h3>批量同步撤单</h3>
+                    <p>批量撤单只提交撤单请求，不判断原委托最终是否已经撤成。返回 <code>submitted</code> 表示 QMT 的 <code>cancel</code> 调用已被接受；最终状态仍要查询委托表或等待撤单错误回调。</p>
+                    <pre class="guide-code" data-language="python">from cfquant import cftrader
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+ENABLE_TRADING = False
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+order_ids = [
+    dict(order_id="1001", stock_code="600000.SH"),
+    dict(order_id="1002", market="SZ"),
+]
+trader = XtQuantTrader("", 0)
+orders_api = cftrader.CfQuantTrader(trader)
+if ENABLE_TRADING:
+    try:
+        trader.start()
+        if trader.connect() != 0 or trader.subscribe(account) != 0:
+            raise RuntimeError("Connection or subscription failed")
+        result = orders_api.cancel_order_stock_batch(
+            account, order_ids, stop_on_error=False,
+        )
+        for row in result["results"]:
+            print(row["index"], row["status"], row["order_id"], row["cancel_result"], row["error"])
+    finally:
+        trader.stop()
+else:
+    print("Preview only:", order_ids)</pre>
+                  </div>
+                  <div class="guide-section" id="cftrader-cancel-async">
+                    <h3>批量异步撤单与原回调</h3>
+                    <p>异步批量撤单使用 <code>cancel_order_stock_batch_async</code>。SDK 为每笔撤单分配 <code>seq</code>，QMT 本地连续调用 <code>cancel</code> 后返回逐笔受理状态，并继续触发原 <code>on_cancel_order_stock_async_response</code> 和 <code>on_cancel_error</code> 回调。</p>
+                    <pre class="guide-code" data-language="python">from cfquant import cftrader
+from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
+from cfquant.xttype import StockAccount
+
+class Callback(XtQuantTraderCallback):
+    def on_cancel_order_stock_async_response(self, response):
+        print("cancel response:", response.seq, response.order_id, response.cancel_result)
+
+    def on_cancel_error(self, error):
+        print("cancel error:", error)
+
+ENABLE_TRADING = False
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+order_ids = [
+    dict(order_id="1001", stock_code="600000.SH"),
+    dict(order_id="1002", market="SZ"),
+]
+trader = XtQuantTrader("", 0)
+orders_api = cftrader.CfQuantTrader(trader)
+if ENABLE_TRADING:
+    try:
+        trader.register_callback(Callback())
+        trader.start()
+        if trader.connect() != 0 or trader.subscribe(account) != 0:
+            raise RuntimeError("Connection or subscription failed")
+        result = orders_api.cancel_order_stock_batch_async(
+            account, order_ids, stop_on_error=False,
+        )
+        for row in result["results"]:
+            print(row["index"], row["status"], row["seq"], row["cancel_result"], row["error"])
+        trader.run_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        trader.stop()
+else:
+    print("Preview only:", order_ids)</pre>
+                  </div>
                   <div class="guide-section" id="cftrader-results">
                     <h3>返回值与失败处理</h3>
                     <p>顶层返回 <code>batch_id</code>、<code>account</code>、<code>asynchronous</code>、<code>ok</code>、<code>total</code>、<code>attempted</code>、<code>submitted</code>、<code>failed</code>、<code>unknown</code>、<code>skipped</code> 和 <code>results</code>。每行包含状态、原始索引、代码、策略名、备注、订单号或请求序号及错误信息。</p>
@@ -2065,6 +2165,7 @@ else:
                       </table>
                     </div>
                     <p><code>execution="qmt"</code> 标明采用 QMT 内批量执行协议，<code>qmt_submit_ms</code> 是 QMT 提交循环耗时，不包含通信与编号解析。异步所有行保留预分配 <code>seq</code>，只有 <code>submitted</code> 代表确认受理。</p>
+                    <p>批量撤单结果额外有 <code>operation="cancel"</code>；每行包含 <code>order_id</code>、可选 <code>stock_code</code>/<code>market</code>、<code>seq</code>、<code>cancel_result</code> 和 <code>error</code>。<code>cancel_result=0</code> 表示 QMT 撤单调用成功，不代表原委托已经处于已撤状态。</p>
                     <p>QMT 本地下单异常会停止尚未执行的行。<code>trader.set_timeout()</code> 对整批 RPC 生效，整批超时或回包丢失时所有未确认行标为 <code>unknown</code>，保留原异步关联；SDK 和 Web 均不自动重试或切换通道重发。已提交订单不回滚，不保证原子提交或同时成交。</p>
                     <p>启用 SH/SZ 独立市场路由时，连续同目标市场的订单组成一段，每段一个批量请求，由对应 QMT 本地执行；返回结果仍保持输入顺序。</p>
                   </div>
@@ -2766,6 +2867,18 @@ else:
           <input id="bindingQmtDir" name="qmt_dir" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64" autocomplete="off">
           <small>保存后会自动复制 cfquant 到 bin.x64\cfquant。留空时该账号仍可运行，但自动复制、自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
         </label>
+        <label class="toggle binding-dialog-wide-row">
+          <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox">
+          <span>勾选自动登录（自动启动 QMT 并记录 PID）</span>
+        </label>
+        <div id="bindingQmtAutoLoginSettings" class="binding-qmt-autostart-settings binding-dialog-wide-row hidden">
+          <div class="binding-qmt-autostart-head">
+            <strong>每日重启时间</strong>
+            <span>请先在 QMT 登录界面勾选“记住密码”和“自动登录”；系统会启动绑定目录的 XtItClient.exe，并在下列时间按目录定向重启。</span>
+          </div>
+          <div id="bindingQmtRestartTimes" class="binding-qmt-restart-times"></div>
+          <button id="addBindingQmtRestartTimeBtn" type="button">添加重启时间</button>
+        </div>
         <label class="field wide">
           <span>账号模式</span>
           <select id="bindingMode" name="mode">
@@ -2877,6 +2990,13 @@ else:
           </div>
           <div id="bindingQmtGuideStatus" class="binding-qmt-guide-status"></div>
         </div>
+        <div id="bindingQmtAutoLoginPanel" class="binding-qmt-autologin-panel hidden">
+          <div class="binding-qmt-guide-section-head">
+            <strong>QMT 自动启动状态</strong>
+            <span>请确认 QMT 已勾选“记住密码”和“自动登录”；系统只负责启动和按计划重启绑定目录的 XtItClient.exe。</span>
+          </div>
+          <div id="bindingQmtAutoLoginStatus" class="binding-qmt-guide-status"></div>
+        </div>
         <div>
           <div class="binding-qmt-guide-section-head">
             <strong>手工加载策略文件</strong>
@@ -2952,9 +3072,9 @@ else:
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
   <script src="/python-api-data.js?v=20260909_01"></script>
-  <script src="/cftrader-api-data.js?v=20260911_01"></script>
-  <script src="/api-tester.js?v=20260911_01"></script>
+  <script src="/cftrader-api-data.js?v=20260911_02"></script>
+  <script src="/api-tester.js?v=20260911_02"></script>
   <script src="/python-api.js?v=20260911_api_test_01"></script>
-  <script src="/app.js?v=web_20260911_01_api_test_01"></script>
+  <script src="/app.js?v=web_20260911_03_callback_01"></script>
 </body>
 </html>

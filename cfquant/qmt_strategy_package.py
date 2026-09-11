@@ -5,8 +5,23 @@ import json
 import re
 
 
+def _aes_module():
+    try:
+        from Crypto.Cipher import AES
+        return AES
+    except ImportError as crypto_error:
+        try:
+            from Cryptodome.Cipher import AES
+            return AES
+        except ImportError:
+            raise RuntimeError(
+                "QMT 策略打包需要 pycryptodome，请使用当前 Web Python 执行 "
+                "'python -m pip install pycryptodome>=3.20' 后重启 Web"
+            ) from crypto_error
+
+
 def _cipher():
-    from Crypto.Cipher import AES
+    AES = _aes_module()
     seed = bytes((a + b) & 255 for a, b in zip(b"rzrk2012", b"RZRK8888"))
     material, previous = b"", b""
     # QMT uses EVP_BytesToKey(SHA1, no salt, count=5), AES-256-CFB128.

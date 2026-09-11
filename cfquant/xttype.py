@@ -469,6 +469,7 @@ class XtTrade(DictObject):
             "m_strTradeID",
             "m_strDealID",
             "m_nTradeID",
+            "m_nDealID",
         ), default="")
         _set_first(data, "traded_time", (
             "trade_time",
@@ -521,6 +522,7 @@ class XtTrade(DictObject):
         ), default=0)
         _set_first(data, "commission", (
             "m_dCommission",
+            "m_dComssion",
         ), default=0.0)
         _set_first(data, "secu_account", (
             "m_strSecuAccount",

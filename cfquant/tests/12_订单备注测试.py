@@ -100,6 +100,39 @@ def test_qmt_bridge_remark_alias_precedes_strategy_name():
     assert calls[0][9] == "remark-a"
 
 
+def test_qmt_bridge_query_trade_restores_strategy_name_from_submitted_remark():
+    raw_trade = {
+        "m_strAccountID": "A123",
+        "m_nRef": 700002,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_strRemark": "remark-a",
+        "m_strStrategyName": "",
+        "m_dPrice": 10.0,
+        "m_nVolume": 100,
+    }
+    bridge = CfquantQmtBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 700002,
+            "get_trade_detail_data": lambda *args: [raw_trade],
+        },
+    )
+
+    bridge._order_stock(_base_order_params(order_remark="remark-a", strategy_name="strategy-a"))
+    rows = bridge._query_trade_detail(
+        {"account": {"account_id": "A123", "account_type": "STOCK"}},
+        "DEAL",
+    )
+    trade = XtTrade.from_any(rows[0])
+
+    assert rows[0]["strategy_name"] == "strategy-a"
+    assert rows[0]["m_strStrategyName"] == "strategy-a"
+    assert trade.strategy_name == "strategy-a"
+    assert trade.order_remark == "remark-a"
+
+
 def test_tx_trade_bridge_order_remark_precedes_strategy_name():
     calls = []
     bridge = TxTradeBridge(
@@ -357,6 +390,37 @@ def test_normal_bridge_turns_real_order_callback_into_xtorderresponse():
     callback_payload = json.loads(callback_pushes[0][1])
     assert callback_payload["data"]["order_remark"] == "remark"
     assert callback_payload["data"]["strategy_name"] == "hxy"
+
+
+def test_normal_bridge_trade_callback_restores_strategy_name_from_submitted_remark():
+    bridge = NormalQmtBridge(
+        DummyContext(),
+        show=False,
+        schedule_timer=False,
+        order_meta_enabled=False,
+    )
+    bridge.tx = RecordingTx()
+    bridge._remember_order_request("A123", "000001.SZ", "remark", "hxy")
+
+    bridge.publish_callback_event("trader:on_stock_trade", {
+        "m_strAccountID": "A123",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700009,
+        "m_strRemark": "remark",
+        "m_strStrategyName": "",
+        "m_dPrice": 10.0,
+        "m_nVolume": 100,
+    })
+
+    callback_payload = json.loads([item for item in bridge.tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    trade = XtTrade.from_any(data)
+    assert data["strategy_name"] == "hxy"
+    assert data["m_strStrategyName"] == "hxy"
+    assert trade.strategy_name == "hxy"
+    assert trade.order_remark == "remark"
 
 
 def test_tx_trade_bridge_pushes_order_meta_before_passorder_and_persists_account_store():
@@ -808,6 +872,123 @@ def test_query_order_restores_strategy_name_from_submitted_remark():
 
     assert orders[0]["strategy_name"] == "hxy"
     assert orders[0]["m_strStrategyName"] == "hxy"
+
+
+def test_query_trade_restores_strategy_name_from_submitted_remark():
+    raw_trade = {
+        "m_strAccountID": "A123",
+        "m_nRef": 700005,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_strRemark": "remark",
+        "m_strStrategyName": "",
+        "m_dPrice": 10.0,
+        "m_nVolume": 100,
+    }
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 700005,
+            "get_trade_detail_data": lambda *args: [raw_trade],
+        },
+    )
+
+    bridge._order_stock(
+        _base_order_params(strategy_name="hxy", order_remark="remark", find_order_wait=0),
+        {"id": "request-1"},
+    )
+    trades = bridge._query_trade_detail(
+        {"account": {"account_id": "A123", "account_type": "STOCK"}},
+        "deal",
+    )
+    trade = XtTrade.from_any(trades[0])
+
+    assert trades[0]["strategy_name"] == "hxy"
+    assert trades[0]["m_strStrategyName"] == "hxy"
+    assert trade.strategy_name == "hxy"
+    assert trade.order_remark == "remark"
+
+
+def test_query_trade_restores_strategy_name_from_order_meta_ref():
+    raw_trade = {
+        "m_strAccountID": "A123",
+        "m_nRef": 700006,
+        "m_strOrderRef": "700006",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_strRemark": "",
+        "m_strStrategyName": "",
+        "m_dPrice": 10.0,
+        "m_nVolume": 100,
+    }
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={"get_trade_detail_data": lambda *args: [raw_trade]},
+    )
+    bridge.order_meta_cache.upsert(order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "A123",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "strategy_name": "meta-strategy",
+        "order_remark": "meta-remark",
+        "user_order_id": "meta-remark",
+        "order_ref": "700006",
+    }))
+
+    trades = bridge._query_trade_detail(
+        {"account": {"account_id": "A123", "account_type": "STOCK"}},
+        "deal",
+    )
+    trade = XtTrade.from_any(trades[0])
+
+    assert trades[0]["strategy_name"] == "meta-strategy"
+    assert trades[0]["order_remark"] == "meta-remark"
+    assert trade.strategy_name == "meta-strategy"
+    assert trade.order_remark == "meta-remark"
+
+
+def test_query_trade_order_meta_does_not_use_context_only_match():
+    raw_trade = {
+        "m_strAccountID": "A123",
+        "m_nRef": 700007,
+        "m_strOrderRef": "700007",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_strRemark": "",
+        "m_strStrategyName": "",
+        "m_nOrderType": 23,
+        "m_dPrice": 10.0,
+        "m_nVolume": 100,
+    }
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={"get_trade_detail_data": lambda *args: [raw_trade]},
+    )
+    bridge.order_meta_cache.upsert(order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "A123",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price": 10.0,
+        "strategy_name": "other-strategy",
+        "order_remark": "other-remark",
+        "user_order_id": "other-remark",
+        "order_ref": "another-ref",
+        "status": "callback_bound",
+    }))
+
+    trades = bridge._query_trade_detail(
+        {"account": {"account_id": "A123", "account_type": "STOCK"}},
+        "deal",
+    )
+
+    assert trades[0]["strategy_name"] == ""
+    assert trades[0]["order_remark"] in (None, "")
 
 
 def test_big_qmt_order_fields_map_to_miniqmt_shape_and_json_primitives():

@@ -36,6 +36,34 @@ def test_same_qmt_same_fund_has_one_mode_across_path_aliases_and_bindings(web_co
     assert config.setup_info()["default_account_key"] != first["account_key"]
 
 
+def test_set_data_provider_returns_complete_account_payload(web_config, tmp_path, monkeypatch):
+    web, config = web_config
+    first = config.save_account_config("1000000001", bridge_id="first", qmt_dir=str(tmp_path), data_provider=True)
+    second = config.save_account_config("8885060548", bridge_id="default", qmt_dir=str(tmp_path / "guojin"))
+    monkeypatch.setattr(web.ACCOUNT_CACHE, "prime_configured_accounts", lambda: None)
+    monkeypatch.setattr(web.STATUS_MONITOR, "wake", lambda: None)
+    monkeypatch.setattr(web.CALLBACKS, "refresh_channels", lambda channels: None)
+
+    data = web.set_data_provider({"account_key": second["account_key"]})
+
+    assert data["setup"]["data_provider_account_key"] == second["account_key"]
+    assert data["account"]["account_id"] == "8885060548"
+    assert data["account_configs"][first["account_key"]]["data_provider"] is False
+    assert data["account_configs"][second["account_key"]]["data_provider"] is True
+    assert data["bridges"]["default"]["python_dir"] == str(tmp_path / "guojin")
+
+
+def test_disabled_account_cannot_be_set_as_data_provider(web_config, tmp_path, monkeypatch):
+    web, config = web_config
+    disabled = config.save_account_config("8885060548", qmt_dir=str(tmp_path), enabled=False)
+    monkeypatch.setattr(web.ACCOUNT_CACHE, "prime_configured_accounts", lambda: None)
+    monkeypatch.setattr(web.STATUS_MONITOR, "wake", lambda: None)
+    monkeypatch.setattr(web.CALLBACKS, "refresh_channels", lambda channels: None)
+
+    with pytest.raises(ValueError, match="disabled account"):
+        web.set_data_provider({"account_key": disabled["account_key"]})
+
+
 def test_advanced_mode_cannot_use_two_aliases_for_one_qmt(web_config, tmp_path):
     _, config = web_config
     with pytest.raises(ValueError, match="QMT"):
@@ -106,3 +134,49 @@ def test_save_and_delete_call_deployment_manager(web_config, monkeypatch):
     assert calls[1][1]["autorun"] is True
     web.delete_account_runtime_config({"account_key": data["account"]["account_key"]})
     assert calls[-1] == ("reconcile", set())
+
+
+def test_save_can_start_qmt_auto_login_and_persist_restart_times(web_config, monkeypatch):
+    web, config = web_config
+    calls = []
+    monkeypatch.setattr(web, "auto_deploy_qmt_core_for_account", lambda *args, **kwargs: {})
+    monkeypatch.setattr(web, "write_qmt_bridge_identity", lambda row: {"written": True, "path": "fake"})
+    monkeypatch.setattr(web, "write_qmt_market_bridge_identities", lambda row: [])
+    monkeypatch.setattr(web, "configure_account_qmt_strategies", lambda row, identity: {})
+    monkeypatch.setattr(web, "ensure_account_runtime", lambda mode: {})
+    monkeypatch.setattr(web.ACCOUNT_CACHE, "prime_configured_accounts", lambda: None)
+    monkeypatch.setattr(web.STATUS_MONITOR, "wake", lambda: None)
+    monkeypatch.setattr(web.CALLBACKS, "refresh_channels", lambda channels: None)
+
+    def apply(row, request=None):
+        calls.append((row["account_id"], request, row["qmt_auto_login"]))
+        return {"enabled": True, "started": True, "pid": 1234,
+                "restart_times": row["qmt_auto_login"]["restart_times"]}
+
+    monkeypatch.setattr(web, "qmt_auto_login_apply_for_account", apply)
+    data = web.save_account_runtime_config({
+        "account_id": "8885060548",
+        "display_name": "国金证券",
+        "qmt_dir": r"D:\国金证券QMT交易端\bin.x64",
+        "qmt_auto_login": {"enabled": True, "restart_times": ["6:30", "06:30", "18:05"]},
+    })
+    assert data["qmt_auto_login"]["pid"] == 1234
+    assert data["account"]["qmt_auto_login"] == {"enabled": True, "restart_times": ["06:30", "18:05"]}
+    assert calls == [("8885060548", {"enabled": True, "restart_times": ["6:30", "06:30", "18:05"]},
+                      {"enabled": True, "restart_times": ["06:30", "18:05"]})]
+
+
+def test_complete_qmt_auto_login_restarts_saved_account(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    row = config.save_account_config(
+        "8885060548",
+        qmt_dir=str(tmp_path),
+        display_name="国金证券",
+        qmt_auto_login={"enabled": True, "restart_times": ["07:30"]},
+    )
+    calls = []
+    monkeypatch.setattr(web, "qmt_auto_login_restart_for_account",
+                        lambda account, request=None, reason="manual": calls.append((account["account_key"], request, reason)) or {"restarted": True})
+    data = web.complete_qmt_auto_login({"account_key": row["account_key"]})
+    assert data["restarted"] is True
+    assert calls == [(row["account_key"], {"enabled": True, "restart_times": ["07:30"]}, "manual")]

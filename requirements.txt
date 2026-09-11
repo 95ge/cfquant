@@ -4,6 +4,7 @@
 pandas
 packaging
 psutil
+# pycryptodome provides the Crypto.Cipher namespace used by QMT strategy packages.
 pycryptodome>=3.20
 pytz
 tabulate

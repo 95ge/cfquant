@@ -128,6 +128,29 @@ def _write_json(path, value):
     _atomic_write(path, json.dumps(value, ensure_ascii=True, sort_keys=True, indent=2).encode("utf-8"))
 
 
+def _generation_values(value):
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    result = []
+    for item in value:
+        item = str(item or "").strip()
+        if item and item not in result:
+            result.append(item)
+    return result
+
+
+def _runtime_generation(role):
+    path = role.get("runtime_status_path") if isinstance(role, dict) else ""
+    if not path:
+        return ""
+    try:
+        report = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return ""
+    generation = report.get("generation")
+    return str(generation or "").strip()
+
+
 def _read_document(path, expected_root="ICUserConfigFile"):
     content = path.read_bytes()
     if len(content) > 16 * 1024 * 1024 or b"<!DOCTYPE" in content.upper() or b"<!ENTITY" in content.upper():
@@ -306,6 +329,82 @@ class QmtStrategyManager:
             return
         job.update(state=state, message=error or STATES[state], error=error, updated_at=time.time())
 
+    def _clear_generation_transition(self, job):
+        changed = False
+        for key in ("control_generation", "accepted_generations"):
+            if key in job:
+                job.pop(key, None)
+                changed = True
+        return changed
+
+    def _prepare_generation_transition(self, job, previous=None):
+        """Keep old same-name containers valid until the replacement starts."""
+        if not job.get("enabled"):
+            return self._clear_generation_transition(job)
+
+        generation = str(job.get("generation") or "").strip()
+        if not generation:
+            return False
+
+        if previous is not None:
+            previous_roles = {
+                role.get("role"): role
+                for role in previous.get("roles", [])
+                if isinstance(role, dict)
+            }
+            reused = any(
+                isinstance(previous_roles.get(role.get("role")), dict)
+                and previous_roles[role["role"]].get("name") == role.get("name")
+                for role in job.get("roles", [])
+            )
+            if previous.get("mode") != job.get("mode") or not reused:
+                return self._clear_generation_transition(job)
+            candidates = _generation_values(previous.get("accepted_generations"))
+            if previous.get("control_generation"):
+                candidates.insert(0, str(previous["control_generation"]).strip())
+            candidates.extend(
+                _runtime_generation(previous_roles[role.get("role")])
+                for role in job.get("roles", [])
+                if isinstance(previous_roles.get(role.get("role")), dict)
+            )
+            if previous.get("generation"):
+                candidates.append(str(previous["generation"]).strip())
+        else:
+            candidates = _generation_values(job.get("accepted_generations"))
+            if job.get("control_generation"):
+                candidates.insert(0, str(job["control_generation"]).strip())
+            candidates.extend(_runtime_generation(role) for role in job.get("roles", []))
+
+        legacy = next((item for item in candidates if item and item != generation), "")
+        if not legacy:
+            return False
+
+        accepted = [item for item in _generation_values(job.get("accepted_generations"))
+                    if item not in (legacy, generation)]
+        accepted.append(generation)
+        changed = (
+            job.get("control_generation") != legacy
+            or _generation_values(job.get("accepted_generations")) != accepted
+        )
+        job["control_generation"] = legacy
+        job["accepted_generations"] = accepted
+        if previous is None:
+            for role in job.get("roles", []):
+                if _runtime_generation(role) == legacy:
+                    updates = {
+                        "reimport_required": True,
+                        "imported": False,
+                        "queued": False,
+                        "model_prepared": False,
+                    }
+                    for key, value in updates.items():
+                        if role.get(key) != value:
+                            role[key] = value
+                            changed = True
+        if changed and job.get("state") == "error":
+            self._state(job, "waiting_exit")
+        return changed
+
     def status(self, account_key):
         with self.lock:
             jobs = [job for job in self.jobs.values() if job["account_key"] == account_key]
@@ -369,6 +468,7 @@ class QmtStrategyManager:
                     for filename in ("qmt_strategy_runtime.py", "qmt_strategy_package.py", "qmt_strategy_deploy.py")]])
                 if previous.get("fingerprint") == fingerprint and previous.get("enabled"):
                     previous["account_key"] = row["account_key"]
+                    self._prepare_generation_transition(previous)
                     if previous["settings"] != settings:
                         previous["settings"] = settings
                         for role in previous["roles"]:
@@ -429,6 +529,7 @@ class QmtStrategyManager:
                     role["package_path"] = str(directory / (role["name"] + ".rzrk"))
                     _atomic_write(role["package_path"], package)
                     role["package_sha256"] = hashlib.sha256(package).hexdigest()
+                self._prepare_generation_transition(job, previous=previous)
                 self._state(job, "waiting_exit")
                 self.jobs[key] = job
             for key, job in self.jobs.items():
@@ -447,7 +548,13 @@ class QmtStrategyManager:
             return self.status(row["account_key"])
 
     def _control(self, job):
-        _write_json(job["control_path"], {k: job[k] for k in ("enabled", "generation", "mode")})
+        generation = str(job.get("control_generation") or job.get("generation") or "")
+        payload = {"enabled": bool(job.get("enabled")), "generation": generation, "mode": job.get("mode", "")}
+        accepted = [item for item in _generation_values(job.get("accepted_generations"))
+                    if item and item != generation]
+        if accepted:
+            payload["accepted_generations"] = accepted
+        _write_json(job["control_path"], payload)
 
     def reconcile(self, accounts):
         with self.lock:
@@ -459,8 +566,11 @@ class QmtStrategyManager:
                          and os.path.normcase(job["root"]) in account_qmt_roots(row))
                 if job.get("enabled") and not valid:
                     job["enabled"] = False
+                    self._clear_generation_transition(job)
                     self._state(job, "waiting_exit")
                     self._control(job)
+                    changed = True
+                elif job.get("enabled") and self._prepare_generation_transition(job):
                     changed = True
                 self._control(job)
             for key in list(self.errors):
@@ -475,9 +585,14 @@ class QmtStrategyManager:
         with self.lock:
             changed = False
             for job in self.jobs.values():
-                if job.get("state") in ("disabled", "error"):
-                    continue
                 before = copy.deepcopy(job)
+                if job.get("state") == "disabled":
+                    continue
+                if job.get("state") == "error":
+                    self._prepare_generation_transition(job)
+                    if not job.get("control_generation") and not _generation_values(
+                            job.get("accepted_generations")):
+                        continue
                 try:
                     self._advance(job)
                 except Exception as error:
@@ -622,18 +737,33 @@ class QmtStrategyManager:
             state = "waiting_import_save" if any(role.get("queued") and not role.get("imported") for role in job["roles"]) else "waiting_exit"
             self._state(job, state)
             return
+        transition_generations = set(_generation_values(job.get("accepted_generations")))
+        if job.get("control_generation"):
+            transition_generations.add(str(job["control_generation"]).strip())
+        valid_generations = set([str(job["generation"])]) | transition_generations
+        reports = []
         states = []
         for role in job["roles"]:
             try:
                 report = json.loads(Path(role["runtime_status_path"]).read_text(encoding="utf-8"))
-                valid = (report.get("generation") == job["generation"]
+                report_generation = str(report.get("generation") or "").strip()
+                valid = (report_generation in valid_generations
                          and 0 <= time.time() - float(report.get("updated_at", 0)) < 10)
-                if valid and report.get("state") == "error":
+                report_state = report.get("state") or ""
+                reports.append((valid, report_generation, report_state))
+                if valid and report_generation == str(job["generation"]) and report_state == "error":
                     self._state(job, "error", "QMT 策略启动失败: " + str(report.get("error") or role["name"]))
                     return
-                states.append(report.get("state") if valid else "")
+                states.append(report_state if valid and report_state != "error" else "")
             except (OSError, ValueError, KeyError, TypeError):
+                reports.append((False, "", ""))
                 states.append("")
+        if (transition_generations and reports
+                and all(valid and generation == str(job["generation"])
+                        and state in ("loaded", "running")
+                        for valid, generation, state in reports)):
+            self._clear_generation_transition(job)
+            self._control(job)
         state = "running" if states and all(item == "running" for item in states) else (
             "waiting_start" if job["settings"]["autorun"] else "waiting_manual_start")
         self._state(job, state)

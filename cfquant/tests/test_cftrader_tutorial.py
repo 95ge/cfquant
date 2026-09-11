@@ -32,11 +32,13 @@ def verify_example(source):
 
 def test_documentation_examples_match_current_sdk():
     examples = re.findall(r"```python\n(.*?)```", DOC.read_text(encoding="utf-8"), re.S)
-    assert len(examples) == 3
+    assert len(examples) == 5
     for example in examples:
         verify_example(example)
     assert "order_stock_batch(" in examples[1]
     assert "order_stock_batch_async(" in examples[2]
+    assert "cancel_order_stock_batch(" in examples[3]
+    assert "cancel_order_stock_batch_async(" in examples[4]
 
 
 def test_batch_tutorial_examples_navigation_and_layout(page, frontend_url, tmp_path):
@@ -45,7 +47,7 @@ def test_batch_tutorial_examples_navigation_and_layout(page, frontend_url, tmp_p
     page.locator('#tutorialReader [data-guide="cftrader"]').click()
     panel = page.locator('#tutorialReader [data-guide-panel="cftrader"]')
     expect(panel).to_be_visible()
-    expect(panel.locator('pre[data-language="python"]')).to_have_count(2)
+    expect(panel.locator('pre[data-language="python"]')).to_have_count(4)
     examples = re.findall(r"```python\n(.*?)```", DOC.read_text(encoding="utf-8"), re.S)[1:]
     for code, documented in zip(panel.locator('pre[data-language="python"]').all_text_contents(), examples):
         assert code.strip() == documented.strip()
@@ -62,6 +64,10 @@ def test_batch_tutorial_examples_navigation_and_layout(page, frontend_url, tmp_p
     panel.locator('a[href="#cftrader-async"]').click()
     expect(panel.locator('#cftrader-async')).to_be_focused()
     page.screenshot(path=str(tmp_path / 'cftrader-async.png'))
+    panel.locator('a[href="#cftrader-cancel-sync"]').click()
+    expect(panel.locator('#cftrader-cancel-sync')).to_be_focused()
+    panel.locator('a[href="#cftrader-cancel-async"]').click()
+    expect(panel.locator('#cftrader-cancel-async')).to_be_focused()
     page.keyboard.press('Escape')
     expect(page.locator('#setupOverlay')).to_be_visible()
     assert all(method == 'GET' for method, path in requests)
@@ -76,9 +82,12 @@ def test_cftrader_reference_search_examples_and_links(page, frontend_url, tmp_pa
     python_directory(page)
     page.locator('#pythonApiSearch').fill('cftrader')
     page.locator('#pythonApiFilter').select_option('extension')
-    expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(4)
+    expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(6)
     page.locator('#pythonApiSearch').fill('order_stock_batch')
+    expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(4)
+    page.locator('#pythonApiSearch').fill('cancel_order_stock_batch')
     expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(2)
+    page.locator('#pythonApiSearch').fill('order_stock_batch')
     page.locator('.python-api-nav [data-python-entry="cftrader.order_stock_batch_async"]').click()
     expect(page.locator('.python-document-head h2')).to_have_text('order_stock_batch_async')
     expect(page.locator('.python-api-document .python-original')).to_have_count(0)
@@ -109,7 +118,7 @@ def test_cftrader_reference_search_examples_and_links(page, frontend_url, tmp_pa
     expect(page.locator('.python-document-head h2')).to_have_text('order_stock_batch_async')
 
     entries = page.evaluate('window.CFQUANT_CFTRADER_API')
-    assert len(entries) == 4
+    assert len(entries) == 6
     for entry in entries:
         verify_example(entry['example'])
         method = getattr(CfQuantTrader, entry['name'])
@@ -135,8 +144,9 @@ def test_web_api_catalog_shows_sdk_and_preserves_http_batch(page, frontend_url, 
     page.keyboard.press('Escape')
     page.locator('.nav-item[data-view="api"]').click()
     expect(page.locator('[data-api-group="cftrader"]')).to_be_visible()
-    expect(page.locator('#apiEndpointList [data-endpoint-id^="cftrader."]')).to_have_count(4)
-    for method in ('order_stock_batch', 'order_stock_batch_async', 'order_stock', 'order_stock_async'):
+    expect(page.locator('#apiEndpointList [data-endpoint-id^="cftrader."]')).to_have_count(6)
+    for method in ('order_stock_batch', 'order_stock_batch_async', 'cancel_order_stock_batch',
+                   'cancel_order_stock_batch_async', 'order_stock', 'order_stock_async'):
         page.locator(f'[data-endpoint-id="cftrader.{method}"]').click()
         expect(page.locator('#apiRoute')).to_contain_text('Python SDK cfquant.cftrader.CfQuantTrader.' + method)
         expect(page.locator('#apiForm button[type="submit"]')).to_be_visible()

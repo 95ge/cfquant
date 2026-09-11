@@ -46,6 +46,8 @@ class CfquantPipeHub(object):
         self.qmt_rx_by_channel = {}
         self.qmt_tx_by_channel = {}
         self.qmt_channel_by_conn = {}
+        self.qmt_conn_meta_by_conn = {}
+        self.qmt_registration_conflicts = []
         self.qmt_lock = threading.RLock()
         self.pending = {}
         self.client_by_id = {}
@@ -58,6 +60,7 @@ class CfquantPipeHub(object):
             os.environ.get("CFQUANT_PIPE_HUB_STATUS_FILE") or default_status_file("cfquant_pipe_hub_status.json")
         )
         self.pending_timeout_seconds = float(os.environ.get("CFQUANT_PIPE_HUB_PENDING_TIMEOUT", "60"))
+        self.qmt_heartbeat_timeout_seconds = float(os.environ.get("CFQUANT_PIPE_HUB_QMT_HEARTBEAT_TIMEOUT", "30"))
         self.maintenance_interval_seconds = float(os.environ.get("CFQUANT_PIPE_HUB_MAINTENANCE_INTERVAL", "2"))
         self.maintenance_thread = None
 
@@ -101,6 +104,7 @@ class CfquantPipeHub(object):
             self.qmt_rx_by_channel.clear()
             self.qmt_tx_by_channel.clear()
             self.qmt_channel_by_conn.clear()
+            self.qmt_conn_meta_by_conn.clear()
         with self.state_lock:
             conns.extend(self.client_ids_by_conn.keys())
             self.pending.clear()
@@ -137,6 +141,9 @@ class CfquantPipeHub(object):
                     elif msg_type == "publish":
                         role = "qmt"
                         self._handle_qmt_publish(conn, envelope)
+                    elif msg_type == "heartbeat":
+                        role = envelope.get("role") or role
+                        self._handle_qmt_heartbeat(conn, envelope)
                     else:
                         self._log("pipe ignored envelope type=%s role=%s" % (msg_type, role))
                 else:
@@ -174,20 +181,33 @@ class CfquantPipeHub(object):
         role = envelope.get("role") or current_role
         if role in ("qmt", "qmt_rx", "qmt_tx"):
             channels = self._envelope_channels(envelope)
+            old_conns = []
             with self.qmt_lock:
+                meta = self._qmt_conn_meta(envelope, role, channels)
+                self.qmt_conn_meta_by_conn[conn] = meta
                 target = self.qmt_rx_by_channel if role in ("qmt", "qmt_rx") else self.qmt_tx_by_channel
                 for channel in channels:
                     old = target.get(channel)
                     target[channel] = conn
                     self.qmt_channel_by_conn.setdefault(conn, set()).add(channel)
                     if old is not None and old is not conn:
-                        try:
-                            old.close()
-                        except Exception:
-                            pass
+                        old_meta = self.qmt_conn_meta_by_conn.get(old) or {}
+                        if not self._same_qmt_instance(old_meta, meta):
+                            self._remember_qmt_conflict_locked(channel, role, old_meta, meta)
+                        if old not in old_conns:
+                            old_conns.append(old)
+            for old in old_conns:
+                self._drop_conn(old)
             self._log(
-                "qmt pipe bridge registered role=%s channels=%s bridge_id=%s"
-                % (role, ",".join(channels), envelope.get("bridge_id") or "-")
+                "qmt pipe bridge registered role=%s channels=%s bridge_id=%s endpoint=%s instance=%s pid=%s"
+                % (
+                    role,
+                    ",".join(channels),
+                    envelope.get("bridge_id") or "-",
+                    envelope.get("endpoint_name") or "-",
+                    envelope.get("instance_id") or "-",
+                    envelope.get("process_id") or envelope.get("pid") or "-",
+                )
             )
         elif role in ("api", "api_rx", "api_tx"):
             client_id = envelope.get("client_id")
@@ -207,6 +227,83 @@ class CfquantPipeHub(object):
             if channel and channel not in result:
                 result.append(channel)
         return result or [self.default_request_channel]
+
+    def _qmt_conn_meta(self, envelope, role, channels):
+        now = time.time()
+        try:
+            heartbeat_interval = float(envelope.get("heartbeat_interval") or 0)
+        except Exception:
+            heartbeat_interval = 0.0
+        return {
+            "role": role,
+            "bridge_id": str(envelope.get("bridge_id") or "-"),
+            "endpoint_name": str(envelope.get("endpoint_name") or ""),
+            "instance_id": str(envelope.get("instance_id") or ""),
+            "process_id": str(envelope.get("process_id") or envelope.get("pid") or ""),
+            "heartbeat_interval": max(0.0, heartbeat_interval),
+            "connected_at": now,
+            "last_seen_at": now,
+            "_last_seen_mono": time.monotonic(),
+            "channels": list(channels or []),
+        }
+
+    def _same_qmt_instance(self, left, right):
+        left = left or {}
+        right = right or {}
+        left_instance = str(left.get("instance_id") or "").strip()
+        right_instance = str(right.get("instance_id") or "").strip()
+        if left_instance and right_instance:
+            return left_instance == right_instance
+        left_pid = str(left.get("process_id") or "").strip()
+        right_pid = str(right.get("process_id") or "").strip()
+        if not left_pid or not right_pid or left_pid != right_pid:
+            return False
+        return (
+            str(left.get("bridge_id") or "") == str(right.get("bridge_id") or "")
+            and str(left.get("endpoint_name") or "") == str(right.get("endpoint_name") or "")
+        )
+
+    def _remember_qmt_conflict_locked(self, channel, role, old_meta, new_meta):
+        now = time.time()
+        self.qmt_registration_conflicts.append({
+            "ts": now,
+            "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "channel": channel,
+            "role": role,
+            "old": self._public_qmt_meta(old_meta),
+            "new": self._public_qmt_meta(new_meta),
+        })
+        self.qmt_registration_conflicts = self.qmt_registration_conflicts[-50:]
+
+    def _touch_qmt_conn(self, conn, envelope=None):
+        with self.qmt_lock:
+            meta = self.qmt_conn_meta_by_conn.get(conn)
+            if not meta:
+                return False
+            now = time.time()
+            meta["last_seen_at"] = now
+            meta["_last_seen_mono"] = time.monotonic()
+            if envelope:
+                if envelope.get("role"):
+                    meta["role"] = envelope.get("role")
+                if envelope.get("bridge_id"):
+                    meta["bridge_id"] = str(envelope.get("bridge_id"))
+                if envelope.get("endpoint_name"):
+                    meta["endpoint_name"] = str(envelope.get("endpoint_name"))
+                if envelope.get("instance_id"):
+                    meta["instance_id"] = str(envelope.get("instance_id"))
+                if envelope.get("process_id") or envelope.get("pid"):
+                    meta["process_id"] = str(envelope.get("process_id") or envelope.get("pid"))
+                try:
+                    heartbeat_interval = float(envelope.get("heartbeat_interval") or meta.get("heartbeat_interval") or 0)
+                    meta["heartbeat_interval"] = max(0.0, heartbeat_interval)
+                except Exception:
+                    pass
+            return True
+
+    def _handle_qmt_heartbeat(self, conn, envelope):
+        if self._touch_qmt_conn(conn, envelope):
+            self._write_status()
 
     def _handle_api_request(self, conn, envelope):
         api_received_at = time.perf_counter()
@@ -272,6 +369,7 @@ class CfquantPipeHub(object):
         self._write_status()
 
     def _handle_qmt_publish(self, conn, envelope):
+        self._touch_qmt_conn(conn, envelope)
         qmt_received_at = time.perf_counter()
         raw = envelope.get("payload")
         msg = loads_message(raw)
@@ -409,15 +507,53 @@ class CfquantPipeHub(object):
             except Exception:
                 pass
 
+    def _qmt_pair_peers_locked(self, conn, channels, meta):
+        role = str((meta or {}).get("role") or "")
+        peers = []
+        for channel in channels or []:
+            candidates = []
+            if role in ("", "qmt", "qmt_rx"):
+                candidates.append(self.qmt_tx_by_channel.get(channel))
+            if role in ("", "qmt", "qmt_tx"):
+                candidates.append(self.qmt_rx_by_channel.get(channel))
+            for peer in candidates:
+                if peer is None or peer is conn or peer in peers:
+                    continue
+                peer_meta = self.qmt_conn_meta_by_conn.get(peer) or {}
+                if self._same_qmt_instance(meta, peer_meta):
+                    peers.append(peer)
+        return peers
+
+    def _detach_qmt_conn_locked(self, conn):
+        meta = self.qmt_conn_meta_by_conn.pop(conn, None) or {}
+        channels = set(self.qmt_channel_by_conn.pop(conn, set()))
+        for channel in list(channels):
+            if self.qmt_rx_by_channel.get(channel) is conn:
+                self.qmt_rx_by_channel.pop(channel, None)
+            if self.qmt_tx_by_channel.get(channel) is conn:
+                self.qmt_tx_by_channel.pop(channel, None)
+        return channels, meta
+
     def _drop_conn(self, conn):
         failed_pending = []
+        close_qmt_conns = []
+        qmt_failed_conns = []
         with self.qmt_lock:
-            channels = self.qmt_channel_by_conn.pop(conn, set())
-            for channel in channels:
-                if self.qmt_rx_by_channel.get(channel) is conn:
-                    self.qmt_rx_by_channel.pop(channel, None)
-                if self.qmt_tx_by_channel.get(channel) is conn:
-                    self.qmt_tx_by_channel.pop(channel, None)
+            channels = set(self.qmt_channel_by_conn.get(conn, set()))
+            meta = self.qmt_conn_meta_by_conn.get(conn) or {}
+            qmt_conn_registered = bool(channels or conn in self.qmt_conn_meta_by_conn)
+            qmt_pair_peers = self._qmt_pair_peers_locked(conn, channels, meta)
+            self._detach_qmt_conn_locked(conn)
+            if qmt_conn_registered:
+                close_qmt_conns.append(conn)
+                qmt_failed_conns.append(conn)
+            for peer in qmt_pair_peers:
+                peer_registered = peer in self.qmt_channel_by_conn or peer in self.qmt_conn_meta_by_conn
+                self._detach_qmt_conn_locked(peer)
+                if peer_registered:
+                    close_qmt_conns.append(peer)
+                    qmt_failed_conns.append(peer)
+        qmt_failed_set = set(qmt_failed_conns)
         close_peers = []
         with self.state_lock:
             meta_by_client = self.client_conn_meta_by_conn.pop(conn, {})
@@ -468,13 +604,18 @@ class CfquantPipeHub(object):
                 qmt_conn = pending.get("qmt_conn")
                 if pending_conn is conn or pending_conn in close_peers:
                     self.pending.pop(request_id, None)
-                elif qmt_conn is conn:
+                elif qmt_conn in qmt_failed_set:
                     self.pending.pop(request_id, None)
                     failed_pending.append((
                         request_id,
                         pending,
                         "QMT pipe bridge disconnected for channel=%s" % pending.get("request_channel"),
                     ))
+        for qmt_conn in close_qmt_conns:
+            try:
+                qmt_conn.close()
+            except Exception:
+                pass
         for peer in close_peers:
             try:
                 peer.close()
@@ -515,11 +656,57 @@ class CfquantPipeHub(object):
         while self.running:
             try:
                 expired_count = self._cleanup_expired_pending()
-                if expired_count:
+                stale_qmt_count = self._cleanup_stale_qmt()
+                if expired_count or stale_qmt_count:
                     self._write_status()
             except Exception as e:
                 self._log("pipe hub maintenance failed: %s" % e)
             time.sleep(max(0.2, self.maintenance_interval_seconds))
+
+    def _qmt_heartbeat_deadline_seconds(self, meta):
+        try:
+            interval = float((meta or {}).get("heartbeat_interval") or 0)
+        except Exception:
+            interval = 0.0
+        if interval <= 0:
+            return 0.0
+        return max(float(self.qmt_heartbeat_timeout_seconds), interval * 3.0)
+
+    def _qmt_meta_stale(self, meta, now_mono=None):
+        deadline = self._qmt_heartbeat_deadline_seconds(meta)
+        if deadline <= 0:
+            return False
+        if now_mono is None:
+            now_mono = time.monotonic()
+        try:
+            last_seen = float((meta or {}).get("_last_seen_mono") or 0)
+        except Exception:
+            last_seen = 0.0
+        return last_seen > 0 and now_mono - last_seen > deadline
+
+    def _cleanup_stale_qmt(self):
+        now_mono = time.monotonic()
+        stale = []
+        with self.qmt_lock:
+            for conn, meta in list(self.qmt_conn_meta_by_conn.items()):
+                role = str((meta or {}).get("role") or "")
+                if role not in ("qmt", "qmt_tx"):
+                    continue
+                if self._qmt_meta_stale(meta, now_mono):
+                    stale.append((conn, dict(meta)))
+        for conn, meta in stale:
+            self._log(
+                "pipe qmt heartbeat expired role=%s channels=%s bridge_id=%s endpoint=%s instance=%s"
+                % (
+                    meta.get("role") or "-",
+                    ",".join(meta.get("channels") or []),
+                    meta.get("bridge_id") or "-",
+                    meta.get("endpoint_name") or "-",
+                    meta.get("instance_id") or "-",
+                )
+            )
+            self._drop_conn(conn)
+        return len(stale)
 
     def _cleanup_expired_pending(self):
         timeout = max(0.0, self.pending_timeout_seconds)
@@ -559,32 +746,114 @@ class CfquantPipeHub(object):
             end = time.perf_counter()
         return (end - start) * 1000.0
 
+    def status(self):
+        return self._status_snapshot()
+
+    def _public_qmt_meta(self, meta, now=None, now_mono=None):
+        if not meta:
+            return None
+        if now is None:
+            now = time.time()
+        if now_mono is None:
+            now_mono = time.monotonic()
+        try:
+            last_seen_at = float(meta.get("last_seen_at") or 0)
+        except Exception:
+            last_seen_at = 0.0
+        try:
+            connected_at = float(meta.get("connected_at") or 0)
+        except Exception:
+            connected_at = 0.0
+        try:
+            heartbeat_interval = float(meta.get("heartbeat_interval") or 0)
+        except Exception:
+            heartbeat_interval = 0.0
+        deadline = self._qmt_heartbeat_deadline_seconds(meta)
+        return {
+            "role": meta.get("role") or "",
+            "bridge_id": meta.get("bridge_id") or "",
+            "endpoint_name": meta.get("endpoint_name") or "",
+            "instance_id": meta.get("instance_id") or "",
+            "process_id": meta.get("process_id") or "",
+            "heartbeat_interval": heartbeat_interval,
+            "connected_at": connected_at,
+            "last_seen_at": last_seen_at,
+            "age_seconds": round(max(0.0, now - last_seen_at), 1) if last_seen_at else None,
+            "connected_age_seconds": round(max(0.0, now - connected_at), 1) if connected_at else None,
+            "stale_after_seconds": round(deadline, 1) if deadline else 0,
+            "stale": self._qmt_meta_stale(meta, now_mono),
+            "channels": list(meta.get("channels") or []),
+        }
+
+    def _status_snapshot(self):
+        now = time.time()
+        now_mono = time.monotonic()
+        with self.qmt_lock:
+            qmt_rx_by_channel = dict(self.qmt_rx_by_channel)
+            qmt_tx_by_channel = dict(self.qmt_tx_by_channel)
+            qmt_meta_by_conn = {
+                conn: dict(meta)
+                for conn, meta in self.qmt_conn_meta_by_conn.items()
+            }
+            qmt_registration_conflicts = list(self.qmt_registration_conflicts)
+        qmt_rx_channels = sorted(set(qmt_rx_by_channel.keys()))
+        qmt_tx_channels = sorted(set(qmt_tx_by_channel.keys()))
+        qmt_channels = sorted(set(qmt_rx_channels) | set(qmt_tx_channels))
+        qmt_ready_channels = []
+        qmt_degraded_channels = []
+        qmt_stale_channels = []
+        qmt_channel_states = {}
+        for channel in qmt_channels:
+            rx_conn = qmt_rx_by_channel.get(channel)
+            tx_conn = qmt_tx_by_channel.get(channel)
+            rx_meta = qmt_meta_by_conn.get(rx_conn) or {}
+            tx_meta = qmt_meta_by_conn.get(tx_conn) or {}
+            tx_stale = bool(tx_conn is not None and self._qmt_meta_stale(tx_meta, now_mono))
+            ready = bool(rx_conn is not None and tx_conn is not None and not tx_stale)
+            if ready:
+                status = "ready"
+                qmt_ready_channels.append(channel)
+            else:
+                status = "stale" if tx_stale else "degraded"
+                qmt_degraded_channels.append(channel)
+                if tx_stale:
+                    qmt_stale_channels.append(channel)
+            qmt_channel_states[channel] = {
+                "status": status,
+                "ready": ready,
+                "rx_connected": rx_conn is not None,
+                "tx_connected": tx_conn is not None,
+                "rx": self._public_qmt_meta(rx_meta, now, now_mono),
+                "tx": self._public_qmt_meta(tx_meta, now, now_mono),
+            }
+        with self.state_lock:
+            pending_ids = list(self.pending.keys())[-20:]
+            pending_count = len(self.pending)
+            client_count = len(set(self.client_by_id.values()))
+        return {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "pipe_name": self.pipe_name,
+            "core_version": CORE_VERSION,
+            "hub_status_schema": 3,
+            "running": self.running,
+            "pid": os.getpid(),
+            "qmt_channels": qmt_channels,
+            "qmt_rx_channels": qmt_rx_channels,
+            "qmt_tx_channels": qmt_tx_channels,
+            "qmt_ready_channels": sorted(qmt_ready_channels),
+            "qmt_degraded_channels": sorted(qmt_degraded_channels),
+            "qmt_stale_channels": sorted(qmt_stale_channels),
+            "qmt_channel_states": qmt_channel_states,
+            "qmt_registration_conflicts": qmt_registration_conflicts[-50:],
+            "qmt_connected": bool(qmt_ready_channels),
+            "pending_count": pending_count,
+            "pending_ids": pending_ids,
+            "api_client_count": client_count,
+        }
+
     def _write_status(self):
         try:
-            with self.qmt_lock:
-                qmt_rx_channels = sorted(set(self.qmt_rx_by_channel.keys()))
-                qmt_tx_channels = sorted(set(self.qmt_tx_by_channel.keys()))
-                qmt_channels = sorted(set(qmt_rx_channels) | set(qmt_tx_channels))
-                qmt_ready_channels = sorted(set(qmt_rx_channels) & set(qmt_tx_channels))
-            with self.state_lock:
-                pending_ids = list(self.pending.keys())[-20:]
-                client_count = len(set(self.client_by_id.values()))
-            data = {
-                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "pipe_name": self.pipe_name,
-                "core_version": CORE_VERSION,
-                "hub_status_schema": 2,
-                "running": self.running,
-                "pid": os.getpid(),
-                "qmt_channels": qmt_channels,
-                "qmt_rx_channels": qmt_rx_channels,
-                "qmt_tx_channels": qmt_tx_channels,
-                "qmt_ready_channels": qmt_ready_channels,
-                "qmt_connected": bool(qmt_ready_channels or qmt_channels),
-                "pending_count": len(self.pending),
-                "pending_ids": pending_ids,
-                "api_client_count": client_count,
-            }
+            data = self._status_snapshot()
             status_dir = os.path.dirname(self.status_file)
             if status_dir:
                 os.makedirs(status_dir, exist_ok=True)

@@ -73,8 +73,10 @@ _prepend_import_path(_LTTX_TX_DIR)
 
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
 from cfquant.batch_orders import (
-    CFTRADER_BATCH_ACTIONS, batch_result, batch_result_rows, batch_unknown,
-    prepare_batch_orders, prepare_batch_request, validate_batch_response,
+    CFTRADER_BATCH_ACTIONS, CFTRADER_BATCH_CANCEL_ACTIONS, CFTRADER_BATCH_ORDER_ACTIONS,
+    batch_cancel_result_rows, batch_result, batch_result_rows, batch_unknown,
+    prepare_batch_cancels, prepare_batch_orders, prepare_batch_cancel_request, prepare_batch_request,
+    validate_batch_cancel_response, validate_batch_response,
 )
 from cfquant import _editable_install
 from cfquant import xtconstant as cf_xtconstant
@@ -356,6 +358,15 @@ QMT_RUNTIME_VERSION_FILE = os.environ.get("CFQUANT_QMT_RUNTIME_VERSION_FILE") or
     RUNTIME_STATUS_DIR,
     "cfquant_qmt_runtime_versions.json",
 )
+QMT_AUTO_LOGIN_STATE_FILE = os.environ.get("CFQUANT_QMT_AUTO_LOGIN_STATE_FILE") or os.path.join(
+    RUNTIME_STATUS_DIR,
+    "qmt_auto_login_sessions.json",
+)
+QMT_AUTO_LOGIN_CAPTURE_SCRIPT_NAME = os.environ.get(
+    "CFQUANT_QMT_AUTO_LOGIN_CAPTURE_SCRIPT",
+    "cfquant_capture_linkMini.bat",
+)
+QMT_AUTO_LOGIN_RESTART_ARG = os.environ.get("CFQUANT_QMT_AUTO_LOGIN_RESTART_ARG", "linkMini")
 ACCOUNT_CACHE_REFRESH_SECONDS = max(1.0, float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "30")))
 ACCOUNT_CACHE_IDLE_SECONDS = max(1.0, float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_IDLE_SECONDS", "90")))
 ACCOUNT_CACHE_EVENT_REFRESH_SECONDS = 2.0
@@ -1512,6 +1523,57 @@ def parse_config_bool(value, default=False):
     return bool(default)
 
 
+def normalize_qmt_auto_login_restart_times(value):
+    if value is None:
+        items = []
+    elif isinstance(value, str):
+        items = re.split(r"[,;\s]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = [value]
+    result = []
+    seen = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        match = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", text)
+        if not match:
+            continue
+        normalized = "%02d:%s" % (int(match.group(1)), match.group(2))
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def normalize_qmt_auto_login_settings(value=None, existing=None):
+    existing = existing if isinstance(existing, dict) else {}
+    if value is None:
+        value = existing
+    if isinstance(value, dict):
+        enabled = parse_config_bool(value.get("enabled"), parse_config_bool(existing.get("enabled"), False))
+        if "restart_times" in value:
+            restart_source = value.get("restart_times")
+        elif "restartTimes" in value:
+            restart_source = value.get("restartTimes")
+        elif "restart_time" in value:
+            restart_source = value.get("restart_time")
+        elif "restartTime" in value:
+            restart_source = value.get("restartTime")
+        else:
+            restart_source = existing.get("restart_times") or []
+    else:
+        enabled = parse_config_bool(value, False)
+        restart_source = existing.get("restart_times") or []
+    return {
+        "enabled": bool(enabled),
+        "restart_times": normalize_qmt_auto_login_restart_times(restart_source),
+    }
+
+
 def account_config_is_enabled(config):
     if not isinstance(config, dict):
         return True
@@ -2431,6 +2493,7 @@ class WebRuntimeConfig(object):
         market_routing_enabled=None,
         market_bridges=None,
         qmt_strategy=None,
+        qmt_auto_login=None,
     ):
         account_id = str(account_id or "").strip()
         if not account_id:
@@ -2458,6 +2521,10 @@ class WebRuntimeConfig(object):
             existing = configs.get(account_key)
             strategy_settings = normalize_strategy_settings(
                 qmt_strategy if qmt_strategy is not None else (existing or {}).get("qmt_strategy")
+            )
+            auto_login_settings = normalize_qmt_auto_login_settings(
+                qmt_auto_login,
+                existing=(existing or {}).get("qmt_auto_login") if isinstance(existing, dict) else None,
             )
             if strategy_settings["enabled"] and not qmt_dir:
                 raise ValueError("自动导入策略需要填写 QMT 目录")
@@ -2550,6 +2617,7 @@ class WebRuntimeConfig(object):
                 "market_routing_enabled": market_routing_enabled,
                 "market_bridges": market_routes if market_routing_enabled else {},
                 "qmt_strategy": strategy_settings,
+                "qmt_auto_login": auto_login_settings,
                 "updated_at": now,
             }
             if enabled:
@@ -2585,6 +2653,7 @@ class WebRuntimeConfig(object):
                 "qmt_trade_dir": qmt_trade_dir,
                 "market_routing_enabled": market_routing_enabled,
                 "market_bridges": market_routes if market_routing_enabled else {},
+                "qmt_auto_login": auto_login_settings,
                 "enabled": enabled,
                 "updated_at": now,
             }
@@ -3268,6 +3337,7 @@ class WebRuntimeConfig(object):
                         parent_bridge_id=bridge_id,
                         enabled=parse_config_bool(item.get("market_routing_enabled"), False),
                     ),
+                    "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
                     "updated_at": float(item.get("updated_at") or 0),
                 }
         return result
@@ -3312,6 +3382,7 @@ class WebRuntimeConfig(object):
                 "qmt_trade_dir": qmt_trade_dir,
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
                 "qmt_strategy": normalize_strategy_settings(item.get("qmt_strategy")),
+                "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
                 "data_provider": bool(item.get("data_provider")),
                 "enabled": item.get("enabled", True) is not False,
                 "market_routing_enabled": parse_config_bool(item.get("market_routing_enabled"), False),
@@ -3923,7 +3994,6 @@ class GlobalTxClient(object):
             except CfquantTimeout as e:
                 if mark_offline_on_timeout:
                     self._mark_failed(cooldown_key, e)
-                self._drop_client(mode, client)
                 raise
             except Exception as e:
                 last_error = e
@@ -4143,23 +4213,41 @@ def account_request(
 def account_cftrader_batch_request(account_id, bridge_id, requested_channel, action, params,
                                   default_channel="trade", timeout=12.0, account_type=None, account_key=None):
     asynchronous = action.endswith("_async")
-    orders = prepare_batch_request(params, asynchronous)
+    cancel_batch = action in CFTRADER_BATCH_CANCEL_ACTIONS
+    if cancel_batch:
+        items = prepare_batch_cancel_request(params, asynchronous)
+        params = dict(params, cancels=items)
+        params.pop("orders", None)
+        params.pop("order_ids", None)
+        list_name = "cancels"
+        row_builder = batch_cancel_result_rows
+        validator = validate_batch_cancel_response
+        operation = "cancel"
+    else:
+        items = prepare_batch_request(params, asynchronous)
+        params = dict(params, orders=items)
+        list_name = "orders"
+        row_builder = batch_result_rows
+        validator = validate_batch_response
+        operation = "order"
     _, market_routes = account_market_route_config(
         account_id=account_id, account_type=account_type, bridge_id=bridge_id, account_key=account_key,
     )
     # Preserve input order when independently routed SH/SZ terminals alternate.
     # Each consecutive segment is sent as one batch to its destination QMT.
     segments = []
-    for index, order in enumerate(orders):
-        market = request_params_market(order) if market_routes else None
+    for index, item in enumerate(items):
+        market = request_params_market(item) if market_routes else None
         if market_routes:
+            if cancel_batch and not market:
+                raise ValueError("No market for cancels[%s]; include market or stock_code for independent QMT market route" % index)
             route = market_routes.get(market) or {}
             if not route.get("bridge_id") or route.get("enabled", True) is False:
-                raise ValueError("No enabled QMT market route for orders[%s]" % index)
+                raise ValueError("No enabled QMT market route for %s[%s]" % (list_name, index))
         if not segments or segments[-1][0] != market:
             segments.append((market, []))
         segments[-1][1].append(index)
-    combined = batch_result_rows(orders, params.get("seqs") if asynchronous else None)
+    combined = row_builder(items, params.get("seqs") if asynchronous else None)
     routes = []
     deadline = time.monotonic() + timeout
     submit_ms = 0.0
@@ -4167,7 +4255,8 @@ def account_cftrader_batch_request(account_id, bridge_id, requested_channel, act
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        body = dict(params, orders=[orders[index] for index in indices])
+        body = dict(params)
+        body[list_name] = [items[index] for index in indices]
         if asynchronous:
             body["seqs"] = [params["seqs"][index] for index in indices]
         try:
@@ -4176,7 +4265,7 @@ def account_cftrader_batch_request(account_id, bridge_id, requested_channel, act
                 default_channel=default_channel, timeout=remaining, mark_offline_on_timeout=True,
                 account_type=account_type, account_key=account_key, route_market=market,
             )
-            response = validate_batch_response(routed["result"], body, asynchronous)
+            response = validator(routed["result"], body, asynchronous)
             submit_ms += float(response.get("qmt_submit_ms") or 0)
             routes.append({key: value for key, value in routed.items() if key != "result"})
             for index, row in zip(indices, response["results"]):
@@ -4186,7 +4275,7 @@ def account_cftrader_batch_request(account_id, bridge_id, requested_channel, act
             break
         if response["unknown"] or (params.get("stop_on_error", False) and response["failed"]):
             break
-    result = batch_result(params["account"], params["batch_id"], asynchronous, combined)
+    result = batch_result(params["account"], params["batch_id"], asynchronous, combined, operation=operation)
     result["qmt_submit_ms"] = round(submit_ms, 3)
     meta = dict(routes[0]) if routes else {}
     return dict(meta, result=result, groups=routes)
@@ -8712,6 +8801,23 @@ class CfquantProjectUpdater(object):
             timeout=SOURCE_EDITABLE_INSTALL_TIMEOUT_SECONDS,
         )
         result["reason"] = reason
+        requirements = result.get("requirements_install") or {}
+        if requirements.get("attempted") or requirements.get("skipped"):
+            safe_print(
+                "cfquant project requirements install reason=%s attempted=%s skipped=%s ok=%s returncode=%s"
+                % (
+                    reason,
+                    requirements.get("attempted"),
+                    requirements.get("skipped"),
+                    requirements.get("ok"),
+                    requirements.get("returncode"),
+                )
+            )
+            if requirements.get("output"):
+                safe_print(
+                    "cfquant project requirements install output: %s"
+                    % requirements["output"][-2000:]
+                )
         safe_print(
             "cfquant editable source install reason=%s attempted=%s ok=%s returncode=%s version=%s"
             % (
@@ -9453,6 +9559,672 @@ def auto_deploy_qmt_core_for_account(row, enabled=True):
     }
 
 
+QMT_AUTO_LOGIN_LOCK = threading.RLock()
+
+
+def qmt_auto_login_supported_for_row(row):
+    row = row or {}
+    text = " ".join(
+        str(value or "")
+        for value in (
+            row.get("display_name"),
+            row.get("account_name"),
+            row.get("qmt_dir"),
+            row.get("python_dir"),
+            row.get("broker"),
+            row.get("broker_name"),
+        )
+    )
+    return "国金" in text or "guojin" in text.lower()
+
+
+def _qmt_auto_login_request_enabled(request, row):
+    if isinstance(request, dict):
+        if "enabled" in request:
+            return parse_bool(request.get("enabled"))
+        return True
+    if request is None:
+        return False
+    return parse_bool(request)
+
+
+def _qmt_auto_login_session_key(row):
+    row = row or {}
+    account_key = str(row.get("account_key") or "").strip()
+    if account_key:
+        return account_key
+    account_id = str(row.get("account_id") or "").strip()
+    account_type = normalize_account_type(row.get("account_type") or "STOCK")
+    bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    return account_key_for(account_id, account_type, bridge_id) if account_id else ""
+
+
+def _qmt_auto_login_read_state_locked():
+    try:
+        with open(QMT_AUTO_LOGIN_STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _qmt_auto_login_write_state_locked(data):
+    data = data if isinstance(data, dict) else {}
+    os.makedirs(os.path.dirname(QMT_AUTO_LOGIN_STATE_FILE), exist_ok=True)
+    temporary = "%s.%s.tmp" % (QMT_AUTO_LOGIN_STATE_FILE, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(temporary, QMT_AUTO_LOGIN_STATE_FILE)
+
+
+def _qmt_auto_login_update_session(row, updates):
+    key = _qmt_auto_login_session_key(row)
+    if not key:
+        return {}
+    with QMT_AUTO_LOGIN_LOCK:
+        state = _qmt_auto_login_read_state_locked()
+        sessions = state.setdefault("sessions", {})
+        session = sessions.get(key) if isinstance(sessions.get(key), dict) else {}
+        session.update(updates or {})
+        session.update({
+            "account_key": key,
+            "account_id": str((row or {}).get("account_id") or ""),
+            "account_type": normalize_account_type((row or {}).get("account_type") or "STOCK"),
+            "bridge_id": normalize_bridge_id((row or {}).get("bridge_id") or DEFAULT_BRIDGE_ID),
+            "updated_at": time.time(),
+            "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        })
+        sessions[key] = session
+        _qmt_auto_login_write_state_locked(state)
+        return json.loads(json.dumps(session, ensure_ascii=False))
+
+
+def _qmt_auto_login_saved_session(row):
+    key = _qmt_auto_login_session_key(row)
+    if not key:
+        return {}
+    with QMT_AUTO_LOGIN_LOCK:
+        state = _qmt_auto_login_read_state_locked()
+        session = (state.get("sessions") or {}).get(key)
+        return json.loads(json.dumps(session, ensure_ascii=False)) if isinstance(session, dict) else {}
+
+
+def _qmt_auto_login_bin_dir(qmt_dir):
+    configured = normalize_optional_path(qmt_dir)
+    if not configured:
+        raise ValueError("QMT 目录为空，无法配置自动启动")
+    candidates = []
+    try:
+        if UPDATER is not None:
+            target = UPDATER._target_paths(configured)
+            candidates.append(normalize_optional_path(target.get("python_dir") or ""))
+    except Exception:
+        pass
+    candidates.append(configured)
+    candidates.append(os.path.join(configured, "bin.x64"))
+    if os.path.basename(configured).lower() == "python":
+        candidates.append(os.path.join(os.path.dirname(configured), "bin.x64"))
+    seen = set()
+    for candidate in candidates:
+        candidate = normalize_optional_path(candidate)
+        if not candidate:
+            continue
+        key = os.path.normcase(os.path.abspath(candidate))
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isfile(os.path.join(candidate, "XtItClient.exe")):
+            return candidate
+    raise FileNotFoundError("QMT 目录缺少 XtItClient.exe: %s" % configured)
+
+
+def _qmt_auto_login_paths(bin_dir):
+    bin_dir = _qmt_auto_login_bin_dir(bin_dir)
+    return {
+        "bin_dir": bin_dir,
+        "exe_path": os.path.join(bin_dir, "XtItClient.exe"),
+        "link_path": os.path.join(bin_dir, "linkMini"),
+        "link_lower_path": os.path.join(bin_dir, "linkmini"),
+        "copy_path": os.path.join(bin_dir, "linkMini_copy"),
+        "capture_script_path": os.path.join(bin_dir, QMT_AUTO_LOGIN_CAPTURE_SCRIPT_NAME),
+    }
+
+
+def _qmt_auto_login_capture_script_content():
+    return "\r\n".join([
+        "@echo off",
+        "title cfquant capture QMT linkMini",
+        "cd /d \"%~dp0\"",
+        ":loop",
+        "if exist linkMini (",
+        "    copy /Y linkMini linkMini_copy >nul",
+        "    echo finish",
+        "    goto end",
+        ")",
+        "if exist linkmini (",
+        "    copy /Y linkmini linkMini_copy >nul",
+        "    echo finish",
+        "    goto end",
+        ")",
+        "timeout /t 1 /nobreak >nul",
+        "goto loop",
+        ":end",
+        "",
+    ])
+
+
+def _qmt_auto_login_write_capture_script(paths):
+    path = paths["capture_script_path"]
+    content = _qmt_auto_login_capture_script_content()
+    with open(path, "w", encoding="ascii", newline="") as f:
+        f.write(content)
+    return path
+
+
+def _qmt_auto_login_processes(bin_dir):
+    paths = _qmt_auto_login_paths(bin_dir)
+    exe_key = os.path.normcase(os.path.abspath(paths["exe_path"]))
+    rows = []
+    if psutil is not None:
+        for process in psutil.process_iter(["pid", "name"]):
+            try:
+                if str(process.info.get("name") or "").lower() != "xtitclient.exe":
+                    continue
+                exe = process.exe() or ""
+                if os.path.normcase(os.path.abspath(exe)) != exe_key:
+                    continue
+                rows.append({
+                    "pid": int(process.info.get("pid") or process.pid),
+                    "name": process.info.get("name") or "XtItClient.exe",
+                    "executable_path": exe,
+                })
+            except (
+                getattr(psutil, "NoSuchProcess", Exception),
+                getattr(psutil, "AccessDenied", Exception),
+                getattr(psutil, "ZombieProcess", Exception),
+            ):
+                continue
+            except Exception:
+                continue
+    if rows:
+        return rows
+    script = r"""
+$target = %s
+@(Get-CimInstance Win32_Process -Filter "Name='XtItClient.exe'" | ForEach-Object {
+  if ($_.ExecutablePath -and ([System.IO.Path]::GetFullPath($_.ExecutablePath).ToLowerInvariant() -eq $target.ToLowerInvariant())) {
+    [pscustomobject]@{ pid=$_.ProcessId; name=$_.Name; executable_path=$_.ExecutablePath }
+  }
+}) | ConvertTo-Json -Compress
+""" % json.dumps(os.path.abspath(paths["exe_path"]))
+    return run_powershell_json(script, timeout=3.0)
+
+
+def _qmt_auto_login_pid_matches(pid, bin_dir):
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    paths = _qmt_auto_login_paths(bin_dir)
+    exe_key = os.path.normcase(os.path.abspath(paths["exe_path"]))
+    details = process_details_by_pid([pid])
+    detail = details.get(pid) or {}
+    executable = detail.get("executable_path") or ""
+    if executable and os.path.normcase(os.path.abspath(executable)) == exe_key:
+        return True
+    return any(int(row.get("pid") or 0) == pid for row in _qmt_auto_login_processes(bin_dir))
+
+
+def _qmt_auto_login_pid_running(pid):
+    try:
+        pid = int(pid)
+    except Exception:
+        return False
+    if pid <= 0:
+        return False
+    if psutil is not None:
+        try:
+            return bool(psutil.pid_exists(pid))
+        except Exception:
+            pass
+    return bool(process_details_by_pid([pid]))
+
+
+def _qmt_auto_login_start_capture(paths):
+    if os.path.isfile(paths["copy_path"]):
+        return {"started": False, "reason": "linkMini_copy already exists", "pid": 0}
+    script_path = _qmt_auto_login_write_capture_script(paths)
+    creationflags = 0
+    if os.name == "nt":
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    process = subprocess.Popen(
+        ["cmd.exe", "/c", script_path] if os.name == "nt" else [script_path],
+        cwd=paths["bin_dir"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags if os.name == "nt" else 0,
+        close_fds=False if os.name == "nt" else True,
+    )
+    return {"started": True, "pid": process.pid, "script_path": script_path}
+
+
+def _qmt_auto_login_start_xtitclient(paths, use_link=False):
+    command = [paths["exe_path"]]
+    restart_arg = str(QMT_AUTO_LOGIN_RESTART_ARG or "").strip()
+    if use_link and restart_arg:
+        command.append(restart_arg)
+    creationflags = 0
+    if os.name == "nt":
+        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    process = subprocess.Popen(
+        command,
+        cwd=paths["bin_dir"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags if os.name == "nt" else 0,
+        close_fds=False if os.name == "nt" else True,
+    )
+    return {
+        "pid": process.pid,
+        "command": command,
+        "exe_path": paths["exe_path"],
+        "bin_dir": paths["bin_dir"],
+    }
+
+
+def _qmt_auto_login_stop_xtitclient(row, paths, session=None):
+    session = session if isinstance(session, dict) else {}
+    pids = []
+    for key in ("launch_pid", "restart_pid", "pid"):
+        try:
+            pid = int(session.get(key) or 0)
+        except Exception:
+            pid = 0
+        if pid > 0 and pid not in pids and _qmt_auto_login_pid_matches(pid, paths["bin_dir"]):
+            pids.append(pid)
+    for process in _qmt_auto_login_processes(paths["bin_dir"]):
+        try:
+            pid = int(process.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if pid > 0 and pid not in pids:
+            pids.append(pid)
+    results = []
+    for pid in pids:
+        completed = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"] if os.name == "nt" else ["kill", "-TERM", str(pid)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8.0,
+            **(_hidden_subprocess_kwargs() if os.name == "nt" else {})
+        )
+        results.append({
+            "pid": pid,
+            "returncode": completed.returncode,
+            "stdout": (completed.stdout or "").strip(),
+            "stderr": (completed.stderr or "").strip(),
+        })
+    if pids:
+        time.sleep(1.0)
+    return {"requested_pids": pids, "results": results}
+
+
+def _qmt_auto_login_copy_current_link(paths):
+    source = ""
+    for candidate in (paths["link_path"], paths["link_lower_path"]):
+        if os.path.isfile(candidate):
+            source = candidate
+            break
+    if not source:
+        return {"copied": False, "source": "", "copy_path": paths["copy_path"]}
+    shutil.copy2(source, paths["copy_path"])
+    return {"copied": True, "source": source, "copy_path": paths["copy_path"]}
+
+
+def qmt_auto_login_prepare_for_account(row, request=None):
+    row = row or {}
+    enabled = _qmt_auto_login_request_enabled(request, row)
+    result = {
+        "enabled": bool(enabled),
+        "prepared": False,
+        "supported": qmt_auto_login_supported_for_row(row),
+        "account_key": _qmt_auto_login_session_key(row),
+        "account_id": str(row.get("account_id") or ""),
+        "qmt_dir": normalize_optional_path(row.get("qmt_dir") or row.get("python_dir")),
+        "message": "",
+    }
+    if not enabled:
+        result["message"] = "QMT 自动登录配置未启用"
+        return result
+    try:
+        paths = _qmt_auto_login_paths(result["qmt_dir"])
+        session = _qmt_auto_login_saved_session(row)
+        existing_capture_pid = int((session or {}).get("capture_pid") or 0)
+        if not os.path.isfile(paths["copy_path"]) and _qmt_auto_login_pid_running(existing_capture_pid):
+            capture = {
+                "started": False,
+                "pid": existing_capture_pid,
+                "reason": "capture script already running",
+                "script_path": paths["capture_script_path"],
+            }
+        else:
+            capture = _qmt_auto_login_start_capture(paths)
+        running = _qmt_auto_login_processes(paths["bin_dir"])
+        if running:
+            launch = {
+                "started": False,
+                "pid": int(running[0].get("pid") or 0),
+                "reason": "target QMT is already running",
+                "processes": running,
+                "exe_path": paths["exe_path"],
+                "bin_dir": paths["bin_dir"],
+            }
+        else:
+            launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
+        token_exists = os.path.isfile(paths["copy_path"])
+        if token_exists:
+            message = "已发现 linkMini_copy，可直接执行重启验证"
+        elif launch.get("started") is False and launch.get("reason") == "target QMT is already running":
+            message = "已检测到绑定目录 QMT 正在运行，并启动捕获脚本等待保存自动登录令牌"
+        else:
+            message = "已启动 QMT 登录窗口并等待保存自动登录令牌"
+        result.update({
+            "prepared": True,
+            "bin_dir": paths["bin_dir"],
+            "exe_path": paths["exe_path"],
+            "capture_script_path": paths["capture_script_path"],
+            "capture": capture,
+            "capture_pid": capture.get("pid") or 0,
+            "launch": launch,
+            "launch_pid": launch.get("pid") or 0,
+            "token_exists": token_exists,
+            "token_path": paths["copy_path"],
+            "message": message,
+        })
+        _qmt_auto_login_update_session(row, {
+            "enabled": True,
+            "state": "waiting_login" if not token_exists else "token_ready",
+            "qmt_dir": result["qmt_dir"],
+            "bin_dir": paths["bin_dir"],
+            "exe_path": paths["exe_path"],
+            "capture_script_path": paths["capture_script_path"],
+            "capture_pid": capture.get("pid") or 0,
+            "launch_pid": launch.get("pid") or 0,
+            "token_path": paths["copy_path"],
+            "token_exists": token_exists,
+            "message": result["message"],
+        })
+    except Exception as error:
+        result.update({
+            "prepared": False,
+            "error": str(error),
+            "message": "QMT 自动登录配置失败: %s" % error,
+        })
+        _qmt_auto_login_update_session(row, {
+            "enabled": True,
+            "state": "error",
+            "qmt_dir": result["qmt_dir"],
+            "error": str(error),
+            "message": result["message"],
+        })
+    return result
+
+
+def qmt_auto_login_complete_for_account(row):
+    row = row or {}
+    session = _qmt_auto_login_saved_session(row)
+    qmt_dir = normalize_optional_path(session.get("qmt_dir") or row.get("qmt_dir") or row.get("python_dir"))
+    paths = _qmt_auto_login_paths(qmt_dir)
+    copy_result = _qmt_auto_login_copy_current_link(paths)
+    if not os.path.isfile(paths["copy_path"]):
+        result = {
+            "ok": False,
+            "completed": False,
+            "account_key": _qmt_auto_login_session_key(row),
+            "qmt_dir": qmt_dir,
+            "bin_dir": paths["bin_dir"],
+            "token_path": paths["copy_path"],
+            "error": "未捕获到 linkMini_copy；请先完成 QMT 登录并勾选自动登录",
+            "message": "未捕获到 linkMini_copy；请先完成 QMT 登录并勾选自动登录",
+        }
+        _qmt_auto_login_update_session(row, {
+            "state": "waiting_login",
+            "qmt_dir": qmt_dir,
+            "bin_dir": paths["bin_dir"],
+            "token_exists": False,
+            "error": result["error"],
+            "message": result["message"],
+        })
+        return result
+    stop = _qmt_auto_login_stop_xtitclient(row, paths, session=session)
+    shutil.copy2(paths["copy_path"], paths["link_path"])
+    restart = _qmt_auto_login_start_xtitclient(paths, use_link=True)
+    result = {
+        "ok": True,
+        "completed": True,
+        "account_key": _qmt_auto_login_session_key(row),
+        "account_id": str(row.get("account_id") or ""),
+        "qmt_dir": qmt_dir,
+        "bin_dir": paths["bin_dir"],
+        "token_path": paths["copy_path"],
+        "link_path": paths["link_path"],
+        "copied_current_link": copy_result,
+        "stop": stop,
+        "restart": restart,
+        "restart_pid": restart.get("pid") or 0,
+        "message": "已按 PID/目录关闭 QMT，并用 linkMini_copy 重新启动自动登录验证",
+    }
+    _qmt_auto_login_update_session(row, {
+        "enabled": True,
+        "state": "restarted",
+        "qmt_dir": qmt_dir,
+        "bin_dir": paths["bin_dir"],
+        "exe_path": paths["exe_path"],
+        "token_path": paths["copy_path"],
+        "link_path": paths["link_path"],
+        "token_exists": True,
+        "restart_pid": restart.get("pid") or 0,
+        "last_stop": stop,
+        "message": result["message"],
+        "error": "",
+    })
+    return result
+
+
+QMT_AUTO_LOGIN_REMINDER = "请确认 QMT 登录窗口中已勾选“记住密码”和“自动登录”。"
+
+
+def _qmt_auto_login_first_pid(processes, launch=None):
+    launch = launch if isinstance(launch, dict) else {}
+    try:
+        pid = int(launch.get("pid") or 0)
+    except Exception:
+        pid = 0
+    if pid > 0:
+        return pid
+    for process in processes or []:
+        try:
+            pid = int(process.get("pid") or 0)
+        except Exception:
+            pid = 0
+        if pid > 0:
+            return pid
+    return 0
+
+
+def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="save"):
+    row = row or {}
+    settings = normalize_qmt_auto_login_settings(request, existing=row.get("qmt_auto_login"))
+    qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
+    result = {
+        "enabled": bool(settings["enabled"]),
+        "configured": False,
+        "started": False,
+        "restarted": False,
+        "pid": 0,
+        "launch_pid": 0,
+        "restart_pid": 0,
+        "account_key": _qmt_auto_login_session_key(row),
+        "account_id": str(row.get("account_id") or ""),
+        "qmt_dir": qmt_dir,
+        "restart_times": list(settings["restart_times"]),
+        "reminder": QMT_AUTO_LOGIN_REMINDER,
+        "message": "",
+    }
+    if not settings["enabled"]:
+        result["message"] = "QMT 自动启动未启用"
+        _qmt_auto_login_update_session(row, {
+            "enabled": False,
+            "state": "disabled",
+            "qmt_dir": qmt_dir,
+            "restart_times": list(settings["restart_times"]),
+            "message": result["message"],
+            "error": "",
+        })
+        return result
+    try:
+        with QMT_AUTO_LOGIN_LOCK:
+            paths = _qmt_auto_login_paths(qmt_dir)
+            stop = None
+            if restart:
+                stop = _qmt_auto_login_stop_xtitclient(row, paths, session=_qmt_auto_login_saved_session(row))
+            running = _qmt_auto_login_processes(paths["bin_dir"])
+            launch = None
+            if not running:
+                launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
+                running = _qmt_auto_login_processes(paths["bin_dir"])
+            pid = _qmt_auto_login_first_pid(running, launch)
+            started = bool(launch)
+            result.update({
+                "configured": True,
+                "started": started and not restart,
+                "restarted": bool(restart),
+                "pid": pid,
+                "launch_pid": pid if not restart else 0,
+                "restart_pid": pid if restart else 0,
+                "bin_dir": paths["bin_dir"],
+                "exe_path": paths["exe_path"],
+                "processes": running,
+                "launch": launch or {},
+                "stop": stop,
+            })
+            if restart:
+                result["message"] = (
+                    "已按计划重启 QMT，PID: %s" % pid
+                    if pid else "已执行计划重启，但暂未获取到 QMT 进程 PID"
+                )
+            elif started:
+                result["message"] = (
+                    "已启动绑定目录 XtItClient.exe，PID: %s" % pid
+                    if pid else "已发起启动绑定目录 XtItClient.exe，暂未获取到进程 PID"
+                )
+            else:
+                result["message"] = (
+                    "已检测到绑定目录 QMT 正在运行，PID: %s" % pid
+                    if pid else "已检测绑定目录 QMT 进程，但暂未获取到 PID"
+                )
+            _qmt_auto_login_update_session(row, {
+                "enabled": True,
+                "state": "restarted" if restart else "running",
+                "qmt_dir": qmt_dir,
+                "bin_dir": paths["bin_dir"],
+                "exe_path": paths["exe_path"],
+                "pid": pid,
+                "launch_pid": result["launch_pid"],
+                "restart_pid": result["restart_pid"],
+                "restart_times": list(settings["restart_times"]),
+                "last_reason": reason,
+                "last_stop": stop,
+                "message": result["message"],
+                "error": "",
+            })
+    except Exception as error:
+        result.update({
+            "configured": False,
+            "error": str(error),
+            "message": "QMT 自动启动配置失败: %s" % error,
+        })
+        _qmt_auto_login_update_session(row, {
+            "enabled": True,
+            "state": "error",
+            "qmt_dir": qmt_dir,
+            "restart_times": list(settings["restart_times"]),
+            "error": str(error),
+            "message": result["message"],
+        })
+    return result
+
+
+def qmt_auto_login_restart_for_account(row, request=None, reason="manual"):
+    row = row or {}
+    settings = normalize_qmt_auto_login_settings(request, existing=row.get("qmt_auto_login"))
+    settings["enabled"] = True
+    return qmt_auto_login_apply_for_account(row, settings, restart=True, reason=reason)
+
+
+class QmtAutoLoginRestartScheduler:
+    def __init__(self, interval=20.0):
+        self.interval = float(interval or 20.0)
+        self._stop = threading.Event()
+        self._thread = None
+        self._fired = {}
+        self._lock = threading.Lock()
+
+    def start(self):
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run_loop, name="qmt-auto-login-restart", daemon=True)
+        self._thread.start()
+
+    def close(self):
+        self._stop.set()
+        thread = self._thread
+        if thread and thread.is_alive():
+            thread.join(timeout=2.0)
+
+    def _run_loop(self):
+        while not self._stop.wait(self.interval):
+            try:
+                self.run_pending()
+            except Exception as error:
+                safe_print("QMT 自动重启调度失败: %s" % error)
+
+    def run_pending(self, now=None):
+        if WEB_CONFIG is None:
+            return []
+        now = now or time.localtime()
+        current_day = time.strftime("%Y-%m-%d", now)
+        current_time = time.strftime("%H:%M", now)
+        configs = WEB_CONFIG.account_configs()
+        results = []
+        with self._lock:
+            for row in configs.values():
+                if not isinstance(row, dict) or not account_config_is_enabled(row):
+                    continue
+                settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+                if not settings["enabled"] or current_time not in settings["restart_times"]:
+                    continue
+                account_key = _qmt_auto_login_session_key(row)
+                fired_key = "%s|%s|%s" % (account_key, current_day, current_time)
+                if self._fired.get(fired_key):
+                    continue
+                self._fired[fired_key] = time.time()
+                results.append(qmt_auto_login_restart_for_account(row, settings, reason="scheduled:%s" % current_time))
+            cutoff = time.time() - 86400 * 3
+            self._fired = {key: value for key, value in self._fired.items() if value >= cutoff}
+        return results
+
+
+QMT_AUTO_LOGIN_RESTART_SCHEDULER = QmtAutoLoginRestartScheduler()
+
+
 def auto_deploy_qmt_core_for_all_accounts(source_dir=None):
     """Copy the current core into every distinct QMT directory in saved bindings."""
     configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
@@ -9651,6 +10423,32 @@ def tcp_port_open(host, port, timeout=0.35):
             sock.close()
         except Exception:
             pass
+
+
+def _web_probe_host(host):
+    host = str(host or "").strip()
+    if not host or host in ("0.0.0.0", "::"):
+        return "127.0.0.1"
+    return host
+
+
+def cfquant_web_available(host, port, timeout=0.8):
+    host = _web_probe_host(host)
+    url_host = "[%s]" % host if ":" in host and not host.startswith("[") else host
+    url = "http://%s:%s/api/health" % (url_host, int(port))
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "cfquant-startup/%s" % current_core_version()},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=float(timeout)) as response:
+            if response.getcode() != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        return bool(payload.get("ok") is True and (payload.get("data") or {}).get("status") == "ok")
+    except Exception:
+        return False
 
 
 def _hidden_subprocess_kwargs():
@@ -11446,7 +12244,14 @@ class AccountDataCache(object):
 ACCOUNT_CACHE = AccountDataCache()
 
 
-CFTRADER_WEB_METHODS = frozenset(("order_stock", "order_stock_async", "order_stock_batch", "order_stock_batch_async"))
+CFTRADER_WEB_METHODS = frozenset((
+    "order_stock",
+    "order_stock_async",
+    "order_stock_batch",
+    "order_stock_batch_async",
+    "cancel_order_stock_batch",
+    "cancel_order_stock_batch_async",
+))
 _CFTRADER_WEB_SEQS = itertools.count(int(time.time() * 1000))
 
 
@@ -11468,24 +12273,39 @@ def submit_cftrader_order(body, method):
     if body.get("account_key") and body["account_key"] != account_key:
         raise ValueError("account_key does not match the selected binding")
     batch = "batch" in method
+    cancel_batch = method.startswith("cancel_order_stock_batch")
     asynchronous = method.endswith("_async")
     batch_id = new_id("webcfbatch")
-    fields = ("stock_code", "order_type", "order_volume", "price_type", "price", "strategy_name", "order_remark")
-    raw_orders = body.get("orders") if batch else [{key: body[key] for key in fields if key in body}]
     stop_on_error = body.get("stop_on_error", False)
-    orders = prepare_batch_orders(raw_orders, batch_id, body.get("strategy_name", ""),
-                                  body.get("order_remark", ""), stop_on_error)
-    for order in orders:
-        order["stock_code"] = normalize_stock_code(order["stock_code"])
-        if order["price_type"] == FIX_PRICE and order["price"] <= 0:
-            raise ValueError("fixed-price orders require price > 0")
-    expected = "CFTRADER %s %s" % (account_id, len(orders))
+    if cancel_batch:
+        raw_cancels = body.get("cancels", body.get("order_ids", body.get("orders")))
+        cancels = prepare_batch_cancels(raw_cancels, batch_id, stop_on_error)
+        for cancel in cancels:
+            if cancel.get("stock_code"):
+                cancel["stock_code"] = normalize_stock_code(cancel["stock_code"])
+        expected_count = len(cancels)
+    else:
+        fields = ("stock_code", "order_type", "order_volume", "price_type", "price", "strategy_name", "order_remark")
+        raw_orders = body.get("orders") if batch else [{key: body[key] for key in fields if key in body}]
+        orders = prepare_batch_orders(raw_orders, batch_id, body.get("strategy_name", ""),
+                                      body.get("order_remark", ""), stop_on_error)
+        for order in orders:
+            order["stock_code"] = normalize_stock_code(order["stock_code"])
+            if order["price_type"] == FIX_PRICE and order["price"] <= 0:
+                raise ValueError("fixed-price orders require price > 0")
+        expected_count = len(orders)
+    expected = "CFTRADER %s %s" % (account_id, expected_count)
     if str(body.get("confirm_text") or "").strip() != expected:
         raise ValueError("confirmation mismatch, expected: %s" % expected)
     account = dict(account_id=account_id, account_type=account_type)
     timeout = request_timeout_value(body.get("timeout"), default=30.0, maximum=120.0)
     started = time.perf_counter()
-    if batch:
+    if cancel_batch:
+        params = dict(account=account, batch_id=batch_id, cancels=cancels, stop_on_error=stop_on_error,
+                      seqs=[next(_CFTRADER_WEB_SEQS) for _ in cancels] if asynchronous else [])
+        route = account_cftrader_batch_request(account_id, bridge_id, None, "cftrader." + method, params,
+                                             timeout=timeout, account_type=account_type, account_key=account_key)
+    elif batch:
         params = dict(account=account, batch_id=batch_id, orders=orders, stop_on_error=stop_on_error,
                       seqs=[next(_CFTRADER_WEB_SEQS) for _ in orders] if asynchronous else [])
         route = account_cftrader_batch_request(account_id, bridge_id, None, "cftrader." + method, params,
@@ -11935,6 +12755,7 @@ def save_account_runtime_config(body):
     market_bridges = body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None
     market_routing_enabled = body.get("market_routing_enabled") if "market_routing_enabled" in body else None
     account_enabled = parse_config_bool(body.get("enabled"), True) if "enabled" in body else None
+    qmt_auto_login_request = body.get("qmt_auto_login") if "qmt_auto_login" in body else None
     row = WEB_CONFIG.save_account_config(
         account_id=account_id,
         account_type=account_type,
@@ -11948,6 +12769,7 @@ def save_account_runtime_config(body):
         market_routing_enabled=market_routing_enabled,
         market_bridges=market_bridges,
         qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
+        qmt_auto_login=qmt_auto_login_request,
     )
     row_enabled = account_config_is_enabled(row)
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
@@ -11957,6 +12779,14 @@ def save_account_runtime_config(body):
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
     qmt_strategy_deploy = configure_account_qmt_strategies(row, identity)
+    qmt_auto_login = (
+        qmt_auto_login_apply_for_account(
+            row,
+            qmt_auto_login_request,
+        )
+        if row_enabled else
+        {"enabled": False, "message": "账号绑定已禁用，未配置 QMT 自动启动"}
+    )
     runtime = ensure_account_runtime(row["mode"])
     ACCOUNT_CACHE.prime_configured_accounts()
     STATUS_MONITOR.wake()
@@ -11966,6 +12796,7 @@ def save_account_runtime_config(body):
         "qmt_core_deploy": qmt_core_deploy,
         "qmt_bridge_identity": identity,
         "qmt_strategy_deploy": qmt_strategy_deploy,
+        "qmt_auto_login": qmt_auto_login,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
         "account_pairs": WEB_CONFIG.account_pairs(),
@@ -11994,6 +12825,12 @@ def account_config_for_request(body):
         identifier = account_key or ("%s/%s" % (account_id, account_type) if account_id else "")
         raise ValueError("unknown account config: %s" % (identifier or "--"))
     return row
+
+
+@serialized_account_configuration
+def complete_qmt_auto_login(body):
+    row = account_config_for_request(body)
+    return qmt_auto_login_restart_for_account(row, row.get("qmt_auto_login"), reason="manual")
 
 
 @serialized_account_configuration
@@ -12116,6 +12953,7 @@ def initialize_web_setup(body):
         market_routing_enabled=body.get("market_routing_enabled") if "market_routing_enabled" in body else None,
         market_bridges=body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None,
         qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
+        qmt_auto_login=body.get("qmt_auto_login") if "qmt_auto_login" in body else None,
     )
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
         row,
@@ -12124,6 +12962,10 @@ def initialize_web_setup(body):
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
     qmt_strategy_deploy = configure_account_qmt_strategies(row, identity)
+    qmt_auto_login = qmt_auto_login_apply_for_account(
+        row,
+        body.get("qmt_auto_login") if "qmt_auto_login" in body else None,
+    )
     runtime = ensure_account_runtime(row["mode"])
     web_auth = None
     server_access = None
@@ -12143,6 +12985,7 @@ def initialize_web_setup(body):
         "qmt_core_deploy": qmt_core_deploy,
         "qmt_bridge_identity": identity,
         "qmt_strategy_deploy": qmt_strategy_deploy,
+        "qmt_auto_login": qmt_auto_login,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
         "server_access": server_access or server_access_info(include_auth_details=True),
@@ -12162,12 +13005,38 @@ def reset_web_setup():
 
 def set_data_provider(body):
     body = body or {}
-    return WEB_CONFIG.set_data_provider_account_id(
-        account_id=body.get("account_id"),
-        account_type=body.get("account_type") or "STOCK",
-        bridge_id=body.get("bridge_id"),
-        account_key=body.get("account_key"),
+    account_id = body.get("account_id")
+    account_type = body.get("account_type") or "STOCK"
+    bridge_id = body.get("bridge_id")
+    account_key = body.get("account_key")
+    requested = None
+    if account_id or account_key:
+        requested = WEB_CONFIG.account_config(
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=bridge_id,
+            account_key=account_key,
+        )
+        if requested and not account_config_is_enabled(requested):
+            raise ValueError("disabled account cannot be used as data provider")
+    setup = WEB_CONFIG.set_data_provider_account_id(
+        account_id=account_id,
+        account_type=account_type,
+        bridge_id=bridge_id,
+        account_key=account_key,
     )
+    selected_key = setup.get("data_provider_account_key") if isinstance(setup, dict) else ""
+    selected = WEB_CONFIG.account_config_by_key(selected_key) if selected_key else None
+    ACCOUNT_CACHE.prime_configured_accounts()
+    STATUS_MONITOR.wake()
+    CALLBACKS.refresh_channels(callback_channels())
+    return {
+        "account": selected,
+        "setup": setup,
+        "account_pairs": WEB_CONFIG.account_pairs(),
+        "account_configs": WEB_CONFIG.account_configs(),
+        "bridges": WEB_CONFIG.bridges(),
+    }
 
 
 def delete_account_pair(body):
@@ -13857,6 +14726,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(verify_account_pair(body)))
             elif parsed.path == "/api/account-config":
                 self._write_json(ok(save_account_runtime_config(body)))
+            elif parsed.path == "/api/qmt-auto-login/complete":
+                self._write_json(ok(complete_qmt_auto_login(body)))
             elif parsed.path == "/api/account-config/update-core":
                 self._write_json(ok(update_account_qmt_core(body)))
             elif parsed.path == "/api/account-config/delete":
@@ -14668,13 +15539,22 @@ def main(argv=None):
     if not static_assets_available():
         raise RuntimeError("static assets not found: %s or package %s" % (STATIC_DIR, PACKAGE_STATIC_NAME))
     configured_modes = configured_runtime_modes()
-    ensure_lttx_started("Web 启动预启动")
     global WEB_BOUND_HOST, WEB_BOUND_PORT
     WEB_BOUND_HOST = args.host
     WEB_BOUND_PORT = args.port
-    probe_host = "127.0.0.1" if args.host in ("", "0.0.0.0") else args.host
+    probe_host = _web_probe_host(args.host)
     if tcp_port_open(probe_host, args.port):
-        raise RuntimeError("cfquant web port %s is already listening, skip duplicate start" % args.port)
+        if cfquant_web_available(probe_host, args.port):
+            safe_print(
+                "cfquant web dashboard already running on http://%s:%s, reuse existing instance"
+                % (probe_host, args.port)
+            )
+            return 0
+        raise RuntimeError(
+            "cfquant web port %s is already occupied by another process; stop it or set CFQUANT_WEB_PORT"
+            % args.port
+        )
+    ensure_lttx_started("Web 启动预启动")
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
         internal_api_key()
@@ -14702,6 +15582,7 @@ def main(argv=None):
     STATUS_MONITOR.start()
     QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
     QMT_STRATEGIES.start()
+    QMT_AUTO_LOGIN_RESTART_SCHEDULER.start()
     ACCOUNT_CACHE.start()
     CALLBACKS.start()
     QUOTES.start()
@@ -14712,6 +15593,7 @@ def main(argv=None):
     finally:
         LOG_CLEANUP.close()
         STATUS_MONITOR.close()
+        QMT_AUTO_LOGIN_RESTART_SCHEDULER.close()
         QMT_STRATEGIES.close()
         ACCOUNT_CACHE.close()
         CALLBACKS.close()

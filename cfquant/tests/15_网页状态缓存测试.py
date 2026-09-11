@@ -3,10 +3,13 @@ import json
 import subprocess
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 import urllib.error
 import urllib.request
 from urllib.parse import urlparse
+
+import pytest
 
 import cfquant_web_server as web
 
@@ -23,6 +26,36 @@ def _handler(headers=None):
     handler = object.__new__(web.CfquantWebHandler)
     handler.headers = dict(headers or {})
     return handler
+
+
+def _start_probe_server(payload, status_code=200):
+    raw = json.dumps(payload).encode("utf-8")
+
+    class ProbeHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/api/health":
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, fmt, *args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ProbeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _close_probe_server(server, thread):
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
 
 
 def test_internal_api_key_is_generated_once_and_persisted(monkeypatch, tmp_path):
@@ -191,6 +224,47 @@ def test_internal_http_api_enforces_its_own_scope(monkeypatch):
     assert config_status == 200
     assert public_config["data"]["auth_required"] is True
     assert "account_configs" not in public_config["data"]
+
+
+def test_cfquant_web_available_detects_health_payload():
+    server, thread = _start_probe_server({"ok": True, "data": {"status": "ok"}})
+    try:
+        assert web.cfquant_web_available("127.0.0.1", server.server_address[1], timeout=1.0) is True
+    finally:
+        _close_probe_server(server, thread)
+
+
+def test_cfquant_web_available_rejects_non_cfquant_payload():
+    server, thread = _start_probe_server({"ok": True, "data": {"status": "other"}})
+    try:
+        assert web.cfquant_web_available("127.0.0.1", server.server_address[1], timeout=1.0) is False
+    finally:
+        _close_probe_server(server, thread)
+
+
+def test_web_main_reuses_existing_cfquant_port(monkeypatch):
+    server, thread = _start_probe_server({"ok": True, "data": {"status": "ok"}})
+    calls = []
+    monkeypatch.setattr(web, "static_assets_available", lambda: True)
+    monkeypatch.setattr(web, "ensure_lttx_started", lambda reason: calls.append(reason))
+    try:
+        assert web.main(["--host", "127.0.0.1", "--port", str(server.server_address[1])]) == 0
+        assert calls == []
+    finally:
+        _close_probe_server(server, thread)
+
+
+def test_web_main_rejects_non_cfquant_port_owner(monkeypatch):
+    server, thread = _start_probe_server({"ok": True, "data": {"status": "other"}})
+    calls = []
+    monkeypatch.setattr(web, "static_assets_available", lambda: True)
+    monkeypatch.setattr(web, "ensure_lttx_started", lambda reason: calls.append(reason))
+    try:
+        with pytest.raises(RuntimeError, match="already occupied by another process"):
+            web.main(["--host", "127.0.0.1", "--port", str(server.server_address[1])])
+        assert calls == []
+    finally:
+        _close_probe_server(server, thread)
 
 
 def test_channel_status_monitor_keeps_ctypes_and_lttx_snapshots_separate():

@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import re
 from pathlib import Path
 
 
@@ -26,11 +27,25 @@ def updated_source(source):
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TxTradeBridge")
     dispatch = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
     lines = source.splitlines(keepends=True)
-    branch = ['        if action in CFTRADER_BATCH_ACTIONS:\n',
-              '            return execute_qmt_batch(self, params, msg, action.endswith("_async"))\n']
-    if lines[dispatch.lineno:dispatch.lineno + 2] != branch:
-        lines[dispatch.lineno:dispatch.lineno] = branch
+    branch = [
+        '        if action in CFTRADER_BATCH_ORDER_ACTIONS:\n',
+        '            return execute_qmt_batch(self, params, msg, action.endswith("_async"))\n',
+        '        if action in CFTRADER_BATCH_CANCEL_ACTIONS:\n',
+        '            return execute_qmt_cancel_batch(self, params, msg, action.endswith("_async"))\n',
+    ]
+    if lines[dispatch.lineno:dispatch.lineno + len(branch)] != branch:
+        if (lines[dispatch.lineno:dispatch.lineno + 2]
+                == ['        if action in CFTRADER_BATCH_ACTIONS:\n',
+                    '            return execute_qmt_batch(self, params, msg, action.endswith("_async"))\n']):
+            lines[dispatch.lineno:dispatch.lineno + 2] = branch
+        else:
+            lines[dispatch.lineno:dispatch.lineno] = branch
     source = ''.join(lines)
+    version_source = (ROOT / "cfquant/version.py").read_text(encoding="utf-8")
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', version_source)
+    if match:
+        source = re.sub(r'^CORE_VERSION\s*=\s*"[^"]+"', 'CORE_VERSION = "%s"' % match.group(1),
+                        source, count=1, flags=re.M)
     source = source.replace('def _order_stock(self, params, msg, resolve_order_id=True):',
                             'def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True):', 1)
     source = source.replace('previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name)\n',

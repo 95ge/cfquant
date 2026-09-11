@@ -4,13 +4,14 @@
 from __future__ import print_function
 
 import argparse
+import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -160,6 +161,31 @@ def _browser_url(host, port):
     return "http://%s:%s/" % (host, port)
 
 
+def _web_probe_host(host):
+    host = str(host or "").strip()
+    if not host or host in ("0.0.0.0", "::"):
+        return "127.0.0.1"
+    return host
+
+
+def _cfquant_web_available(host, port, timeout=0.8):
+    host = _web_probe_host(host)
+    url = _browser_url(host, port).rstrip("/") + "/api/health"
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "cfquant-cli/%s" % CORE_VERSION},
+            method="GET",
+        )
+        with urllib.request.urlopen(request, timeout=float(timeout)) as response:
+            if response.getcode() != 200:
+                return False
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        return bool(payload.get("ok") is True and (payload.get("data") or {}).get("status") == "ok")
+    except Exception:
+        return False
+
+
 def _resolve_web_address(args):
     host = args.host or os.environ.get("CFQUANT_WEB_HOST")
     port = args.port
@@ -196,18 +222,14 @@ def _print_startup_banner(args):
 
 
 def _wait_and_open_browser(host, port):
-    connect_host = str(host or "").strip()
-    if not connect_host or connect_host in ("0.0.0.0", "::"):
-        connect_host = "127.0.0.1"
+    connect_host = _web_probe_host(host)
     url = _browser_url(connect_host, port)
     deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((connect_host.strip("[]"), int(port)), timeout=0.4):
-                webbrowser.open(url)
-                return
-        except OSError:
-            time.sleep(0.25)
+        if _cfquant_web_available(connect_host, port, timeout=0.6):
+            webbrowser.open(url)
+            return
+        time.sleep(0.25)
 
 
 def _serve(argv, prog="cfquant"):

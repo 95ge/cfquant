@@ -1,7 +1,8 @@
 """Order-only extensions sharing an existing XtQuantTrader session and callbacks."""
 
 from .batch_orders import (
-    batch_result, batch_result_rows, batch_unknown, prepare_batch_orders, validate_batch_response,
+    batch_cancel_result_rows, batch_result, batch_result_rows, batch_unknown,
+    prepare_batch_cancels, prepare_batch_orders, validate_batch_cancel_response, validate_batch_response,
 )
 from .protocol import new_id
 from .xttrader import XtQuantTrader, _account_payload
@@ -50,6 +51,18 @@ class CfQuantTrader:
         """
         return self._batch(account, orders, strategy_name, order_remark, stop_on_error, asynchronous=True)
 
+    def cancel_order_stock_batch(self, account, order_ids, stop_on_error=False):
+        """Cancel multiple orders inside QMT through one batch request.
+
+        ``order_ids`` may be a list of IDs or dictionaries containing
+        ``order_id`` plus optional ``stock_code``/``market`` for market routing.
+        """
+        return self._cancel_batch(account, order_ids, stop_on_error, asynchronous=False)
+
+    def cancel_order_stock_batch_async(self, account, order_ids, stop_on_error=False):
+        """Cancel multiple orders asynchronously; responses use original callbacks."""
+        return self._cancel_batch(account, order_ids, stop_on_error, asynchronous=True)
+
     def _prepare(self, account, orders, strategy_name, order_remark, stop_on_error):
         account = _account_payload(self._trader._resolve_account(account))
         if not str(account.get("account_id") or "").strip():
@@ -81,3 +94,26 @@ class CfQuantTrader:
                 if row["status"] in ("failed", "skipped"):
                     self._trader._discard_pending_async_order(row["seq"])
         return result
+
+    def _prepare_cancel(self, account, order_ids, stop_on_error):
+        account = _account_payload(self._trader._resolve_account(account))
+        if not str(account.get("account_id") or "").strip():
+            raise ValueError("account_id is required")
+        batch_id = new_id("cfcancel")
+        rows = prepare_batch_cancels(order_ids, batch_id, stop_on_error)
+        return account, batch_id, rows
+
+    def _cancel_batch(self, account, order_ids, stop_on_error, asynchronous):
+        account, batch_id, rows = self._prepare_cancel(account, order_ids, stop_on_error)
+        seqs = [next(self._trader._seq) for row in rows] if asynchronous else []
+        params = dict(account=account, batch_id=batch_id, cancels=rows, seqs=seqs, stop_on_error=stop_on_error)
+        action = "cftrader.cancel_order_stock_batch_async" if asynchronous else "cftrader.cancel_order_stock_batch"
+        try:
+            response = self._trader._trade_request(action, params)
+            return validate_batch_cancel_response(response, params, asynchronous)
+        except Exception as error:
+            results = batch_cancel_result_rows(rows, seqs)
+            batch_unknown(results, "Batch cancel response unavailable; QMT may still execute the batch: %s" % error)
+            result = batch_result(account, batch_id, asynchronous, results, operation="cancel")
+            result["request_error"] = str(error) or type(error).__name__
+            return result

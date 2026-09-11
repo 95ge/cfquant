@@ -7,7 +7,12 @@ import threading
 import time
 
 from .protocol import loads_message, pack_event, pack_response
-from .batch_orders import CFTRADER_BATCH_ACTIONS, execute_qmt_batch
+from .batch_orders import (
+    CFTRADER_BATCH_CANCEL_ACTIONS,
+    CFTRADER_BATCH_ORDER_ACTIONS,
+    execute_qmt_batch,
+    execute_qmt_cancel_batch,
+)
 from .level2 import L2_GET_PERIODS, L2_PERIODS, l2_query, quote_plain, require_l2_callable, thousand_price
 from .version import __version__ as CORE_VERSION
 from . import account_routing
@@ -242,8 +247,10 @@ class TxTradeBridge(object):
             )
 
     def _dispatch(self, action, params, msg):
-        if action in CFTRADER_BATCH_ACTIONS:
+        if action in CFTRADER_BATCH_ORDER_ACTIONS:
             return execute_qmt_batch(self, params, msg, action.endswith("_async"))
+        if action in CFTRADER_BATCH_CANCEL_ACTIONS:
+            return execute_qmt_cancel_batch(self, params, msg, action.endswith("_async"))
         if action == "cfquant.ping":
             return {
                 "pong": True,
@@ -583,8 +590,9 @@ class TxTradeBridge(object):
                         formatted["account_type"] = (
                             account.get("account_type") or params.get("account_type") or account_type.upper()
                         )
-                    if detail_type.lower() == "order":
+                    if detail_type.lower() in ("order", "deal"):
                         self._enrich_order_request_fields(formatted)
+                        self._enrich_query_order_meta_fields(formatted, account_id, account_type)
                 result.append(formatted)
             except Exception as e:
                 self._log(
@@ -1299,6 +1307,68 @@ class TxTradeBridge(object):
             if not order.get("m_strStrategyName"):
                 order["m_strStrategyName"] = strategy_name
         return order
+
+    def _enrich_query_order_meta_fields(self, data, account_id="", account_type=""):
+        if not isinstance(data, dict):
+            return data
+        if not self.order_meta_enabled:
+            return data
+        account_id = str(account_id or self._first_value(data, ("account_id", "m_strAccountID")) or "").strip()
+        account_type = order_meta.normalize_account_type(account_type or data.get("account_type") or self.account_type)
+        if account_id:
+            data.setdefault("account_id", account_id)
+            data.setdefault("m_strAccountID", account_id)
+        if account_type:
+            data.setdefault("account_type", account_type)
+        try:
+            record, match_info = self._resolve_direct_query_order_meta(data, account_id, account_type)
+            if record is None and account_id:
+                self._load_order_meta_store(account_id, account_type)
+                record, match_info = self._resolve_direct_query_order_meta(data, account_id, account_type)
+            if record:
+                order_meta.apply_record_to_callback(data, record, match_info)
+                if match_info.get("bound_order_ref"):
+                    self._persist_order_meta_record(record, payload=order_meta.encode_record(record))
+        except Exception as e:
+            self._log("query order meta enrich failed account=%s type=%s error=%s" % (account_id or "-", account_type or "-", e))
+        return data
+
+    def _resolve_direct_query_order_meta(self, data, account_id, account_type):
+        callback_record = order_meta.normalize_record(
+            data,
+            bridge_id=self.bridge_id,
+            account_type=account_type or data.get("account_type"),
+            account_id=account_id or data.get("account_id"),
+        )
+        order_refs = order_meta.order_ref_candidates_from_data(callback_record)
+        user_order_id = order_meta.normalize_text(callback_record.get("user_order_id"))
+        with self.order_meta_cache.lock:
+            self.order_meta_cache.prune()
+            ctx = self.order_meta_cache._ctx(callback_record)
+            for order_ref in order_refs:
+                record = self.order_meta_cache.by_ref.get(ctx + (order_ref,))
+                if record:
+                    return record, {"match_confidence": "order_ref"}
+            if user_order_id:
+                record = self.order_meta_cache.by_user.get(ctx + (user_order_id,))
+                if record:
+                    bound_order_ref = ""
+                    if order_refs:
+                        existing_refs = order_meta.order_ref_candidates_from_data(record)
+                        existing_set = set(existing_refs)
+                        bound_refs = [ref for ref in order_refs if ref not in existing_set]
+                        order_meta.merge_order_ref_candidates(record, order_refs)
+                        if not order_meta.normalize_order_ref(record.get("order_ref")):
+                            record["order_ref"] = order_refs[0]
+                            record["m_strOrderRef"] = order_refs[0]
+                        record["updated_at"] = time.time()
+                        self.order_meta_cache._upsert_locked(record)
+                        bound_order_ref = order_refs[0] if bound_refs else ""
+                    return record, {
+                        "match_confidence": "user_order_id",
+                        "bound_order_ref": bound_order_ref,
+                    }
+        return None, {}
 
     def _prune_pending_async_orders_locked(self):
         wait_seconds = os.environ.get("CFQUANT_ASYNC_ORDER_RESPONSE_WAIT_SECONDS", 60.0)
@@ -2849,7 +2919,7 @@ class TxTradeBridge(object):
                 "order_type": self._stock_order_type(obj),
                 "order_id": self._first_value(obj, ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID")),
                 "order_sysid": self._get_value(obj, "m_strOrderSysID"),
-                "traded_id": self._first_value(obj, ("m_strTradeID", "m_strDealID", "m_nTradeID")),
+                "traded_id": self._first_value(obj, ("m_strTradeID", "m_strDealID", "m_nTradeID", "m_nDealID")),
                 "strategy_name": self._get_value(obj, "m_strStrategyName"),
                 "order_remark": self._first_value(obj, ("m_strRemark", "m_strOrderRemark")),
                 "trade_time": self._first_value(obj, (
@@ -2872,9 +2942,12 @@ class TxTradeBridge(object):
                 "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "price": self._get_value(obj, "m_dPrice"),
+                "traded_price": self._get_value(obj, "m_dPrice"),
                 "volume": self._get_value(obj, "m_nVolume"),
+                "traded_volume": self._get_value(obj, "m_nVolume"),
                 "trade_amount": self._get_value(obj, "m_dTradeAmount"),
-                "commission": self._get_value(obj, "m_dCommission"),
+                "traded_amount": self._get_value(obj, "m_dTradeAmount"),
+                "commission": self._first_value(obj, ("m_dCommission", "m_dComssion")),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
@@ -2886,6 +2959,7 @@ class TxTradeBridge(object):
                 "m_nVolume": self._get_value(obj, "m_nVolume"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
                 "m_dCommission": self._get_value(obj, "m_dCommission"),
+                "m_dComssion": self._get_value(obj, "m_dComssion"),
                 "m_strAccountID": self._get_value(obj, "m_strAccountID"),
                 "m_nRef": self._get_value(obj, "m_nRef"),
                 "m_strOrderRef": self._get_value(obj, "m_strOrderRef"),
@@ -2894,6 +2968,8 @@ class TxTradeBridge(object):
                 "m_strOrderSysID": self._get_value(obj, "m_strOrderSysID"),
                 "m_strTradeID": self._get_value(obj, "m_strTradeID"),
                 "m_strDealID": self._get_value(obj, "m_strDealID"),
+                "m_nTradeID": self._get_value(obj, "m_nTradeID"),
+                "m_nDealID": self._get_value(obj, "m_nDealID"),
                 "m_strStrategyName": self._get_value(obj, "m_strStrategyName"),
                 "m_strRemark": self._get_value(obj, "m_strRemark"),
                 "m_strTradeTime": self._get_value(obj, "m_strTradeTime"),

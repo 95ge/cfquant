@@ -79,8 +79,13 @@ class _CqStrategyLease(object):
         try:
             with open(self.descriptor["control_path"], encoding="utf-8") as stream:
                 desired = _cq_json.load(stream)
+            accepted = desired.get("accepted_generations")
+            if not isinstance(accepted, (list, tuple, set)):
+                accepted = ()
+            allowed_generations = set([desired.get("generation")])
+            allowed_generations.update(str(item) for item in accepted if item)
             return (desired.get("enabled") is True
-                    and desired.get("generation") == self.descriptor["generation"]
+                    and self.descriptor["generation"] in allowed_generations
                     and desired.get("mode") == self.descriptor["mode"])
         except (OSError, ValueError):
             return False

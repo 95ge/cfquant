@@ -8,6 +8,7 @@ import time
 from .config import get_config
 from .logging_i18n import get_log_language, set_log_language, translate_log
 from .protocol import loads_message, pack_event, pack_response
+from .batch_orders import CFTRADER_BATCH_CANCEL_ACTIONS, execute_qmt_cancel_batch
 from .level2 import L2_GET_PERIODS, L2_PERIODS, l2_query, quote_plain, require_l2_callable, thousand_price
 from .xttype import filter_cancelable_orders
 
@@ -195,6 +196,8 @@ class CfquantQmtBridge(object):
             "xttrader.order_stock_async",
             "xttrader.cancel_order_stock",
             "xttrader.cancel_order_stock_async",
+            "cftrader.cancel_order_stock_batch",
+            "cftrader.cancel_order_stock_batch_async",
         }
 
     def _handle_request(self, msg, received_at=None, parse_ms=0.0):
@@ -220,6 +223,8 @@ class CfquantQmtBridge(object):
             return pack_response(request_id, ok=False, error=e)
 
     def _dispatch(self, action, params, msg):
+        if action in CFTRADER_BATCH_CANCEL_ACTIONS:
+            return execute_qmt_cancel_batch(self, params, msg, action.endswith("_async"))
         if action == "cfquant.ping":
             return {"pong": True, "ts": time.time(), "request_channel": self.request_channel}
         if action == "cfquant.set_log_language":
@@ -1009,7 +1014,7 @@ class CfquantQmtBridge(object):
                     row["account_id"] = account.get("account_id", "")
                 if row.get("account_type") in (None, ""):
                     row["account_type"] = account.get("account_type") or self._account_type_name(None).upper()
-                if str(datatype).upper() == "ORDER":
+                if str(datatype).upper() in ("ORDER", "DEAL"):
                     self._enrich_order_request_fields(row)
         if str(datatype).upper() == "ORDER" and self._truthy_param(params.get("cancelable_only")):
             rows = filter_cancelable_orders(rows)
@@ -1133,15 +1138,35 @@ class CfquantQmtBridge(object):
                 "order_type": self._stock_order_type(obj),
                 "order_id": self._first_value(obj, ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID")),
                 "order_sysid": self._get_value(obj, "m_strOrderSysID"),
-                "traded_id": self._first_value(obj, ("m_strTradeID", "m_strDealID", "m_nTradeID")),
+                "traded_id": self._first_value(obj, ("m_strTradeID", "m_strDealID", "m_nTradeID", "m_nDealID")),
+                "trade_time": self._first_value(obj, (
+                    "trade_time",
+                    "deal_time",
+                    "m_strTradeTime",
+                    "m_strDealTime",
+                    "m_nTradeTime",
+                    "m_nDealTime",
+                )),
+                "trade_date": self._first_value(obj, (
+                    "trade_date",
+                    "deal_date",
+                    "m_strTradeDate",
+                    "m_strDealDate",
+                    "m_strTradingDay",
+                    "m_nTradeDate",
+                    "m_nDealDate",
+                )),
                 "strategy_name": self._get_value(obj, "m_strStrategyName"),
                 "order_remark": self._first_value(obj, ("m_strRemark", "m_strOrderRemark")),
                 "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
                 "price": self._get_value(obj, "m_dPrice"),
+                "traded_price": self._get_value(obj, "m_dPrice"),
                 "volume": self._get_value(obj, "m_nVolume"),
+                "traded_volume": self._get_value(obj, "m_nVolume"),
                 "trade_amount": self._get_value(obj, "m_dTradeAmount"),
-                "commission": self._get_value(obj, "m_dCommission"),
+                "traded_amount": self._get_value(obj, "m_dTradeAmount"),
+                "commission": self._first_value(obj, ("m_dCommission", "m_dComssion")),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
                 "m_strInstrumentName": self._get_value(obj, "m_strInstrumentName"),
@@ -1153,6 +1178,7 @@ class CfquantQmtBridge(object):
                 "m_nVolume": self._get_value(obj, "m_nVolume"),
                 "m_dTradeAmount": self._get_value(obj, "m_dTradeAmount"),
                 "m_dCommission": self._get_value(obj, "m_dCommission"),
+                "m_dComssion": self._get_value(obj, "m_dComssion"),
                 "m_nRef": self._get_value(obj, "m_nRef"),
                 "m_strOrderRef": self._get_value(obj, "m_strOrderRef"),
                 "m_nOrderID": self._first_value(obj, ("m_nOrderID", "m_nRef")),
@@ -1160,8 +1186,17 @@ class CfquantQmtBridge(object):
                 "m_strOrderSysID": self._get_value(obj, "m_strOrderSysID"),
                 "m_strTradeID": self._get_value(obj, "m_strTradeID"),
                 "m_strDealID": self._get_value(obj, "m_strDealID"),
+                "m_nTradeID": self._get_value(obj, "m_nTradeID"),
+                "m_nDealID": self._get_value(obj, "m_nDealID"),
                 "m_strStrategyName": self._get_value(obj, "m_strStrategyName"),
                 "m_strRemark": self._get_value(obj, "m_strRemark"),
+                "m_strTradeTime": self._get_value(obj, "m_strTradeTime"),
+                "m_strDealTime": self._get_value(obj, "m_strDealTime"),
+                "m_nTradeTime": self._get_value(obj, "m_nTradeTime"),
+                "m_nDealTime": self._get_value(obj, "m_nDealTime"),
+                "m_strTradeDate": self._get_value(obj, "m_strTradeDate"),
+                "m_strDealDate": self._get_value(obj, "m_strDealDate"),
+                "m_strTradingDay": self._get_value(obj, "m_strTradingDay"),
             }
         if datatype == "POSITION":
             return {

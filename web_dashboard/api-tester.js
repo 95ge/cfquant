@@ -57,7 +57,8 @@
     let html = `<dl class="api-test-metrics">${metrics.map(([label, value]) => `<div><dt>${escape(label)}</dt><dd>${escape(value)}</dd></div>`).join('')}</dl>`;
     if (Array.isArray(result?.results)) {
       const labels = { submitted: '已提交', failed: '失败', unknown: '待确认', skipped: '未提交' };
-      html += `<div class="api-test-orders" role="region" aria-label="逐笔委托结果" tabindex="0"><table><thead><tr><th>序号</th><th>证券</th><th>状态</th><th>order_id</th><th>seq</th><th>备注 / 错误</th></tr></thead><tbody>${result.results.map(row => `<tr><td>${escape(Number(row.index) + 1)}</td><td>${escape(row.stock_code)}</td><td>${escape(labels[row.status] || row.status)}</td><td>${escape(row.order_id ?? '--')}</td><td>${escape(row.seq ?? '--')}</td><td>${escape(row.error || row.order_remark)}</td></tr>`).join('')}</tbody></table></div>`;
+      const operation = result.operation === 'cancel' ? '撤单' : '委托';
+      html += `<div class="api-test-orders" role="region" aria-label="逐笔${operation}结果" tabindex="0"><table><thead><tr><th>序号</th><th>证券 / 市场</th><th>状态</th><th>order_id</th><th>seq</th><th>结果 / 备注 / 错误</th></tr></thead><tbody>${result.results.map(row => `<tr><td>${escape(Number(row.index) + 1)}</td><td>${escape(row.stock_code || row.market || '--')}</td><td>${escape(labels[row.status] || row.status)}</td><td>${escape(row.order_id ?? '--')}</td><td>${escape(row.seq ?? '--')}</td><td>${escape(row.error || row.order_remark || (row.cancel_result ?? ''))}</td></tr>`).join('')}</tbody></table></div>`;
     }
     return html;
   }
@@ -86,8 +87,9 @@
     host.dataset.mounted = entry.id;
     const record = records.get(entry.id) || { busy: false, listeners: new Set() };
     records.set(entry.id, record);
+    const sdkSubmitLabel = entry.name && entry.name.startsWith('cancel_order_stock_batch') ? '测试撤单' : '测试下单';
     host.innerHTML = `<div class="api-test-heading"><h3 tabindex="-1">${entry.module === 'callback' ? '回调记录' : '在线测试'}</h3><code>${escape(endpoint.method)} ${escape(endpoint.path)}</code></div>
-      <form class="api-form api-inline-form"><fieldset class="api-test-fields"></fieldset><div class="api-test-actions"><button class="primary" type="submit">${endpoint.sdkEntry ? '测试下单' : '发送请求'}</button><button type="button" data-test-reset>重置参数</button><button type="button" data-test-stop disabled>停止等待</button></div></form>
+      <form class="api-form api-inline-form"><fieldset class="api-test-fields"></fieldset><div class="api-test-actions"><button class="primary" type="submit">${endpoint.sdkEntry ? sdkSubmitLabel : '发送请求'}</button><button type="button" data-test-reset>重置参数</button><button type="button" data-test-stop disabled>停止等待</button></div></form>
       <details class="api-test-request"><summary>请求预览</summary><pre class="json-box" data-test-request></pre></details>
       <div class="api-test-result-heading"><strong data-test-status role="status" tabindex="-1">尚未测试</strong><span data-test-time></span><button type="button" data-test-copy disabled>复制结果</button><button type="button" data-test-clear disabled>清空结果</button></div>
       <div data-test-metrics></div><pre class="json-box api-test-output" data-test-output tabindex="0"></pre>`;

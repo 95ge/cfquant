@@ -305,6 +305,9 @@ class CallbackPrinter(XtQuantTraderCallback):
         self.counts = {}
         self.lock = threading.RLock()
 
+    def on_stock_asset(self, asset):
+        self._emit_payload("on_stock_asset", asset)
+
     def on_connected(self):
         self._emit_no_payload("on_connected")
 
@@ -547,6 +550,7 @@ def main():
         counts = callback.summary()
         print_info(
             "监听结束",
+            stock_asset_callbacks=counts.get("on_stock_asset", 0),
             stock_order_callbacks=counts.get("on_stock_order", 0),
             stock_trade_callbacks=counts.get("on_stock_trade", 0),
             order_error_callbacks=counts.get("on_order_error", 0),

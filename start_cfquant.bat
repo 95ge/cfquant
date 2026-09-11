@@ -4,13 +4,17 @@ cd /d "%~dp0"
 
 set "PYTHONDONTWRITEBYTECODE=1"
 set "PYTHONIOENCODING=utf-8"
-if not defined CFQUANT_START_WAIT_SECONDS set "CFQUANT_START_WAIT_SECONDS=30"
+if not defined CFQUANT_START_WAIT_SECONDS set "CFQUANT_START_WAIT_SECONDS=90"
 set "LOG_DIR=%~dp0log"
 set "START_LOG=%LOG_DIR%\cfquant_startup.log"
-set "WEB_STDOUT=%LOG_DIR%\cfquant_web_server.stdout.log"
-set "WEB_STDERR=%LOG_DIR%\cfquant_web_server.stderr.log"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>nul
+set "WEB_LOG_RUN_ID="
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyyMMdd_HHmmss_ffff'"`) do set "WEB_LOG_RUN_ID=%%T"
+if not defined WEB_LOG_RUN_ID set "WEB_LOG_RUN_ID=%RANDOM%"
+set "WEB_LOG_RUN_ID=%WEB_LOG_RUN_ID%_%RANDOM%"
+set "WEB_STDOUT=%LOG_DIR%\cfquant_web_server.%WEB_LOG_RUN_ID%.stdout.log"
+set "WEB_STDERR=%LOG_DIR%\cfquant_web_server.%WEB_LOG_RUN_ID%.stderr.log"
 call :log "start_cfquant.bat invoked"
 
 set "PYTHON_EXE=python"
@@ -52,6 +56,8 @@ if not defined WEB_PORT set "WEB_PORT=8765"
 if defined CFQUANT_WEB_PORT set "WEB_PORT=%CFQUANT_WEB_PORT%"
 if defined CFQUANT_START_WEB_PORT set "WEB_PORT=%CFQUANT_START_WEB_PORT%"
 set "CFQUANT_WEB_PORT=%WEB_PORT%"
+if not defined CFQUANT_START_REUSE_WAIT_SECONDS set "CFQUANT_START_REUSE_WAIT_SECONDS=10"
+call :log "web stdout/stderr run logs stdout=%WEB_STDOUT% stderr=%WEB_STDERR%"
 
 if /i "%~1"=="--foreground" goto foreground
 if /i "%~1"=="--debug" goto foreground
@@ -65,16 +71,26 @@ call :log "starting web dashboard port=%WEB_PORT%"
 
 call :is_port_open %WEB_PORT%
 if not errorlevel 1 (
-    echo cfquant web dashboard already listens on %WEB_PORT%, skip start.
-    call :log "port already listening port=%WEB_PORT%"
-    call :open_browser
+    call :wait_for_cfquant_web %WEB_PORT% %CFQUANT_START_REUSE_WAIT_SECONDS%
+    if not errorlevel 1 (
+        echo cfquant web dashboard already runs on %WEB_PORT%, reuse it.
+        call :log "existing cfquant web reused port=%WEB_PORT%"
+        call :open_browser
+        endlocal
+        exit /b 0
+    )
+    echo [ERROR] Port %WEB_PORT% is already used by another process, not cfquant.
+    echo [ERROR] Please stop that process or set CFQUANT_WEB_PORT to another port.
+    call :log "port occupied by non-cfquant process port=%WEB_PORT%"
+    call :show_port_owner
+    call :pause_on_error
     endlocal
-    exit /b 0
+    exit /b 1
 )
 
 start "cfquant Web" /min cmd /d /s /c ""%PYTHON_EXE%" "%~dp0cfquant_web_server.py" --port %WEB_PORT% 1>>"%WEB_STDOUT%" 2>>"%WEB_STDERR%""
 
-call :wait_for_port %WEB_PORT% %CFQUANT_START_WAIT_SECONDS%
+call :wait_for_cfquant_web %WEB_PORT% %CFQUANT_START_WAIT_SECONDS%
 if errorlevel 1 (
     echo [ERROR] cfquant web dashboard did not start within %CFQUANT_START_WAIT_SECONDS% seconds.
     echo [ERROR] Please check the logs below.
@@ -139,13 +155,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_
 set "CFQUANT_START_PORT="
 exit /b %errorlevel%
 
-:wait_for_port
+:wait_for_cfquant_web
 set "CFQUANT_START_PORT=%~1"
 set "CFQUANT_START_WAIT=%~2"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; $wait=[int]$env:CFQUANT_START_WAIT; $deadline=(Get-Date).AddSeconds($wait); while ((Get-Date) -lt $deadline) { try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close(); exit 0 }; $client.Close() } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; $wait=[int]$env:CFQUANT_START_WAIT; $deadline=(Get-Date).AddSeconds($wait); $url='http://127.0.0.1:' + $port + '/api/health'; while ((Get-Date) -lt $deadline) { try { $req=[Net.WebRequest]::Create($url); $req.Method='GET'; $req.Timeout=1000; $req.ReadWriteTimeout=1000; $req.UserAgent='cfquant-start'; $res=$req.GetResponse(); try { if ([int]$res.StatusCode -eq 200) { $reader=[IO.StreamReader]::new($res.GetResponseStream(), [Text.Encoding]::UTF8); $content=$reader.ReadToEnd(); $reader.Close(); $payload=$content | ConvertFrom-Json; if ($payload.ok -eq $true -and $payload.data.status -eq 'ok') { exit 0 } } } finally { $res.Close() } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
 set "CFQUANT_START_PORT="
 set "CFQUANT_START_WAIT="
 exit /b %errorlevel%
+
+:show_port_owner
+set "CFQUANT_START_PORT=%WEB_PORT%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; try { $rows=Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; foreach ($row in $rows) { $pidValue=$row.OwningProcess; $name='unknown'; try { $name=(Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}; Write-Output ('Port owner PID={0} Process={1}' -f $pidValue,$name) } } catch {}"
+set "CFQUANT_START_PORT="
+exit /b 0
 
 :show_logs
 echo.

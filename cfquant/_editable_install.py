@@ -14,8 +14,12 @@ PACKAGE_NAME = "cfquant"
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 PIP_INDEX_URL_ENV = "CFQUANT_PIP_INDEX_URL"
 INSTALLED_CHECK_CODE = (
-    "import importlib.metadata as metadata; "
-    "metadata.distribution(%r)"
+    "import importlib.metadata as metadata\n"
+    "metadata.distribution(%r)\n"
+    "try:\n"
+    "    from Crypto.Cipher import AES\n"
+    "except ImportError:\n"
+    "    from Cryptodome.Cipher import AES"
 ) % PACKAGE_NAME
 
 
@@ -59,11 +63,137 @@ def editable_install_args(project_root, python_exe=None):
     return command
 
 
+def requirements_install_args(project_root, python_exe=None):
+    """Build the pip command used to install the project's runtime dependencies."""
+    command = [
+        python_exe or sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+    ]
+    command.extend(pip_index_args())
+    command.extend(["-r", "requirements.txt"])
+    return command
+
+
 def _output_tail(value, limit=6000):
     text = str(value or "")
     if len(text) <= int(limit):
         return text
     return "...(output truncated)...\n" + text[-int(limit):]
+
+
+def _run_pip_command(
+    command,
+    project_root,
+    timeout=180.0,
+    output_limit=6000,
+    subprocess_kwargs=None,
+):
+    kwargs = {
+        "cwd": str(project_root),
+        "env": python_environment(clear_pythonpath=True),
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": float(timeout),
+    }
+    if subprocess_kwargs:
+        kwargs.update(dict(subprocess_kwargs))
+    try:
+        completed = subprocess.run(command, **kwargs)
+        return {
+            "ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "timed_out": False,
+            "output": _output_tail(completed.stdout, output_limit),
+            "error": "",
+        }
+    except subprocess.TimeoutExpired as error:
+        output = error.output if error.output is not None else error.stdout
+        return {
+            "ok": False,
+            "returncode": None,
+            "timed_out": True,
+            "output": _output_tail(output, output_limit),
+            "error": "pip command timed out",
+        }
+    except Exception as error:
+        return {
+            "ok": False,
+            "returncode": None,
+            "timed_out": False,
+            "output": _output_tail(error, output_limit),
+            "error": str(error),
+        }
+
+
+def run_requirements_install(
+    project_root,
+    python_exe=None,
+    timeout=180.0,
+    output_limit=6000,
+    subprocess_kwargs=None,
+):
+    """Install requirements.txt and return a serializable result."""
+    project_root = Path(project_root).resolve()
+    requirements_file = project_root / "requirements.txt"
+    result = {
+        "attempted": False,
+        "ok": True,
+        "skipped": False,
+        "project_dir": str(project_root),
+        "requirements_file": str(requirements_file),
+        "python_executable": str(python_exe or sys.executable),
+        "command": [],
+        "command_text": "",
+        "returncode": None,
+        "timed_out": False,
+        "output": "",
+        "message": "",
+    }
+    if not requirements_file.is_file():
+        result.update({
+            "skipped": True,
+            "message": "requirements.txt not found; skipped project requirements install",
+        })
+        return result
+
+    command = [str(item) for item in requirements_install_args(
+        project_root,
+        python_exe=python_exe,
+    )]
+    result.update({
+        "attempted": True,
+        "command": command,
+        "command_text": subprocess.list2cmdline(command),
+    })
+    execution = _run_pip_command(
+        command,
+        project_root,
+        timeout=timeout,
+        output_limit=output_limit,
+        subprocess_kwargs=subprocess_kwargs,
+    )
+    result.update(execution)
+    if result["ok"]:
+        result["message"] = "project requirements install completed"
+    elif result["timed_out"]:
+        result["message"] = "project requirements install timed out"
+    elif result["returncode"] is not None:
+        result["message"] = (
+            "project requirements install failed with exit code %s"
+            % result["returncode"]
+        )
+    else:
+        result["message"] = "project requirements install failed: %s" % (
+            result.get("error") or "unknown error"
+        )
+    return result
 
 
 def run_editable_install(
@@ -88,6 +218,9 @@ def run_editable_install(
         "output": "",
         "installed_version": "",
         "message": "",
+        "requirements_install": None,
+        "requirements_attempted": False,
+        "editable_attempted": False,
     }
     if not (project_root / "pyproject.toml").is_file():
         result.update({
@@ -96,9 +229,30 @@ def run_editable_install(
         })
         return result
 
+    requirements = run_requirements_install(
+        project_root,
+        python_exe=python_exe,
+        timeout=timeout,
+        output_limit=output_limit,
+        subprocess_kwargs=subprocess_kwargs,
+    )
+    result["requirements_install"] = requirements
+    result["requirements_attempted"] = bool(requirements.get("attempted"))
+    if not requirements.get("ok"):
+        result.update({
+            "attempted": bool(requirements.get("attempted")),
+            "ok": False,
+            "returncode": requirements.get("returncode"),
+            "timed_out": bool(requirements.get("timed_out")),
+            "output": requirements.get("output") or "",
+            "message": requirements.get("message") or "project requirements install failed",
+        })
+        return result
+
     command = editable_install_args(project_root, python_exe=python_exe)
     result.update({
         "attempted": True,
+        "editable_attempted": True,
         "command": [str(item) for item in command],
         "command_text": subprocess.list2cmdline([str(item) for item in command]),
     })
@@ -195,11 +349,11 @@ def ensure_cfquant_installed(project_root, python_exe=None):
     python_exe = python_exe or sys.executable
     print("Checking whether %s is installed in this Python environment..." % PACKAGE_NAME)
     if is_cfquant_installed(python_exe):
-        print("%s is already installed; skip editable source install." % PACKAGE_NAME)
+        print("%s and its runtime dependencies are ready; skip editable source install." % PACKAGE_NAME)
         return 0
 
     command = editable_install_args(project_root, python_exe)
-    print("%s is not installed; installing the current project source." % PACKAGE_NAME)
+    print("%s or its runtime dependencies are missing; installing the current project source." % PACKAGE_NAME)
     print("Running: %s" % subprocess.list2cmdline(command))
     completed = run(command, project_root)
     if completed.returncode != 0:

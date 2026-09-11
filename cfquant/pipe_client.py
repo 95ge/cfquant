@@ -89,7 +89,6 @@ class PipeRpcClient(object):
             try:
                 msg = q.get(timeout=effective_timeout)
             except queue.Empty:
-                self.close()
                 from .client import CfquantTimeout
 
                 raise CfquantTimeout("cfquant pipe request timeout: %s" % action)

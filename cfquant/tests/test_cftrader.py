@@ -54,7 +54,7 @@ def lite_bridge(path):
 def connected(request, monkeypatch):
     account = StockAccount("TEST_ONLY", "STOCK")
     account.bridge_id = "test_only"
-    native_calls, requests, responses, orders, errors = [], [], [], [], []
+    native_calls, cancel_calls, requests, responses, cancel_responses, orders, errors = [], [], [], [], [], [], []
     outcomes = []
     def passorder(*args):
         native_calls.append(args)
@@ -62,11 +62,18 @@ def connected(request, monkeypatch):
         if isinstance(result, Exception):
             raise result
         return result
+    def cancel(*args):
+        cancel_calls.append(args)
+        result = outcomes.pop(0) if outcomes else True
+        if isinstance(result, Exception):
+            raise result
+        return result
     cls = lite_bridge(request.param) if isinstance(request.param, Path) else request.param
-    bridge = cls(None, show=False, globals_dict={"passorder": passorder})
+    bridge = cls(None, show=False, globals_dict={"passorder": passorder, "cancel": cancel})
     bridge.order_meta_enabled = False
     callback = XtQuantTraderCallback()
     callback.on_order_stock_async_response = responses.append
+    callback.on_cancel_order_stock_async_response = cancel_responses.append
     callback.on_stock_order = orders.append
     callback.on_order_error = errors.append
     trader = XtQuantTrader(callback=callback, account=account)
@@ -87,7 +94,8 @@ def connected(request, monkeypatch):
     bridge._send_trader_event = lambda client_id, name, data: client.handlers["trader:" + name](data)
     yield SimpleNamespace(api=cftrader.CfQuantTrader(trader), trader=trader, client=client, account=account,
                           bridge=bridge, native_calls=native_calls, requests=requests, outcomes=outcomes,
-                          responses=responses, orders=orders, errors=errors)
+                          cancel_calls=cancel_calls, responses=responses, cancel_responses=cancel_responses,
+                          orders=orders, errors=errors)
     bridge.close()
     trader.stop()
 
@@ -199,6 +207,69 @@ def test_async_batch_uses_original_seq_allocator_and_callback_deduplication(conn
     assert len(env.requests) == 2
     assert env.requests[1][0] == 'cftrader.order_stock_batch_async'
     assert env.requests[1][1]['seqs'] == seqs
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_cancel_batch_submits_once_and_preserves_zero_success_result(connected, asynchronous):
+    env = connected
+    method = env.api.cancel_order_stock_batch_async if asynchronous else env.api.cancel_order_stock_batch
+    result = method(env.account, [
+        dict(order_id=1001, stock_code='600000.SH'),
+        dict(order_id='1002', market='SZ'),
+    ])
+    assert result['operation'] == 'cancel'
+    assert result['ok'] is True
+    assert result['submitted'] == result['attempted'] == result['total'] == 2
+    assert [row['order_id'] for row in result['results']] == ['1001', '1002']
+    assert [row['cancel_result'] for row in result['results']] == [0, 0]
+    assert len(env.requests) == 1
+    assert env.requests[0][0] == 'cftrader.cancel_order_stock_batch' + ('_async' if asynchronous else '')
+    assert [call[0] for call in env.cancel_calls] == ['1001', '1002']
+    assert env.native_calls == []
+    if asynchronous:
+        assert [row['seq'] for row in result['results']] == env.requests[0][1]['seqs']
+        assert [item.seq for item in env.cancel_responses] == env.requests[0][1]['seqs']
+    else:
+        assert env.cancel_responses == []
+
+
+@pytest.mark.parametrize("stop_on_error,expected", [(False, ["failed", "submitted"]),
+                                                   (True, ["failed", "skipped"])])
+def test_cancel_batch_rejections_and_stop_on_error(connected, stop_on_error, expected):
+    env = connected
+    env.outcomes[:] = [False, True]
+    result = env.api.cancel_order_stock_batch(env.account, ['1001', '1002'], stop_on_error=stop_on_error)
+    assert [row['status'] for row in result['results']] == expected
+    assert result['failed'] == 1
+    assert len(env.cancel_calls) == (1 if stop_on_error else 2)
+
+
+@pytest.mark.parametrize("bad", [[], [{}], [dict(order_id='')], [dict(order_id='1001', market='HK')],
+                                [dict(order_id='1001', unexpected=True)], ['1001', '1001'],
+                                [dict(order_id='1001', market='SZ'), dict(order_id='1001', market='SZ')]])
+def test_invalid_cancel_batch_is_rejected_before_qmt(connected, bad):
+    env = connected
+    with pytest.raises(ValueError):
+        env.api.cancel_order_stock_batch(env.account, bad)
+    assert env.requests == []
+    assert env.cancel_calls == []
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
+def test_cancel_batch_lost_response_never_replays(connected, monkeypatch, asynchronous):
+    env = connected
+    original = env.client.request
+    def lose_response(*args, **kwargs):
+        original(*args, **kwargs)
+        raise CfquantTimeout('cancel response was lost after QMT submitted requests')
+    monkeypatch.setattr(env.client, 'request', lose_response)
+    method = env.api.cancel_order_stock_batch_async if asynchronous else env.api.cancel_order_stock_batch
+    result = method(env.account, ['1001', '1002'])
+    assert result['operation'] == 'cancel'
+    assert result['unknown'] == 2
+    assert len(env.requests) == 1
+    assert len(env.cancel_calls) == 2
+    assert 'cancel response was lost' in result['request_error']
 
 
 @pytest.mark.parametrize("stop_on_error,expected", [(False, ["submitted", "failed", "submitted"]),

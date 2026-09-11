@@ -6,6 +6,7 @@ import queue
 import struct
 import threading
 import time
+import uuid
 from ctypes import wintypes
 
 from .logging_i18n import get_log_enabled, translate_log
@@ -327,6 +328,7 @@ class PipeTxClient(object):
         show=True,
         connect_timeout_ms=3000,
         reconnect_interval=1.0,
+        heartbeat_interval=None,
     ):
         self.pipe_name = normalize_pipe_name(pipe_name)
         self.request_channel = request_channel
@@ -336,12 +338,29 @@ class PipeTxClient(object):
         self.show = show
         self.connect_timeout_ms = int(connect_timeout_ms)
         self.reconnect_interval = float(reconnect_interval)
+        if heartbeat_interval is None:
+            heartbeat_interval = os.environ.get("CFQUANT_PIPE_HEARTBEAT_SECONDS", "10")
+        try:
+            self.heartbeat_interval = max(0.0, float(heartbeat_interval))
+        except Exception:
+            self.heartbeat_interval = 10.0
+        self.process_id = os.getpid()
+        self.instance_id = os.environ.get("CFQUANT_PIPE_INSTANCE_ID") or "%s.%s.%s.%s" % (
+            self.bridge_id,
+            self.endpoint_name,
+            self.process_id,
+            uuid.uuid4().hex[:12],
+        )
         self.Q = queue.Queue(maxsize=10000)
         self.running = False
         self.rx_conn = None
         self.tx_conn = None
+        self.connection_generation = 0
+        self.last_connected_at = 0.0
+        self.last_error = ""
         self.conn_lock = threading.RLock()
         self.thread = None
+        self.heartbeat_thread = None
 
     def start(self):
         if self.running:
@@ -350,6 +369,10 @@ class PipeTxClient(object):
         self.thread = threading.Thread(target=self._connect_loop)
         self.thread.daemon = True
         self.thread.start()
+        if self.heartbeat_interval > 0:
+            self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
+            self.heartbeat_thread.daemon = True
+            self.heartbeat_thread.start()
         return self
 
     def start_tx(self):
@@ -363,26 +386,24 @@ class PipeTxClient(object):
     def push(self, key, payload, channel):
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8", errors="replace")
-        envelope = dumps_pipe_message({
-            "type": "publish",
-            "role": "qmt_tx",
-            "bridge_id": self.bridge_id,
-            "request_channel": self.request_channel,
-            "request_channels": self.request_channels,
-            "endpoint_name": self.endpoint_name,
+        envelope = dumps_pipe_message(self._pipe_envelope("publish", "qmt_tx", {
             "key": key,
             "channel": channel,
             "payload": payload,
-        })
-        conn = self._get_tx_conn()
+        }))
+        conn, generation = self._get_tx_state()
         if conn is None:
+            rx_conn, rx_generation = self._get_rx_state()
+            if rx_conn is not None:
+                self._drop_pair(rx_generation, reason="pipe tx connection missing", conns=(rx_conn,))
             return {"code": -1, "msg": "pipe not connected"}
         try:
             conn.write_frame(envelope)
             return {"code": 0, "msg": "ok"}
         except Exception as e:
-            self._log("pipe push failed: %s" % e)
-            self._drop_conn(conn)
+            message = "pipe push failed: %s" % e
+            self._log(message)
+            self._drop_pair(generation, reason=message, conns=(conn,))
             return {"code": -1, "msg": str(e)}
 
     def close(self):
@@ -391,49 +412,44 @@ class PipeTxClient(object):
             self.Q.put_nowait(None)
         except Exception:
             pass
-        self._drop_conns(self._get_conns())
+        self._drop_pair(None, reason="pipe tx client closed", conns=self._get_conns())
 
     def _connect_loop(self):
         while self.running:
             rx_conn = None
             tx_conn = None
+            generation = None
             try:
                 rx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
-                rx_conn.write_frame(dumps_pipe_message({
-                    "type": "hello",
-                    "role": "qmt_rx",
-                    "bridge_id": self.bridge_id,
-                    "request_channel": self.request_channel,
-                    "request_channels": self.request_channels,
-                    "endpoint_name": self.endpoint_name,
-                }))
+                rx_conn.write_frame(dumps_pipe_message(self._pipe_envelope("hello", "qmt_rx")))
                 tx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
-                tx_conn.write_frame(dumps_pipe_message({
-                    "type": "hello",
-                    "role": "qmt_tx",
-                    "bridge_id": self.bridge_id,
-                    "request_channel": self.request_channel,
-                    "request_channels": self.request_channels,
-                    "endpoint_name": self.endpoint_name,
-                }))
+                tx_conn.write_frame(dumps_pipe_message(self._pipe_envelope("hello", "qmt_tx")))
                 with self.conn_lock:
+                    self.connection_generation += 1
+                    generation = self.connection_generation
                     self.rx_conn = rx_conn
                     self.tx_conn = tx_conn
+                    self.last_connected_at = time.time()
+                    self.last_error = ""
                 self._log(
                     "pipe connected pipe=%s request_channel=%s bridge_id=%s"
                     % (self.pipe_name, self.request_channel, self.bridge_id)
                 )
-                self._read_loop(rx_conn)
+                self._read_loop(rx_conn, generation)
             except Exception as e:
+                self.last_error = str(e)
                 if self.running:
                     self._log("pipe connect/read failed: %s" % e)
             finally:
-                self._drop_conns((rx_conn, tx_conn))
+                if generation is None:
+                    self._close_conns((rx_conn, tx_conn))
+                else:
+                    self._drop_pair(generation, conns=(rx_conn, tx_conn))
             if self.running:
                 time.sleep(self.reconnect_interval)
 
-    def _read_loop(self, conn):
-        while self.running and self._get_rx_conn() is conn:
+    def _read_loop(self, conn, generation):
+        while self.running and self._get_rx_state() == (conn, generation):
             raw = conn.read_frame()
             if raw is None:
                 break
@@ -453,32 +469,94 @@ class PipeTxClient(object):
         with self.conn_lock:
             return self.tx_conn
 
+    def _get_rx_state(self):
+        with self.conn_lock:
+            return self.rx_conn, self.connection_generation
+
+    def _get_tx_state(self):
+        with self.conn_lock:
+            return self.tx_conn, self.connection_generation
+
     def _get_conn(self):
-        return self._get_rx_conn()
+        with self.conn_lock:
+            if self.rx_conn is not None and self.tx_conn is not None:
+                return self.rx_conn
+            return None
 
     def _get_conns(self):
         with self.conn_lock:
             return self.rx_conn, self.tx_conn
 
     def _drop_conn(self, conn):
-        self._drop_conns((conn,))
+        if conn is None:
+            return
+        with self.conn_lock:
+            generation = self.connection_generation if conn is self.rx_conn or conn is self.tx_conn else None
+        if generation is None:
+            self._close_conns((conn,))
+            return
+        self._drop_pair(generation, conns=(conn,))
 
     def _drop_conns(self, conns):
+        self._drop_pair(None, conns=conns)
+
+    def _drop_pair(self, generation=None, reason="", conns=()):
+        close_conns = []
         with self.conn_lock:
-            for conn in conns:
+            if generation is None or self.connection_generation == generation:
+                for conn in (self.rx_conn, self.tx_conn):
+                    if conn is not None and conn not in close_conns:
+                        close_conns.append(conn)
+                self.rx_conn = None
+                self.tx_conn = None
+                if reason:
+                    self.last_error = reason
+            for conn in conns or ():
                 if conn is None:
                     continue
-                if self.rx_conn is conn:
-                    self.rx_conn = None
-                if self.tx_conn is conn:
-                    self.tx_conn = None
-        for conn in conns:
+                if conn not in close_conns:
+                    close_conns.append(conn)
+        self._close_conns(close_conns)
+
+    def _close_conns(self, conns):
+        for conn in conns or ():
             if conn is None:
                 continue
             try:
                 conn.close()
             except Exception:
                 pass
+
+    def _heartbeat_loop(self):
+        while self.running:
+            time.sleep(max(0.1, self.heartbeat_interval))
+            if not self.running:
+                break
+            conn, generation = self._get_tx_state()
+            if conn is None:
+                continue
+            try:
+                conn.write_frame(dumps_pipe_message(self._pipe_envelope("heartbeat", "qmt_tx")))
+            except Exception as e:
+                message = "pipe heartbeat failed: %s" % e
+                self._log(message)
+                self._drop_pair(generation, reason=message, conns=(conn,))
+
+    def _pipe_envelope(self, msg_type, role, extra=None):
+        data = {
+            "type": msg_type,
+            "role": role,
+            "bridge_id": self.bridge_id,
+            "request_channel": self.request_channel,
+            "request_channels": self.request_channels,
+            "endpoint_name": self.endpoint_name,
+            "instance_id": self.instance_id,
+            "process_id": self.process_id,
+            "heartbeat_interval": self.heartbeat_interval,
+        }
+        if extra:
+            data.update(extra)
+        return data
 
     def _log(self, msg):
         if self.show and get_log_enabled():

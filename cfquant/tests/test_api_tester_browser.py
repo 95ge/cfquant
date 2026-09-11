@@ -97,6 +97,44 @@ def test_batch_test_confirmation_json_busy_results_and_layout(page, frontend_url
     assert errors == []
 
 
+@pytest.mark.parametrize('method', ['cancel_order_stock_batch', 'cancel_order_stock_batch_async'])
+def test_cancel_batch_test_confirmation_json_results_and_layout(page, frontend_url, method):
+    panel, requests, errors = open_test(page, frontend_url, 'cftrader.' + method)
+    pending = []
+    page.route('**/api/cftrader/' + method, lambda route: pending.append(route))
+    panel.locator('[name="account_id"]').fill('TEST_ONLY')
+    panel.locator('[name="account_type"]').select_option('CREDIT')
+    panel.locator('[type="submit"]').click()
+    expect(panel.locator('[data-test-status]')).to_have_text('参数有误')
+    assert pending == []
+    original = panel.locator('[name="cancels_json"]').input_value()
+    panel.locator('[name="cancels_json"]').fill('[bad json')
+    panel.locator('[name="confirm_text"]').fill('CFTRADER TEST_ONLY 2')
+    panel.locator('[type="submit"]').click()
+    assert pending == []
+    panel.locator('[name="cancels_json"]').fill(original)
+    panel.locator('[name="stop_on_error"]').check()
+    panel.locator('[type="submit"]').click()
+    assert len(pending) == 1
+    body = pending[0].request.post_data_json
+    assert len(body['cancels']) == 2 and 'cancels_json' not in body and 'orders' not in body
+    assert body['stop_on_error'] is True and body['account_type'] == 'CREDIT'
+    asynchronous = method.endswith('_async')
+    rows = [dict(index=i, order_id=cancel['order_id'], stock_code=cancel.get('stock_code', ''),
+                 market=cancel.get('market', ''), status='submitted', ok=True,
+                 cancel_result=0, seq=3001+i if asynchronous else None)
+            for i, cancel in enumerate(body['cancels'])]
+    pending[0].fulfill(json={'ok': True, 'data': {'latency_ms': 150, 'result': {
+        'operation': 'cancel', 'execution': 'qmt', 'ok': True, 'total': 2, 'submitted': 2,
+        'failed': 0, 'unknown': 0, 'skipped': 0, 'qmt_submit_ms': 4.2, 'results': rows}}})
+    expect(panel.locator('[data-test-status]')).to_have_text('请求完成')
+    expect(panel.locator('.api-test-orders tbody tr')).to_have_count(2)
+    expect(panel.locator('[data-test-output]')).to_contain_text('cancel_result')
+    assert_reader_layout(page)
+    assert panel.evaluate('node => node.scrollWidth <= node.clientWidth')
+    assert errors == []
+
+
 def test_stop_waiting_does_not_resubmit_and_result_survives_navigation(page, frontend_url):
     panel, requests, errors = open_test(page, frontend_url, 'cftrader.order_stock_batch')
     pending = []

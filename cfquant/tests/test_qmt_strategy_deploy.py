@@ -155,6 +155,77 @@ def test_same_mode_reuses_model_name_when_deployment_fingerprint_changes(deploym
     assert len(models(root)) == 4
 
 
+def test_same_mode_reimport_accepts_old_container_until_new_container_starts(deployment):
+    manager, row, infos, running, root = deployment
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    first = copy.deepcopy(next(iter(manager.jobs.values())))
+    first_generation = first["generation"]
+    name = first["roles"][0]["name"]
+
+    identity_path = Path(infos[0]["path"])
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    identity["bridge_id"] = "bridge-reimport"
+    _write_json(identity_path, identity)
+    manager.configure(row, infos)
+
+    second = next(iter(manager.jobs.values()))
+    second_generation = second["generation"]
+    control = json.loads(Path(second["control_path"]).read_text(encoding="utf-8"))
+    assert second_generation != first_generation
+    assert control["generation"] == first_generation
+    assert control["accepted_generations"] == [second_generation]
+
+    # An old QMT container only checks desired.generation and must remain valid.
+    old_descriptor = {
+        "control_path": second["control_path"],
+        "lease_dir": str(root / "cfquant_managed" / next(iter(manager.jobs)) / "leases"),
+        "generation": first_generation,
+        "role": "normal",
+        "mode": "ctypes",
+    }
+    old_lease = _CqStrategyLease(old_descriptor).acquire()
+    old_lease.close()
+
+    running[0] = True
+    role = second["roles"][0]
+    _write_json(role["runtime_status_path"], {
+        "state": "running", "generation": second_generation, "updated_at": time.time(),
+    })
+    manager.process_once()
+    control = json.loads(Path(second["control_path"]).read_text(encoding="utf-8"))
+    assert control["generation"] == second_generation
+    assert "accepted_generations" not in control
+    assert second.get("control_generation") is None
+    assert second.get("accepted_generations") is None
+    assert second["state"] == "running"
+    assert role["name"] == name
+
+
+def test_reconcile_recovers_stale_same_name_generation(deployment):
+    manager, row, infos, running, root = deployment
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    job = next(iter(manager.jobs.values()))
+    old_generation = job["generation"]
+    job["generation"] = "replacement-generation"
+    job["state"] = "error"
+    job["error"] = ""
+    role = job["roles"][0]
+    _write_json(role["runtime_status_path"], {
+        "state": "running", "generation": old_generation, "updated_at": time.time(),
+    })
+
+    manager.reconcile({row["account_key"]: row})
+    control = json.loads(Path(job["control_path"]).read_text(encoding="utf-8"))
+    assert job["state"] == "waiting_exit"
+    assert control["generation"] == old_generation
+    assert control["accepted_generations"] == ["replacement-generation"]
+    assert role["reimport_required"] is True
+
+
 def test_switch_and_delete_revoke_old_generation_and_disable_its_model(deployment):
     manager, row, infos, running, root = deployment
     row["qmt_strategy"].update(autorun=True)

@@ -13,6 +13,7 @@ import cfquant.tx_trade_bridge as tx_trade_bridge_module
 from cfquant import xtconstant
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.pipe_bridge import PipeNormalQmtBridge, PipeTradeBridge
+from cfquant.protocol import loads_message
 from cfquant.runtime_report import module_source_state, source_sha256
 from cfquant.tx_trade_bridge import TxTradeBridge
 from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
@@ -123,6 +124,106 @@ def test_web_lttx_route_dedupes_same_trader_event_payload():
     assert len(pushed) == 2
     assert pushed[0][2]["order_sysid"] == "1602193470177586775"
     assert pushed[1][2]["order_sysid"] == "958"
+
+
+def test_trade_callback_is_forwarded_with_trade_fields_and_sdk_shape():
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge = NormalQmtBridge(None, show=False, schedule_timer=False, order_meta_enabled=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    raw_trade = {
+        "m_strAccountID": "A123",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nOrderType": 23,
+        "m_nRef": 700009,
+        "m_strOrderSysID": "SYS-9",
+        "m_nDealID": 90001,
+        "m_dPrice": 10.25,
+        "m_nVolume": 100,
+        "m_dTradeAmount": 1025.0,
+        "m_dComssion": 1.2,
+        "m_strDealTime": "10:31:02",
+        "m_strTradingDay": "20260911",
+    }
+
+    try:
+        bridge.account_id = "A123"
+        bridge.account_type = "STOCK"
+        bridge.account_subscribers[("STOCK", "A123")] = {"external-trade-client"}
+        bridge.client_accounts["external-trade-client"] = {("STOCK", "A123")}
+        bridge.publish_callback_event("trader:on_stock_trade", raw_trade)
+    finally:
+        bridge.close()
+        tx_trade_bridge_module._AUTO_TRADE_CALLBACK_REGISTRY.clear()
+
+    assert len(tx.pushes) == 2
+    callback_kind, callback_payload, callback_key = tx.pushes[0]
+    assert callback_kind == "event"
+    assert callback_key == bridge.callback_event_channel
+    callback_event = json.loads(callback_payload)
+    assert callback_event["event"] == "trader:on_stock_trade"
+    data = callback_event["data"]
+    assert data["traded_id"] == 90001
+    assert data["traded_price"] == 10.25
+    assert data["traded_volume"] == 100
+    assert data["traded_amount"] == 1025.0
+    assert data["commission"] == 1.2
+
+    trade = XtTrade.from_any(data)
+    assert trade.account_id == "A123"
+    assert trade.stock_code == "000001.SZ"
+    assert trade.traded_id == 90001
+    assert trade.traded_price == 10.25
+    assert trade.traded_volume == 100
+    assert trade.traded_amount == 1025.0
+    assert trade.commission == 1.2
+
+    direct_event = loads_message(tx.pushes[1][1])
+    assert direct_event["event"] == "trader:on_stock_trade"
+    assert direct_event["client_id"] == "external-trade-client"
+    assert direct_event["data"]["traded_volume"] == 100
+
+
+def test_web_lttx_route_accepts_trade_callback_event():
+    route = web.LttxWebRouteServer()
+    client_id = "external_trade_client"
+    account_id = "8885060548"
+    account_type = "STOCK"
+    bridge_id = "default"
+    account_key = web.account_key_for(account_id, account_type, bridge_id)
+    trade = {
+        "account_id": account_id,
+        "account_type": account_type,
+        "stock_code": "002148.SZ",
+        "order_id": 1082130908,
+        "traded_id": "T-1",
+        "traded_price": 6.8,
+        "traded_volume": 100,
+    }
+    pushed = []
+
+    def capture_push(item_client_id, event, data=None, subscription_id=None):
+        pushed.append((item_client_id, event, dict(data or {}), subscription_id))
+
+    route._push_event = capture_push
+    route._account_subscribers[account_key] = {client_id}
+    route._on_client_event({
+        "type": "event",
+        "event": "trader:on_stock_trade",
+        "bridge_id": bridge_id,
+        "account_id": account_id,
+        "account_type": account_type,
+        "data": dict(trade),
+    })
+
+    assert pushed == [(client_id, "trader:on_stock_trade", trade, None)]
 
 
 @pytest.mark.parametrize("raw,market,expected", [

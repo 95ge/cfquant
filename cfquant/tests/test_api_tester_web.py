@@ -28,6 +28,12 @@ def body(batch=True):
     return value
 
 
+def cancel_body():
+    return dict(account_id='TEST_ONLY', account_type='CREDIT', account_key='test_binding',
+                confirm_text='CFTRADER TEST_ONLY 2',
+                cancels=[dict(order_id='1001', stock_code='600000.SH'), dict(order_id='1002', market='SZ')])
+
+
 @pytest.mark.parametrize('asynchronous', [False, True])
 def test_web_batch_sends_one_qmt_request_and_preserves_original_callbacks(binding, routing, asynchronous):
     clients, calls = routing
@@ -57,6 +63,21 @@ def test_web_batch_sends_one_qmt_request_and_preserves_original_callbacks(bindin
 
 
 @pytest.mark.parametrize('asynchronous', [False, True])
+def test_web_cancel_batch_sends_one_qmt_request(binding, routing, asynchronous):
+    clients, calls = routing
+    method = 'cancel_order_stock_batch' + ('_async' if asynchronous else '')
+    result = web.submit_cftrader_order(cancel_body(), method)
+    assert len(calls) == 1
+    assert calls[0][2] == 'cftrader.' + method
+    assert 'cancels' in calls[0][3] and 'orders' not in calls[0][3]
+    assert result['api_method'] == 'cftrader.' + method
+    assert result['result']['operation'] == 'cancel'
+    assert result['result']['submitted'] == 2
+    if asynchronous:
+        assert len(calls[0][3]['seqs']) == 2
+
+
+@pytest.mark.parametrize('asynchronous', [False, True])
 def test_web_single_uses_original_xttrader_action(binding, monkeypatch, asynchronous):
     calls = []
     def request(*args, **kwargs):
@@ -83,6 +104,20 @@ def test_invalid_web_order_never_reaches_qmt(binding, routing, changes):
     value.update(changes)
     with pytest.raises((ValueError, TypeError)):
         web.submit_cftrader_order(value, 'order_stock_batch')
+    assert calls == []
+
+
+@pytest.mark.parametrize('changes', [
+    {'confirm_text': ''}, {'confirm_text': 'CFTRADER TEST_ONLY 1'},
+    {'cancels': []}, {'cancels': [dict(order_id='')]},
+    {'cancels': [dict(order_id='1001', market='HK')]}, {'stop_on_error': 'false'},
+])
+def test_invalid_web_cancel_batch_never_reaches_qmt(binding, routing, changes):
+    _, calls = routing
+    value = cancel_body()
+    value.update(changes)
+    with pytest.raises((ValueError, TypeError)):
+        web.submit_cftrader_order(value, 'cancel_order_stock_batch')
     assert calls == []
 
 
