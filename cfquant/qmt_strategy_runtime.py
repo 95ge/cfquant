@@ -90,6 +90,27 @@ class _CqStrategyLease(object):
         except (OSError, ValueError):
             return False
 
+    def _denial_reason(self):
+        try:
+            with open(self.descriptor["control_path"], encoding="utf-8") as stream:
+                desired = _cq_json.load(stream)
+            if desired.get("enabled") is not True:
+                return "control_enabled=false"
+            if desired.get("mode") != self.descriptor["mode"]:
+                return "mode_mismatch expected=%s actual=%s" % (
+                    desired.get("mode"), self.descriptor["mode"])
+            accepted = desired.get("accepted_generations")
+            if not isinstance(accepted, (list, tuple, set)):
+                accepted = ()
+            allowed_generations = set([desired.get("generation")])
+            allowed_generations.update(str(item) for item in accepted if item)
+            if self.descriptor["generation"] not in allowed_generations:
+                return "generation_mismatch expected=%s actual=%s" % (
+                    desired.get("generation"), self.descriptor["generation"])
+        except (OSError, ValueError, TypeError):
+            return "control_file_unavailable"
+        return "control_state_changed"
+
     def acquire(self, timeout=10.0):
         _cq_os.makedirs(self.directory, exist_ok=True)
         deadline = _cq_time.monotonic() + timeout
@@ -125,7 +146,10 @@ class _CqStrategyLease(object):
             if _cq_time.monotonic() >= deadline:
                 raise RuntimeError("Another cfquant strategy still owns this QMT account; start was refused.")
             _cq_time.sleep(0.1)
-        raise RuntimeError("This cfquant strategy is disabled or superseded by the account's selected mode.")
+        raise RuntimeError(
+            "This cfquant strategy is disabled or superseded by the account's selected mode. %s"
+            % self._denial_reason()
+        )
 
     def close(self, context=None):
         with self.mutex:

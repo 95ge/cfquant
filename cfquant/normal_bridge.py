@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import datetime as dt
+import hashlib
 import json
 import queue
 import threading
@@ -84,6 +85,9 @@ class NormalQmtBridge(TxTradeBridge):
         self.order_meta_subscription_lock = threading.RLock()
         self.order_meta_reset_slots = set()
         self.order_meta_store_load_times = {}
+        self.callback_asset_dedupe_lock = threading.RLock()
+        self.callback_asset_fingerprints = {}
+        self.callback_asset_dedupe_max = 4096
 
     def start(self):
         if self.running:
@@ -780,10 +784,60 @@ class NormalQmtBridge(TxTradeBridge):
             "ts": int(time.time() * 1000),
             "data": data,
         }
-        self.tx.push("event", json.dumps(payload, ensure_ascii=False), self.callback_event_channel)
+        channel_duplicate = self._duplicate_asset_callback(
+            "channel",
+            event_name,
+            account_id,
+            account_type,
+            data,
+        )
+        if not channel_duplicate:
+            self.tx.push("event", json.dumps(payload, ensure_ascii=False), self.callback_event_channel)
+        sent_clients = 0
         if account_id:
-            self._send_trader_event_to_account(account_id, event_name.replace("trader:", "", 1), data, account_type=account_type or None)
-        self._log("normal bridge callback event sent event=%s account=%s" % (event_name, account_id or "-"))
+            trader_event = event_name.replace("trader:", "", 1)
+            for client_id in self._client_ids_for_account(account_id, account_type=account_type or None):
+                client_duplicate = self._duplicate_asset_callback(
+                    "client:%s" % client_id,
+                    event_name,
+                    account_id,
+                    account_type,
+                    data,
+                )
+                if client_duplicate:
+                    continue
+                self._send_trader_event(client_id, trader_event, data)
+                sent_clients += 1
+        self._log(
+            "normal bridge callback event sent event=%s account=%s channel_sent=%s clients=%s duplicate=%s"
+            % (event_name, account_id or "-", not channel_duplicate, sent_clients, channel_duplicate and sent_clients == 0)
+        )
+
+    def _duplicate_asset_callback(self, scope, event_name, account_id, account_type, data):
+        if event_name != "trader:on_stock_asset" or not account_id:
+            return False
+        fingerprint = self._asset_callback_fingerprint(data)
+        key = (
+            str(scope or ""),
+            str(self.bridge_id or ""),
+            str(account_type or ""),
+            str(account_id or ""),
+            event_name,
+        )
+        with self.callback_asset_dedupe_lock:
+            if self.callback_asset_fingerprints.get(key) == fingerprint:
+                return True
+            self.callback_asset_fingerprints[key] = fingerprint
+            while len(self.callback_asset_fingerprints) > self.callback_asset_dedupe_max:
+                self.callback_asset_fingerprints.pop(next(iter(self.callback_asset_fingerprints)))
+        return False
+
+    def _asset_callback_fingerprint(self, data):
+        try:
+            payload = json.dumps(data, sort_keys=True, ensure_ascii=True, separators=(",", ":"), default=str)
+        except Exception:
+            payload = repr(sorted((str(key), repr(value)) for key, value in (data or {}).items()))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _callback_object_to_dict(self, obj):
         fields = [

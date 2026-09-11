@@ -1,5 +1,7 @@
 """Managed strategy controls and progress with mocked APIs, on desktop/mobile."""
 
+import pytest
+
 from cfquant.tests.test_tutorial_reader import browser, expect, frontend_url, open_app, page
 
 
@@ -26,8 +28,43 @@ def test_project_update_notice_handles_editable_install(page, frontend_url):
     assert errors == []
 
 
+def test_project_reload_waits_for_health_before_marking_progress_done(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    health_requests = []
+    page.route("**/api/health*", lambda route: (
+        health_requests.append(route.request.url),
+        route.fulfill(json={"ok": True, "data": {"status": "ok"}}),
+    ))
+
+    result = page.evaluate("""async () => {
+        openQmtUpdateProgress('project-official', 'Reload test', 'Installing');
+        const outcome = await handleProjectReload(
+            {next_url: window.location.href},
+            'Reloading web',
+            {current_version: 'reload-test'},
+            {navigate: false, initialDelayMs: 0, pollIntervalMs: 20, timeoutMs: 500}
+        );
+        const progress = state.qmtUpdateProgress || {};
+        return {
+            outcome,
+            status: progress.status || '',
+            detail: progress.detail || '',
+            percent: progress.percent || 0,
+            visible: !document.querySelector('#qmtUpdateProgressOverlay').classList.contains('hidden'),
+        };
+    }""")
+
+    assert result["outcome"]["reloaded"] is True
+    assert result["status"] == "done"
+    assert result["percent"] == 100
+    assert result["visible"] is True
+    assert "Web" in result["detail"]
+    assert health_requests
+    assert errors == []
+
+
 def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, frontend_url, tmp_path):
-    _, errors = open_app(page, frontend_url)
+    requests, errors = open_app(page, frontend_url)
     page.evaluate("""() => {
         document.querySelector('#setupOverlay').classList.add('hidden');
         state.setup = {setup_required: false};
@@ -36,7 +73,7 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
     }""")
     expect(page.locator('#bindingStrategyEnabled')).to_be_checked()
     expect(page.locator('#bindingStrategyAutorun')).not_to_be_checked()
-    expect(page.locator('#bindingStrategyRunMode')).to_have_value('0')
+    expect(page.locator('#bindingStrategyRunMode')).to_have_value('1')
     page.locator('#bindingAccountId').fill('1000000001')
     page.locator('#bindingQmtDir').fill('D:\\QMT-FAKE')
     page.locator('#bindingMode').select_option('lite')
@@ -65,8 +102,134 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
     assert saved[0]['qmt_strategy'] == {'enabled': True, 'live': True, 'autorun': True,
         'stock': 'SH000300', 'account_keys': {'normal': '2____101____201____49____1000000001____',
                                             'trade': '', 'SH': '', 'SZ': ''}}
-    expect(page.locator('#bindingQmtGuideOverlay')).not_to_be_visible()
+    expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('请正常退出')
+    expect(page.locator('#bindingQmtGuideOverlay [data-qmt-script-copy]')).to_have_count(0)
     assert page.locator('body').inner_text().find('Waiting for QMT exit') >= 0
+    page.locator('#closeBindingQmtGuideBottomBtn').click()
+    expect(page.locator('#bindingQmtGuideOverlay')).not_to_be_visible()
+    expect(page.locator('#onboardingWizard')).not_to_be_visible()
+    assert not page.evaluate('state.onboardingBindingFlowActive')
+    assert not any(path == '/api/qmt-scripts/source' for _, path in requests)
+    assert errors == []
+
+
+@pytest.mark.parametrize('entry', ['setup', 'onboarding'])
+def test_initialization_saves_credit_account_and_shows_login_reminder(page, frontend_url, tmp_path, entry):
+    requests, errors = open_app(page, frontend_url, setup_required=entry == 'setup')
+    if entry == 'onboarding':
+        page.locator('#onboardingStartConfigBtn').click()
+    if entry == 'setup' and page.locator('#setupAdminUsername').is_visible():
+        page.locator('#setupAdminUsername').fill('test-admin')
+        page.locator('#setupAdminPassword').fill('test-password')
+        page.locator('#setupAdminPasswordConfirm').fill('test-password')
+    page.locator(f'#{entry}AccountId').fill('900010001595')
+    page.locator(f'#{entry}AccountType').select_option('CREDIT')
+    page.locator(f'#{entry}QmtDir').fill('D:/GUOJIN-QMT-FAKE/bin.x64')
+    page.locator(f'#{entry}QmtAutoLogin').check()
+    page.locator(f'#{entry}StrategyAutorun').check()
+    saved = []
+
+    def respond(route):
+        payload = route.request.post_data_json
+        saved.append(payload)
+        key = 'default:CREDIT:900010001595'
+        row = {name: payload[name] for name in (
+            'account_id', 'account_type', 'mode', 'qmt_dir', 'qmt_strategy', 'qmt_auto_login')}
+        row.update(account_key=key, bridge_id='default')
+        data = {'account': row, 'account_configs': {key: row}, 'account_pairs': {},
+            'bridges': {'default': {'name': 'default'}},
+            'setup': {'setup_required': False, 'default_account_key': key,
+                      'default_account_id': row['account_id'], 'default_account_type': 'CREDIT'},
+            'server_access': {'web_auth_enabled': False},
+            'qmt_core_deploy': {'results': [{'updated': True, 'python_dir': row['qmt_dir']} ]},
+            'qmt_strategy_deploy': {'enabled': True, 'targets': [{'state': 'waiting_start',
+                'strategies': ['CFQ_TEST'], 'message': '等待托管策略启动及通道连接'}]},
+            'qmt_auto_login': {'enabled': True, 'started': True, 'pid': 1234}}
+        page.route('**/api/config', lambda route: route.fulfill(json={'ok': True, 'data': data}))
+        route.fulfill(json={'ok': True, 'data': data})
+
+    endpoint = 'setup/initialize' if entry == 'setup' else 'account-config'
+    page.route(f'**/api/{endpoint}', respond)
+    page.locator('#setupForm button[type="submit"]' if entry == 'setup' else '#onboardingSaveConfigBtn').click()
+    expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
+    assert len(saved) == 1
+    assert saved[0]['account_type'] == 'CREDIT'
+    assert saved[0]['qmt_auto_login']['enabled'] is True
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('等待自动登录完成')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('请手动输入密码登录')
+    assert not any(path == '/api/qmt-scripts/source' for _, path in requests)
+    expect(page.locator('#copyBindingQmtGuideBtn, #onboardingCopyQmtScriptBtn, #copyBindingQmtScriptBtn')).to_have_count(0)
+    assert page.locator('.binding-qmt-guide-dialog').evaluate('(el) => el.scrollWidth <= el.clientWidth')
+    expect(page.locator('#bindingQmtGuideTitle')).to_be_in_viewport()
+    page.screenshot(path=str(tmp_path / 'qmt-startup-reminder.png'))
+    page.locator('#checkBindingQmtConnectionBtn').click()
+    expect(page.locator('#onboardingWizard')).to_be_visible()
+    expect(page.locator('#onboardingRestartChecklist')).to_contain_text('已勾选自动启动 QMT')
+    page.locator('#onboardingBackBridgeBtn').click()
+    expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
+    expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('1234')
+    page.locator('#closeBindingQmtGuideBottomBtn').click()
+    expect(page.locator('#onboardingWizard')).not_to_be_visible()
+    assert errors == []
+
+
+def test_startup_reminders_distinguish_pending_failure_disabled_and_manual_run(page, frontend_url):
+    _, errors = open_app(page, frontend_url)
+    cases = [
+        ({}, '请重启对应 QMT 并登录'),
+        ({'enabled': False}, '账号绑定已停用'),
+        ({'qmt_strategy': {'enabled': False}}, '自动导入并管理 QMT 策略未启用'),
+        ({'qmt_strategy': {'enabled': True, 'autorun': False}}, '运行已导入的托管策略'),
+        ({'qmt_auto_login': {'enabled': True, 'error': 'launch failed'}}, 'QMT 自动启动失败'),
+        ({'qmt_strategy_deploy': {'error': 'permission denied'}}, '策略部署失败'),
+        ({'qmt_strategy_deploy': {'targets': [{'state': 'error', 'error': 'invalid directory'}]}}, '策略部署失败'),
+        ({'qmt_strategy_deploy': {'targets': [{'state': 'waiting_account'}]}}, '补充模型账号 Key'),
+        ({'qmt_auto_login': {'enabled': True},
+          'qmt_strategy_deploy': {'targets': [{'state': 'waiting_exit'}]}}, '等待绑定列表显示模型配置完成'),
+        ({'qmt_auto_login': {'enabled': True},
+          'qmt_strategy_deploy': {'targets': [{'state': 'waiting_import_save'}]}}, '请正常退出'),
+        ({'mode': 'lttx', 'qmt_dir': 'D:/QMT', 'qmt_trade_dir': 'D:/TRADE',
+          'qmt_auto_login': {'enabled': True}}, '其他目录的 QMT 请分别启动并登录'),
+    ]
+    for values, expected in cases:
+        result = page.evaluate('(values) => qmtStartupInstruction(values)', values)
+        assert expected in result
+        assert '粘贴' not in result
+    page.evaluate("""() => showBindingQmtGuide({
+        qmt_strategy_deploy: {targets: [{state: 'error', error: 'invalid directory'}]}
+    })""")
+    expect(page.locator('#bindingQmtStrategyStatus')).to_contain_text('invalid directory')
+    assert errors == []
+
+
+def test_web_settings_reset_password_displays_file_path_without_secret(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    page.evaluate("""() => {
+        state.serverAccess = {web_auth_enabled: true, web_auth_username: 'admin',
+            web_auth: {enabled: true, configured: true, username: 'admin'},
+            web_auth_password_file: 'D:\\\\cfquant\\\\cfquant_web_reset_password.txt',
+            configured_host: '127.0.0.1', configured_port: 8765, web_port: 8765,
+            allow_remote: false, allowed_domains: []};
+        hideOnboardingModal({force: true});
+        setView('settings');
+        setSettingsTab('web-access');
+        renderServerAccess(state.serverAccess);
+    }""")
+    expect(page.locator('#resetWebAuthPasswordBtn')).to_be_visible()
+    expect(page.locator('#webAuthPasswordFilePath')).to_contain_text('D:\\cfquant\\cfquant_web_reset_password.txt')
+    page.on('dialog', lambda dialog: dialog.accept())
+    page.route('**/api/web-auth/reset-password', lambda route: route.fulfill(json={
+        'ok': True, 'data': {'username': 'admin',
+            'password_file': r'D:\cfquant\cfquant_web_reset_password.txt',
+            'message': '密码已重置'}}))
+    page.locator('#resetWebAuthPasswordBtn').click()
+    expect(page.locator('#webAuthResetStatus')).to_contain_text('D:\\cfquant\\cfquant_web_reset_password.txt')
+    expect(page.locator('#webAuthPasswordFilePath')).to_contain_text('D:\\cfquant\\cfquant_web_reset_password.txt')
+    expect(page.locator('#webAuthResetStatus')).not_to_contain_text('新密码')
+    expect(page.locator('#webAuthOverlay')).to_be_visible()
+    expect(page.locator('#webAuthLoginResetBtn')).to_be_visible()
     assert errors == []
 
 
@@ -106,6 +269,8 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
     expect(page.locator('#bindingQmtAutoLoginPanel')).to_be_visible()
     expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('1234')
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('国金证券 QMT 目前不支持自动登录，请手动输入密码登录')
     assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05']}
     assert errors == []
 

@@ -414,6 +414,10 @@ WEB_BOUND_HOST = None
 WEB_BOUND_PORT = None
 WEB_RESTART_REQUEST = None
 WEB_RESTART_LOCK = threading.RLock()
+WEB_RELOAD_WAIT_HOST_ENV = "CFQUANT_WEB_RELOAD_WAIT_HOST"
+WEB_RELOAD_WAIT_PORT_ENV = "CFQUANT_WEB_RELOAD_WAIT_PORT"
+WEB_RELOAD_WAIT_SECONDS_ENV = "CFQUANT_WEB_RELOAD_WAIT_SECONDS"
+WEB_RELOAD_WAIT_DEFAULT_SECONDS = float(os.environ.get("CFQUANT_WEB_RELOAD_WAIT_DEFAULT_SECONDS", "35"))
 WEB_AUTH_TOKENS = {}
 WEB_AUTH_LOCK = threading.RLock()
 WEB_AUTH_COOKIE_NAME = "cfquant_web_token"
@@ -2868,6 +2872,52 @@ class WebRuntimeConfig(object):
             return False
         return secrets.compare_digest(actual_hash, expected_hash)
 
+    def reset_web_auth_password(self):
+        """Generate a new admin password, persist its hash, and write the secret to a local file."""
+        alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+        password = "".join(secrets.choice(alphabet) for _ in range(18))
+        with self._lock:
+            username = str(self._data.get("web_auth_username") or "admin").strip() or "admin"
+        password_path = self.web_auth_password_file()
+        parent = os.path.dirname(password_path)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+        temporary = password_path + ".tmp"
+        content = (
+            "cfquant Web 管理员密码重置\n"
+            "请妥善保管此文件，登录后删除。\n"
+            "管理员账号: %s\n"
+            "新密码: %s\n"
+            "生成时间: %s\n"
+        ) % (username, password, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()))
+        try:
+            with open(temporary, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, password_path)
+        finally:
+            if os.path.exists(temporary):
+                try:
+                    os.remove(temporary)
+                except OSError:
+                    pass
+        self.set_server_access_settings(
+            web_auth_enabled=True,
+            web_auth_username=username,
+            web_auth_password=password,
+        )
+        return {
+            "enabled": True,
+            "username": username,
+            "password_file": password_path,
+            "message": "密码已重置，请打开密码文件查看新密码；旧登录会话已失效。",
+        }
+
+    def web_auth_password_file(self):
+        """Return the absolute path used for generated reset-password files."""
+        return os.path.abspath(os.path.join(BASE_DIR, "cfquant_web_reset_password.txt"))
+
     def set_allow_remote(self, value, api_base_url=None):
         with self._lock:
             self._data["allow_remote"] = bool(value)
@@ -3072,6 +3122,7 @@ class WebRuntimeConfig(object):
             "allowed_domains": domains,
             "allowed_domains_text": ",".join(domains),
             "web_auth": web_auth,
+            "web_auth_password_file": self.web_auth_password_file(),
             "web_auth_enabled": web_auth["enabled"],
             "web_auth_username": web_auth["username"],
             "web_auth_username_masked": web_auth["username_masked"],
@@ -10037,7 +10088,7 @@ def qmt_auto_login_complete_for_account(row):
     return result
 
 
-QMT_AUTO_LOGIN_REMINDER = "请确认 QMT 登录窗口中已勾选“记住密码”和“自动登录”。"
+QMT_AUTO_LOGIN_REMINDER = "QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。"
 
 
 def _qmt_auto_login_first_pid(processes, launch=None):
@@ -10430,6 +10481,16 @@ def _web_probe_host(host):
     if not host or host in ("0.0.0.0", "::"):
         return "127.0.0.1"
     return host
+
+
+def wait_for_tcp_port_release(host, port, timeout=WEB_RELOAD_WAIT_DEFAULT_SECONDS):
+    probe_host = _web_probe_host(host)
+    deadline = time.time() + max(0.0, float(timeout or 0))
+    while time.time() < deadline:
+        if not tcp_port_open(probe_host, port):
+            return True
+        time.sleep(0.25)
+    return not tcp_port_open(probe_host, port)
 
 
 def cfquant_web_available(host, port, timeout=0.8):
@@ -12923,7 +12984,8 @@ def initialize_web_setup(body):
     admin_password_confirm = str(
         body.get("admin_password_confirm") or body.get("web_auth_password_confirm") or ""
     )
-    should_register_admin = not auth_info.get("configured")
+    requested_auth_enabled = parse_bool(body.get("web_auth_enabled")) if "web_auth_enabled" in body else False
+    should_register_admin = (not auth_info.get("configured")) and requested_auth_enabled
     if should_register_admin:
         if not admin_username:
             raise ValueError("admin username is required")
@@ -12979,6 +13041,8 @@ def initialize_web_setup(body):
         web_auth = web_auth_status(token)
         web_auth["token"] = token
         web_auth["remember"] = True
+    elif not auth_info.get("configured"):
+        server_access = WEB_CONFIG.set_server_access_settings(web_auth_enabled=False)
     return {
         "initialized": True,
         "account": row,
@@ -13408,11 +13472,19 @@ def web_auth_logout(token):
 
 def web_reload_info(reason="settings"):
     access = server_access_info()
+    previous_host = WEB_BOUND_HOST or access.get("bound_host") or ""
+    previous_port = WEB_BOUND_PORT or access.get("bound_port") or 0
+    host = access.get("configured_host") or previous_host or ""
+    port = access.get("configured_port") or access.get("web_port") or previous_port or 0
     return {
         "restarting": True,
         "reason": reason,
         "requested_at": time.time(),
         "next_url": access.get("next_url") or access.get("configured_local_url") or "",
+        "host": host,
+        "port": port,
+        "previous_host": previous_host,
+        "previous_port": previous_port,
         "server_access": access,
     }
 
@@ -13421,8 +13493,11 @@ def schedule_web_reload(server, reload_info):
     global WEB_RESTART_REQUEST
     if server is None:
         raise RuntimeError("web server instance is not available")
+    request = dict(reload_info or {})
+    request.setdefault("host", WEB_BOUND_HOST)
+    request.setdefault("port", WEB_BOUND_PORT)
     with WEB_RESTART_LOCK:
-        WEB_RESTART_REQUEST = dict(reload_info or {})
+        WEB_RESTART_REQUEST = request
 
     def shutdown_later():
         time.sleep(0.7)
@@ -14586,6 +14661,16 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._write_json(fail(e, 400), status=400)
             return
+        if parsed.path == "/api/web-auth/reset-password" and not self._authorized(parsed):
+            client_host = str((self.client_address or ("", 0))[0] or "")
+            if not is_loopback_host(client_host):
+                self._write_json(fail("password reset without login is only allowed from this machine", 403), status=403)
+                return
+            try:
+                self._write_json(ok(WEB_CONFIG.reset_web_auth_password()))
+            except Exception as e:
+                self._write_json(fail(e, 400), status=400)
+            return
         if not self._authorized(parsed):
             self._write_json(fail("invalid credentials", 401), status=401)
             return
@@ -14642,6 +14727,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(result))
                 if reload_requested:
                     schedule_web_reload(self.server, result["reload"])
+            elif parsed.path == "/api/web-auth/reset-password":
+                self._write_json(ok(WEB_CONFIG.reset_web_auth_password()))
             elif parsed.path == "/api/user-profile":
                 self._write_json(ok(save_user_profile(body)))
             elif parsed.path == "/api/transport":
@@ -15497,24 +15584,64 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
 def spawn_reloaded_web_server(reload_request):
     reload_request = reload_request or {}
-    command = [sys.executable, os.path.abspath(__file__)]
+    host = str(
+        reload_request.get("host")
+        or WEB_BOUND_HOST
+        or os.environ.get("CFQUANT_WEB_HOST")
+        or ("0.0.0.0" if WEB_CONFIG.allow_remote() else "127.0.0.1")
+    ).strip()
+    fallback_port = WEB_BOUND_PORT or WEB_CONFIG.web_port()
+    try:
+        port = normalize_web_port(reload_request.get("port") or fallback_port, default=fallback_port, strict=True)
+    except Exception:
+        port = fallback_port
+    restart_script = os.path.join(BASE_DIR, "restart_cfquant.bat")
+    use_restart_script = os.name == "nt" and os.path.isfile(restart_script)
+    if use_restart_script:
+        command = ["cmd.exe", "/d", "/c", 'call "%s"' % restart_script]
+    else:
+        command = [sys.executable, os.path.abspath(__file__)]
+    if host and not use_restart_script:
+        command.extend(["--host", host])
+    if port and not use_restart_script:
+        command.extend(["--port", str(port)])
+    env = os.environ.copy()
+    if host:
+        env["CFQUANT_WEB_HOST"] = host
+        env[WEB_RELOAD_WAIT_HOST_ENV] = host
+    if port:
+        env["CFQUANT_WEB_PORT"] = str(port)
+        env[WEB_RELOAD_WAIT_PORT_ENV] = str(port)
+    env.setdefault(WEB_RELOAD_WAIT_SECONDS_ENV, str(WEB_RELOAD_WAIT_DEFAULT_SECONDS))
+    if use_restart_script:
+        env["CFQUANT_RESTART_NO_PAUSE"] = "1"
+        env["CFQUANT_START_NO_PAUSE"] = "1"
     creationflags = 0
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
-    popen_kwargs = {"creationflags": creationflags, "close_fds": False if os.name == "nt" else True}
+    popen_kwargs = {"close_fds": False if os.name == "nt" else True, "env": env}
     if os.name == "nt":
+        popen_kwargs["creationflags"] = creationflags
         hidden_kwargs = _hidden_subprocess_kwargs()
         popen_kwargs.update(hidden_kwargs)
         popen_kwargs["creationflags"] = creationflags | int(hidden_kwargs.get("creationflags") or 0)
-    safe_print("cfquant web reload spawning next process url=%s" % (reload_request.get("next_url") or ""))
+    safe_print(
+        "cfquant web reload spawning next process url=%s host=%s port=%s"
+        % (reload_request.get("next_url") or "", host, port)
+    )
+    reload_log = None
     try:
+        try:
+            reload_log = open(os.path.join(LOG_DIR, "cfquant_web_reload.log"), "ab")
+        except Exception:
+            reload_log = None
         process = subprocess.Popen(
             command,
-            cwd=STATE_DIR if os.path.isdir(STATE_DIR) else BASE_DIR,
+            cwd=BASE_DIR if use_restart_script else (STATE_DIR if os.path.isdir(STATE_DIR) else BASE_DIR),
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=reload_log or subprocess.DEVNULL,
+            stderr=reload_log or subprocess.DEVNULL,
             **popen_kwargs
         )
         safe_print("cfquant web reload spawned pid=%s" % process.pid)
@@ -15522,6 +15649,12 @@ def spawn_reloaded_web_server(reload_request):
     except Exception as e:
         safe_print("cfquant web reload spawn failed: %s" % e)
         return {"error": str(e), "command": command}
+    finally:
+        if reload_log:
+            try:
+                reload_log.close()
+            except Exception:
+                pass
 
 
 def main(argv=None):
@@ -15543,6 +15676,26 @@ def main(argv=None):
     WEB_BOUND_HOST = args.host
     WEB_BOUND_PORT = args.port
     probe_host = _web_probe_host(args.host)
+    reload_wait_port = os.environ.get(WEB_RELOAD_WAIT_PORT_ENV)
+    if reload_wait_port:
+        try:
+            wait_port = normalize_web_port(reload_wait_port, default=args.port, strict=True)
+        except Exception:
+            wait_port = args.port
+        wait_host = os.environ.get(WEB_RELOAD_WAIT_HOST_ENV) or args.host
+        try:
+            wait_seconds = float(os.environ.get(WEB_RELOAD_WAIT_SECONDS_ENV) or WEB_RELOAD_WAIT_DEFAULT_SECONDS)
+        except Exception:
+            wait_seconds = WEB_RELOAD_WAIT_DEFAULT_SECONDS
+        if wait_port == args.port:
+            safe_print(
+                "cfquant web reload waiting for port release host=%s port=%s timeout=%ss"
+                % (_web_probe_host(wait_host), wait_port, wait_seconds)
+            )
+            if not wait_for_tcp_port_release(wait_host, wait_port, timeout=wait_seconds):
+                raise RuntimeError(
+                    "cfquant web reload timed out waiting for port %s to be released" % wait_port
+                )
     if tcp_port_open(probe_host, args.port):
         if cfquant_web_available(probe_host, args.port):
             safe_print(

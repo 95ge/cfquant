@@ -37,7 +37,7 @@ STATES = {
 def normalize_strategy_settings(value):
     value = value if isinstance(value, dict) else {}
     result = {}
-    for name, default in (("enabled", False), ("live", False), ("autorun", False)):
+    for name, default in (("enabled", False), ("live", True), ("autorun", False)):
         raw = value.get(name, default)
         if not isinstance(raw, bool):
             raise ValueError("qmt_strategy.%s must be a boolean" % name)
@@ -588,8 +588,12 @@ class QmtStrategyManager:
                 before = copy.deepcopy(job)
                 if job.get("state") == "disabled":
                     continue
+                if job.get("enabled") and self._prepare_generation_transition(job):
+                    # A strategy can report an older generation after this
+                    # process starts. Publish the transition before QMT
+                    # launches the old container again.
+                    self._control(job)
                 if job.get("state") == "error":
-                    self._prepare_generation_transition(job)
                     if not job.get("control_generation") and not _generation_values(
                             job.get("accepted_generations")):
                         continue

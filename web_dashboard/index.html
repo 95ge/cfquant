@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260911_04_api_test_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260912_01_api_test_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -51,7 +51,7 @@
             <div class="login-slide-copy">
               <span>Security</span>
               <h2>管理员登录与自动会话保持</h2>
-              <p>首次使用创建管理员账号，后续自动登录；主动退出后回到登录界面，适合本机和局域网部署。</p>
+              <p>网页登录管理可在初始化时选择开启；开启后首次设置管理员账号，后续自动登录。</p>
             </div>
             <div class="login-security-grid" aria-hidden="true">
               <div>加盐哈希</div>
@@ -92,6 +92,7 @@
               <span>登录成功后保持会话，主动退出前不再要求输入密码。</span>
             </div>
             <button id="webAuthLoginBtn" class="primary login-submit wide" type="submit"><span>登录</span></button>
+            <button id="webAuthLoginResetBtn" type="button" class="wide">忘记密码？本机重置并生成文件</button>
             <span id="webAuthLoginStatus" class="metric-note login-status" role="status"></span>
           </div>
         </form>
@@ -127,7 +128,14 @@
         </li>
       </ol>
       <form id="setupForm" class="auth-form">
-        <section id="setupAdminFields" class="setup-section setup-admin-fields">
+        <section class="setup-section setup-auth-choice">
+          <label class="toggle">
+            <input id="setupEnableWebAuth" type="checkbox">
+            <span>启用网页登录管理</span>
+          </label>
+          <span class="metric-note">默认关闭；启用后需要设置管理员账号和密码。</span>
+        </section>
+        <section id="setupAdminFields" class="setup-section setup-admin-fields hidden">
           <div class="setup-section-head">
             <strong>管理员</strong>
             <span>创建登录账号</span>
@@ -195,6 +203,11 @@
               <small>高级模式需填写另一个 QMT，保存后同样自动复制核心包</small>
             </label>
             <div id="setupStrategySettings" class="qmt-strategy-settings wide"></div>
+            <label class="toggle wide">
+              <input id="setupQmtAutoLogin" type="checkbox">
+              <span>自动启动 QMT</span>
+            </label>
+            <small class="wide">QMT 已设置自动登录时，等待自动登录即可；国金证券 QMT 需手动输入密码登录。</small>
           </div>
         </section>
         <div class="setup-actions">
@@ -629,20 +642,6 @@
             </div>
           </div>
 
-          <div class="panel span-12 view-panel view-bindings binding-script-panel binding-script-panel-hidden">
-            <div class="panel-head bindings-head">
-              <div class="panel-title-stack">
-                <h2>QMT 内部代码</h2>
-                <span id="bindingQmtScriptSummary" class="metric-note">保存绑定后按当前模式显示</span>
-              </div>
-              <div class="panel-actions">
-                <button id="refreshBindingQmtScriptBtn" type="button">刷新代码</button>
-                <button id="copyBindingQmtScriptBtn" type="button">复制当前代码</button>
-              </div>
-            </div>
-            <div id="bindingQmtScriptGuide" class="binding-script-guide"></div>
-            <div id="bindingQmtScriptList" class="binding-script-list"></div>
-          </div>
 
           <div class="panel span-12 view-panel view-bindings bindings-panel">
             <div class="panel-head bindings-head">
@@ -1028,6 +1027,14 @@
                           <span>密码</span>
                           <input id="webAuthPasswordInput" type="password" autocomplete="new-password" placeholder="留空则保持不变">
                         </label>
+                        <div class="server-auth-reset wide">
+                          <button id="resetWebAuthPasswordBtn" type="button">重置密码并生成文件</button>
+                          <span id="webAuthResetStatus" class="metric-note" role="status">新密码只写入项目目录文本文件，不会显示在网页中。</span>
+                        </div>
+                        <div class="server-auth-reset wide">
+                          <span class="settings-note">密码文件位置（重置后生成）</span>
+                          <code id="webAuthPasswordFilePath">--</code>
+                        </div>
                       </div>
                     </div>
                     <div class="server-settings-group">
@@ -1226,7 +1233,7 @@
                 <article class="tutorial-topic" data-guide-panel="onboarding">
                   <div class="guide-section">
                     <h3>先把 cfquant 跑起来</h3>
-                    <p>按向导填账号、选模式、部署脚本、验证数据。</p>
+                    <p>填写账号、选择模式并保存，系统自动部署策略，然后按提示启动并登录 QMT。</p>
                     <div class="guide-callout">
                       <strong>推荐</strong>
                       <span>第一次用通用模式，QMT 目录填 <code>bin.x64</code>。</span>
@@ -1249,7 +1256,7 @@
                       <div class="onboarding-progress" aria-label="新手初始化步骤">
                         <button class="active" type="button" data-onboarding-step="intro"><span>1</span><strong>开始</strong></button>
                         <button type="button" data-onboarding-step="config"><span>2</span><strong>账号</strong></button>
-                        <button type="button" data-onboarding-step="deploy"><span>3</span><strong>脚本</strong></button>
+                        <button type="button" data-onboarding-step="deploy"><span>3</span><strong>启动</strong></button>
                         <button type="button" data-onboarding-step="bridge"><span>4</span><strong>通道</strong></button>
                         <button type="button" data-onboarding-step="data"><span>5</span><strong>接口</strong></button>
                       </div>
@@ -1273,7 +1280,7 @@
                           <div class="onboarding-quick-item">
                             <span>3</span>
                             <strong>部署脚本</strong>
-                            <small>按清单复制到 QMT。</small>
+                            <small>保存绑定后自动导入策略。</small>
                           </div>
                           <div class="onboarding-quick-item">
                             <span>4</span>
@@ -1334,6 +1341,11 @@
                             <span>作为默认共享行情数据源</span>
                           </label>
                           <div id="onboardingStrategySettings" class="qmt-strategy-settings wide"></div>
+                          <label class="toggle wide">
+                            <input id="onboardingQmtAutoLogin" type="checkbox">
+                            <span>自动启动 QMT</span>
+                          </label>
+                          <small class="wide">QMT 已设置自动登录时，等待自动登录即可；国金证券 QMT 需手动输入密码登录。</small>
                         </div>
                         <div class="onboarding-actions">
                           <button id="onboardingBackConfigBtn" class="onboarding-back-step" type="button">返回上一步</button>
@@ -1345,30 +1357,23 @@
 
                       <section class="onboarding-panel" data-onboarding-panel="deploy">
                         <div class="onboarding-panel-head">
-                          <strong>部署脚本</strong>
-                          <span>按清单复制文件，再在 QMT 里加载。</span>
+                          <strong>QMT 启动提醒</strong>
+                          <span>保存绑定后，按部署状态提示重启或登录 QMT。</span>
                         </div>
                         <div id="onboardingDeployPaths" class="onboarding-deploy-list"></div>
-                          <div id="onboardingDeployNotice" class="guide-callout">
-                            <strong>通用模式</strong>
-                            <span>只加载 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。</span>
-                          </div>
-                          <div id="onboardingQmtScriptGuide" class="binding-script-guide"></div>
-                          <div id="onboardingQmtScriptSummary" class="metric-note"></div>
-                          <div id="onboardingQmtScriptList" class="binding-script-list"></div>
+                          <div id="onboardingDeployNotice" class="guide-callout"></div>
+                          <p>QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。</p>
                            <div class="onboarding-actions">
                              <button id="onboardingBackDeployBtn" class="onboarding-back-step" type="button">返回上一步</button>
-                             <button id="onboardingCopyDeployBtn" type="button">复制部署清单</button>
-                            <button id="onboardingCopyQmtScriptBtn" type="button">复制 QMT 代码</button>
-                            <button id="onboardingGoBridgeBtn" class="primary" type="button">我已部署，开始检测</button>
+                            <button id="onboardingGoBridgeBtn" class="primary" type="button">检测连接</button>
                           <span id="onboardingDeployStatus" class="metric-note"></span>
                         </div>
                       </section>
 
                       <section class="onboarding-panel" data-onboarding-panel="bridge">
                         <div class="onboarding-panel-head">
-                          <strong>重启 QMT 并运行策略</strong>
-                          <span>重启对应的 QMT，在策略列表中运行刚刚粘贴并保存的策略，然后开始在线检测。</span>
+                          <strong>QMT 连接检测</strong>
+                          <span>完成 QMT 登录后检测通道；未启用策略自动运行时，请在“模型交易”运行已导入的托管策略。国金证券 QMT 需手动输入密码登录。</span>
                         </div>
                         <div id="onboardingRestartChecklist" class="onboarding-restart-checklist"></div>
                         <div id="onboardingBridgeWaiting" class="onboarding-bridge-waiting hidden" aria-live="polite">
@@ -1381,7 +1386,7 @@
                         <div id="onboardingBridgeSummary" class="onboarding-summary"></div>
                         <div class="onboarding-actions">
                           <button id="onboardingBackBridgeBtn" class="onboarding-back-step" type="button">返回上一步</button>
-                          <button id="onboardingRefreshBridgeBtn" class="primary" type="button">我已重启并运行，开始检测</button>
+                          <button id="onboardingRefreshBridgeBtn" class="primary" type="button">检测连接</button>
                           <button id="onboardingForceCloseBtn" class="onboarding-force-close" type="button">强制关闭本次绑定流程</button>
                           <span id="onboardingBridgeStatus" class="metric-note"></span>
                         </div>
@@ -1518,7 +1523,7 @@
                     <ol class="guide-list detailed">
                       <li><strong>启动服务。</strong>运行 <code>start_cfquant.bat</code>，或执行 <code>cfquant --open-browser</code>。</li>
                       <li><strong>完成初始化。</strong>填写资金账号、账户类型、QMT 安装目录或 <code>bin.x64</code> 目录和运行模式。</li>
-                      <li><strong>部署 QMT。</strong>系统会自动复制核心包；仍需按“QMT 部署教程”创建或更新入口脚本。</li>
+                      <li><strong>启动 QMT。</strong>保存绑定后系统自动部署策略，按提示重启或登录 QMT；国金证券 QMT 需手动输入密码登录。</li>
                       <li><strong>启动脚本。</strong>通用模式启动一个入口；高级模式分别启动普通端和极速交易端。</li>
                       <li><strong>验证账号。</strong>回到“绑定”页刷新状态，再查资金、持仓。</li>
                       <li><strong>接入外部程序。</strong>先在“接口”页调通参数，再改外部 Python 代码。</li>
@@ -2245,223 +2250,74 @@ else:
                   <div class="deploy-mode-panels">
                     <section id="deployModePanelCtypes" class="deploy-mode-panel active" role="tabpanel" aria-labelledby="deployModeCtypes" data-deploy-mode-panel="ctypes">
                       <div class="guide-section">
-                        <h3>一、通用模式部署教程</h3>
-                    <div class="guide-callout warning">
-                      <strong>特别提醒</strong>
-                      <span>国泰君安和国泰海通的 QMT，需要走【极致模式】。其他券商 QMT 建议先按通用模式部署。</span>
-                    </div>
-                    <ol class="guide-list detailed">
-                      <li><strong>下载项目解压，或通过 pip 安装后找到安装目录。</strong>下面以下载解压项目、国金证券 QMT 为例，其他证券公司的 QMT 按相同方式处理。</li>
-                      <li><strong>填写 QMT 目录。</strong>在初始化或绑定页填写 QMT 安装目录或 <code>bin.x64</code>，系统会自动复制 <code>cfquant</code> 核心包。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-4.png" alt="将 cfquant 目录复制到 QMT 安装目录">
-                      <figcaption>历史手动复制位置；新版可由 Web 在保存账号配置时自动复制。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="3">
-                      <li><strong>打开 QMT。</strong>完成登录，并安装相应 Python 环境；如果已经安装，可以忽略。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-5.png" alt="QMT 登录并安装 Python 环境">
-                      <figcaption>打开 QMT，登录账号并确认 Python 环境可用。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="4">
-                      <li><strong>新建 Python 策略。</strong>打开大 QMT 的“模型研究”界面，进入“新建策略”，选择“新建 Python 策略”。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-6.png" alt="QMT 模型研究中新建 Python 策略">
-                      <figcaption>在模型研究中新建 Python 策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="5">
-                      <li><strong>启动策略。</strong>在通用模式中加载并启动 <code>CFQUANT_CTYPE_ALL_LOWLAT.py</code>。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-7.png" alt="启动通用模式策略">
-                      <figcaption>启动通用模式策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="6">
-                      <li><strong>重启 QMT。</strong>首次部署或替换脚本后，建议重启 QMT，再重新启动策略。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-9.png" alt="重启 QMT">
-                      <figcaption>重启 QMT 后重新启动策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="7">
-                      <li><strong>网页端绑定账号。</strong>回到 Web 控制台，在“绑定”页面填写资金账号、QMT 目录，并选择通用模式。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-10.png" alt="通用模式网页端账号绑定">
-                      <figcaption>在网页端完成通用模式账号绑定。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="8">
-                      <li><strong>确认部署成功。</strong>网页端能看到对应通道在线，并能读取资产、持仓、委托或行情数据。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-8.png" alt="通用模式部署成功提示">
-                      <figcaption>部署成功后的网页状态提示。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="9">
-                      <li><strong>接口调用测试。</strong>进入“接口调试”，执行一次查询或交易测试，确认调用链路可用。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-14.png" alt="通用模式接口调用测试">
-                      <figcaption>使用网页接口进行调用测试。</figcaption>
-                    </figure>
+                        <h3>通用模式自动部署</h3>
+                        <ol class="guide-list detailed">
+                          <li><strong>配置账号。</strong>选择通用模式，填写对应 QMT 安装目录或 bin.x64。国泰君安和国泰海通 QMT 请使用极致模式。</li>
+                          <li><strong>保存绑定。</strong>勾选“自动导入并管理 QMT 策略”，确认账号、模拟／实盘和策略自动运行设置后保存。初始化与后续绑定均由系统自动导入策略。</li>
+                          <li><strong>启动并登录 QMT。</strong>按保存后的提示重启 QMT；勾选“自动启动 QMT”后，在启动的 QMT 中登录即可。QMT 已设置自动登录时，请等待自动登录完成。</li>
+                          <li><strong>检查连接。</strong>登录后查看绑定列表中的通道状态，或点击“检测连接”。未勾选“QMT 启动后自动运行”时，在“模型交易”运行已导入的托管策略。</li>
+                        </ol>
+                        <div class="guide-callout warning">
+                          <strong>国金证券登录</strong>
+                          <span>国金证券 QMT 目前不支持自动登录，每次启动后请手动输入密码登录。</span>
+                        </div>
+                        <div class="guide-callout">
+                          <strong>等待退出或部署失败</strong>
+                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或模型账号 Key 后重新保存。</span>
+                        </div>
+                        <figure class="guide-image-card">
+                          <img src="/image/qmt_deploy/image-10.png" alt="通用模式账号绑定示意">
+                          <figcaption>通用模式账号与 QMT 目录配置示意，以当前绑定表单为准。</figcaption>
+                        </figure>
                       </div>
                     </section>
 
                     <section id="deployModePanelLite" class="deploy-mode-panel" role="tabpanel" aria-labelledby="deployModeLite" data-deploy-mode-panel="lite">
                       <div class="guide-section">
-                        <h3>二、极致模式部署教程</h3>
-                    <div class="guide-callout warning">
-                      <strong>特别提醒</strong>
-                      <span>国泰君安和国泰海通的 QMT，需要走【极致模式】。极致模式在 QMT 中加载 <code>CFQUANT_LITE.py</code>。</span>
-                    </div>
-                    <ol class="guide-list detailed">
-                      <li><strong>准备项目目录。</strong>下载项目解压，或通过 pip 安装后找到对应安装目录。</li>
-                      <li><strong>确认入口脚本。</strong>极致模式核心运行入口是 <code>CFQUANT_LITE.py</code>，不要求 QMT 侧导入 <code>cfquant</code> 包。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-4.png" alt="极致模式放置项目目录">
-                      <figcaption>传统目录位置；极致模式主要加载自包含入口脚本。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="3">
-                      <li><strong>打开 QMT。</strong>完成登录，并安装相应 Python 环境；如果已经安装，可以忽略。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-5.png" alt="极致模式确认 QMT Python 环境">
-                      <figcaption>确认 QMT Python 环境可用。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="4">
-                      <li><strong>新建 Python 策略。</strong>打开大 QMT 的“模型研究”界面，进入“新建策略”，选择“新建 Python 策略”。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-11.png" alt="创建极致模式 Python 策略">
-                      <figcaption>创建极致模式 Python 策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="5">
-                      <li><strong>启动策略。</strong>在 QMT 中加载并启动 <code>CFQUANT_LITE.py</code>。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-12.png" alt="启动极致模式策略">
-                      <figcaption>启动极致模式策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="6">
-                      <li><strong>重启 QMT。</strong>首次部署或更新入口脚本后，重启 QMT 并重新启动策略。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-9.png" alt="极致模式重启 QMT">
-                      <figcaption>重启 QMT 后重新启动极致模式策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="7">
-                      <li><strong>网页端绑定账号。</strong>在 Web 控制台“绑定”页面选择极致模式，填写账号和 QMT 目录后保存。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-13.png" alt="极致模式网页端账号绑定">
-                      <figcaption>在网页端完成极致模式账号绑定。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="8">
-                      <li><strong>接口调用测试。</strong>部署成功后，可以在网页端的“接口调试”中进行调用测试。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-15.png" alt="极致模式接口调用测试">
-                      <figcaption>极致模式部署成功后的接口调用测试。</figcaption>
-                    </figure>
+                        <h3>极致模式自动部署</h3>
+                        <ol class="guide-list detailed">
+                          <li><strong>配置账号。</strong>选择极致模式，填写对应 QMT 安装目录或 bin.x64。系统会自动部署自包含策略。</li>
+                          <li><strong>保存绑定。</strong>勾选“自动导入并管理 QMT 策略”，确认账号、模拟／实盘和策略自动运行设置后保存。初始化与后续绑定均由系统自动导入策略。</li>
+                          <li><strong>启动并登录 QMT。</strong>按保存后的提示重启 QMT；勾选“自动启动 QMT”后，在启动的 QMT 中登录即可。QMT 已设置自动登录时，请等待自动登录完成。</li>
+                          <li><strong>检查连接。</strong>登录后查看绑定列表中的通道状态，或点击“检测连接”。未勾选“QMT 启动后自动运行”时，在“模型交易”运行已导入的托管策略。</li>
+                        </ol>
+                        <div class="guide-callout warning">
+                          <strong>国金证券登录</strong>
+                          <span>国金证券 QMT 目前不支持自动登录，每次启动后请手动输入密码登录。</span>
+                        </div>
+                        <div class="guide-callout">
+                          <strong>等待退出或部署失败</strong>
+                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或模型账号 Key 后重新保存。</span>
+                        </div>
+                        <figure class="guide-image-card">
+                          <img src="/image/qmt_deploy/image-13.png" alt="极致模式账号绑定示意">
+                          <figcaption>极致模式账号与 QMT 目录配置示意，以当前绑定表单为准。</figcaption>
+                        </figure>
                       </div>
                     </section>
 
                     <section id="deployModePanelAdvanced" class="deploy-mode-panel" role="tabpanel" aria-labelledby="deployModeAdvanced" data-deploy-mode-panel="advanced">
                       <div class="guide-section">
-                        <h3>三、高级模式部署教程</h3>
-                    <div class="guide-recommend warning">
-                      <strong>高级模式部署比较复杂</strong>
-                      <span>建议先跑通通用模式后再尝试高级模式。高级模式下单延迟约 4ms，这里的延迟是指外部程序到 QMT 内部，不是到交易所；QMT 到交易所的延迟不在本项目控制范围内。</span>
-                    </div>
-                    <div class="guide-callout warning">
-                      <strong>部署规则</strong>
-                      <span>高级模式需要两个 QMT。一般将 <code>qmt_scripts/CFQUANT.py</code> 放到第一个 QMT，将 <code>qmt_scripts/CFQUANT_TRADE_LOWLAT.py</code> 放到第二个安装的 QMT。不要在同一个 QMT 里同时运行这两个脚本；国泰海通无法部署高级模式。</span>
-                    </div>
-                    <ol class="guide-list detailed">
-                      <li><strong>准备两个 QMT。</strong>一个作为普通端，一个作为极速交易端。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-16.png" alt="高级模式准备两个 QMT">
-                      <figcaption>高级模式需要准备两个 QMT。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="2">
-                      <li><strong>准备项目安装目录。</strong>下载项目解压，或通过 pip 安装后找到安装目录。下面以下载解压项目、国金证券 QMT 为例。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-17.png" alt="高级模式项目文件准备">
-                      <figcaption>准备高级模式所需项目文件。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="3">
-                      <li><strong>填写两个 QMT 目录。</strong>在绑定页分别填写普通端和极速交易端的 QMT 安装目录或 <code>bin.x64</code>，系统会自动复制 <code>cfquant</code> 核心包。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-4.png" alt="高级模式复制 cfquant 目录">
-                      <figcaption>历史手动复制位置；新版可由 Web 在保存高级模式账号配置时自动复制。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="4">
-                      <li><strong>打开两个 QMT。</strong>登录并安装相应 Python 环境；如果已经安装，可以忽略。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-5.png" alt="高级模式确认两个 QMT Python 环境">
-                      <figcaption>确认两个 QMT 的 Python 环境可用。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="5">
-                      <li><strong>新建 Python 策略。</strong>分别在两个 QMT 的“模型研究”界面中新建 Python 策略。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-18.png" alt="高级模式创建 Python 策略">
-                      <figcaption>高级模式创建 Python 策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="6">
-                      <li><strong>启动两个策略。</strong>第一个 QMT 启动 <code>CFQUANT.py</code>，第二个 QMT 启动 <code>CFQUANT_TRADE_LOWLAT.py</code>。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-7.png" alt="高级模式启动两个策略">
-                      <figcaption>启动两个 QMT 里的策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="7">
-                      <li><strong>重启 QMT。</strong>首次部署或替换脚本后，建议重启两个 QMT，再重新启动策略。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-9.png" alt="高级模式重启 QMT">
-                      <figcaption>重启两个 QMT 后重新启动策略。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="8">
-                      <li><strong>网页端绑定账号。</strong>在 Web 控制台“绑定”页面选择高级模式，填写普通端和极速交易端 QMT 目录，并确认自动复制提示无异常。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-19.png" alt="高级模式网页端账号绑定">
-                      <figcaption>在网页端完成高级模式账号绑定。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="9">
-                      <li><strong>确认部署成功。</strong>网页端应能看到普通端和极速交易端都在线。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-8.png" alt="高级模式部署成功提示">
-                      <figcaption>高级模式部署成功后的状态提示。</figcaption>
-                    </figure>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-20.png" alt="高级模式双端状态">
-                      <figcaption>高级模式普通端和极速交易端状态。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="10">
-                      <li><strong>接口调用测试。</strong>用网页端“接口调试”执行一次调用测试。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-14.png" alt="高级模式接口调用测试">
-                      <figcaption>高级模式接口调用测试。</figcaption>
-                    </figure>
-                    <ol class="guide-list detailed" start="11">
-                      <li><strong>非开盘时间低延迟测试。</strong>可用低延迟测试结果作为链路参考，但真实表现会受 QMT、机器负载和券商环境影响。</li>
-                    </ol>
-                    <figure class="guide-image-card">
-                      <img src="/image/qmt_deploy/image-21.png" alt="高级模式非开盘时间低延迟测试结果">
-                      <figcaption>非开盘时间下的低延迟测试结果。</figcaption>
-                    </figure>
+                        <h3>高级模式自动部署</h3>
+                        <ol class="guide-list detailed">
+                          <li><strong>配置账号。</strong>选择高级模式，分别填写普通端和极速交易端两个不同的 QMT 目录，系统分别部署对应策略。</li>
+                          <li><strong>保存绑定。</strong>勾选“自动导入并管理 QMT 策略”，确认账号、模拟／实盘和策略自动运行设置后保存。初始化与后续绑定均由系统自动导入策略。</li>
+                          <li><strong>启动并登录 QMT。</strong>按保存后的提示重启 QMT；勾选“自动启动 QMT”后，在启动的 QMT 中登录即可。QMT 已设置自动登录时，请等待自动登录完成。</li>
+                          <li><strong>检查连接。</strong>登录后查看绑定列表中的通道状态，或点击“检测连接”。未勾选“QMT 启动后自动运行”时，在“模型交易”运行已导入的托管策略。</li>
+                        </ol>
+                        <div class="guide-callout warning">
+                          <strong>国金证券登录</strong>
+                          <span>国金证券 QMT 目前不支持自动登录，每次启动后请手动输入密码登录。</span>
+                        </div>
+                        <div class="guide-callout">
+                          <strong>等待退出或部署失败</strong>
+                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或模型账号 Key 后重新保存。</span>
+                        </div>
+                        <p>两个 QMT 都需要完成登录。自动启动选项仅启动绑定的主 QMT 目录，极速交易端需单独启动并登录。</p>
+                        <figure class="guide-image-card">
+                          <img src="/image/qmt_deploy/image-19.png" alt="高级模式账号绑定示意">
+                          <figcaption>高级模式账号与 QMT 目录配置示意，以当前绑定表单为准。</figcaption>
+                        </figure>
                       </div>
                     </section>
                   </div>
@@ -2869,12 +2725,12 @@ else:
         </label>
         <label class="toggle binding-dialog-wide-row">
           <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox">
-          <span>勾选自动登录（自动启动 QMT 并记录 PID）</span>
+          <span>自动启动 QMT</span>
         </label>
         <div id="bindingQmtAutoLoginSettings" class="binding-qmt-autostart-settings binding-dialog-wide-row hidden">
           <div class="binding-qmt-autostart-head">
             <strong>每日重启时间</strong>
-            <span>请先在 QMT 登录界面勾选“记住密码”和“自动登录”；系统会启动绑定目录的 XtItClient.exe，并在下列时间按目录定向重启。</span>
+            <span>系统会启动绑定目录的 QMT，并按下列时间重启。QMT 已设置自动登录时，等待自动登录即可；国金证券 QMT 需手动输入密码登录。</span>
           </div>
           <div id="bindingQmtRestartTimes" class="binding-qmt-restart-times"></div>
           <button id="addBindingQmtRestartTimeBtn" type="button">添加重启时间</button>
@@ -2973,8 +2829,8 @@ else:
     <div class="binding-dialog binding-qmt-guide-dialog" role="dialog" aria-modal="true" aria-labelledby="bindingQmtGuideTitle">
       <div class="binding-dialog-head">
         <div>
-          <strong id="bindingQmtGuideTitle">绑定已保存，完成 QMT 策略加载</strong>
-          <span id="bindingQmtGuideSubtitle">请在对应 QMT 中新建策略并保存运行。</span>
+          <strong id="bindingQmtGuideTitle">绑定已保存，QMT 启动提醒</strong>
+          <span id="bindingQmtGuideSubtitle">请按部署状态提示重启或登录 QMT。</span>
         </div>
         <div class="onboarding-head-actions">
           <button type="button" data-open-tutorial data-tutorial-return="返回部署">阅读教程</button>
@@ -2983,34 +2839,31 @@ else:
       </div>
       <div class="binding-qmt-guide-body">
         <div id="bindingQmtGuideInstruction" class="binding-qmt-guide-instruction"></div>
+        <p id="bindingQmtLoginReminder">QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。</p>
         <div>
           <div class="binding-qmt-guide-section-head">
-            <strong>自动复制状态</strong>
-            <span>核心包已自动处理；下面的策略文件需要在 QMT 中手工新建。</span>
+            <strong>自动部署状态</strong>
           </div>
+          <div id="bindingQmtStrategyStatus" class="binding-qmt-status-summary" role="status"></div>
           <div id="bindingQmtGuideStatus" class="binding-qmt-guide-status"></div>
         </div>
         <div id="bindingQmtAutoLoginPanel" class="binding-qmt-autologin-panel hidden">
           <div class="binding-qmt-guide-section-head">
             <strong>QMT 自动启动状态</strong>
-            <span>请确认 QMT 已勾选“记住密码”和“自动登录”；系统只负责启动和按计划重启绑定目录的 XtItClient.exe。</span>
           </div>
           <div id="bindingQmtAutoLoginStatus" class="binding-qmt-guide-status"></div>
         </div>
         <div>
           <div class="binding-qmt-guide-section-head">
-            <strong>手工加载策略文件</strong>
-            <span id="bindingQmtGuideModeNotice">按当前模式显示对应文件。</span>
+            <strong>对应 QMT 目录</strong>
           </div>
-          <div id="bindingQmtGuideSummary" class="metric-note"></div>
-          <div id="bindingQmtGuideScriptList" class="binding-script-list"></div>
+          <div id="bindingQmtGuideTargets" class="binding-qmt-guide-status"></div>
         </div>
       </div>
       <div class="binding-qmt-guide-actions">
-        <span class="metric-note">操作顺序：新建策略 → 粘贴代码 → 保存 → 运行</span>
         <button id="backBindingQmtGuideBtn" type="button">返回上一步</button>
-        <button id="copyBindingQmtGuideBtn" type="button">复制全部策略代码</button>
-        <button id="closeBindingQmtGuideBottomBtn" class="primary" type="button">我已完成，关闭指引</button>
+        <button id="checkBindingQmtConnectionBtn" type="button">检测连接</button>
+        <button id="closeBindingQmtGuideBottomBtn" class="primary" type="button">知道了</button>
       </div>
     </div>
   </div>
@@ -3075,6 +2928,6 @@ else:
   <script src="/cftrader-api-data.js?v=20260911_02"></script>
   <script src="/api-tester.js?v=20260911_02"></script>
   <script src="/python-api.js?v=20260911_api_test_01"></script>
-  <script src="/app.js?v=web_20260911_04_callback_01"></script>
+  <script src="/app.js?v=web_20260911_07_password_file_path"></script>
 </body>
 </html>

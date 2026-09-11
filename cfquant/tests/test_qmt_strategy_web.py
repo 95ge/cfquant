@@ -1,5 +1,7 @@
 """Web account configuration integration with isolated state and deployment."""
 
+import os
+
 import pytest
 
 
@@ -12,6 +14,64 @@ def web_config(tmp_path, monkeypatch):
     return web, config
 
 
+def test_web_reload_info_uses_target_port_and_preserves_previous_listener(web_config, monkeypatch):
+    web, _ = web_config
+    monkeypatch.setattr(web, "WEB_BOUND_HOST", "127.0.0.1")
+    monkeypatch.setattr(web, "WEB_BOUND_PORT", 8765)
+    monkeypatch.setattr(web, "server_access_info", lambda: {
+        "configured_host": "0.0.0.0",
+        "configured_port": 9876,
+        "next_url": "http://127.0.0.1:9876/",
+    })
+
+    info = web.web_reload_info(reason="settings")
+
+    assert info["host"] == "0.0.0.0"
+    assert info["port"] == 9876
+    assert info["previous_host"] == "127.0.0.1"
+    assert info["previous_port"] == 8765
+
+
+def test_spawn_reloaded_web_server_preserves_host_port_and_wait_env(web_config, monkeypatch, tmp_path):
+    web, _ = web_config
+    calls = []
+
+    class FakePopen:
+        pid = 4321
+
+        def __init__(self, command, **kwargs):
+            calls.append((command, kwargs))
+
+    monkeypatch.setattr(web.subprocess, "Popen", FakePopen)
+    monkeypatch.setattr(web, "LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(web, "STATE_DIR", str(tmp_path))
+
+    result = web.spawn_reloaded_web_server({
+        "host": "0.0.0.0",
+        "port": 9876,
+        "next_url": "http://127.0.0.1:9876/",
+    })
+
+    assert result["pid"] == 4321
+    command, kwargs = calls[0]
+    assert command[0]
+    if web.os.name == "nt" and os.path.isfile(os.path.join(web.BASE_DIR, "restart_cfquant.bat")):
+        assert command[0].lower().endswith("cmd.exe")
+        assert "restart_cfquant.bat" in command[-1]
+    else:
+        assert command[1].endswith("cfquant_web_server.py")
+        assert command[command.index("--host") + 1] == "0.0.0.0"
+        assert command[command.index("--port") + 1] == "9876"
+    env = kwargs["env"]
+    assert env["CFQUANT_WEB_HOST"] == "0.0.0.0"
+    assert env["CFQUANT_WEB_PORT"] == "9876"
+    assert env[web.WEB_RELOAD_WAIT_HOST_ENV] == "0.0.0.0"
+    assert env[web.WEB_RELOAD_WAIT_PORT_ENV] == "9876"
+    if web.os.name == "nt" and os.path.isfile(os.path.join(web.BASE_DIR, "restart_cfquant.bat")):
+        assert env["CFQUANT_RESTART_NO_PAUSE"] == "1"
+        assert env["CFQUANT_START_NO_PAUSE"] == "1"
+
+
 def test_web_persists_strategy_flags_and_preserves_them_for_older_clients(web_config, tmp_path):
     web, config = web_config
     row = config.save_account_config("1000000001", qmt_dir=str(tmp_path), qmt_strategy={
@@ -20,6 +80,13 @@ def test_web_persists_strategy_flags_and_preserves_them_for_older_clients(web_co
     assert saved["qmt_strategy"] == row["qmt_strategy"]
     reloaded = web.WebRuntimeConfig(config.path, config.settings_db_path)
     assert reloaded.account_configs()[row["account_key"]]["qmt_strategy"] == row["qmt_strategy"]
+
+
+def test_new_binding_defaults_strategy_to_live_mode(web_config, tmp_path):
+    _, config = web_config
+    row = config.save_account_config("1000000001", qmt_dir=str(tmp_path),
+                                     qmt_strategy={"enabled": True})
+    assert row["qmt_strategy"]["live"] is True
 
 
 def test_same_qmt_same_fund_has_one_mode_across_path_aliases_and_bindings(web_config, tmp_path):
@@ -180,3 +247,41 @@ def test_complete_qmt_auto_login_restarts_saved_account(web_config, monkeypatch,
     data = web.complete_qmt_auto_login({"account_key": row["account_key"]})
     assert data["restarted"] is True
     assert calls == [(row["account_key"], {"enabled": True, "restart_times": ["07:30"]}, "manual")]
+
+
+def test_reset_web_auth_password_writes_file_and_revokes_old_session(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    monkeypatch.setattr(web, "BASE_DIR", str(tmp_path / "project"))
+    config.set_server_access_settings(
+        web_auth_enabled=True,
+        web_auth_username="operator",
+        web_auth_password="old-password",
+    )
+    token = web.issue_web_auth_token("operator", remember=True)
+    assert config.verify_web_auth("operator", "old-password")
+    assert web.web_auth_token_info(token)
+
+    result = config.reset_web_auth_password()
+
+    password_file = tmp_path / "project" / "cfquant_web_reset_password.txt"
+    assert result["password_file"] == str(password_file)
+    assert config.server_access_info()["web_auth_password_file"] == str(password_file)
+    assert password_file.is_file()
+    content = password_file.read_text(encoding="utf-8")
+    new_password = content.split("新密码: ", 1)[1].splitlines()[0]
+    assert len(new_password) == 18
+    assert new_password != "old-password"
+    assert not config.verify_web_auth("operator", "old-password")
+    assert config.verify_web_auth("operator", new_password)
+    assert web.web_auth_token_info(token) is None
+
+
+def test_reset_web_auth_password_enables_auth_when_it_was_not_configured(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    monkeypatch.setattr(web, "BASE_DIR", str(tmp_path / "project"))
+    result = config.reset_web_auth_password()
+    password_file = tmp_path / "project" / "cfquant_web_reset_password.txt"
+    new_password = password_file.read_text(encoding="utf-8").split("新密码: ", 1)[1].splitlines()[0]
+    assert result["username"] == "admin"
+    assert config.web_auth_enabled()
+    assert config.verify_web_auth("admin", new_password)

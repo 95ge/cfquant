@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260911_04';
+const FRONTEND_VERSION = 'web_20260912_01';
 
 const state = {
   accountId: '',
@@ -109,9 +109,6 @@ const state = {
   bindingActionBusyKey: '',
   bindingActionBusyType: '',
   bindingNoticeTimer: null,
-  qmtScriptSourceCache: {},
-  qmtScriptSourcePromises: {},
-  qmtScriptRenderToken: 0,
   tests: [],
   testSourceId: '',
   testSearchText: '',
@@ -298,212 +295,65 @@ function transportModeRequestScope(mode) {
   return '单文件双通道';
 }
 
-function qmtEntryScriptForMode(mode) {
-  const value = normalizeTransportMode(mode);
-  if (value === 'lite') return 'CFQUANT_LITE.py';
-  if (value === 'lttx') return 'CFQUANT.py';
-  return 'CFQUANT_CTYPE_ALL_LOWLAT.py';
-}
+const QMT_MARKET_LABELS = { SH: '上海', SZ: '深圳' };
+const QMT_LOGIN_REMINDER = 'QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。';
 
-const QMT_MARKET_SCRIPT_DIR = '\u540c\u8d26\u53f7\u72ec\u7acb\u5e02\u573a';
-const QMT_MARKET_LABELS = { SH: '\u4e0a\u6d77', SZ: '\u6df1\u5733' };
-
-function qmtMarketEntryScriptForMode(mode, market) {
-  const suffix = String(market || '').toUpperCase() === 'SH' ? 'SH' : 'SZ';
-  const value = normalizeTransportMode(mode);
-  const base = value === 'lite'
-    ? 'CFQUANT_LITE'
-    : (value === 'lttx' ? 'CFQUANT_TRADE_LOWLAT' : 'CFQUANT_CTYPE_ALL_LOWLAT');
-  return `${QMT_MARKET_SCRIPT_DIR}/${base}_${suffix}.py`;
-}
-
-function qmtScriptTargetPath(qmtDir, scriptPath) {
-  const pythonDir = qmtPythonDirPath(qmtDir);
-  const fileName = String(scriptPath || '').split('/').pop();
-  return pythonDir ? joinWinPath(pythonDir, fileName) : '\u8bf7\u5148\u586b\u5199 QMT \u76ee\u5f55';
-}
-
-function qmtScriptPlan(values = {}) {
-  const mode = normalizeTransportMode(values.mode);
-  const marketRoutingEnabled = values.marketRoutingEnabled !== undefined
-    ? !!values.marketRoutingEnabled
-    : !!values.market_routing_enabled;
-  const routes = normalizeMarketRoutes({
-    ...values,
-    market_bridges: values.marketBridges || values.market_bridges || {},
-  });
-  const scripts = [];
-  const addScript = (role, path, qmtDir, note = '') => scripts.push({
-    role,
-    path,
-    name: path.split('/').pop(),
-    target: qmtScriptTargetPath(qmtDir, path),
-    note,
-  });
-
-  if (marketRoutingEnabled) {
-    ['SH', 'SZ'].forEach((market) => {
-      const marketLabel = QMT_MARKET_LABELS[market];
-      const role = mode === 'lttx' ? `${marketLabel}\u6781\u901f\u4ea4\u6613\u7aef` : `${marketLabel}\u4ea4\u6613\u7aef`;
-      const note = `${marketLabel} QMT \u53ea\u52a0\u8f7d ${qmtMarketEntryScriptForMode(mode, market).split('/').pop()}\uff0c\u4e0d\u8981\u52a0\u8f7d\u666e\u901a\u5165\u53e3\u3002`;
-      addScript(role, qmtMarketEntryScriptForMode(mode, market), routes[market].qmt_dir, note);
+function qmtDeploymentTargets(values = {}) {
+  const marketRouting = values.marketRoutingEnabled !== undefined
+    ? !!values.marketRoutingEnabled : !!values.market_routing_enabled;
+  if (marketRouting) {
+    const routes = normalizeMarketRoutes({
+      ...values, market_bridges: values.marketBridges || values.market_bridges || {},
     });
-  } else if (mode === 'lttx') {
-    addScript('\u666e\u901a\u7aef QMT', 'CFQUANT.py', values.qmt_dir, '\u666e\u901a\u7aef\u8d1f\u8d23\u8c03\u7528\u548c\u666e\u901a\u901a\u9053\u3002');
-    addScript('\u6781\u901f\u4ea4\u6613\u7aef QMT', 'CFQUANT_TRADE_LOWLAT.py', values.qmt_trade_dir, '\u8bf7\u653e\u5728\u4e0e\u666e\u901a\u7aef\u4e0d\u540c\u7684 QMT \u4e2d\u52a0\u8f7d\u3002');
+    return ['SH', 'SZ'].map((market) => ({
+      role: `${QMT_MARKET_LABELS[market]} QMT`, qmt_dir: routes[market].qmt_dir || '',
+    }));
+  }
+  if (normalizeTransportMode(values.mode) === 'lttx') {
+    return [
+      { role: '普通端 QMT', qmt_dir: values.qmt_dir || '' },
+      { role: '极速交易端 QMT', qmt_dir: values.qmt_trade_dir || '' },
+    ];
+  }
+  return [{ role: `${transportModeLabel(values.mode)} QMT`, qmt_dir: values.qmt_dir || '' }];
+}
+
+function qmtStartupInstruction(values = {}) {
+  const deploy = values.qmt_strategy_deploy || {};
+  const targets = Array.isArray(deploy.targets) ? deploy.targets : [];
+  const strategy = values.qmt_strategy || {};
+  const autoLogin = values.qmt_auto_login || {};
+  if (values.enabled === false) return '账号绑定已停用；需要使用时，请启用绑定并保存。';
+  if (deploy.error || targets.some((target) => target.error || target.state === 'error')) {
+    return '策略部署失败，请根据下方错误检查 QMT 目录、权限和账号配置，然后重新保存绑定。';
+  }
+  if (strategy.enabled === false) {
+    return '自动导入并管理 QMT 策略未启用。请返回账号配置，勾选后保存以完成自动部署。';
+  }
+  if (targets.some((target) => target.state === 'waiting_account')) {
+    return '尚未找到资金账号的 QMT 绑定键，请在账号配置中补充模型账号 Key 后重新保存。';
+  }
+  let message;
+  if (targets.some((target) => ['waiting_exit', 'waiting_import_save'].includes(target.state))) {
+    message = '请正常退出对应 QMT，保持 cfquant 运行，等待绑定列表显示模型配置完成后，再启动并登录 QMT。';
+  } else if (autoLogin.error) {
+    message = `QMT 自动启动失败，请手动启动并登录 QMT。原因：${autoLogin.error}`;
+  } else if (targets.length && targets.every((target) => target.state === 'running')) {
+    message = '托管策略已在线，可以查看账号状态或测试接口。';
+  } else if (qmtAutoLoginGuideEnabled(autoLogin)) {
+    message = '已勾选自动启动 QMT，请在 QMT 启动后完成登录。';
   } else {
-    const entryScript = qmtEntryScriptForMode(mode);
-    addScript(`${transportModeLabel(mode)} QMT`, entryScript, values.qmt_dir, '\u4fdd\u5b58\u540e\u5c06\u8fd9\u4e00\u4efd\u811a\u672c\u52a0\u8f7d\u5230 QMT\u3002');
+    message = '请重启对应 QMT 并登录，使绑定配置生效。';
   }
-
-  let notice = '';
-  if (marketRoutingEnabled) {
-    notice = '\u5df2\u6309\u4e24\u5730\u591a\u4e2d\u5fc3\uff0f\u540c\u8d26\u53f7\u72ec\u7acb\u5e02\u573a\u8def\u7531\u5c55\u793a\u3002\u4e0a\u6d77 QMT \u8fd0\u884c _SH \u811a\u672c\uff0c\u6df1\u5733 QMT \u8fd0\u884c _SZ \u811a\u672c\uff1b\u4e0d\u8981\u628a\u666e\u901a\u5165\u53e3\u590d\u5236\u5230\u5e02\u573a\u4ea4\u6613\u7aef\u3002';
-  } else if (mode === 'lttx') {
-    notice = '\u9ad8\u7ea7\u6a21\u5f0f\u9700\u8981\u5728\u4e24\u4e2a\u4e0d\u540c\u7684 QMT \u4e2d\u5206\u522b\u52a0\u8f7d\u666e\u901a\u7aef\u548c\u6781\u901f\u4ea4\u6613\u7aef\u811a\u672c\u3002';
-  } else {
-    notice = `\u5f53\u524d\u4e3a${transportModeLabel(mode)}\uff0c\u53ea\u9700\u52a0\u8f7d\u6e05\u5355\u4e2d\u8fd9\u4e00\u4efd\u811a\u672c\u3002`;
+  if (qmtAutoLoginGuideEnabled(autoLogin) && qmtDeploymentTargets(values).some(
+    (target) => !qmtDirsAreSame(target.qmt_dir, values.qmt_dir)
+  )) {
+    message += ' 自动启动仅作用于绑定的主 QMT 目录，其他目录的 QMT 请分别启动并登录。';
   }
-  return { mode, marketRoutingEnabled, scripts, notice };
-}
-
-function bindingScriptValuesFromSelectedAccount() {
-  const info = selectedAccountInfo();
-  const config = info.config || {};
-  return {
-    account_id: info.accountId || '',
-    account_type: info.accountType || 'STOCK',
-    qmt_dir: config.qmt_dir || '',
-    qmt_trade_dir: accountConfigQmtTradeDir(config),
-    mode: config.mode || 'ctypes',
-    marketRoutingEnabled: isMarketRoutingEnabled(config),
-    marketBridges: normalizeMarketRoutes(config),
-  };
-}
-
-function renderQmtScriptCards(list, plan, sourceByPath = {}, includeSource = true) {
-  if (!list) return;
-  list.innerHTML = plan.scripts.map((script) => {
-    const source = sourceByPath[script.path];
-    const code = includeSource
-      ? (source ? `<pre class="binding-script-code"><code>${esc(source.source || '')}</code></pre>` : '<div class="binding-script-loading">\u6b63\u5728\u8bfb\u53d6\u811a\u672c\u6e90\u7801\u2026</div>')
-      : '';
-    return `<article class="binding-script-card">
-      <div class="binding-script-card-head">
-        <div class="binding-script-card-title"><strong>${esc(script.role)}</strong><code>${esc(script.name)}</code></div>
-        <button type="button" data-qmt-script-copy="${esc(script.path)}">\u590d\u5236\u8fd9\u4efd\u4ee3\u7801</button>
-      </div>
-      <div class="binding-script-meta"><span>\u653e\u5165</span><code>${esc(script.target)}</code></div>
-      <div class="binding-script-note">${esc(script.note)}</div>
-      ${code}
-    </article>`;
-  }).join('');
-}
-
-async function loadQmtScriptSources(paths) {
-  const wanted = Array.from(new Set(paths.filter(Boolean)));
-  const missing = wanted.filter((path) => !state.qmtScriptSourceCache[path]);
-  if (missing.length) {
-    const requestKey = missing.slice().sort().join('\n');
-    let request = state.qmtScriptSourcePromises[requestKey];
-    if (!request) {
-      const params = new URLSearchParams();
-      missing.forEach((path) => params.append('name', path));
-      request = api(`/api/qmt-scripts/source?${params.toString()}`)
-        .then((data) => {
-          (data.scripts || []).forEach((script) => {
-            state.qmtScriptSourceCache[script.path] = script;
-          });
-        })
-        .finally(() => {
-          delete state.qmtScriptSourcePromises[requestKey];
-        });
-      state.qmtScriptSourcePromises[requestKey] = request;
-    }
-    await request;
+  if (strategy.autorun === false || targets.some((target) => target.state === 'waiting_manual_start')) {
+    message += ' 未勾选“QMT 启动后自动运行”时，请在登录后到“模型交易”运行已导入的托管策略。';
   }
-  return Object.fromEntries(wanted.map((path) => [path, state.qmtScriptSourceCache[path]]));
-}
-
-async function renderQmtScriptPanel({ listId, guideId, summaryId, values, includeSource = true } = {}) {
-  const list = $(listId);
-  if (!list) return;
-  const plan = qmtScriptPlan(values || {});
-  const token = ++state.qmtScriptRenderToken;
-  const guide = $(guideId);
-  const summary = $(summaryId);
-  if (guide) guide.textContent = plan.notice;
-  if (summary) summary.textContent = `${plan.scripts.length} \u4efd QMT \u811a\u672c\uff0c\u6309\u5f53\u524d\u6a21\u5f0f\u751f\u6210`;
-  renderQmtScriptCards(list, plan, {}, includeSource);
-  if (!includeSource) return;
-  try {
-    const sourceByPath = await loadQmtScriptSources(plan.scripts.map((script) => script.path));
-    if (token !== state.qmtScriptRenderToken) return;
-    renderQmtScriptCards(list, plan, sourceByPath, true);
-  } catch (error) {
-    if (token !== state.qmtScriptRenderToken) return;
-    list.innerHTML = `<div class="binding-script-error">\u811a\u672c\u6e90\u7801\u8bfb\u53d6\u5931\u8d25\uff1a${esc(error.message)}</div>`;
-  }
-}
-
-async function copyQmtScript(path, statusId = 'bindingQmtScriptSummary') {
-  try {
-    const sourceByPath = await loadQmtScriptSources([path]);
-    const source = sourceByPath[path];
-    if (!source) throw new Error('\u672a\u627e\u5230\u811a\u672c\u6e90\u7801');
-    await navigator.clipboard.writeText(source.source || '');
-    const status = $(statusId);
-    if (status) status.textContent = `${source.name} \u5df2\u590d\u5236\uff0c\u53ef\u76f4\u63a5\u7c98\u8d34\u5230 QMT\u3002`;
-  } catch (error) {
-    setBindingNotice(`QMT \u811a\u672c\u590d\u5236\u5931\u8d25\uff1a${error.message}`, 'error', { autoHide: false });
-  }
-}
-
-async function copyQmtScriptPlan(values, statusId = 'bindingQmtScriptSummary') {
-  const plan = qmtScriptPlan(values || {});
-  try {
-    const sourceByPath = await loadQmtScriptSources(plan.scripts.map((script) => script.path));
-    const text = plan.scripts.map((script) => {
-      const source = sourceByPath[script.path];
-      return `# ${script.role} / ${script.name}\n${source ? source.source : ''}`;
-    }).join('\n\n# ==============================\n\n');
-    await navigator.clipboard.writeText(text);
-    const status = $(statusId);
-    if (status) status.textContent = `已复制 ${plan.scripts.length} 份 QMT 代码（按文件分隔）。`;
-  } catch (error) {
-    setBindingNotice(`QMT 脚本复制失败：${error.message}`, 'error', { autoHide: false });
-  }
-}
-
-function renderBindingQmtScriptPanel() {
-  const values = bindingScriptValuesFromSelectedAccount();
-  const list = $('bindingQmtScriptList');
-  if (!values.account_id && !values.qmt_dir && !values.qmt_trade_dir) {
-    const guide = $('bindingQmtScriptGuide');
-    const summary = $('bindingQmtScriptSummary');
-    if (guide) guide.textContent = '\u4fdd\u5b58\u4e00\u4e2a\u8d26\u53f7\u7ed1\u5b9a\u540e\uff0c\u8fd9\u91cc\u4f1a\u6309\u5f53\u524d\u6a21\u5f0f\u5c55\u793a\u5e94\u8be5\u590d\u5236\u5230 QMT \u7684\u5165\u53e3\u811a\u672c\u3002';
-    if (summary) summary.textContent = '\u6682\u65e0\u5df2\u4fdd\u5b58\u7684\u8d26\u53f7\u914d\u7f6e';
-    if (list) list.innerHTML = '';
-    return;
-  }
-  return renderQmtScriptPanel({
-    listId: 'bindingQmtScriptList',
-    guideId: 'bindingQmtScriptGuide',
-    summaryId: 'bindingQmtScriptSummary',
-    values,
-    includeSource: true,
-  });
-}
-
-function wireQmtScriptCopyList(listId, statusId) {
-  const list = $(listId);
-  if (!list || list.dataset.qmtScriptCopyWired === '1') return;
-  list.dataset.qmtScriptCopyWired = '1';
-  list.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-qmt-script-copy]');
-    if (!button) return;
-    copyQmtScript(button.dataset.qmtScriptCopy || '', statusId);
-  });
+  return message;
 }
 
 async function copyTextWithFallback(text) {
@@ -1162,7 +1012,7 @@ function bindingQmtDeployStatusHtml(deploy) {
   const results = deploy && Array.isArray(deploy.results) ? deploy.results : [];
   const summary = deploy && deploy.summary ? deploy.summary : null;
   if (!results.length) {
-    return `<div class="binding-qmt-status-row is-warn"><strong>QMT \u6838\u5fc3\u5305</strong><span>\u672a\u6267\u884c\u81ea\u52a8\u590d\u5236\uff0c\u8bf7\u6838\u5bf9 QMT \u76ee\u5f55\u540e\u624b\u5de5\u590d\u5236\u3002</span></div>`;
+    return '<div class="binding-qmt-status-row is-warn"><strong>QMT 核心包</strong><span>未返回自动部署结果，请核对 QMT 目录后重新保存绑定。</span></div>';
   }
   const rows = results.map((item) => {
     const status = item.error ? 'error' : (item.updated ? 'success' : (item.warning ? 'warn' : 'info'));
@@ -1252,9 +1102,6 @@ function bindingQmtAutoLoginStatusHtml(autoLogin) {
   rows.push(`<div class="binding-qmt-status-row is-info">
     <strong>每日重启</strong><span>${esc(restartTimes.length ? restartTimes.join(' / ') : '未设置')}</span>
   </div>`);
-  rows.push(`<div class="binding-qmt-status-row is-warn">
-    <strong>登录前提</strong><span>${esc(autoLogin.reminder || '请确认 QMT 已勾选“记住密码”和“自动登录”。')}</span>
-  </div>`);
   return rows.join('');
 }
 
@@ -1270,41 +1117,33 @@ function finishBindingQmtGuide() {
   closeBindingQmtGuide();
 }
 
-function bindingQmtGuideInstruction(values = {}) {
-  const plan = qmtScriptPlan(values);
-  if (plan.marketRoutingEnabled) {
-    return '\u8fd9\u662f\u4e24\u5730\u591a\u4e2d\u5fc3\uff0f\u540c\u8d26\u53f7\u72ec\u7acb\u5e02\u573a\u914d\u7f6e\u3002\u8bf7\u5728\u5bf9\u5e94 QMT \u4e2d\u5206\u522b\u65b0\u5efa\u7b56\u7565\uff1a\u4e0a\u6d77\u7aef\u53ea\u8fd0\u884c _SH\uff0c\u6df1\u5733\u7aef\u53ea\u8fd0\u884c _SZ\u3002';
-  }
-  if (plan.mode === 'lttx') {
-    return '\u9ad8\u7ea7\u6a21\u5f0f\u9700\u8981\u914d\u7f6e\u4e24\u4e2a QMT\uff1a\u666e\u901a\u7aef\u548c\u6781\u901f\u4ea4\u6613\u7aef\u5404\u65b0\u5efa\u4e00\u4e2a\u7b56\u7565\uff0c\u5206\u522b\u7c98\u8d34\u5bf9\u5e94\u4ee3\u7801\u540e\u4fdd\u5b58\u5e76\u8fd0\u884c\u3002';
-  }
-  return '\u8bf7\u5728\u5bf9\u5e94 QMT \u4e2d\u65b0\u5efa\u7b56\u7565\uff0c\u5c06\u4e0b\u65b9\u4ee3\u7801\u5168\u90e8\u7c98\u8d34\u8fdb\u53bb\uff0c\u7136\u540e\u4fdd\u5b58\u5e76\u8fd0\u884c\u3002';
-}
-
 function closeBindingQmtGuide() {
   const overlay = $('bindingQmtGuideOverlay');
   if (!overlay) return;
-  const guideContext = state.bindingQmtGuideContext;
-  const guideValues = state.bindingQmtGuideValues;
-  const continueBindingFlow = guideContext === 'onboarding' || guideContext === 'binding';
   state.bindingQmtGuideContext = '';
   overlay.classList.add('hidden');
   overlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('binding-dialog-open');
-  if (continueBindingFlow) {
-    window.setTimeout(() => beginOnboardingRestartFlow(guideValues, {
-      context: guideContext,
-      returnTarget: 'qmt-guide',
-    }), 0);
-  }
+}
+
+function checkBindingQmtConnection() {
+  const values = state.bindingQmtGuideValues;
+  const context = state.bindingQmtGuideContext;
+  closeBindingQmtGuide();
+  beginOnboardingRestartFlow(values, { context, returnTarget: 'qmt-guide' });
 }
 
 function showBindingQmtGuide(values, deploy, options = {}) {
   const overlay = $('bindingQmtGuideOverlay');
   if (!overlay) return;
-  state.bindingQmtGuideValues = values || {};
+  values = {
+    ...(values || {}),
+    qmt_auto_login: options.qmtAutoLogin || (values || {}).qmt_auto_login,
+    qmt_strategy_deploy: options.qmtStrategyDeploy || (values || {}).qmt_strategy_deploy,
+  };
+  state.bindingQmtGuideValues = values;
   if (deploy !== undefined) state.bindingQmtGuideDeploy = deploy;
-  state.bindingQmtGuideAutoLogin = options.qmtAutoLogin || null;
+  state.bindingQmtGuideAutoLogin = values.qmt_auto_login || null;
   state.bindingQmtAutoLoginBusy = false;
   state.bindingQmtGuideContext = options.context || '';
   const title = $('bindingQmtGuideTitle');
@@ -1312,43 +1151,32 @@ function showBindingQmtGuide(values, deploy, options = {}) {
   const instruction = $('bindingQmtGuideInstruction');
   const status = $('bindingQmtGuideStatus');
   const backButton = $('backBindingQmtGuideBtn');
-  const bottomButton = $('closeBindingQmtGuideBottomBtn');
-  const plan = qmtScriptPlan(values || {});
-  if (title) title.textContent = '\u7ed1\u5b9a\u5df2\u4fdd\u5b58\uff0c\u5b8c\u6210 QMT \u7b56\u7565\u52a0\u8f7d';
-  if (subtitle) subtitle.textContent = values && values.account_id ? `${values.account_id} / ${transportModeLabel(values.mode)}` : '\u8bf7\u5b8c\u6210 QMT \u7b56\u7565\u52a0\u8f7d';
-  if (instruction) instruction.textContent = bindingQmtGuideInstruction(values || {});
-  if (status) status.innerHTML = bindingQmtDeployStatusHtml(
-    deploy !== undefined ? deploy : state.bindingQmtGuideDeploy
-  );
-  if (backButton) {
-    backButton.textContent = state.bindingQmtGuideContext === 'onboarding'
-      ? '返回账号配置'
-      : '返回绑定配置';
-  }
-  if (bottomButton) {
-    bottomButton.textContent = qmtAutoLoginGuideEnabled(state.bindingQmtGuideAutoLogin)
-      ? '我已确认 QMT 自动登录设置，关闭指引'
-      : (state.bindingQmtGuideContext === 'onboarding'
-        ? '我已复制代码，下一步'
-        : '我已完成，关闭指引');
-    bottomButton.disabled = false;
-  }
+  if (title) title.textContent = '绑定已保存，QMT 启动提醒';
+  if (subtitle) subtitle.textContent = values.account_id
+    ? `${values.account_id} / ${transportModeLabel(values.mode)}` : 'QMT 启动提醒';
+  if (instruction) instruction.textContent = qmtStartupInstruction(values);
+  if (status) status.innerHTML = bindingQmtDeployStatusHtml(state.bindingQmtGuideDeploy);
+  const strategyStatus = $('bindingQmtStrategyStatus');
+  if (strategyStatus) strategyStatus.textContent = qmtStrategyDeploySummary(values.qmt_strategy_deploy)
+    || (values.qmt_strategy && values.qmt_strategy.enabled === false
+      ? '未启用自动管理策略' : '未返回策略部署状态，请在绑定列表检查部署结果。');
+  if (backButton) backButton.textContent = state.bindingQmtGuideContext === 'onboarding'
+    ? '返回账号配置' : '返回绑定配置';
+  const targets = $('bindingQmtGuideTargets');
+  if (targets) targets.innerHTML = qmtDeploymentTargets(values).map((target) =>
+    `<div class="binding-qmt-status-row is-info"><strong>${esc(target.role)}</strong><span><code>${esc(target.qmt_dir || '未填写 QMT 目录')}</code></span></div>`
+  ).join('');
   overlay.classList.remove('hidden');
   overlay.setAttribute('aria-hidden', 'false');
+  const dialog = overlay.querySelector('.binding-qmt-guide-dialog');
+  if (dialog) dialog.scrollTop = 0;
+  const loginReminder = $('bindingQmtLoginReminder');
+  if (loginReminder) loginReminder.textContent = QMT_LOGIN_REMINDER;
   document.body.classList.add('binding-dialog-open');
-  renderQmtScriptPanel({
-    listId: 'bindingQmtGuideScriptList',
-    guideId: 'bindingQmtGuideModeNotice',
-    summaryId: 'bindingQmtGuideSummary',
-    values,
-    includeSource: true,
-  });
-  const modeNotice = $('bindingQmtGuideModeNotice');
-  if (modeNotice) modeNotice.textContent = `${plan.notice} \u8bf7\u6309\u6bcf\u4e00\u4efd\u811a\u672c\u53f3\u4fa7\u6309\u94ae\u590d\u5236\u3002`;
   renderBindingQmtAutoLoginStatus(state.bindingQmtGuideAutoLogin);
   window.setTimeout(() => {
     const close = $('closeBindingQmtGuideBtn');
-    if (close) close.focus();
+    if (close) close.focus({ preventScroll: true });
   }, 0);
 }
 const DEFAULT_UPDATE_REF = 'main';
@@ -2551,7 +2379,7 @@ function mountQmtStrategySettings() {
     if (!target) return;
     target.innerHTML = `
       <label class="toggle wide"><input id="${prefix}StrategyEnabled" type="checkbox" checked><span>自动导入并管理 QMT 策略</span></label>
-      <label class="field"><span>模型运行方式</span><select id="${prefix}StrategyRunMode"><option value="0">模拟运行</option><option value="1">实盘运行</option></select></label>
+      <label class="field"><span>模型运行方式</span><select id="${prefix}StrategyRunMode"><option value="1" selected>实盘运行</option><option value="0">模拟运行</option></select></label>
       <label class="toggle"><input id="${prefix}StrategyAutorun" type="checkbox"><span>QMT 启动后自动运行</span></label>
       <label class="field"><span>主图品种</span><input id="${prefix}StrategyStock" value="SH000300" autocomplete="off"></label>
       <details class="wide"><summary>模型账号 Key（自动识别 / 手动指定）</summary>
@@ -2577,7 +2405,7 @@ function fillQmtStrategySettings(prefix, settings) {
   if (!$(`${prefix}StrategyEnabled`)) return;
   const value = settings || {};
   $(`${prefix}StrategyEnabled`).checked = value.enabled !== false;
-  $(`${prefix}StrategyRunMode`).value = value.live ? '1' : '0';
+  $(`${prefix}StrategyRunMode`).value = value.live !== false ? '1' : '0';
   $(`${prefix}StrategyAutorun`).checked = !!value.autorun;
   $(`${prefix}StrategyStock`).value = value.stock || 'SH000300';
   ['normal', 'trade', 'SH', 'SZ'].forEach((role) => {
@@ -2601,15 +2429,10 @@ function readQmtStrategySettings(prefix) {
 function qmtStrategyDeploySummary(deploy) {
   if (!deploy) return '';
   if (deploy.error) return deploy.message || deploy.error;
-  return (deploy.targets || []).map((target) => `${(target.strategies || []).join(' / ')}：${target.message}`).join('；');
-}
-
-function showQmtStrategyDeployment(data) {
-  const message = qmtStrategyDeploySummary(data.qmt_strategy_deploy);
-  if (!message) return false;
-  setView('bindings');
-  setBindingNotice(message, data.qmt_strategy_deploy.error || (data.qmt_strategy_deploy.targets || []).some((target) => target.error) ? 'warn' : 'success', { autoHide: false });
-  return true;
+  return (deploy.targets || []).map((target) => {
+    const label = (target.strategies || []).join(' / ') || target.root || 'QMT';
+    return `${label}：${target.error || target.message || target.state || '等待部署状态'}`;
+  }).join('；') || deploy.message || '';
 }
 
 function bindingSaveSummary({
@@ -3470,6 +3293,8 @@ function setWebAuthLoginBusy(busy) {
 }
 
 function setupRequiresAdminRegistration() {
+  const setupChoice = $('setupEnableWebAuth');
+  if (setupChoice) return !!setupChoice.checked;
   const auth = state.serverAccess && state.serverAccess.web_auth ? state.serverAccess.web_auth : null;
   return !(auth && auth.configured);
 }
@@ -4420,6 +4245,14 @@ function renderServerAccess(info) {
   }
   const passwordInput = $('webAuthPasswordInput');
   if (passwordInput && !passwordInput.matches(':focus')) passwordInput.value = '';
+  const passwordFilePath = $('webAuthPasswordFilePath');
+  if (passwordFilePath) {
+    passwordFilePath.textContent = String(
+      state.serverAccess.web_auth_password_file
+      || (state.serverAccess.web_auth && state.serverAccess.web_auth.password_file)
+      || '重置后生成'
+    ).trim();
+  }
 
   const overviewStatus = $('serverAccessStatus');
   if (overviewStatus) overviewStatus.textContent = statusParts.join('；');
@@ -4659,7 +4492,7 @@ async function saveServerAccessFromUi(source = 'api', options = {}) {
     const reloadInfo = data.reload || null;
     if (reloadInfo) {
       const nextUrl = reloadInfo.next_url || data.next_url || '';
-      setServerAccessStatus(nextUrl ? `已保存，Web 正在重载；稍后跳转到 ${nextUrl}` : '已保存，Web 正在重载；请稍后刷新页面。', 'ok');
+      setServerAccessStatus(nextUrl ? `已保存，Web 正在重载；当前页面会等待服务恢复后跳转到 ${nextUrl}` : '已保存，Web 正在重载；当前页面会等待服务恢复。', 'busy');
     } else {
       const restartText = data.requires_restart || data.restart_required ? '，端口或监听地址变更需重载后生效。' : '。';
       setServerAccessStatus(`已保存${restartText}`, 'ok');
@@ -4669,10 +4502,18 @@ async function saveServerAccessFromUi(source = 'api', options = {}) {
       web_port: data.web_port || data.configured_port,
       requires_restart: !!data.requires_restart,
     });
-    if (reloadInfo && reloadInfo.next_url) {
-      setTimeout(() => {
-        window.location.href = reloadInfo.next_url;
-      }, 1200);
+    if (reloadInfo) {
+      const result = await waitForProjectReloadHealth(reloadInfo);
+      if (result.ok) {
+        const targetUrl = nextUrl || window.location.href;
+        setServerAccessStatus(targetUrl ? `Web 已恢复，正在跳转到 ${targetUrl}` : 'Web 已恢复，正在刷新页面。', 'ok');
+        setTimeout(() => {
+          window.location.replace(projectReloadNavigateUrl(targetUrl));
+        }, 500);
+      } else {
+        const reason = result.error ? `，最后一次错误：${result.error}` : '';
+        setServerAccessStatus(`已保存，但 Web 重载未确认${reason}。请重新打开 ${nextUrl || '当前地址'}；如仍无法恢复，请运行 restart_cfquant.bat。`, 'error');
+      }
       return;
     }
     if (authEnabled && authChanged) {
@@ -4683,6 +4524,49 @@ async function saveServerAccessFromUi(source = 'api', options = {}) {
     log(options.reload ? 'Web 重载失败' : '访问设置保存失败', { error: error.message });
   } finally {
     setServerAccessBusy(false, mode);
+  }
+}
+
+async function resetWebAuthPasswordFromUi() {
+  const confirmed = window.confirm(
+    '确认重置 Web 管理员密码吗？旧密码和所有现有登录会话会立即失效，新密码将写入项目目录的文本文件。'
+  );
+  if (!confirmed) return;
+  const button = $('resetWebAuthPasswordBtn');
+  const status = $('webAuthResetStatus');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '正在生成...';
+  }
+  if (status) status.textContent = '正在生成新密码...';
+  try {
+    const data = await api('/api/web-auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    const passwordFile = String(data.password_file || '').trim();
+    if (!passwordFile) throw new Error('服务端未返回密码文件路径');
+    if (status) status.textContent = `密码已重置，请打开：${passwordFile}`;
+    setServerAccessStatus(`密码已重置，请打开密码文件查看新密码：${passwordFile}`, 'ok');
+    state.serverAccess = {
+      ...(state.serverAccess || {}),
+      web_auth_enabled: true,
+      web_auth_username: data.username || (state.serverAccess && state.serverAccess.web_auth_username) || 'admin',
+      web_auth_password_file: passwordFile,
+    };
+    const passwordFilePath = $('webAuthPasswordFilePath');
+    if (passwordFilePath) passwordFilePath.textContent = passwordFile;
+    clearWebAuthToken();
+    state.webAuthStatus = null;
+    showWebAuthOverlay(`密码已重置，请打开以下文件查看新密码：${passwordFile}`);
+  } catch (error) {
+    if (status) status.textContent = `重置失败：${error.message}`;
+    setServerAccessStatus(`密码重置失败：${error.message}`, 'error');
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = '重置密码并生成文件';
+    }
   }
 }
 
@@ -4881,8 +4765,9 @@ async function submitSetupForm(event) {
     qmt_trade_dir: $('setupQmtTradeDir') ? $('setupQmtTradeDir').value.trim() : '',
     mode: $('setupMode') ? $('setupMode').value : 'ctypes',
     qmt_strategy: readQmtStrategySettings('setup'),
+    web_auth_enabled: !!($('setupEnableWebAuth') && $('setupEnableWebAuth').checked),
   };
-  body.qmt_auto_login = { enabled: false, restart_times: [] };
+  body.qmt_auto_login = { enabled: !!($('setupQmtAutoLogin') && $('setupQmtAutoLogin').checked), restart_times: [] };
   if (adminRequired) {
     const adminUsername = $('setupAdminUsername') ? $('setupAdminUsername').value.trim() : '';
     const adminPassword = $('setupAdminPassword') ? $('setupAdminPassword').value : '';
@@ -4959,13 +4844,15 @@ async function submitSetupForm(event) {
     hideSetupOverlay();
     await startAuthenticatedApp();
     localStorage.setItem(onboardingAutoShownKey(), '1');
-    if (!showQmtStrategyDeployment(data) || qmtAutoLoginGuideEnabled(data.qmt_auto_login)) showBindingQmtGuide({
+    showBindingQmtGuide({
       account_id: body.account_id,
       account_type: body.account_type,
       qmt_dir: body.qmt_dir,
       qmt_trade_dir: body.qmt_trade_dir,
       mode: body.mode,
-    }, data.qmt_core_deploy, { context: 'onboarding', qmtAutoLogin: data.qmt_auto_login });
+      qmt_strategy: body.qmt_strategy,
+      qmt_auto_login: body.qmt_auto_login,
+    }, data.qmt_core_deploy, { context: 'onboarding', qmtAutoLogin: data.qmt_auto_login, qmtStrategyDeploy: data.qmt_strategy_deploy });
     if (qmtCoreDeployHasIssues(data.qmt_core_deploy)) {
       setView('bindings');
       setBindingNotice(qmtCoreDeploySummaryText(data.qmt_core_deploy) || 'cfquant 核心包自动复制失败，请检查 QMT 目录和权限。', 'warn', { autoHide: false });
@@ -5752,14 +5639,79 @@ function renderProjectUpdateStatus(data) {
   setProjectUpdateControlsBusy(false);
 }
 
-function handleProjectReload(reloadInfo, message) {
-  if (!reloadInfo) return;
+function projectReloadHealthUrl(nextUrl) {
+  const url = new URL('/api/health', nextUrl || window.location.href);
+  url.searchParams.set('_cfquant_reload_probe', String(Date.now()));
+  return url.toString();
+}
+
+function projectReloadNavigateUrl(nextUrl) {
+  const url = new URL(nextUrl || window.location.href, window.location.href);
+  url.searchParams.set('_cfquant_reload', String(Date.now()));
+  return url.toString();
+}
+
+async function waitForProjectReloadHealth(reloadInfo, options = {}) {
+  const nextUrl = reloadInfo && reloadInfo.next_url ? reloadInfo.next_url : window.location.href;
+  const timeoutMs = Math.max(1000, Number(options.timeoutMs || 120000));
+  const requestTimeoutMs = Math.max(500, Number(options.requestTimeoutMs || 4000));
+  const pollIntervalMs = Math.max(100, Number(options.pollIntervalMs || 800));
+  const initialDelayMs = Math.max(0, Number(options.initialDelayMs === undefined ? 1500 : options.initialDelayMs));
+  const wait = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+  const deadline = Date.now() + timeoutMs;
+  let attempts = 0;
+  let lastError = '';
+  if (initialDelayMs) await wait(initialDelayMs);
+  while (Date.now() < deadline) {
+    attempts += 1;
+    setQmtUpdateProgressStep('restart', `Web 服务正在重启，正在第 ${attempts} 次确认服务恢复...`, 94);
+    try {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null;
+      const requestTimer = controller ? window.setTimeout(() => controller.abort(), requestTimeoutMs) : null;
+      let response;
+      try {
+        response = await fetch(projectReloadHealthUrl(nextUrl), {
+          cache: 'no-store',
+          credentials: 'omit',
+          headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+          ...(controller ? { signal: controller.signal } : {}),
+        });
+      } finally {
+        if (requestTimer) window.clearTimeout(requestTimer);
+      }
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload && payload.ok && payload.data && payload.data.status === 'ok') {
+        return { ok: true, attempts };
+      }
+      lastError = payload && payload.error ? payload.error : `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error && error.message ? error.message : String(error);
+    }
+    await wait(pollIntervalMs);
+  }
+  return { ok: false, attempts, error: lastError };
+}
+
+async function handleProjectReload(reloadInfo, message, payload = null, options = {}) {
+  if (!reloadInfo) return { reloaded: false, skipped: true };
   const nextUrl = reloadInfo.next_url || window.location.href;
   log(message || 'Web 正在重启', { next_url: nextUrl });
-  const delayMs = state.qmtUpdateProgress && state.qmtUpdateProgress.status === 'done' ? 4200 : 2600;
-  window.setTimeout(() => {
-    window.location.href = nextUrl || window.location.href;
-  }, delayMs);
+  setQmtUpdateProgressStep('restart', 'Web 服务正在重启，请保持当前页面打开；恢复后会自动刷新。', 94);
+  const result = await waitForProjectReloadHealth(reloadInfo, options);
+  if (result.ok) {
+    finishQmtUpdateProgress(payload || {}, 'Web 服务已恢复，正在刷新当前页面...');
+    log('Web 服务重启完成', { next_url: nextUrl, attempts: result.attempts });
+    if (options.navigate !== false) {
+      window.setTimeout(() => {
+        window.location.replace(projectReloadNavigateUrl(nextUrl));
+      }, Math.max(0, Number(options.navigateDelayMs === undefined ? 500 : options.navigateDelayMs)));
+    }
+    return { reloaded: true, attempts: result.attempts };
+  }
+  const reason = result.error ? `，最后一次错误：${result.error}` : '';
+  failQmtUpdateProgress(new Error(`Web 服务重启未确认${reason}。请重新打开 ${nextUrl}；如仍无法恢复，请运行 restart_cfquant.bat。`));
+  log('Web 服务重启未确认', { next_url: nextUrl, attempts: result.attempts, error: result.error || '' });
+  return { reloaded: false, attempts: result.attempts, error: result.error || '' };
 }
 
 function projectReloadProgressText(data, actionText) {
@@ -5770,7 +5722,7 @@ function projectReloadProgressText(data, actionText) {
   const deployText = summary.message ? ` ${summary.message}。` : '';
   const editableText = editableInstallSummaryText(data);
   const installText = editableText ? ` ${editableText}。` : '';
-  if (reloadInfo) return `${actionText}${version}。${installText}${deployText} 服务即将重启，页面会自动跳转；请随后完全退出并重启 QMT。`;
+  if (reloadInfo) return `${actionText}${version}。${installText}${deployText} Web 服务正在重启，页面会保持打开并在服务恢复后自动刷新；请随后完全退出并重启 QMT。`;
   return `${actionText}${version}。${installText}${deployText} 请完全退出并重启 QMT 加载新版本。`;
 }
 
@@ -5871,14 +5823,17 @@ async function runProjectGithubUpdateFromUi(options = {}) {
     setQmtUpdateProgressStep('restart', data.reload ? '完整版本和 QMT 核心已处理，正在准备重启服务...' : '完整版本已处理，正在刷新页面状态...');
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: true });
-    finishQmtUpdateProgress(data, projectReloadProgressText(data, '版本更新完成'));
     log('完整版本已从官网优先更新', {
       version: data.current_version || '',
       copied_files: data.copied_files || 0,
       qmt_core_deploy: data.qmt_core_deploy || null,
       source: options.source || 'settings',
     });
-    handleProjectReload(data.reload, '版本已更新，正在重启本地服务');
+    if (data.reload) {
+      await handleProjectReload(data.reload, '版本已更新，正在重启本地服务', data);
+    } else {
+      finishQmtUpdateProgress(data, projectReloadProgressText(data, '版本更新完成'));
+    }
   } catch (error) {
     failQmtUpdateProgress(error);
     throw error;
@@ -5918,13 +5873,16 @@ async function uploadProjectZipUpdateFromUi() {
     setQmtUpdateProgressStep('restart', data.reload ? '完整版本和 QMT 核心已处理，正在准备重启服务...' : '完整版本已处理，正在刷新页面状态...');
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: true });
-    finishQmtUpdateProgress(data, projectReloadProgressText(data, '完整版本 zip 更新完成'));
     log('完整版本已通过 zip 更新', {
       version: data.current_version || '',
       copied_files: data.copied_files || 0,
       qmt_core_deploy: data.qmt_core_deploy || null,
     });
-    handleProjectReload(data.reload, '完整版本 zip 更新完成，正在重启本地服务');
+    if (data.reload) {
+      await handleProjectReload(data.reload, '完整版本 zip 更新完成，正在重启本地服务', data);
+    } else {
+      finishQmtUpdateProgress(data, projectReloadProgressText(data, '完整版本 zip 更新完成'));
+    }
   } catch (error) {
     failQmtUpdateProgress(error);
     throw error;
@@ -5961,9 +5919,12 @@ async function rollbackProjectUpdateFromUi() {
     setQmtUpdateProgressStep('restart', data.reload ? '完整版本与 QMT 核心已回滚，正在准备重启服务...' : '完整版本已回滚，正在刷新页面状态...');
     renderProjectUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: true });
-    finishQmtUpdateProgress(data, projectReloadProgressText(data, '完整版本回滚完成'));
     log('完整版本已回滚', { version: data.current_version || '', backup, qmt_core_deploy: data.qmt_core_deploy || null });
-    handleProjectReload(data.reload, '完整版本已回滚，正在重启本地服务');
+    if (data.reload) {
+      await handleProjectReload(data.reload, '完整版本已回滚，正在重启本地服务', data);
+    } else {
+      finishQmtUpdateProgress(data, projectReloadProgressText(data, '完整版本回滚完成'));
+    }
   } catch (error) {
     failQmtUpdateProgress(error);
     throw error;
@@ -6994,7 +6955,6 @@ function setView(view) {
     refreshStatus().catch((error) => log('状态刷新失败', { error: error.message }));
   }
   if (state.appStarted && view === 'bindings') {
-    renderBindingQmtScriptPanel();
     renderCachedBindingStatuses();
     if (!state.bindingStatusRefreshInFlight) {
       state.bindingStatusRefreshInFlight = true;
@@ -8431,7 +8391,6 @@ function syncBindingForm() {
     renderBindingQmtRestartTimes(settings.restart_times);
     syncBindingQmtAutoLoginSettingsVisibility();
   }
-  renderBindingQmtScriptPanel();
 }
 
 function closeBindingDialog() {
@@ -8756,7 +8715,7 @@ async function submitBindingForm(event) {
     });
     setBindingNotice(refreshError ? `${noticeMessage}，连接状态刷新失败：${refreshError.message}` : noticeMessage, noticeLevel);
     log('账号配置已保存', { account_id: accountId, display_name: displayName, account_type: accountType, mode, data_provider: dataProvider, qmt_dir_configured: !!qmtDir });
-    if (!showQmtStrategyDeployment(data) || qmtAutoLoginGuideEnabled(data.qmt_auto_login)) showBindingQmtGuide({
+    showBindingQmtGuide({
       account_id: accountId,
       account_type: accountType,
       account_key: savedAccountKey,
@@ -8767,7 +8726,9 @@ async function submitBindingForm(event) {
       enabled,
       marketRoutingEnabled,
       marketBridges,
-    }, data.qmt_core_deploy, { context: 'binding', qmtAutoLogin: data.qmt_auto_login });
+      qmt_strategy: strategySettings,
+      qmt_auto_login: qmtAutoLoginSettings,
+    }, data.qmt_core_deploy, { context: 'binding', qmtAutoLogin: data.qmt_auto_login, qmtStrategyDeploy: data.qmt_strategy_deploy });
     if (data.qmt_core_deploy) {
       log('QMT 核心包自动复制已处理', qmtCoreDeployLogPayload(data.qmt_core_deploy));
     }
@@ -11325,36 +11286,15 @@ function onboardingValues() {
     data_provider: $('onboardingDataProvider') ? $('onboardingDataProvider').checked : !!config.data_provider,
   };
   values.qmt_auto_login = normalizeQmtAutoLoginSettings(config.qmt_auto_login);
+  if ($('onboardingQmtAutoLogin')) values.qmt_auto_login.enabled = $('onboardingQmtAutoLogin').checked;
   return values;
 }
 
 function onboardingDeployPlan(values = onboardingValues()) {
-  const mode = normalizeTransportMode(values.mode);
-  const qmtDir = values.qmt_dir || '';
-  const qmtTradeDir = values.qmt_trade_dir || '';
-  const qmtCoreDir = qmtCoreDirPath(qmtDir);
-  const pythonDir = qmtPythonDirPath(qmtDir);
-  const tradeCoreDir = qmtCoreDirPath(qmtTradeDir);
-  const tradePythonDir = qmtPythonDirPath(qmtTradeDir);
-  const entryScript = qmtEntryScriptForMode(mode);
-  const baseRows = [
-    ['资金账号', values.account_id || '--'],
-    ['QMT 目录', qmtDir || '未填写'],
-    ['自动复制核心包到', qmtCoreDir ? joinWinPath(qmtCoreDir, 'cfquant') : '请先填写 QMT 目录'],
-  ];
-  if (mode === 'lttx') {
-    return [
-      ...baseRows,
-      ['普通 QMT 加载', pythonDir ? joinWinPath(pythonDir, 'CFQUANT.py') : '请先填写普通 QMT 目录'],
-      ['极速 QMT 目录', qmtTradeDir || '请先填写第二个 QMT 目录'],
-      ['极速核心包到', tradeCoreDir ? joinWinPath(tradeCoreDir, 'cfquant') : '请先填写第二个 QMT 目录'],
-      ['极速 QMT 加载', tradePythonDir ? joinWinPath(tradePythonDir, 'CFQUANT_TRADE_LOWLAT.py') : '请先填写第二个 QMT 目录'],
-    ];
-  }
   return [
-    ...baseRows,
-    ['QMT 加载', pythonDir ? joinWinPath(pythonDir, entryScript) : '请先填写 QMT 目录'],
-    ['脚本数量', `一个 QMT，一个${transportModeLabel(mode)}脚本`],
+    ['资金账号', values.account_id || '--'],
+    ...qmtDeploymentTargets(values).map((target) => [target.role, target.qmt_dir || '未填写']),
+    ['策略管理', values.qmt_strategy && values.qmt_strategy.enabled ? '自动导入并管理' : '未启用'],
   ];
 }
 
@@ -11366,21 +11306,9 @@ function renderOnboardingDeployPlan() {
     `<div class="onboarding-deploy-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
   )).join('');
   const notice = $('onboardingDeployNotice');
-  if (notice) {
-    const mode = normalizeTransportMode(values.mode);
-    const advanced = mode === 'lttx';
-    const entryScript = qmtEntryScriptForMode(mode);
-    notice.classList.toggle('warning', advanced);
-    notice.innerHTML = advanced
-      ? '<strong>高级模式</strong><span>普通 QMT 加载 <code>CFQUANT.py</code>，极速交易端加载 <code>CFQUANT_TRADE_LOWLAT.py</code>。</span>'
-      : `<strong>${esc(transportModeLabel(mode))}</strong><span>只加载 <code>${esc(entryScript)}</code>。</span>`;
-  }
-  renderQmtScriptPanel({
-    listId: 'onboardingQmtScriptList',
-    guideId: 'onboardingQmtScriptGuide',
-    summaryId: 'onboardingQmtScriptSummary',
-    values,
-    includeSource: true,
+  if (notice) notice.textContent = qmtStartupInstruction({
+    ...values,
+    ...(state.onboardingBindingValues || {}),
   });
 }
 
@@ -11438,11 +11366,10 @@ function onboardingBridgeReadiness(data, values = currentOnboardingBindingValues
 function renderOnboardingRestartChecklist(values = currentOnboardingBindingValues()) {
   const box = $('onboardingRestartChecklist');
   if (!box) return;
-  const plan = qmtScriptPlan(values);
-  box.innerHTML = plan.scripts.map((script, index) => (
+  box.innerHTML = qmtDeploymentTargets(values).map((target, index) => (
     `<div class="onboarding-restart-row">
       <span>${index + 1}</span>
-      <div><strong>${esc(script.role)}</strong><small>重启 QMT，打开并运行 <code>${esc(script.name)}</code></small><code>${esc(script.target)}</code></div>
+      <div><strong>${esc(target.role)}</strong><small>${esc(qmtStartupInstruction(values))}</small><code>${esc(target.qmt_dir || '未填写 QMT 目录')}</code></div>
     </div>`
   )).join('');
 }
@@ -11487,7 +11414,7 @@ function renderOnboardingDataSummary(payload = null, error = null) {
     ['资产查询', error ? `失败：${error.message}` : (payload ? (assetOk ? '成功' : '未返回资产') : '尚未查询')],
     ['持仓查询', error ? `失败：${error.message}` : (payload ? (positionsOk ? '成功' : '未返回持仓') : '尚未查询')],
     ['持仓数量', payload ? `${positionsRows} 条` : '尚未查询'],
-    ['下一步', assetOk || positionsRows ? '基础初始化完成，可以接入外部程序' : '先确认 QMT 已登录账号并加载通用端脚本'],
+    ['下一步', assetOk || positionsRows ? '基础初始化完成，可以接入外部程序' : '先确认 QMT 已登录账号且托管策略已上线'],
   ];
   box.innerHTML = rows.map(([label, value]) => (
     `<div class="onboarding-summary-row"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`
@@ -11634,6 +11561,9 @@ function syncOnboardingWizard(options = {}) {
     modeInput.value = config.mode || (state.setup && state.setup.default_mode) || 'ctypes';
   }
   if (shouldFill) fillQmtStrategySettings('onboarding', config.account_id ? (config.qmt_strategy || { enabled: false }) : undefined);
+  if (shouldFill && $('onboardingQmtAutoLogin')) {
+    $('onboardingQmtAutoLogin').checked = normalizeQmtAutoLoginSettings(config.qmt_auto_login).enabled;
+  }
   syncAdvancedQmtDirField('onboardingQmtTradeDir', modeInput && modeInput.value);
   fillOnboardingQmtTradeDirFromSaved();
   const providerInput = $('onboardingDataProvider');
@@ -11697,16 +11627,17 @@ async function saveOnboardingConfig(event) {
     } else if (qmtCoreDeployHasIssues(data.qmt_core_deploy)) {
       setOnboardingStatus('onboardingDeployStatus', deployMessage || 'cfquant 核心包自动复制失败，请检查 QMT 目录和权限。', 'warn');
     } else if (deployMessage) {
-      setOnboardingStatus('onboardingDeployStatus', `${deployMessage}，可继续部署 QMT 脚本。`, 'ok');
+      setOnboardingStatus('onboardingDeployStatus', deployMessage, 'ok');
     } else if (data.qmt_bridge_identity) {
-      setOnboardingStatus('onboardingDeployStatus', '身份配置已写入，可继续部署 QMT 脚本。', 'ok');
+      setOnboardingStatus('onboardingDeployStatus', '身份配置已写入，请查看策略部署结果及启动提醒。', 'ok');
     }
     await refreshBindingStatuses();
     setOnboardingStep('deploy');
     hideOnboardingModal();
-    if (!showQmtStrategyDeployment(data) || qmtAutoLoginGuideEnabled(data.qmt_auto_login)) {
-      showBindingQmtGuide(values, data.qmt_core_deploy, { context: 'onboarding', qmtAutoLogin: data.qmt_auto_login });
-    }
+    state.onboardingBindingValues = { ...values, qmt_auto_login: data.qmt_auto_login || values.qmt_auto_login,
+      qmt_strategy_deploy: data.qmt_strategy_deploy };
+    renderOnboardingDeployPlan();
+    showBindingQmtGuide(state.onboardingBindingValues, data.qmt_core_deploy, { context: 'onboarding' });
     log('新手引导账号配置已保存', {
       account_id: values.account_id,
       account_type: values.account_type,
@@ -11717,16 +11648,6 @@ async function saveOnboardingConfig(event) {
   } catch (error) {
     setOnboardingStatus('onboardingConfigStatus', `保存失败：${error.message}`, 'error');
     log('新手引导账号配置保存失败', { error: error.message });
-  }
-}
-
-async function copyOnboardingDeployPlan() {
-  const text = onboardingDeployPlan().map(([label, value]) => `${label}: ${value}`).join('\n');
-  try {
-    await navigator.clipboard.writeText(text);
-    setOnboardingStatus('onboardingDeployStatus', '部署清单已复制。', 'ok');
-  } catch (error) {
-    setOnboardingStatus('onboardingDeployStatus', '复制失败，请直接按页面清单部署。', 'error');
   }
 }
 
@@ -11751,7 +11672,7 @@ function syncOnboardingBindingFlowControls() {
   });
   if (checkButton) {
     checkButton.disabled = checking;
-    checkButton.textContent = checking ? '正在持续检测...' : '我已重启并运行，开始检测';
+    checkButton.textContent = checking ? '正在持续检测...' : '检测连接';
   }
   if (waiting) waiting.classList.toggle('hidden', !checking);
   if (waitingText && checking) {
@@ -11780,7 +11701,7 @@ function beginOnboardingRestartFlow(values = onboardingValues(), options = {}) {
   renderOnboardingBridgeSummary(null);
   setOnboardingStatus(
     'onboardingBridgeStatus',
-    '请先重启对应 QMT，并运行刚刚保存的策略。完成后点击“我已重启并运行，开始检测”。',
+    qmtStartupInstruction(values),
     'warn'
   );
   setOnboardingStatus('onboardingDataStatus', '', '');
@@ -11990,10 +11911,6 @@ function wireOnboardingGuide() {
     syncOnboardingWizard({ force: true });
     setOnboardingStatus('onboardingConfigStatus', '已读取当前账号配置。', 'ok');
   });
-  const copyBtn = $('onboardingCopyDeployBtn');
-  if (copyBtn) copyBtn.addEventListener('click', () => copyOnboardingDeployPlan());
-  const copyQmtScriptBtn = $('onboardingCopyQmtScriptBtn');
-  if (copyQmtScriptBtn) copyQmtScriptBtn.addEventListener('click', () => copyQmtScriptPlan(onboardingValues(), 'onboardingDeployStatus'));
   const goBridgeBtn = $('onboardingGoBridgeBtn');
   if (goBridgeBtn) goBridgeBtn.addEventListener('click', () => {
     beginOnboardingRestartFlow(onboardingValues(), { context: 'onboarding', returnTarget: 'deploy' });
@@ -12646,12 +12563,6 @@ async function boot() {
       if (row) row.remove();
     });
   }
-  wireQmtScriptCopyList('bindingQmtScriptList', 'bindingQmtScriptSummary');
-  wireQmtScriptCopyList('onboardingQmtScriptList', 'onboardingDeployStatus');
-  const refreshBindingQmtScriptBtn = $('refreshBindingQmtScriptBtn');
-  if (refreshBindingQmtScriptBtn) refreshBindingQmtScriptBtn.addEventListener('click', () => renderBindingQmtScriptPanel());
-  const copyBindingQmtScriptBtn = $('copyBindingQmtScriptBtn');
-  if (copyBindingQmtScriptBtn) copyBindingQmtScriptBtn.addEventListener('click', () => copyQmtScriptPlan(bindingScriptValuesFromSelectedAccount(), 'bindingQmtScriptSummary'));
   const openOnboardingGuideBtn = $('openOnboardingGuideBtn');
   if (openOnboardingGuideBtn) {
     openOnboardingGuideBtn.addEventListener('click', () => openOnboardingGuide({ manual: true }));
@@ -12680,9 +12591,8 @@ async function boot() {
   if (backBindingQmtGuideBtn) backBindingQmtGuideBtn.addEventListener('click', returnFromBindingQmtGuide);
   const closeBindingQmtGuideBottomBtn = $('closeBindingQmtGuideBottomBtn');
   if (closeBindingQmtGuideBottomBtn) closeBindingQmtGuideBottomBtn.addEventListener('click', finishBindingQmtGuide);
-  const copyBindingQmtGuideBtn = $('copyBindingQmtGuideBtn');
-  if (copyBindingQmtGuideBtn) copyBindingQmtGuideBtn.addEventListener('click', () => copyQmtScriptPlan(state.bindingQmtGuideValues || {}, 'bindingQmtGuideSummary'));
-  wireQmtScriptCopyList('bindingQmtGuideScriptList', 'bindingQmtGuideSummary');
+  const checkBindingQmtConnectionBtn = $('checkBindingQmtConnectionBtn');
+  if (checkBindingQmtConnectionBtn) checkBindingQmtConnectionBtn.addEventListener('click', checkBindingQmtConnection);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && bindingDialogOverlay && !bindingDialogOverlay.classList.contains('hidden')) {
       closeBindingDialog();
@@ -12791,9 +12701,24 @@ async function boot() {
     saveServerAccessFromUi('api', { reload: true }).catch((error) => log('Web 重载失败', { error: error.message }));
   });
   $('webAuthForm').addEventListener('submit', loginWebAuth);
+  const webAuthLoginResetBtn = $('webAuthLoginResetBtn');
+  if (webAuthLoginResetBtn) webAuthLoginResetBtn.addEventListener('click', () => {
+    resetWebAuthPasswordFromUi().catch((error) => log('Web 密码重置失败', { error: error.message }));
+  });
+  const resetWebAuthPasswordBtn = $('resetWebAuthPasswordBtn');
+  if (resetWebAuthPasswordBtn) resetWebAuthPasswordBtn.addEventListener('click', () => {
+    resetWebAuthPasswordFromUi().catch((error) => log('Web 密码重置失败', { error: error.message }));
+  });
   const logoutBtn = $('webAuthLogoutBtn');
   if (logoutBtn) logoutBtn.addEventListener('click', () => logoutWebAuth());
   $('setupForm').addEventListener('submit', submitSetupForm);
+  const setupEnableWebAuth = $('setupEnableWebAuth');
+  if (setupEnableWebAuth) {
+    setupEnableWebAuth.addEventListener('change', () => {
+      const fields = $('setupAdminFields');
+      if (fields) fields.classList.toggle('hidden', !setupEnableWebAuth.checked);
+    });
+  }
   const setupMode = $('setupMode');
   if (setupMode) {
     setupMode.addEventListener('change', () => syncAdvancedQmtDirField('setupQmtTradeDir', setupMode.value));

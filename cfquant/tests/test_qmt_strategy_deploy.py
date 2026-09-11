@@ -324,17 +324,9 @@ def test_runtime_progress_requires_a_fresh_matching_generation(deployment):
     path = role["runtime_status_path"]
     _write_json(path, {"state": "running", "generation": "obsolete", "updated_at": time.time()})
     manager.process_once()
-    assert job["state"] == "waiting_start"
-    _write_json(path, {"state": "running", "generation": job["generation"], "updated_at": time.time()})
-    manager.process_once()
-    assert job["state"] == "running"
-    _write_json(path, {"state": "running", "generation": job["generation"], "updated_at": time.time() - 20})
-    manager.process_once()
-    assert job["state"] == "waiting_start"
-    _write_json(path, {"state": "error", "generation": job["generation"], "updated_at": time.time(), "error": "fake import failure"})
-    manager.process_once()
-    assert job["state"] == "error"
-    assert "fake import failure" in job["error"]
+    assert job["state"] == "waiting_exit"
+    assert role["reimport_required"] is True
+    assert role["imported"] is False
 
 
 @pytest.mark.parametrize("mode", ["ctypes", "lite", "lttx"])
@@ -359,10 +351,39 @@ def test_all_managed_entry_variants_compile_without_executing(mode, deployment):
 def test_alias_paths_and_strict_setting_types(deployment):
     _, row, _, _, root = deployment
     assert account_qmt_roots(row) == account_qmt_roots(dict(row, qmt_dir=str(root)))
+    assert normalize_strategy_settings({"enabled": True})["live"] is True
+    assert normalize_strategy_settings({"enabled": True, "live": False})["live"] is False
     with pytest.raises(ValueError):
         normalize_strategy_settings({"live": "false"})
     with pytest.raises(ValueError):
         normalize_strategy_settings({"stock": "invalid"})
+
+
+def test_process_once_detects_stale_runtime_generation_and_queues_reimport(deployment):
+    manager, row, infos, running, root = deployment
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    job = next(iter(manager.jobs.values()))
+    role = job["roles"][0]
+    old_generation = "old-runtime-generation"
+    _write_json(role["runtime_status_path"], {
+        "state": "running", "generation": old_generation, "updated_at": time.time(),
+    })
+
+    running[0] = True
+    manager.process_once()
+    control = json.loads(Path(job["control_path"]).read_text(encoding="utf-8"))
+    assert control["generation"] == old_generation
+    assert control["accepted_generations"] == [job["generation"]]
+    assert role["reimport_required"] is True
+    assert role["imported"] is False
+    assert job["state"] == "waiting_exit"
+
+    running[0] = False
+    manager.process_once()
+    assert job["state"] == "waiting_import"
+    assert (root / "formulas" / (role["name"] + ".rzrk")).is_file()
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "gbk", "gb18030"])

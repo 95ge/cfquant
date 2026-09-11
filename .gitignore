@@ -36,6 +36,7 @@ test_dir/
 
 cfquant_web_config.db
 cfquant_web_config.json
+cfquant_web_reset_password.txt
 cfquant_hub_status.json
 cfquant_pipe_hub_status.json
 official-home-*.png

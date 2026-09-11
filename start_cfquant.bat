@@ -125,8 +125,7 @@ if not "%WEB_EXIT_CODE%"=="0" (
     call :show_logs
     call :pause_on_error
 )
-endlocal
-exit /b %WEB_EXIT_CODE%
+endlocal & exit /b %WEB_EXIT_CODE%
 
 :ensure_cfquant_package
 echo Checking the cfquant package in the selected Python environment...
@@ -152,16 +151,18 @@ exit /b 0
 :is_port_open
 set "CFQUANT_START_PORT=%~1"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close(); exit 0 }; $client.Close(); exit 1 } catch { exit 1 }"
+set "PORT_RESULT=%errorlevel%"
 set "CFQUANT_START_PORT="
-exit /b %errorlevel%
+exit /b %PORT_RESULT%
 
 :wait_for_cfquant_web
 set "CFQUANT_START_PORT=%~1"
 set "CFQUANT_START_WAIT=%~2"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; $wait=[int]$env:CFQUANT_START_WAIT; $deadline=(Get-Date).AddSeconds($wait); $url='http://127.0.0.1:' + $port + '/api/health'; while ((Get-Date) -lt $deadline) { try { $req=[Net.WebRequest]::Create($url); $req.Method='GET'; $req.Timeout=1000; $req.ReadWriteTimeout=1000; $req.UserAgent='cfquant-start'; $res=$req.GetResponse(); try { if ([int]$res.StatusCode -eq 200) { $reader=[IO.StreamReader]::new($res.GetResponseStream(), [Text.Encoding]::UTF8); $content=$reader.ReadToEnd(); $reader.Close(); $payload=$content | ConvertFrom-Json; if ($payload.ok -eq $true -and $payload.data.status -eq 'ok') { exit 0 } } } finally { $res.Close() } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
+set "WAIT_RESULT=%errorlevel%"
 set "CFQUANT_START_PORT="
 set "CFQUANT_START_WAIT="
-exit /b %errorlevel%
+exit /b %WAIT_RESULT%
 
 :show_port_owner
 set "CFQUANT_START_PORT=%WEB_PORT%"

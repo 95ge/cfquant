@@ -191,6 +191,54 @@ def test_trade_callback_is_forwarded_with_trade_fields_and_sdk_shape():
     assert direct_event["data"]["traded_volume"] == 100
 
 
+def test_normal_bridge_dedupes_identical_asset_callbacks_per_client():
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge = NormalQmtBridge(None, show=False, schedule_timer=False, order_meta_enabled=False)
+    bridge.tx = RecordingTx()
+    try:
+        bridge.account_subscribers[("STOCK", "A123")] = {"client-1", "client-2"}
+        bridge.client_accounts["client-1"] = {("STOCK", "A123")}
+        bridge.client_accounts["client-2"] = {("STOCK", "A123")}
+        asset = {
+            "m_strAccountID": "A123",
+            "m_nAccountType": 2,
+            "m_dAvailable": 1000.0,
+            "m_dBalance": 1200.0,
+        }
+
+        bridge.publish_callback_event("trader:on_stock_asset", dict(asset))
+        bridge.publish_callback_event("trader:on_stock_asset", dict(asset))
+        assert len(bridge.tx.pushes) == 3
+
+        bridge.account_subscribers[("STOCK", "A123")].add("client-3")
+        bridge.client_accounts["client-3"] = {("STOCK", "A123")}
+        bridge.publish_callback_event("trader:on_stock_asset", dict(asset))
+        assert len(bridge.tx.pushes) == 4
+        assert loads_message(bridge.tx.pushes[-1][1])["client_id"] == "client-3"
+
+        changed = dict(asset, m_dAvailable=1001.0)
+        bridge.publish_callback_event("trader:on_stock_asset", changed)
+        assert len(bridge.tx.pushes) == 8
+        channel_events = [json.loads(item[1]) for item in bridge.tx.pushes if item[2] == bridge.callback_event_channel]
+        assert len(channel_events) == 2
+        assert channel_events[-1]["data"]["m_dAvailable"] == 1001.0
+        direct_events = [
+            loads_message(item[1])
+            for item in bridge.tx.pushes
+            if item[2] in ("client-1", "client-2", "client-3")
+        ]
+        assert [event["client_id"] for event in direct_events[-3:]] == ["client-1", "client-2", "client-3"]
+    finally:
+        bridge.close()
+        tx_trade_bridge_module._AUTO_TRADE_CALLBACK_REGISTRY.clear()
+
+
 def test_web_lttx_route_accepts_trade_callback_event():
     route = web.LttxWebRouteServer()
     client_id = "external_trade_client"

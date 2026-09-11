@@ -38,25 +38,34 @@ if not "%WAIT_CODE%"=="0" (
 )
 
 timeout /t 1 /nobreak >nul
+set "CFQUANT_RESTART_PREV_START_NO_PAUSE=%CFQUANT_START_NO_PAUSE%"
+set "CFQUANT_START_NO_PAUSE=1"
 call "%~dp0start_cfquant.bat" %*
 set "START_CODE=%errorlevel%"
+if defined CFQUANT_RESTART_PREV_START_NO_PAUSE (
+    set "CFQUANT_START_NO_PAUSE=%CFQUANT_RESTART_PREV_START_NO_PAUSE%"
+) else (
+    set "CFQUANT_START_NO_PAUSE="
+)
+set "CFQUANT_RESTART_PREV_START_NO_PAUSE="
 if "%START_CODE%"=="0" (
     echo cfquant restart completed.
     call :log "restart completed port=%WEB_PORT%"
 ) else (
     echo cfquant restart failed with code %START_CODE%.
     call :log "restart failed code=%START_CODE%"
+    call :pause_on_error
 )
-endlocal
-exit /b %START_CODE%
+endlocal & exit /b %START_CODE%
 
 :wait_for_port_release
 set "CFQUANT_RESTART_PORT=%~1"
 set "CFQUANT_RESTART_WAIT=%~2"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_RESTART_PORT; $wait=[int]$env:CFQUANT_RESTART_WAIT; $deadline=(Get-Date).AddSeconds($wait); while ((Get-Date) -lt $deadline) { try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close() } else { $client.Close(); exit 0 } } catch { exit 0 }; Start-Sleep -Milliseconds 500 }; exit 1"
+set "WAIT_RESULT=%errorlevel%"
 set "CFQUANT_RESTART_PORT="
 set "CFQUANT_RESTART_WAIT="
-exit /b %errorlevel%
+exit /b %WAIT_RESULT%
 
 :pause_on_error
 if "%CFQUANT_RESTART_NO_PAUSE%"=="1" exit /b 0
