@@ -63,6 +63,22 @@ def editable_install_args(project_root, python_exe=None):
     return command
 
 
+def source_install_args(project_root, python_exe=None):
+    # Regular source installs are the compatibility fallback for old pip builds
+    # that cannot do editable installs from pyproject-only projects.
+    command = [
+        python_exe or sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+    ]
+    command.extend(pip_index_args())
+    command.append(".")
+    return command
+
+
 def requirements_install_args(project_root, python_exe=None):
     """Build the pip command used to install the project's runtime dependencies."""
     command = [
@@ -130,6 +146,22 @@ def _run_pip_command(
             "output": _output_tail(error, output_limit),
             "error": str(error),
         }
+
+
+def _read_installed_version():
+    try:
+        try:
+            from importlib import metadata as importlib_metadata
+        except ImportError:
+            import importlib_metadata
+        return str(importlib_metadata.version(PACKAGE_NAME))
+    except Exception:
+        return ""
+
+
+def _combine_install_output(*parts):
+    output = "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    return output.strip()
 
 
 def run_requirements_install(
@@ -221,6 +253,11 @@ def run_editable_install(
         "requirements_install": None,
         "requirements_attempted": False,
         "editable_attempted": False,
+        "source_install_attempted": False,
+        "source_install_command": [],
+        "source_install_command_text": "",
+        "source_install_returncode": None,
+        "source_install_output": "",
     }
     if not (project_root / "pyproject.toml").is_file():
         result.update({
@@ -275,17 +312,44 @@ def run_editable_install(
         result["output"] = output
         result["ok"] = completed.returncode == 0
         if result["ok"]:
-            try:
-                try:
-                    from importlib import metadata as importlib_metadata
-                except ImportError:
-                    import importlib_metadata
-                result["installed_version"] = str(importlib_metadata.version(PACKAGE_NAME))
-            except Exception:
-                pass
+            result["installed_version"] = _read_installed_version()
             result["message"] = "cfquant 源码可编辑安装已完成"
         else:
-            result["message"] = "cfquant 源码可编辑安装失败，退出码 %s" % completed.returncode
+            source_command = source_install_args(project_root, python_exe=python_exe)
+            source_command_text = subprocess.list2cmdline([str(item) for item in source_command])
+            source_result = _run_pip_command(
+                [str(item) for item in source_command],
+                project_root,
+                timeout=timeout,
+                output_limit=output_limit,
+                subprocess_kwargs=subprocess_kwargs,
+            )
+            result.update({
+                "source_install_attempted": True,
+                "source_install_command": [str(item) for item in source_command],
+                "source_install_command_text": source_command_text,
+                "source_install_returncode": source_result.get("returncode"),
+                "source_install_output": source_result.get("output") or "",
+                "returncode": source_result.get("returncode"),
+                "timed_out": bool(source_result.get("timed_out")),
+                "output": _combine_install_output(
+                    output,
+                    "Fallback source install output:\n%s" % (source_result.get("output") or ""),
+                ),
+                "ok": bool(source_result.get("ok")),
+            })
+            if result["ok"]:
+                result["installed_version"] = _read_installed_version()
+                result["message"] = (
+                    "cfquant 源码普通安装已完成；当前 pip 不支持可编辑安装时会自动使用该方式"
+                )
+            elif result["timed_out"]:
+                result["message"] = "cfquant 源码普通安装超时"
+            else:
+                result["message"] = (
+                    "cfquant 源码安装失败；可编辑安装退出码 %s，普通安装退出码 %s"
+                    % (completed.returncode, source_result.get("returncode"))
+                )
     except subprocess.TimeoutExpired as error:
         output = error.output if error.output is not None else error.stdout
         result.update({
@@ -357,11 +421,20 @@ def ensure_cfquant_installed(project_root, python_exe=None):
     print("Running: %s" % subprocess.list2cmdline(command))
     completed = run(command, project_root)
     if completed.returncode != 0:
-        print("[ERROR] editable source install failed with exit code %s." % completed.returncode, file=sys.stderr)
-        return completed.returncode
+        print(
+            "[WARN] editable source install failed with exit code %s; trying regular source install."
+            % completed.returncode,
+            file=sys.stderr,
+        )
+        source_command = source_install_args(project_root, python_exe)
+        print("Running fallback: %s" % subprocess.list2cmdline(source_command))
+        completed = run(source_command, project_root)
+        if completed.returncode != 0:
+            print("[ERROR] source install failed with exit code %s." % completed.returncode, file=sys.stderr)
+            return completed.returncode
 
     if not is_cfquant_installed(python_exe):
-        print("[ERROR] %s is still not visible after editable install." % PACKAGE_NAME, file=sys.stderr)
+        print("[ERROR] %s is still not visible after source install." % PACKAGE_NAME, file=sys.stderr)
         return 1
     print("%s package is installed." % PACKAGE_NAME)
     return 0

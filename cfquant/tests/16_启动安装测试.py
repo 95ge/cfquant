@@ -34,6 +34,15 @@ def test_requirements_install_uses_requirements_file(tmp_path):
     assert command[command.index("-r") + 1] == "requirements.txt"
 
 
+def test_source_install_uses_regular_project_install(tmp_path):
+    command = _editable_install.source_install_args(tmp_path, python_exe="python")
+
+    assert command[:4] == ["python", "-m", "pip", "install"]
+    assert command[command.index("--index-url") + 1] == _editable_install.DEFAULT_PIP_INDEX_URL
+    assert "--editable" not in command
+    assert command[-1] == "."
+
+
 def test_requirements_uses_tsinghua_mirror():
     requirements = (Path(__file__).resolve().parents[2] / "requirements.txt").read_text(
         encoding="utf-8"
@@ -165,8 +174,11 @@ def test_run_editable_install_stops_when_requirements_fail(monkeypatch, tmp_path
 
 def test_run_editable_install_reports_failure(monkeypatch, tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'cfquant'\n", encoding="utf-8")
+    calls = []
 
     def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
         class Result(object):
             returncode = 7
             stdout = "pip failed\n"
@@ -179,7 +191,68 @@ def test_run_editable_install_reports_failure(monkeypatch, tmp_path):
     assert result["attempted"] is True
     assert result["ok"] is False
     assert result["returncode"] == 7
+    assert result["source_install_attempted"] is True
+    assert result["source_install_returncode"] == 7
+    assert len(calls) == 2
     assert "pip failed" in result["output"]
+
+
+def test_run_editable_install_falls_back_to_source_install(monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'cfquant'\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+
+        class Result(object):
+            stdout = "pip completed\n"
+
+        result = Result()
+        result.returncode = 7 if "--editable" in args else 0
+        if result.returncode != 0:
+            result.stdout = "legacy editable failure\n"
+        return result
+
+    monkeypatch.setattr(_editable_install.subprocess, "run", fake_run)
+    result = _editable_install.run_editable_install(tmp_path, python_exe="python")
+
+    assert result["attempted"] is True
+    assert result["ok"] is True
+    assert result["editable_attempted"] is True
+    assert result["source_install_attempted"] is True
+    assert result["returncode"] == 0
+    assert "--editable" in calls[0][0]
+    assert "--editable" not in calls[1][0]
+    assert calls[1][0][-1] == "."
+    assert "legacy editable failure" in result["output"]
+    assert "pip completed" in result["output"]
+
+
+def test_ensure_cfquant_installed_falls_back_to_source_install(monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'cfquant'\n", encoding="utf-8")
+    installed_checks = [False, True]
+    calls = []
+
+    def fake_is_installed(python_exe=None):
+        return installed_checks.pop(0)
+
+    def fake_run(args, cwd, quiet=False, clear_pythonpath=False):
+        calls.append((args, cwd, quiet, clear_pythonpath))
+
+        class Result(object):
+            pass
+
+        result = Result()
+        result.returncode = 7 if "--editable" in args else 0
+        return result
+
+    monkeypatch.setattr(_editable_install, "is_cfquant_installed", fake_is_installed)
+    monkeypatch.setattr(_editable_install, "run", fake_run)
+
+    assert _editable_install.ensure_cfquant_installed(tmp_path, python_exe="python") == 0
+    assert "--editable" in calls[0][0]
+    assert "--editable" not in calls[1][0]
+    assert calls[1][0][-1] == "."
 
 
 def test_start_script_passes_dot_not_trailing_dp0():
@@ -212,6 +285,15 @@ def test_stop_script_stops_cfquant_web_by_port():
     assert "cfquant-web" in script
     assert "cfquant.exe" in script
     assert "Port ' + $port + ' is owned by non-cfquant process" in script
+
+
+def test_service_batch_scripts_capture_binary_status_without_errorlevel_expansion():
+    project_root = Path(__file__).resolve().parents[2]
+
+    for filename in ("restart_cfquant.bat", "start_cfquant.bat", "stop_cfquant.bat"):
+        script = (project_root / filename).read_text(encoding="utf-8").lower()
+        assert "%errorlevel%" not in script
+        assert "if errorlevel 1" in script
 
 
 def test_cli_open_browser_waits_for_cfquant_health(monkeypatch):

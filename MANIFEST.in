@@ -30,6 +30,7 @@ recursive-exclude pip_library_dev *
 recursive-exclude .cfquant_project_updates *
 recursive-exclude .cfquant_updates *
 recursive-exclude .updates *
+recursive-exclude .cfquant_ops *
 recursive-exclude .pytest_cache *
 recursive-exclude .playwright-cli *
 recursive-exclude .local_archive *

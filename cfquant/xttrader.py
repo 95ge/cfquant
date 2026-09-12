@@ -17,6 +17,7 @@ from .xttype import (
     CreditAssure,
     CreditSloCode,
     CreditSubjects,
+    DictObject,
     StkCompacts,
     XtCreditDetail,
     XtAsset,
@@ -42,6 +43,31 @@ _account_bridge_cache = {}
 _account_bridge_lock = threading.RLock()
 _session_id_seq = itertools.count(1)
 _session_id_lock = threading.Lock()
+
+# The wire bridge represents native QMT objects as dictionaries so they can
+# cross the process boundary. Restore the public xtquant object contract for
+# query methods whose native API returns typed objects. Query methods absent
+# from this table intentionally keep the bridge's native dict/list shape.
+_COMPAT_QUERY_OBJECT_TYPES = {
+    "query_account_info": DictObject,
+    "query_account_infos": DictObject,
+    "query_account_status": XtAccountStatus,
+    "query_position_statistics": XtPositionStatistics,
+    "query_credit_detail": XtCreditDetail,
+    "query_stk_compacts": StkCompacts,
+    "query_credit_subjects": CreditSubjects,
+    "query_credit_slo_code": CreditSloCode,
+    "query_credit_assure": CreditAssure,
+    "query_secu_account": DictObject,
+    "query_bank_info": DictObject,
+    "query_bank_amount": DictObject,
+    "query_bank_transfer_stream": DictObject,
+}
+
+
+def _restore_compat_query_result(method, result):
+    query_type = _COMPAT_QUERY_OBJECT_TYPES.get(method)
+    return to_objects(result, query_type) if query_type else result
 
 
 def get_trade_client():
@@ -82,6 +108,26 @@ def _truthy_param(value):
     if isinstance(value, str):
         return value.strip().lower() in ("1", "true", "yes", "y", "on")
     return bool(value)
+
+
+def _async_cancel_result_failed(value):
+    """Return whether a bridge result explicitly rejects an async cancel."""
+    if isinstance(value, dict):
+        if value.get("accepted") is False or value.get("seq") == -1:
+            return True
+        if "cancel_result" in value:
+            return _async_cancel_result_failed(value.get("cancel_result"))
+        if "request_result" in value:
+            return _async_cancel_result_failed(value.get("request_result"))
+        return False
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return not value
+    if isinstance(value, (int, float)):
+        return value < 0
+    text = str(value).strip().lower()
+    return text in ("-1", "false", "failed", "error", "none", "null")
 
 
 def _account_type_value(account_type):
@@ -255,6 +301,9 @@ class XtQuantTrader(object):
         self._pending_async_orders = []
         self._pending_async_orders_lock = threading.RLock()
         self._completed_async_order_seqs = {}
+        self._pending_async_cancels = {}
+        self._completed_async_cancel_seqs = {}
+        self._pending_async_cancels_lock = threading.RLock()
         self.timeout = 0
         self.relaxed_response_order_enabled = False
         self._query_lock = threading.RLock()
@@ -431,11 +480,19 @@ class XtQuantTrader(object):
 
     def cancel_order_stock_async(self, account, order_id):
         seq = next(self._seq)
-        self._trade_request("xttrader.cancel_order_stock_async", {
-            "account": _account_payload(account),
-            "order_id": order_id,
-            "seq": seq,
-        })
+        self._register_pending_async_cancel(seq)
+        try:
+            result = self._trade_request("xttrader.cancel_order_stock_async", {
+                "account": _account_payload(account),
+                "order_id": order_id,
+                "seq": seq,
+            })
+        except Exception:
+            self._discard_pending_async_cancel(seq)
+            raise
+        if _async_cancel_result_failed(result):
+            self._discard_pending_async_cancel(seq)
+            return -1
         return seq
 
     def cancel_order_stock_sysid(self, account, market, sysid):
@@ -450,12 +507,20 @@ class XtQuantTrader(object):
 
     def cancel_order_stock_sysid_async(self, account, market, sysid):
         seq = next(self._seq)
-        self._trade_request("xttrader.cancel_order_stock_sysid_async", {
-            "account": _account_payload(account),
-            "market": market,
-            "sysid": sysid,
-            "seq": seq,
-        })
+        self._register_pending_async_cancel(seq)
+        try:
+            result = self._trade_request("xttrader.cancel_order_stock_sysid_async", {
+                "account": _account_payload(account),
+                "market": market,
+                "sysid": sysid,
+                "seq": seq,
+            })
+        except Exception:
+            self._discard_pending_async_cancel(seq)
+            raise
+        if _async_cancel_result_failed(result):
+            self._discard_pending_async_cancel(seq)
+            return -1
         return seq
 
     def query_stock_asset(self, account):
@@ -726,6 +791,8 @@ class XtQuantTrader(object):
                 data = cls.from_any(data)
             if name == "on_order_stock_async_response" and not self._accept_async_order_response(data):
                 return
+            if name == "on_cancel_order_stock_async_response" and not self._accept_async_cancel_response(data):
+                return
             async_response = None
             if name == "on_stock_order":
                 async_response = self._async_order_response_from_order(data)
@@ -824,6 +891,40 @@ class XtQuantTrader(object):
             "seq": matched.get("seq"),
         })
 
+    def _register_pending_async_cancel(self, seq):
+        with self._pending_async_cancels_lock:
+            self._prune_async_cancel_state_locked()
+            self._pending_async_cancels[seq] = time.time()
+
+    def _discard_pending_async_cancel(self, seq):
+        with self._pending_async_cancels_lock:
+            self._pending_async_cancels.pop(seq, None)
+
+    def _prune_async_cancel_state_locked(self):
+        cutoff = time.time() - 120.0
+        self._pending_async_cancels = {
+            seq: created_at
+            for seq, created_at in self._pending_async_cancels.items()
+            if created_at >= cutoff
+        }
+        self._completed_async_cancel_seqs = {
+            seq: completed_at
+            for seq, completed_at in self._completed_async_cancel_seqs.items()
+            if completed_at >= cutoff
+        }
+
+    def _accept_async_cancel_response(self, response):
+        seq = getattr(response, "seq", None)
+        if seq is None:
+            return True
+        with self._pending_async_cancels_lock:
+            self._prune_async_cancel_state_locked()
+            if seq in self._completed_async_cancel_seqs:
+                return False
+            self._pending_async_cancels.pop(seq, None)
+            self._completed_async_cancel_seqs[seq] = time.time()
+        return True
+
     def _emit_noarg_callback(self, name):
         func = getattr(self.callback, name, None)
         if callable(func):
@@ -875,15 +976,7 @@ class XtQuantTrader(object):
 
     def _compat_request(self, method, params=None):
         result = self._trade_request("xttrader.%s" % method, params or {})
-        cls = {
-            "query_position_statistics": XtPositionStatistics,
-            "query_credit_detail": XtCreditDetail,
-            "query_stk_compacts": StkCompacts,
-            "query_credit_subjects": CreditSubjects,
-            "query_credit_slo_code": CreditSloCode,
-            "query_credit_assure": CreditAssure,
-        }.get(method)
-        return to_objects(result, cls) if cls else result
+        return _restore_compat_query_result(method, result)
 
     def _compat_account_request(self, method, account, args=None, kwargs=None):
         return self._compat_request(method, self._account_params(account, args=args, kwargs=kwargs))

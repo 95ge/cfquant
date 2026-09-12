@@ -1024,9 +1024,15 @@ body.binding-dialog-open {
 
 .setup-section-head {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+}
+
+.setup-section-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .setup-section-head strong {
@@ -1038,13 +1044,136 @@ body.binding-dialog-open {
   font-size: 11px;
 }
 
+.help-tooltip-trigger {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #b9c5d1;
+  border-radius: 50%;
+  background: #f7f9fb;
+  color: #315b84;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.help-tooltip-trigger:hover,
+.help-tooltip-trigger:focus-visible,
+.help-tooltip-trigger.is-open {
+  border-color: #1f6feb;
+  background: #eef5ff;
+  color: #1f5fa8;
+}
+
+.help-tooltip-trigger::after {
+  content: attr(data-help-text);
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 80;
+  width: min(340px, calc(100vw - 32px));
+  min-width: 220px;
+  padding: 10px 12px;
+  border: 1px solid #26384b;
+  border-radius: 6px;
+  background: #101820;
+  color: #f4f7fa;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-3px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+}
+
+.help-tooltip-trigger:hover::after,
+.help-tooltip-trigger:focus-visible::after,
+.help-tooltip-trigger.is-open::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.qmt-login-prerequisite {
+  display: grid;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid #ead7a2;
+  border-left: 4px solid #d49b1d;
+  border-radius: 6px;
+  background: #fffaf0;
+  color: #5a4a22;
+}
+
+.qmt-login-prerequisite.compact {
+  margin: 0;
+}
+
+.qmt-login-prerequisite-head,
+.qmt-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.qmt-login-prerequisite-head strong,
+.qmt-section-heading strong {
+  color: #3f3520;
+  font-size: 13px;
+}
+
+.qmt-login-prerequisite-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 18px;
+}
+
+.qmt-login-prerequisite-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.qmt-login-prerequisite-grid > div strong {
+  color: #4b3d1e;
+  font-size: 12px;
+}
+
+.qmt-login-prerequisite-grid > div span,
+.qmt-login-prerequisite > small,
+.qmt-login-reminder {
+  color: #6a5b36;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.qmt-login-prerequisite > small {
+  display: block;
+}
+
+.qmt-login-reminder {
+  margin: 0;
+}
+
 .setup-fields-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
-.setup-fields-grid .field.wide {
+.setup-fields-grid > .wide {
   grid-column: 1 / -1;
 }
 
@@ -3874,7 +4003,7 @@ th.num .sort-header {
   background: #fbfcfd;
 }
 
-.binding-dialog-head div {
+.binding-dialog-head > div:first-child {
   display: grid;
   gap: 5px;
   min-width: 0;
@@ -3968,6 +4097,10 @@ th.num .sort-header {
 .binding-qmt-autostart-head {
   display: grid;
   gap: 4px;
+}
+
+.binding-qmt-autostart-head .qmt-section-heading {
+  justify-content: flex-start;
 }
 
 .binding-qmt-autostart-head strong {
@@ -4806,6 +4939,85 @@ th.num .sort-header {
   min-width: 0;
 }
 
+.update-safety-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #d5e4f2;
+  border-left: 3px solid #1f6feb;
+  border-radius: 6px;
+  background: #f6faff;
+}
+
+.update-safety-panel > div,
+.update-rollback-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.update-safety-panel span,
+.update-safety-panel strong,
+.update-safety-panel small,
+.update-rollback-copy span,
+.update-rollback-copy strong,
+.update-rollback-copy small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.update-safety-panel span,
+.update-rollback-copy span {
+  color: #52708c;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.update-safety-panel strong,
+.update-rollback-copy strong {
+  color: #203b55;
+  font-size: 13px;
+}
+
+.update-safety-panel small,
+.update-rollback-copy small {
+  color: #5c7184;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.update-safety-panel > .metric-note {
+  min-width: 0;
+  color: #365c7a;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: right;
+  white-space: normal;
+}
+
+.update-rollback-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 1.1fr) minmax(150px, auto);
+  align-items: end;
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #e6edf5;
+}
+
+.update-rollback-row .field {
+  min-width: 0;
+}
+
+.update-rollback-row button {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  white-space: normal;
+}
+
 .update-version-info {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -5169,6 +5381,15 @@ th.num .sort-header {
 @media (max-width: 640px) {
   .update-notice-grid {
     grid-template-columns: 1fr;
+  }
+
+  .update-safety-panel,
+  .update-rollback-row {
+    grid-template-columns: 1fr;
+  }
+
+  .update-safety-panel > .metric-note {
+    text-align: left;
   }
 
   .restart-notice-head,
@@ -6809,8 +7030,20 @@ tr.order-row-updated td {
 }
 
 .onboarding-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.onboarding-panel-copy {
   display: grid;
   gap: 5px;
+  min-width: 0;
+}
+
+.onboarding-panel-head > .help-tooltip-trigger {
+  flex: 0 0 auto;
 }
 
 .onboarding-panel-head strong {
@@ -8858,6 +9091,10 @@ tr.order-row-updated td {
 @media (max-width: 760px) {
   .binding-dialog {
     width: min(1100px, 100%);
+  }
+
+  .qmt-login-prerequisite-grid {
+    grid-template-columns: 1fr;
   }
 
   .market-routing-panel {

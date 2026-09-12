@@ -4,12 +4,15 @@ import os
 import json
 import threading
 import time
+import tokenize
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 import cfquant_web_server as web
 import cfquant.tx_trade_bridge as tx_trade_bridge_module
+from cfquant import order_meta
 from cfquant import xtconstant
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.pipe_bridge import PipeNormalQmtBridge, PipeTradeBridge
@@ -17,7 +20,21 @@ from cfquant.protocol import loads_message
 from cfquant.runtime_report import module_source_state, source_sha256
 from cfquant.tx_trade_bridge import TxTradeBridge
 from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
-from cfquant.xttype import StockAccount, XtAsset, XtOrder, XtPosition, XtTrade, normalize_order_price_type
+from cfquant.xttype import (
+    StockAccount,
+    XtAsset,
+    XtCancelError,
+    XtCancelOrderResponse,
+    XtOrder,
+    XtOrderError,
+    XtOrderResponse,
+    XtPosition,
+    XtTrade,
+    normalize_order_price_type,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_shared_qmt_context_registers_auto_trade_callback_once():
@@ -142,7 +159,8 @@ def test_trade_callback_is_forwarded_with_trade_fields_and_sdk_shape():
         "m_strInstrumentID": "000001",
         "m_strExchangeID": "SZ",
         "m_nOrderType": 23,
-        "m_nRef": 700009,
+        "m_nRef": 0,
+        "m_nOrderID": 700009,
         "m_strOrderSysID": "SYS-9",
         "m_nDealID": 90001,
         "m_dPrice": 10.25,
@@ -170,6 +188,7 @@ def test_trade_callback_is_forwarded_with_trade_fields_and_sdk_shape():
     callback_event = json.loads(callback_payload)
     assert callback_event["event"] == "trader:on_stock_trade"
     data = callback_event["data"]
+    assert data["order_id"] == 700009
     assert data["traded_id"] == 90001
     assert data["traded_price"] == 10.25
     assert data["traded_volume"] == 100
@@ -189,6 +208,416 @@ def test_trade_callback_is_forwarded_with_trade_fields_and_sdk_shape():
     assert direct_event["event"] == "trader:on_stock_trade"
     assert direct_event["client_id"] == "external-trade-client"
     assert direct_event["data"]["traded_volume"] == 100
+
+
+@pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
+def test_order_callback_skips_placeholder_order_reference(bridge_class):
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge = bridge_class(None, show=False, schedule_timer=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    try:
+        bridge.publish_callback_event("trader:on_stock_order", {
+            "m_strAccountID": "A123",
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_nRef": 0,
+            "m_nOrderID": 700015,
+            "m_strOrderSysID": "SYS-15",
+            "m_nOrderType": 23,
+            "m_nVolumeTotalOriginal": 100,
+            "m_dLimitPrice": 10.25,
+        })
+    finally:
+        bridge.close()
+
+    data = json.loads(tx.pushes[0][1])["data"]
+    assert data["order_id"] == 700015
+    assert XtOrder.from_any(data).order_id == 700015
+
+
+@pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
+def test_order_error_callback_restores_strategy_and_order_id_from_request_metadata(bridge_class):
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge = bridge_class(None, show=False, schedule_timer=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    bridge._remember_order_request(
+        "A123",
+        "000001.SZ",
+        "user-001",
+        "fast-strategy",
+        order_id=700010,
+    )
+
+    try:
+        bridge.publish_callback_event("trader:on_order_error", {
+            "m_strAccountID": "A123",
+            "m_nAccountType": 2,
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "user-001",
+            "m_strStrategyName": "",
+            "order_id": 0,
+            "m_nRef": 0,
+            "m_nErrorID": 101,
+            "m_strErrorMsg": "rejected",
+        })
+    finally:
+        bridge.close()
+
+    callback_payload = json.loads(tx.pushes[0][1])
+    data = callback_payload["data"]
+    error = XtOrderError.from_any(data)
+    assert data["strategy_name"] == "fast-strategy"
+    assert data["order_id"] == 700010
+    assert data["m_nRef"] == 700010
+    assert error.strategy_name == "fast-strategy"
+    assert error.order_id == 700010
+    assert error.error_id == 101
+    assert error.error_msg == "rejected"
+
+
+def test_order_error_callback_restores_order_id_from_rich_order_metadata():
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+            self.store = {}
+
+        def push(self, *args):
+            self.pushes.append(args)
+
+        def get(self, key):
+            return self.store.get(key)
+
+        def put(self, key, value):
+            self.store[key] = value
+
+        def dict_change(self, var, key, value):
+            bucket = self.store.setdefault(var, {})
+            bucket[key] = value
+
+    bridge = NormalQmtBridge(None, show=False, schedule_timer=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "A123",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price": 10.0,
+        "order_volume": 100,
+        "strategy_name": "fast-strategy",
+        "order_remark": "user-002",
+        "user_order_id": "user-002",
+        "order_id": 700011,
+        "status": "accepted",
+    })
+    bridge.order_meta_cache.upsert(record)
+
+    try:
+        bridge.publish_callback_event("trader:on_order_error", {
+            "m_strAccountID": "A123",
+            "m_nAccountType": 2,
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "user-002",
+            "m_strStrategyName": "",
+            "m_nRef": 0,
+            "m_nErrorID": 102,
+            "m_strErrorMsg": "rejected",
+        })
+    finally:
+        bridge.close()
+
+    callback_payload = json.loads([item for item in tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    error = XtOrderError.from_any(data)
+    assert data["strategy_name"] == "fast-strategy"
+    assert data["order_id"] == 700011
+    assert data["m_nRef"] == 700011
+    assert data["m_strOrderRef"] == "700011"
+    assert data["cfquant_order_meta_hit"] is True
+    assert error.strategy_name == "fast-strategy"
+    assert error.order_id == 700011
+
+
+def test_order_error_callback_can_match_lightweight_request_before_passorder_returns():
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge = NormalQmtBridge(None, show=False, schedule_timer=False, order_meta_enabled=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+
+    def passorder(*args):
+        bridge.publish_callback_event("trader:on_order_error", {
+            "m_strAccountID": "A123",
+            "m_nAccountType": 2,
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "user-003",
+            "m_nRef": 0,
+            "m_nErrorID": 103,
+            "m_strErrorMsg": "rejected before return",
+        })
+        return -1
+
+    bridge.globals_dict["passorder"] = passorder
+    try:
+        bridge._order_stock({
+            "account_id": "A123",
+            "account_type": "STOCK",
+            "stock_code": "000001.SZ",
+            "optype": 23,
+            "strategy_name": "fast-strategy",
+            "order_remark": "user-003",
+            "price": 10.0,
+            "order_volume": 100,
+        }, {"id": "sync-error"})
+    finally:
+        bridge.close()
+
+    callback_payload = json.loads(tx.pushes[0][1])
+    data = callback_payload["data"]
+    error = XtOrderError.from_any(data)
+    assert data["strategy_name"] == "fast-strategy"
+    assert error.strategy_name == "fast-strategy"
+    assert error.order_id == -1
+    assert error.error_id == 103
+
+
+@pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
+def test_cancel_error_callback_restores_context_by_order_id(bridge_class):
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge = bridge_class(None, show=False, schedule_timer=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    bridge._remember_order_request(
+        "A123",
+        "000001.SZ",
+        "cancel-001",
+        "cancel-strategy",
+        order_id=700012,
+    )
+
+    try:
+        bridge.publish_callback_event("trader:on_cancel_error", {
+            "m_strAccountID": "A123",
+            "m_nAccountType": 2,
+            "m_nRef": 0,
+            "m_nOrderID": 700012,
+            "m_nErrorID": 201,
+            "m_strErrorMsg": "cancel rejected",
+        })
+    finally:
+        bridge.close()
+
+    callback_payload = json.loads(tx.pushes[0][1])
+    data = callback_payload["data"]
+    error = XtCancelError.from_any(data)
+    assert data["strategy_name"] == "cancel-strategy"
+    assert data["order_remark"] == "cancel-001"
+    assert data["m_strStrategyName"] == "cancel-strategy"
+    assert data["m_strRemark"] == "cancel-001"
+    assert error.order_id == 700012
+    assert error.strategy_name == "cancel-strategy"
+    assert error.order_remark == "cancel-001"
+    assert error.error_id == 201
+
+
+def test_cancel_error_callback_restores_context_from_rich_order_metadata():
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+            self.store = {}
+
+        def push(self, *args):
+            self.pushes.append(args)
+
+        def get(self, key):
+            return self.store.get(key)
+
+        def put(self, key, value):
+            self.store[key] = value
+
+        def dict_change(self, var, key, value):
+            bucket = self.store.setdefault(var, {})
+            bucket[key] = value
+
+    bridge = NormalQmtBridge(None, show=False, schedule_timer=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "A123",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price": 10.0,
+        "order_volume": 100,
+        "strategy_name": "cancel-rich-strategy",
+        "order_remark": "cancel-002",
+        "user_order_id": "cancel-002",
+        "order_id": 700013,
+        "order_refs": ["700013", "SYS-CANCEL-13"],
+        "status": "callback_bound",
+    })
+    bridge.order_meta_cache.upsert(record)
+
+    try:
+        bridge.publish_callback_event("trader:on_cancel_error", {
+            "m_strAccountID": "A123",
+            "m_nAccountType": 2,
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strOrderSysID": "SYS-CANCEL-13",
+            "m_nErrorID": 202,
+            "m_strErrorMsg": "cancel rejected",
+        })
+    finally:
+        bridge.close()
+
+    callback_payload = json.loads([item for item in tx.pushes if item[0] == "event"][-1][1])
+    data = callback_payload["data"]
+    error = XtCancelError.from_any(data)
+    assert data["strategy_name"] == "cancel-rich-strategy"
+    assert data["order_remark"] == "cancel-002"
+    assert data["order_id"] == 700013
+    assert data["m_nRef"] == 700013
+    assert data["cfquant_order_meta_hit"] is True
+    assert error.order_id == 700013
+    assert error.strategy_name == "cancel-rich-strategy"
+
+
+@pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
+def test_property_based_callbacks_preserve_async_and_asset_position_fields(bridge_class):
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    class SlotObject(object):
+        __slots__ = ("__dict__",)
+
+        def __init__(self, **values):
+            for name, value in values.items():
+                setattr(self, name, value)
+
+    bridge = bridge_class(None, show=False, schedule_timer=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    bridge._remember_order_request(
+        "A123",
+        "000001.SZ",
+        "async-remark",
+        "async-strategy",
+        order_id=700014,
+    )
+    try:
+        bridge.publish_callback_event("trader:on_order_stock_async_response", SlotObject(
+            m_strAccountID="A123",
+            m_nSeq=31,
+            m_nRef=0,
+            m_nOrderID=700014,
+            m_strErrorMsg="",
+        ))
+        bridge.publish_callback_event("trader:on_cancel_order_stock_async_response", SlotObject(
+            m_strAccountID="A123",
+            m_nSeq=32,
+            m_nRef=0,
+            m_nOrderID=700014,
+            m_nCancelResult=0,
+            m_strErrorMsg="",
+        ))
+        bridge.publish_callback_event("trader:on_stock_asset", SlotObject(
+            m_strAccountID="A123",
+            m_nAccountType=2,
+            m_dEnableBalance=100.0,
+            m_dFrozenCash=2.0,
+            m_dMarketValue=300.0,
+            m_dBalance=400.0,
+        ))
+        bridge.publish_callback_event("trader:on_stock_position", SlotObject(
+            m_strAccountID="A123",
+            m_strInstrumentID="000001",
+            m_strExchangeID="SZ",
+            m_nPosition=8,
+            m_nAvailableVolume=5,
+            m_nFreezeVolume=1,
+            m_nUncomeVolume=2,
+            m_nYdPosition=7,
+            m_dAvgPrice=10.5,
+        ))
+    finally:
+        bridge.close()
+
+    events = [json.loads(item[1]) for item in tx.pushes if item[0] == "event"]
+    order_response = XtOrderResponse.from_any(events[0]["data"])
+    cancel_response = XtCancelOrderResponse.from_any(events[1]["data"])
+    asset = XtAsset.from_any(events[2]["data"])
+    position = XtPosition.from_any(events[3]["data"])
+    assert order_response.seq == 31
+    assert order_response.order_id == 700014
+    assert order_response.strategy_name == "async-strategy"
+    assert order_response.order_remark == "async-remark"
+    assert cancel_response.seq == 32
+    assert cancel_response.order_id == 700014
+    assert cancel_response.cancel_result == 0
+    assert events[1]["data"]["strategy_name"] == "async-strategy"
+    assert events[1]["data"]["order_remark"] == "async-remark"
+    assert asset.cash == 100.0
+    assert asset.frozen_cash == 2.0
+    assert asset.market_value == 300.0
+    assert asset.total_asset == 400.0
+    assert position.stock_code == "000001.SZ"
+    assert position.volume == 8
+    assert position.can_use_volume == 5
+    assert position.frozen_volume == 1
+    assert position.on_road_volume == 2
+    assert position.yesterday_volume == 7
+    assert position.avg_price == 10.5
+
+
+def test_qmt_callback_entry_scripts_preserve_order_error_context_fields():
+    script_paths = sorted((PROJECT_ROOT / "qmt_scripts").rglob("CFQUANT*.py"))
+    callback_scripts = [
+        path for path in script_paths
+        if "TRADE_LOWLAT" not in path.name
+    ]
+    assert callback_scripts
+    for path in callback_scripts:
+        source = tokenize.open(str(path)).read()
+        assert "def order_error_callback" in source
+        assert "def orderError_callback" in source
+        assert '"trader:on_order_error"' in source
+        assert '"m_nRef"' in source
+        assert '"m_strStrategyName"' in source
 
 
 def test_normal_bridge_dedupes_identical_asset_callbacks_per_client():

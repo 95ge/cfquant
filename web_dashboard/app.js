@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260912_01';
+const FRONTEND_VERSION = 'web_20260913_01';
 
 const state = {
   accountId: '',
@@ -296,7 +296,7 @@ function transportModeRequestScope(mode) {
 }
 
 const QMT_MARKET_LABELS = { SH: '上海', SZ: '深圳' };
-const QMT_LOGIN_REMINDER = 'QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。';
+const QMT_LOGIN_REMINDER = '国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码，然后等待自动登录完成。所有 QMT 都要先完成 Python 库下载。';
 
 function qmtDeploymentTargets(values = {}) {
   const marketRouting = values.marketRoutingEnabled !== undefined
@@ -341,7 +341,7 @@ function qmtStartupInstruction(values = {}) {
   } else if (targets.length && targets.every((target) => target.state === 'running')) {
     message = '托管策略已在线，可以查看账号状态或测试接口。';
   } else if (qmtAutoLoginGuideEnabled(autoLogin)) {
-    message = '已勾选自动启动 QMT，请在 QMT 启动后完成登录。';
+    message = '已勾选自动启动 QMT，请按下方登录前提完成 QMT 登录。';
   } else {
     message = '请重启对应 QMT 并登录，使绑定配置生效。';
   }
@@ -354,6 +354,39 @@ function qmtStartupInstruction(values = {}) {
     message += ' 未勾选“QMT 启动后自动运行”时，请在登录后到“模型交易”运行已导入的托管策略。';
   }
   return message;
+}
+
+function closeHelpTooltips(except = null) {
+  document.querySelectorAll('.help-tooltip-trigger.is-open').forEach((button) => {
+    if (button === except) return;
+    button.classList.remove('is-open');
+    button.setAttribute('aria-expanded', 'false');
+  });
+}
+
+function wireHelpTooltips() {
+  document.querySelectorAll('.help-tooltip-trigger').forEach((button) => {
+    if (button.dataset.helpBound === '1') return;
+    button.dataset.helpBound = '1';
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const isOpen = button.classList.contains('is-open');
+      closeHelpTooltips();
+      button.classList.toggle('is-open', !isOpen);
+      button.setAttribute('aria-expanded', String(!isOpen));
+    });
+  });
+  if (document.body.dataset.helpTooltipsWired === '1') return;
+  document.body.dataset.helpTooltipsWired = '1';
+  document.addEventListener('click', (event) => {
+    if (!(event.target instanceof Element) || !event.target.closest('.help-tooltip-trigger')) {
+      closeHelpTooltips();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeHelpTooltips();
+  });
 }
 
 async function copyTextWithFallback(text) {
@@ -1017,8 +1050,8 @@ function bindingQmtDeployStatusHtml(deploy) {
   const rows = results.map((item) => {
     const status = item.error ? 'error' : (item.updated ? 'success' : (item.warning ? 'warn' : 'info'));
     const label = item.error
-      ? '\u590d\u5236\u5931\u8d25'
-      : (item.updated ? '\u5df2\u590d\u5236' : (item.skipped ? '\u65e0\u9700\u590d\u5236' : '\u5df2\u5904\u7406'));
+      ? '\u540c\u6b65\u5931\u8d25'
+      : (item.updated ? '\u5df2\u540c\u6b65' : (item.skipped ? '\u65e0\u9700\u540c\u6b65' : '\u5df2\u5904\u7406'));
     const detail = item.error || item.warning || item.message || label;
     const target = item.python_dir || item.configured_dir || item.qmt_dir || '';
     return `<div class="binding-qmt-status-row is-${status}">
@@ -2572,6 +2605,11 @@ function qmtRuntimeDetail(report = {}) {
   return report.message || '未收到 QMT 运行时版本上报，请先运行对应 QMT 桥接脚本后再查看。';
 }
 
+function projectUpdateBusy() {
+  const operation = state.projectUpdateStatus && state.projectUpdateStatus.operation;
+  return !!(state.projectUpdateBusy || (operation && operation.busy));
+}
+
 function renderProjectVersionLegacyRuntime(info) {
   state.versionInfo = info || state.versionInfo || null;
   const data = state.versionInfo || {};
@@ -2665,8 +2703,8 @@ function renderProjectVersionLegacyRuntime(info) {
     : remote.version
       ? remoteUpdateDetail(remote, data.repo_url || DEFAULT_UPDATE_REPO_URL)
       : '尚未检查官网版本';
-  const actionBusy = state.versionCheckInFlight || state.projectUpdateBusy || state.versionUpdateBusy;
-  const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
+  const actionBusy = state.versionCheckInFlight || projectUpdateBusy() || state.versionUpdateBusy;
+  const updateDisabled = projectUpdateBusy() ? ' disabled' : '';
   const recheckDisabled = state.versionCheckInFlight ? ' disabled' : '';
   const displayCompareText = qmtSavedVersion ? compareText : '无法判断';
   const stateDetail = qmtReported
@@ -2806,7 +2844,7 @@ function renderProjectVersion(info) {
     ? `检查失败：${remoteError}`
     : (latestVersion !== '--' ? remoteUpdateDetail(remote, data.repo_url || DEFAULT_UPDATE_REPO_URL) : '尚未检查官网版本');
   const compareText = projectUpdateCompareText(comparison, remoteError);
-  const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
+  const updateDisabled = projectUpdateBusy() ? ' disabled' : '';
   const recheckDisabled = checking ? ' disabled' : '';
   const heroClass = checking ? 'is-checking' : (remoteError ? 'is-wait' : (updateAvailable ? 'is-stale' : 'is-ok'));
   const changelog = remote.changelog || {};
@@ -2823,7 +2861,7 @@ function renderProjectVersion(info) {
         <span>当前版本</span>
         <strong>${esc(currentVersion)}</strong>
       </div>
-      <p>一次更新会替换完整项目，并把最新 cfquant 核心复制到所有已绑定的 QMT 目录。</p>
+      <p>一次更新会替换完整项目，并把最新 cfquant 核心同步到所有已绑定的 QMT 目录。</p>
     </section>
     <section class="version-compare-section">
       <div class="version-section-head">
@@ -2844,7 +2882,7 @@ function renderProjectVersion(info) {
       <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新</button>
       <button type="button" data-version-action="open-update">更新设置</button>
     </div>
-    <div class="version-action-status">${esc(state.projectUpdateBusy ? '正在更新完整版本并同步已绑定 QMT 目录...' : '更新完成后，请完全退出并重启 QMT 加载新版本。')}</div>`;
+    <div class="version-action-status">${esc(projectUpdateBusy() ? '正在更新完整版本并同步已绑定 QMT 目录...' : '更新完成后，请完全退出并重启 QMT 加载新版本。')}</div>`;
 }
 
 function renderProjectVersionLegacy(info) {
@@ -2903,10 +2941,10 @@ function renderProjectVersionLegacy(info) {
     : remote.version
       ? remoteUpdateDetail(remote, data.repo_url || DEFAULT_UPDATE_REPO_URL)
       : '尚未检查官网版本';
-  const actionBusy = state.versionCheckInFlight || state.projectUpdateBusy || state.versionUpdateBusy;
-  const updateDisabled = state.projectUpdateBusy ? ' disabled' : '';
+  const actionBusy = state.versionCheckInFlight || projectUpdateBusy() || state.versionUpdateBusy;
+  const updateDisabled = projectUpdateBusy() ? ' disabled' : '';
   const recheckDisabled = state.versionCheckInFlight ? ' disabled' : '';
-  const actionStatus = state.projectUpdateBusy
+  const actionStatus = projectUpdateBusy()
     ? 'Web 项目正在更新，完成后会自动重启。'
     : state.versionCheckInFlight
       ? '正在连接远端版本源...'
@@ -4855,7 +4893,7 @@ async function submitSetupForm(event) {
     }, data.qmt_core_deploy, { context: 'onboarding', qmtAutoLogin: data.qmt_auto_login, qmtStrategyDeploy: data.qmt_strategy_deploy });
     if (qmtCoreDeployHasIssues(data.qmt_core_deploy)) {
       setView('bindings');
-      setBindingNotice(qmtCoreDeploySummaryText(data.qmt_core_deploy) || 'cfquant 核心包自动复制失败，请检查 QMT 目录和权限。', 'warn', { autoHide: false });
+      setBindingNotice(qmtCoreDeploySummaryText(data.qmt_core_deploy) || 'cfquant 核心包自动同步失败，请检查 QMT 目录和权限。', 'warn', { autoHide: false });
     }
     log('初始化配置已保存', {
       account_id: body.account_id,
@@ -5018,14 +5056,18 @@ function setProjectUpdateControlsBusy(busy = state.projectUpdateBusy) {
   const backups = state.projectUpdateStatus && Array.isArray(state.projectUpdateStatus.backups)
     ? state.projectUpdateStatus.backups
     : [];
+  const operation = state.projectUpdateStatus && state.projectUpdateStatus.operation
+    ? state.projectUpdateStatus.operation
+    : {};
+  const controlsBusy = state.projectUpdateBusy || !!operation.busy;
   ['runProjectGithubUpdateBtn', 'uploadProjectZipUpdateBtn'].forEach((id) => {
     const button = $(id);
-    if (button) button.disabled = state.projectUpdateBusy || !ready;
+    if (button) button.disabled = controlsBusy || !ready;
   });
   const refreshButton = $('refreshProjectUpdateStatusBtn');
-  if (refreshButton) refreshButton.disabled = state.projectUpdateBusy;
+  if (refreshButton) refreshButton.disabled = controlsBusy;
   const rollbackButton = $('rollbackProjectUpdateBtn');
-  if (rollbackButton) rollbackButton.disabled = state.projectUpdateBusy || !ready || !backups.length;
+  if (rollbackButton) rollbackButton.disabled = controlsBusy || !ready || !backups.length;
   renderProjectVersion(state.versionInfo);
 }
 
@@ -5234,10 +5276,23 @@ function buildUpdateNoticeLines(payload, options = {}) {
   const editableInstall = payload.editable_install || {};
   const restart = payload.qmt_restart_required || {};
   const entry = payload.entry_manual_update || restart.entry_manual_update || {};
+  const backup = payload.backup || null;
+  const rollbackBackup = payload.rollback_backup || null;
   const restartRequired = !!restart.required || !!options.forceQmtRestart;
   const entryRequired = !!entry.required;
-  if (!restartRequired && !entryRequired) return [];
+  if (!restartRequired && !entryRequired && !backup && !rollbackBackup) return [];
   const lines = [];
+  if (backup) {
+    lines.push({
+      strong: '更新前回退点已创建',
+      text: `当前版本已备份为 ${backup.version || backup.name || '可回退版本'}，发生问题时可在更新管理中恢复。`,
+    });
+  } else if (rollbackBackup) {
+    lines.push({
+      strong: '回滚前版本已备份',
+      text: `回滚前的当前版本已保存为 ${rollbackBackup.version || rollbackBackup.name || '可回退版本'}，可用于再次恢复。`,
+    });
+  }
   if (deploySummary.error_count || deploySummary.identity_error_count || deploySummary.ok === false) {
     lines.push({
       strong: '部分 QMT 目录同步失败',
@@ -5289,8 +5344,11 @@ function buildUpdateNoticeModel(payload, options = {}) {
   const targetDir = payload.python_dir || payload.target_dir || '';
   const restartRequired = !!restart.required || !!options.forceQmtRestart;
   const entryRequired = !!entry.required;
+  const backupOnly = !restartRequired && !entryRequired;
   const modeFiles = entry.mode_files && typeof entry.mode_files === 'object' ? entry.mode_files : {};
-  const steps = entryRequired
+  const steps = backupOnly
+    ? ['回到更新管理确认回退点已显示。']
+    : entryRequired
     ? [
       '停止 QMT 里正在运行的 cfquant 入口脚本。',
       `手动更新入口文件${entryFiles.length ? `：${entryFiles.join('、')}` : '。'}`,
@@ -5303,8 +5361,10 @@ function buildUpdateNoticeModel(payload, options = {}) {
       '回到网页刷新状态，确认通道在线。',
     ];
   return {
-    title: entryRequired ? 'QMT 入口文件需要手动更新' : '更新完成，请重启 QMT',
-    subtitle: entryRequired
+    title: backupOnly ? '版本回退点已创建' : (entryRequired ? 'QMT 入口文件需要手动更新' : '更新完成，请重启 QMT'),
+    subtitle: backupOnly
+      ? '当前项目版本已经保存，可在更新管理中选择该回退点恢复。'
+      : entryRequired
       ? '本次更新涉及 QMT 入口脚本。由于入口文件通常是加密文件，需要手动替换后再启动。'
       : '完整版本和绑定目录中的核心文件已经更新；QMT 运行中的进程不会自动加载新代码。',
     lines,
@@ -5344,7 +5404,7 @@ function renderUpdateNoticeCard(model, options = {}) {
           <strong>${esc(model.title)}</strong>
           <span>${esc(primaryLine ? primaryLine.text : model.subtitle)}</span>
         </div>
-        <em>${esc(model.entryRequired ? '需手动处理' : '需重启')}</em>
+        <em>${esc(model.entryRequired ? '需手动处理' : (model.restartRequired ? '需重启' : '已保存'))}</em>
       </div>
       ${meta.length ? `<div class="update-notice-meta">${meta.map((item) => `<span>${esc(item)}</span>`).join('')}</div>` : ''}
       ${(secondaryLine || entryText) ? `<div class="update-notice-mode-files">
@@ -5597,7 +5657,9 @@ function renderProjectUpdateStatus(data) {
   state.projectUpdateStatus = data || null;
   const status = $('projectUpdateStatus');
   const select = $('projectRollbackBackupSelect');
+  const backupSummary = $('projectUpdateBackupSummary');
   const backups = data && Array.isArray(data.backups) ? data.backups : [];
+  const operation = data && data.operation ? data.operation : {};
   const repoInput = $('projectUpdateRepoInput');
   const refInput = $('projectUpdateRefInput');
   const defaultRepo = (data && data.default_repo_url) || DEFAULT_UPDATE_REPO_URL;
@@ -5606,14 +5668,28 @@ function renderProjectUpdateStatus(data) {
   if (refInput && !refInput.value.trim()) refInput.value = defaultRef;
   if (select) {
     select.innerHTML = backups.length
-      ? backups.map((row) => {
+        ? backups.map((row) => {
           const version = row.version ? ` / ${row.version}` : '';
           const count = row.file_count ? ` / ${row.file_count} 文件` : '';
-          const label = `${row.created_at_text || row.name}${version}${count}`;
+          const format = row.complete === false ? ' / 旧格式' : ' / 完整回退点';
+          const label = `${row.created_at_text || row.name}${version}${count}${format}`;
           return `<option value="${esc(row.name)}">${esc(label)}</option>`;
         }).join('')
       : '<option value="">暂无项目备份</option>';
-    select.disabled = !backups.length;
+    select.disabled = !backups.length || !!operation.busy;
+  }
+  if (backupSummary) {
+    if (!backups.length) {
+      backupSummary.textContent = '暂无可回退版本';
+      backupSummary.title = '';
+    } else {
+      const latest = backups[0];
+      const latestVersion = latest.version || latest.name || '未知版本';
+      const latestTime = latest.created_at_text || '时间未知';
+      const formatText = latest.complete === false ? '旧格式备份' : '完整回退点';
+      backupSummary.textContent = `已保留 ${backups.length} 个回退点 · 最近 ${latestVersion} · ${latestTime}`;
+      backupSummary.title = `${formatText}，包含 ${latest.file_count || 0} 个项目文件`;
+    }
   }
   if (status) {
     if (!data) {
@@ -5629,6 +5705,10 @@ function renderProjectUpdateStatus(data) {
         compareText || '',
         `备份 ${backups.length}`,
       ].filter(Boolean);
+      if (operation.busy) {
+        parts.unshift(operation.message || '正在处理项目更新');
+        if (operation.trade_locked) parts.unshift('网页交易已暂时锁定');
+      }
       if (data.errors && data.errors.length) parts.push(`错误：${data.errors.join('；')}`);
       if (data.warnings && data.warnings.length) parts.push(`提示：${data.warnings.join('；')}`);
       status.textContent = parts.join(' · ');
@@ -5781,6 +5861,14 @@ async function refreshProjectUpdateStatus(options = {}) {
   return data;
 }
 
+async function refreshProjectUpdateStatusQuietly() {
+  try {
+    await refreshProjectUpdateStatus({ remote: false, log: false });
+  } catch (error) {
+    log('更新失败后的回退点状态刷新失败', { error: error.message });
+  }
+}
+
 async function runProjectGithubUpdateFromUi(options = {}) {
   const repoInput = $('projectUpdateRepoInput');
   const refInput = $('projectUpdateRefInput');
@@ -5798,11 +5886,11 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   }
   const versionInfo = state.versionInfo || {};
   const remoteInfo = versionInfo.remote || {};
-  let confirmText = '确认更新到官网最新版本？本次会同时更新控制台与本地服务，并把最新 cfquant 核心复制到所有已绑定 QMT 目录。完成后需要完全退出并重启 QMT。';
+  let confirmText = '确认更新到官网最新版本？更新前会先创建完整回退点，更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本，并确认当前不在交易时段。本次会同时更新控制台、本地服务和已绑定 QMT 核心，完成后需要完全退出并重启 QMT。';
   if (versionInfo.comparison === 'older') {
-    confirmText = '当前版本显示比官网版本更新，继续会用官网当前版本覆盖完整项目和已绑定 QMT 核心。确认继续？';
+    confirmText = '当前版本显示比官网版本更新，继续会先创建完整回退点，再用官网当前版本覆盖完整项目和已绑定 QMT 核心。更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本。确认继续？';
   } else if (remoteInfo.error) {
-    confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从官网优先源更新完整版本吗？更新完成后需要重启 QMT。`;
+    confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从官网优先源更新完整版本吗？更新前会先创建完整回退点，更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本。`;
   }
   const confirmed = window.confirm(confirmText);
   if (!confirmed) return;
@@ -5836,6 +5924,7 @@ async function runProjectGithubUpdateFromUi(options = {}) {
     }
   } catch (error) {
     failQmtUpdateProgress(error);
+    await refreshProjectUpdateStatusQuietly();
     throw error;
   } finally {
     state.versionUpdateBusy = false;
@@ -5851,7 +5940,7 @@ async function uploadProjectZipUpdateFromUi() {
     log('未选择完整版本 zip 文件，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认使用该 zip 更新完整版本，并把最新 cfquant 核心同步到所有已绑定 QMT 目录？完成后需要完全退出并重启 QMT。');
+  const confirmed = window.confirm('确认使用该 zip 更新完整版本？更新前会先创建完整回退点，更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本，并在非交易时段操作。完成后需要完全退出并重启 QMT。');
   if (!confirmed) return;
   const formData = new FormData();
   formData.append('reload', '1');
@@ -5885,6 +5974,7 @@ async function uploadProjectZipUpdateFromUi() {
     }
   } catch (error) {
     failQmtUpdateProgress(error);
+    await refreshProjectUpdateStatusQuietly();
     throw error;
   } finally {
     state.versionUpdateBusy = false;
@@ -5900,7 +5990,17 @@ async function rollbackProjectUpdateFromUi() {
     log('没有可回滚的项目备份');
     return;
   }
-  const confirmed = window.confirm(`确认回滚完整版本到备份 ${backup}？回滚后的 cfquant 核心也会同步到所有已绑定 QMT 目录，完成后需要重启 QMT。`);
+  const selected = state.projectUpdateStatus && Array.isArray(state.projectUpdateStatus.backups)
+    ? state.projectUpdateStatus.backups.find((row) => row.name === backup)
+    : null;
+  const selectedVersion = selected && (selected.version || selected.name)
+    ? (selected.version || selected.name)
+    : backup;
+  const selectedTime = selected && selected.created_at_text ? `（${selected.created_at_text}）` : '';
+  const selectedWarning = selected && selected.complete === false
+    ? '\n该备份为旧格式，可能只能恢复备份清单中的文件。'
+    : '';
+  const confirmed = window.confirm(`确认回滚完整版本到 ${selectedVersion}${selectedTime}？回滚前会先备份当前版本，回滚期间网页新委托会暂时锁定；回滚后的 cfquant 核心也会同步到所有已绑定 QMT 目录，完成后需要重启 QMT。${selectedWarning}`);
   if (!confirmed) return;
   openQmtUpdateProgress(
     'project-rollback',
@@ -5927,6 +6027,7 @@ async function rollbackProjectUpdateFromUi() {
     }
   } catch (error) {
     failQmtUpdateProgress(error);
+    await refreshProjectUpdateStatusQuietly();
     throw error;
   } finally {
     state.versionUpdateBusy = false;
@@ -8046,7 +8147,7 @@ function renderAccountPairs() {
       const dirLine = document.createElement('small');
       dirLine.textContent = config.qmt_dir
         ? `QMT 核心目录：${config.qmt_dir}`
-        : 'QMT 核心目录未填写，自动复制和自动更新不可用';
+        : 'QMT 核心目录未填写，自动同步和自动更新不可用';
       summary.appendChild(modeLine);
       summary.appendChild(dirLine);
       const marketSummary = marketRouteSummary(config);
@@ -8279,12 +8380,12 @@ async function saveCurrentAccountPair() {
       marketBridges,
     }, data.qmt_core_deploy, { context: 'binding', qmtAutoLogin: data.qmt_auto_login });
     if (data.qmt_core_deploy) {
-      log('QMT 核心包自动复制已处理', qmtCoreDeployLogPayload(data.qmt_core_deploy));
+      log('QMT 核心包自动同步已处理', qmtCoreDeployLogPayload(data.qmt_core_deploy));
     }
     if (data.qmt_bridge_identity) {
       log('ctypes 身份配置已处理', data.qmt_bridge_identity);
     }
-    if (!qmtDir) log('QMT 核心目录未填写，该账号自动复制和自动更新不可用', { account_id: accountId, account_type: accountType });
+    if (!qmtDir) log('QMT 核心目录未填写，该账号自动同步和自动更新不可用', { account_id: accountId, account_type: accountType });
   } catch (error) {
     setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
     log('账号配置保存失败', { error: error.message });
@@ -8730,12 +8831,12 @@ async function submitBindingForm(event) {
       qmt_auto_login: qmtAutoLoginSettings,
     }, data.qmt_core_deploy, { context: 'binding', qmtAutoLogin: data.qmt_auto_login, qmtStrategyDeploy: data.qmt_strategy_deploy });
     if (data.qmt_core_deploy) {
-      log('QMT 核心包自动复制已处理', qmtCoreDeployLogPayload(data.qmt_core_deploy));
+      log('QMT 核心包自动同步已处理', qmtCoreDeployLogPayload(data.qmt_core_deploy));
     }
     if (data.qmt_bridge_identity) {
       log('ctypes 身份配置已处理', data.qmt_bridge_identity);
     }
-    if (!qmtDir) log('QMT 核心目录未填写，该账号自动复制和自动更新不可用', { account_id: accountId, account_type: accountType });
+    if (!qmtDir) log('QMT 核心目录未填写，该账号自动同步和自动更新不可用', { account_id: accountId, account_type: accountType });
   } catch (error) {
     setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
     log('账号配置保存失败', { error: error.message });
@@ -11625,7 +11726,7 @@ async function saveOnboardingConfig(event) {
     if (data.qmt_bridge_identity && data.qmt_bridge_identity.error) {
       setOnboardingStatus('onboardingDeployStatus', `身份文件写入失败：${data.qmt_bridge_identity.error}`, 'error');
     } else if (qmtCoreDeployHasIssues(data.qmt_core_deploy)) {
-      setOnboardingStatus('onboardingDeployStatus', deployMessage || 'cfquant 核心包自动复制失败，请检查 QMT 目录和权限。', 'warn');
+      setOnboardingStatus('onboardingDeployStatus', deployMessage || 'cfquant 核心包自动同步失败，请检查 QMT 目录和权限。', 'warn');
     } else if (deployMessage) {
       setOnboardingStatus('onboardingDeployStatus', deployMessage, 'ok');
     } else if (data.qmt_bridge_identity) {
@@ -12462,6 +12563,7 @@ function startTimers() {
 
 async function boot() {
   mountQmtStrategySettings();
+  wireHelpTooltips();
   wireForms();
   renderProjectUpdateStatus(null);
   renderUpdateStatus(null);

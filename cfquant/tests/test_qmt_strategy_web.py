@@ -14,6 +14,33 @@ def web_config(tmp_path, monkeypatch):
     return web, config
 
 
+def test_initialize_web_setup_can_skip_optional_admin_registration(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    monkeypatch.setattr(web, "auto_deploy_qmt_core_for_account", lambda *args, **kwargs: {
+        "summary": {"ok": True},
+        "results": [],
+    })
+    monkeypatch.setattr(web, "write_qmt_bridge_identity", lambda row: {"written": True, "path": "fake"})
+    monkeypatch.setattr(web, "write_qmt_market_bridge_identities", lambda row: [])
+    monkeypatch.setattr(web, "configure_account_qmt_strategies", lambda row, identity: {})
+    monkeypatch.setattr(web, "qmt_auto_login_apply_for_account", lambda row, request=None: {
+        "enabled": False,
+    })
+    monkeypatch.setattr(web, "ensure_account_runtime", lambda mode: {"mode": mode})
+
+    data = web.initialize_web_setup({
+        "account_id": "1000000001",
+        "qmt_dir": str(tmp_path / "bin.x64"),
+        "web_auth_enabled": False,
+    })
+
+    assert config.web_auth_enabled() is False
+    assert data["server_access"]["web_auth_enabled"] is False
+    assert data["web_auth"]["configured"] is False
+    assert data["web_auth"]["username"] == ""
+    assert data["setup"]["setup_required"] is False
+
+
 def test_web_reload_info_uses_target_port_and_preserves_previous_listener(web_config, monkeypatch):
     web, _ = web_config
     monkeypatch.setattr(web, "WEB_BOUND_HOST", "127.0.0.1")

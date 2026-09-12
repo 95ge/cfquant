@@ -113,6 +113,62 @@ def test_single_order_signatures_and_results_match_xttrader(connected):
     assert not hasattr(env.api, "stop")
 
 
+def test_single_cancel_async_returns_seq_and_deduplicates_callback(connected):
+    env = connected
+    seq = env.trader.cancel_order_stock_async(env.account, "1001")
+    assert seq > 0
+    assert len(env.cancel_responses) == 1
+    assert env.cancel_responses[0].seq == seq
+    assert env.cancel_responses[0].order_id == "1001"
+    assert env.cancel_responses[0].cancel_result == 0
+    assert env.trader._pending_async_cancels == {}
+
+    env.client.handlers["trader:on_cancel_order_stock_async_response"](
+        vars(env.cancel_responses[0])
+    )
+    assert len(env.cancel_responses) == 1
+
+
+def test_single_cancel_async_returns_minus_one_for_explicit_qmt_rejection(connected):
+    env = connected
+    env.outcomes[:] = [False]
+    result = env.trader.cancel_order_stock_async(env.account, "1001")
+    assert result == -1
+    assert len(env.cancel_responses) == 1
+    assert env.cancel_responses[0].cancel_result == -1
+    assert env.trader._pending_async_cancels == {}
+
+
+def test_single_cancel_sysid_async_preserves_sysid_and_deduplicates_callback(connected):
+    env = connected
+    seq = env.trader.cancel_order_stock_sysid_async(env.account, "SZ", "SYS-1001")
+    assert seq > 0
+    assert len(env.cancel_responses) == 1
+    assert env.cancel_responses[0].seq == seq
+    assert env.cancel_responses[0].order_id == "SYS-1001"
+    assert env.cancel_responses[0].order_sysid == "SYS-1001"
+    assert env.cancel_responses[0].cancel_result == 0
+    assert env.trader._pending_async_cancels == {}
+
+    env.client.handlers["trader:on_cancel_order_stock_async_response"](
+        vars(env.cancel_responses[0])
+    )
+    assert len(env.cancel_responses) == 1
+
+
+def test_async_order_response_preserves_original_error_message():
+    response = XtOrderResponse.from_any({
+        "m_strAccountID": "TEST_ONLY",
+        "m_nOrderID": 1001,
+        "m_strErrorMsg": "rejected by QMT",
+        "m_nSeq": 9,
+    })
+    assert response.account_id == "TEST_ONLY"
+    assert response.order_id == 1001
+    assert response.error_msg == "rejected by QMT"
+    assert response.seq == 9
+
+
 @pytest.mark.parametrize("internal_id,sysid", [
     (1082130604, 899), (1082130609, 904), (1082130619, 914),
     (1082130624, 919), (1082130629, 924),

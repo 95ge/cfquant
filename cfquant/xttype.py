@@ -64,6 +64,21 @@ def _set_first(data, target, names, default=_MISSING):
         data[target] = value
 
 
+def _set_first_order_id(data, names, default=-1):
+    current = data.get("order_id", _MISSING)
+    if current is not _MISSING and not _is_empty(current) and current not in (0, "0", -1, "-1"):
+        return
+    for name in names:
+        if name not in data:
+            continue
+        value = data.get(name)
+        if _is_empty(value) or value in (0, "0", -1, "-1"):
+            continue
+        data["order_id"] = value
+        return
+    data["order_id"] = default
+
+
 def _normalize_order_id_field(data):
     value = data.get("order_id")
     if isinstance(value, str):
@@ -358,12 +373,12 @@ class XtOrder(DictObject):
             return value
         _apply_common_account_fields(data)
         _apply_stock_code_field(data)
-        _set_first(data, "order_id", (
+        _set_first_order_id(data, (
             "m_nRef",
             "m_nOrderID",
             "m_strOrderRef",
             "m_strOrderID",
-        ), default=-1)
+        ))
         _normalize_order_id_field(data)
         _set_first(data, "order_sysid", (
             "m_strOrderSysID",
@@ -494,12 +509,12 @@ class XtTrade(DictObject):
             "m_dTradeAmount",
             "m_dTradedAmount",
         ), default=0.0)
-        _set_first(data, "order_id", (
+        _set_first_order_id(data, (
             "m_nRef",
             "m_nOrderID",
             "m_strOrderRef",
             "m_strOrderID",
-        ), default=-1)
+        ))
         _normalize_order_id_field(data)
         _set_first(data, "order_sysid", (
             "m_strOrderSysID",
@@ -790,16 +805,19 @@ class XtOrderError(DictObject):
         if data is None:
             return value
         _apply_common_account_fields(data)
-        _set_first(data, "order_id", (
+        _set_first_order_id(data, (
             "m_nRef",
             "m_nOrderID",
             "m_strOrderRef",
             "m_strOrderID",
-        ), default=-1)
+        ))
         _set_first(data, "error_id", ("m_nErrorID", "error_code"), default=None)
         _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")
         _set_first(data, "strategy_name", ("m_strStrategyName",), default="")
         _set_first(data, "order_remark", ("m_strRemark", "m_strOrderRemark"), default="")
+        _normalize_order_id_field(data)
+        if data.get("order_id") in (0, "0", -1, "-1"):
+            data["order_id"] = -1
         return cls(**data)
 
 
@@ -810,11 +828,22 @@ class XtCancelError(DictObject):
         if data is None:
             return value
         _apply_common_account_fields(data)
-        _set_first(data, "order_id", ("m_nOrderID", "m_strOrderID"), default=-1)
+        _apply_stock_code_field(data)
+        _set_first_order_id(data, (
+            "m_nRef",
+            "m_nOrderID",
+            "m_strOrderRef",
+            "m_strOrderID",
+        ))
         _set_first(data, "market", ("m_nMarket", "m_strExchangeID"), default="")
         _set_first(data, "order_sysid", ("m_strOrderSysID", "sysid", "m_strOrderID"), default="")
         _set_first(data, "error_id", ("m_nErrorID", "error_code"), default=None)
         _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")
+        _set_first(data, "strategy_name", ("m_strStrategyName",), default="")
+        _set_first(data, "order_remark", ("m_strRemark", "m_strOrderRemark"), default="")
+        _normalize_order_id_field(data)
+        if data.get("order_id") in (0, "0", -1, "-1"):
+            data["order_id"] = -1
         return cls(**data)
 
 
@@ -825,15 +854,16 @@ class XtOrderResponse(DictObject):
         if data is None:
             return value
         _apply_common_account_fields(data)
-        _set_first(data, "order_id", (
+        _set_first_order_id(data, (
             "m_nRef",
             "m_nOrderID",
             "m_strOrderRef",
             "m_strOrderID",
-        ), default=-1)
+        ))
         _normalize_order_id_field(data)
         _set_first(data, "strategy_name", ("m_strStrategyName",), default="")
         _set_first(data, "order_remark", ("m_strRemark", "m_strOrderRemark"), default="")
+        _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")
         _set_first(data, "seq", ("m_nSeq", "request_id"), default=None)
         return cls(**data)
 
@@ -846,7 +876,12 @@ class XtCancelOrderResponse(DictObject):
             return value
         _apply_common_account_fields(data)
         _set_first(data, "cancel_result", ("result", "m_nCancelResult"), default=-1)
-        _set_first(data, "order_id", ("m_nOrderID", "m_strOrderID"), default=-1)
+        _set_first_order_id(data, (
+            "m_nRef",
+            "m_nOrderID",
+            "m_strOrderRef",
+            "m_strOrderID",
+        ))
         _set_first(data, "order_sysid", ("m_strOrderSysID", "sysid", "m_strOrderID"), default="")
         _set_first(data, "seq", ("m_nSeq", "request_id"), default=None)
         _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")

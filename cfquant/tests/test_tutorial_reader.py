@@ -125,6 +125,7 @@ def test_first_setup_can_read_without_saving_and_preserves_draft(page, frontend_
     expect(page.locator("#tutorialReader")).not_to_be_visible()
     expect(opener).to_be_focused()
 
+    page.locator("#setupEnableWebAuth").check()
     draft = {
         "setupAdminUsername": "draft-admin",
         "setupAdminPassword": "draft-password",

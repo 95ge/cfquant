@@ -4,6 +4,7 @@ sys.dont_write_bytecode = True
 
 import argparse
 import base64
+from contextlib import contextmanager
 import email.parser
 import email.policy
 import fnmatch
@@ -28,6 +29,7 @@ import time
 import tokenize
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -398,6 +400,19 @@ PROJECT_UPDATE_DIR = os.path.join(
     ".cfquant_project_updates",
 )
 PROJECT_UPDATE_BACKUP_KEEP = int(os.environ.get("CFQUANT_PROJECT_UPDATE_BACKUP_KEEP", "2"))
+PROJECT_UPDATE_TRADE_WRITE_PATHS = frozenset({
+    "/api/order",
+    "/api/credit/order",
+    "/api/future/order",
+    "/api/future-option/order",
+    "/api/stock-option/order",
+    "/api/orders/batch",
+    "/api/credit/orders/batch",
+    "/api/future/orders/batch",
+    "/api/future-option/orders/batch",
+    "/api/stock-option/orders/batch",
+    "/api/cancel",
+})
 QMT_ENTRY_SCRIPT_NAMES = (
     "CFQUANT_CTYPE_ALL_LOWLAT.py",
     "CFQUANT_LITE.py",
@@ -7041,6 +7056,11 @@ def fail(error, status=400):
     return {"ok": False, "error": str(error), "status": status}
 
 
+def is_project_update_trade_write_path(path):
+    path = str(path or "")
+    return path in PROJECT_UPDATE_TRADE_WRITE_PATHS or path.startswith("/api/cftrader/")
+
+
 def to_jsonable(value, depth=0):
     if depth > 40:
         return str(value)
@@ -7398,7 +7418,7 @@ class CfquantUpdater(object):
             "removed_backups": [],
             "current_version": "",
             "qmt_restart_required": qmt_restart_not_required_info(
-                reason="尚未执行 QMT 核心包自动复制"
+                reason="尚未执行 QMT 核心包自动同步"
             ),
             "error": "",
             "warning": "",
@@ -7407,8 +7427,8 @@ class CfquantUpdater(object):
         if not configured_dir:
             result.update({
                 "skipped": True,
-                "warning": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
-                "message": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
+                "warning": "QMT 目录未填写，已跳过 cfquant 核心包自动同步",
+                "message": "QMT 目录未填写，已跳过 cfquant 核心包自动同步",
             })
             return result
 
@@ -7435,7 +7455,7 @@ class CfquantUpdater(object):
                     raise RuntimeError("QMT 核心目录不存在: %s" % (python_dir or configured_dir))
                 if os.path.basename(os.path.normpath(python_dir)).lower() != "bin.x64":
                     raise RuntimeError(
-                        "自动复制仅支持 QMT 的 bin.x64 目录，请填写 QMT 安装目录或 bin.x64: %s"
+                        "自动同步仅支持 QMT 的 bin.x64 目录，请填写 QMT 安装目录或 bin.x64: %s"
                         % python_dir
                     )
 
@@ -7475,7 +7495,7 @@ class CfquantUpdater(object):
                 installed = True
                 meta = {
                     "source": "local_account_binding",
-                    "reason": "保存账号配置时自动复制 cfquant 核心包",
+                    "reason": "保存账号配置时自动同步 cfquant 核心包",
                     "bridge_id": bridge_id,
                     "qmt_role": str(qmt_role or "normal"),
                 }
@@ -7487,12 +7507,12 @@ class CfquantUpdater(object):
                     "removed_backups": removed,
                     "current_version": self._read_version(current),
                     "qmt_restart_required": qmt_restart_required_info(
-                        reason="QMT 核心包自动复制完成",
+                        reason="QMT 核心包自动同步完成",
                         entry_info=qmt_entry_manual_update_info(
-                            reason="账号保存只自动复制 cfquant 核心包，不会覆盖 QMT 入口策略文件"
+                            reason="账号保存只自动同步 cfquant 核心包，不会覆盖 QMT 入口策略文件"
                         ),
                     ),
-                    "message": "cfquant 核心包已自动复制到 %s" % current,
+                    "message": "cfquant 核心包已自动同步到 %s" % current,
                 })
                 return result
         except Exception as e:
@@ -7507,9 +7527,9 @@ class CfquantUpdater(object):
                 safe_print("cfquant auto deploy cleanup failed: %s" % restore_error)
             result["error"] = str(e)
             result["qmt_restart_required"] = qmt_restart_not_required_info(
-                reason="QMT 核心包自动复制失败"
+                reason="QMT 核心包自动同步失败"
             )
-            result["message"] = "cfquant 核心包自动复制失败: %s" % e
+            result["message"] = "cfquant 核心包自动同步失败: %s" % e
             safe_print(
                 "cfquant QMT core auto deploy failed bridge_id=%s role=%s qmt_dir=%s error=%s"
                 % (bridge_id, qmt_role, configured_dir, e)
@@ -8575,6 +8595,10 @@ class CfquantUpdater(object):
         return time.strftime("%Y%m%d_%H%M%S")
 
 
+class ProjectUpdateBusyError(RuntimeError):
+    pass
+
+
 class CfquantProjectUpdater(object):
     BACKUP_KEEP = PROJECT_UPDATE_BACKUP_KEEP
     EXCLUDED_DIR_NAMES = {
@@ -8590,6 +8614,19 @@ class CfquantProjectUpdater(object):
         ".ruff_cache",
         ".idea",
         ".vscode",
+        ".playwright-cli",
+        ".local_archive",
+        ".pytest_basetemp",
+        ".pytest_tmp",
+        ".tmp_pytest",
+        "build",
+        "dist",
+        "official_site",
+        "pip_library_dev",
+        "private_docs",
+        "reports",
+        "temp",
+        "test_dir",
         "node_modules",
         "log",
         "log_data",
@@ -8598,11 +8635,18 @@ class CfquantProjectUpdater(object):
         "pic",
         "remotion_intro",
     }
+    EXCLUDED_DIR_PREFIXES = (
+        ".pytest-",
+        ".pytest_",
+        ".tmp_pytest",
+    )
     PRESERVED_REL_PATHS = {
         "AGENTS.md",
         ".env",
         "cfquant_web_config.json",
         "cfquant_web_config.db",
+        "cfquant_web_reset_password.txt",
+        "cfquant_hub_status.json",
         "cfquant_pipe_hub_status.json",
         "runtime/config/cfquant_web_config.json",
         "runtime/db/cfquant_web_config.db",
@@ -8617,10 +8661,94 @@ class CfquantProjectUpdater(object):
         "*.log",
         "*.tmp",
         "*.bak",
+        "*.db",
+        "*.db-shm",
+        "*.db-wal",
+        "*.sqlite",
+        "*.sqlite3",
+        "*.sqlite3-shm",
+        "*.sqlite3-wal",
+        "*.env",
+        ".tmp_*",
     )
 
     def __init__(self):
-        self._lock = threading.RLock()
+        self._operation_condition = threading.Condition(threading.RLock())
+        self._operation_state = None
+        self._active_trade_requests = 0
+
+    @contextmanager
+    def _operation(self, operation):
+        with self._operation_condition:
+            if self._operation_state:
+                current = self._operation_state
+                raise ProjectUpdateBusyError(
+                    current.get("message") or "已有项目更新或回滚操作正在执行，请稍后重试"
+                )
+            started_at = time.time()
+            state = {
+                "busy": True,
+                "operation": operation,
+                "phase": "preparing",
+                "trade_locked": False,
+                "started_at": started_at,
+                "started_at_text": time.strftime(
+                    "%Y-%m-%d %H:%M:%S",
+                    time.localtime(started_at),
+                ),
+                "message": "正在准备项目更新" if operation == "update" else "正在准备项目回滚",
+            }
+            self._operation_state = state
+        try:
+            yield
+        finally:
+            with self._operation_condition:
+                self._operation_state = None
+                self._operation_condition.notify_all()
+
+    @contextmanager
+    def trade_request(self, path):
+        if not is_project_update_trade_write_path(path):
+            yield
+            return
+        with self._operation_condition:
+            if self._operation_state and self._operation_state.get("trade_locked", True):
+                state = self._operation_state
+                raise ProjectUpdateBusyError(
+                    state.get("message") or "系统更新进行中，网页交易请求已暂时锁定，请稍后重试"
+                )
+            self._active_trade_requests += 1
+        try:
+            yield
+        finally:
+            with self._operation_condition:
+                self._active_trade_requests = max(0, self._active_trade_requests - 1)
+                self._operation_condition.notify_all()
+
+    def is_busy(self):
+        with self._operation_condition:
+            return bool(self._operation_state)
+
+    def operation_status(self):
+        with self._operation_condition:
+            state = dict(self._operation_state or {})
+            if not state:
+                return {"busy": False}
+            state["active_trade_requests"] = self._active_trade_requests
+            state["elapsed_seconds"] = max(0, int(time.time() - state.get("started_at", time.time())))
+            return state
+
+    def _set_operation_phase(self, phase, message, trade_locked=None):
+        with self._operation_condition:
+            if self._operation_state:
+                if trade_locked is True and not self._operation_state.get("trade_locked"):
+                    self._operation_state["trade_locked"] = True
+                    self._operation_state["phase"] = "waiting_trade_requests"
+                    self._operation_state["message"] = "正在等待已提交的网页交易请求完成"
+                    while self._active_trade_requests:
+                        self._operation_condition.wait(0.25)
+                self._operation_state["phase"] = phase
+                self._operation_state["message"] = message
 
     def status(self, repo_url=None, ref=None, include_remote=True):
         repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
@@ -8642,6 +8770,7 @@ class CfquantProjectUpdater(object):
             "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
             "last_update": self._read_install_meta(),
             "backups": backups,
+            "operation": self.operation_status(),
             "version_info": project_version_info(
                 include_remote=include_remote,
                 repo_url=repo_url,
@@ -8659,7 +8788,8 @@ class CfquantProjectUpdater(object):
         ref = str(ref or "").strip()
         if not repo_url:
             raise ValueError("repo_url is required")
-        with self._lock:
+        with self._operation("update"):
+            self._set_operation_phase("download", "正在从 GitHub 下载完整项目版本")
             with tempfile.TemporaryDirectory(prefix="cfquant_project_update_") as work_dir:
                 source_dir = os.path.join(work_dir, "source")
                 fetched = UPDATER._fetch_github(repo_url, ref, source_dir)
@@ -8675,9 +8805,10 @@ class CfquantProjectUpdater(object):
         fallback_repo_url = str(fallback_repo_url or DEFAULT_UPDATE_REPO_URL).strip()
         fallback_ref = str(fallback_ref or DEFAULT_UPDATE_REF).strip()
         official_error = ""
-        with self._lock:
+        with self._operation("update"):
             with tempfile.TemporaryDirectory(prefix="cfquant_project_update_") as work_dir:
                 source_dir = os.path.join(work_dir, "source")
+                self._set_operation_phase("download", "正在从官网下载完整项目版本")
                 try:
                     fetched = UPDATER._fetch_official_package(site_url, source_dir)
                     return self._install_source(source_dir, {
@@ -8691,6 +8822,7 @@ class CfquantProjectUpdater(object):
                 if not fallback_repo_url:
                     raise RuntimeError("官网下载失败且未配置 GitHub 回退源: %s" % official_error)
                 source_dir = os.path.join(work_dir, "github_source")
+                self._set_operation_phase("download", "官网不可用，正在从 GitHub 下载回退版本")
                 fetched = UPDATER._fetch_github(fallback_repo_url, fallback_ref, source_dir)
                 return self._install_source(source_dir, {
                     "source": "github_fallback",
@@ -8704,12 +8836,13 @@ class CfquantProjectUpdater(object):
         content = content or b""
         if not content:
             raise ValueError("zip content is empty")
-        with self._lock:
+        with self._operation("update"):
             with tempfile.TemporaryDirectory(prefix="cfquant_project_update_") as work_dir:
                 zip_path = os.path.join(work_dir, "upload.zip")
                 with open(zip_path, "wb") as f:
                     f.write(content)
                 source_dir = os.path.join(work_dir, "source")
+                self._set_operation_phase("extract", "正在解压完整项目版本")
                 UPDATER._safe_extract_zip(zip_path, source_dir)
                 return self._install_source(source_dir, {
                     "source": "zip",
@@ -8718,7 +8851,7 @@ class CfquantProjectUpdater(object):
                 })
 
     def rollback(self, backup_name=None):
-        with self._lock:
+        with self._operation("rollback"):
             backups = self._list_backups()
             if not backups:
                 raise RuntimeError("没有可回滚的项目备份")
@@ -8729,16 +8862,29 @@ class CfquantProjectUpdater(object):
                     raise RuntimeError("project backup not found: %s" % backup_name)
             else:
                 selected = backups[0]
+            self._set_operation_phase(
+                "backup",
+                "正在备份当前版本，确保回滚失败时可以恢复",
+                trade_locked=True,
+            )
+            rollback_rel_files = sorted(set(
+                self._source_rel_files(BASE_DIR)
+                + self._manifest_rel_files(selected)
+            ))
             rollback_backup = self._backup_project(
-                self._manifest_rel_files(selected),
+                rollback_rel_files,
                 label="rollback",
+                managed_rel_files=rollback_rel_files,
             )
             entry_info = self._entry_rollback_info(selected)
             editable_install = None
             try:
+                self._set_operation_phase("restore", "正在恢复选中的项目版本")
                 self._restore_backup(selected)
+                self._set_operation_phase("install", "正在刷新当前 Python 环境中的源码安装")
                 editable_install = self._run_editable_install("project_rollback")
                 self._require_editable_install(editable_install)
+                self._set_operation_phase("deploy", "正在同步回滚后的 cfquant 核心到 QMT 目录")
                 qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
             except Exception:
                 self._restore_backup(rollback_backup)
@@ -8748,6 +8894,13 @@ class CfquantProjectUpdater(object):
                 except Exception as recovery_error:
                     safe_print("project rollback editable install recovery failed: %s" % recovery_error)
                 raise
+            self._write_rollback_meta(
+                selected,
+                rollback_backup,
+                entry_info,
+                editable_install,
+                qmt_core_deploy,
+            )
             removed = self._prune_backups()
             return {
                 "updated": True,
@@ -8776,28 +8929,39 @@ class CfquantProjectUpdater(object):
         rel_files = self._source_rel_files(source_root)
         if not rel_files:
             raise RuntimeError("源码中没有可更新的项目文件")
-        backup = self._backup_project(rel_files, label="backup")
+        self._set_operation_phase(
+            "backup",
+            "正在创建当前项目的完整回退点",
+            trade_locked=True,
+        )
+        backup_rel_files = sorted(set(
+            self._source_rel_files(BASE_DIR) + rel_files
+        ))
+        backup = self._backup_project(
+            backup_rel_files,
+            label="backup",
+            managed_rel_files=backup_rel_files,
+        )
         copied = []
         changed = []
         editable_install = None
         try:
+            self._set_operation_phase("install", "正在覆盖项目源码")
             for rel_path in rel_files:
                 src = os.path.join(source_root, rel_path.replace("/", os.sep))
                 dst = self._safe_target_path(rel_path)
                 if not file_content_equal(src, dst):
                     changed.append(rel_path)
-                parent = os.path.dirname(dst)
-                if parent:
-                    os.makedirs(parent, exist_ok=True)
-                if os.path.isdir(dst) and not os.path.islink(dst):
-                    UPDATER._remove_tree(dst)
-                elif os.path.exists(dst) and not os.path.isfile(dst):
-                    os.remove(dst)
+                self._prepare_target_file(dst)
                 shutil.copy2(src, dst)
                 copied.append(rel_path)
             entry_info = self._entry_update_info(changed)
+            self._set_operation_phase("install", "正在刷新当前 Python 环境中的源码安装")
             editable_install = self._run_editable_install("project_update")
             self._require_editable_install(editable_install)
+            self._set_operation_phase("deploy", "正在同步最新 cfquant 核心到 QMT 目录")
+            qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
+            qmt_deploy_summary = qmt_core_deploy.get("summary") or {}
             self._write_install_meta(
                 meta,
                 source_root,
@@ -8807,8 +8971,6 @@ class CfquantProjectUpdater(object):
                 entry_info,
                 editable_install=editable_install,
             )
-            qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
-            qmt_deploy_summary = qmt_core_deploy.get("summary") or {}
             removed = self._prune_backups()
             return {
                 "updated": True,
@@ -8932,58 +9094,103 @@ class CfquantProjectUpdater(object):
         result.sort()
         return result
 
-    def _backup_project(self, rel_files, label="backup"):
-        rel_files = sorted(set(rel_files or []))
-        os.makedirs(self._backup_root(), exist_ok=True)
-        name = "%s_%s" % (time.strftime("%Y%m%d_%H%M%S"), label)
-        backup_dir = os.path.join(self._backup_root(), name)
-        files_dir = os.path.join(backup_dir, "files")
-        os.makedirs(files_dir, exist_ok=True)
+    def _backup_project(self, rel_files=None, label="backup", managed_rel_files=None):
+        requested_rel_files = sorted(set(rel_files or []))
+        rel_files = sorted(set(
+            self._source_rel_files(BASE_DIR) + requested_rel_files
+        ))
+        managed_rel_files = sorted(set(
+            (managed_rel_files or []) + rel_files
+        ))
+        backup_root = os.path.abspath(self._backup_root())
+        os.makedirs(backup_root, exist_ok=True)
+        suffix = uuid.uuid4().hex[:10]
+        name = "%s_%s_%s" % (time.strftime("%Y%m%d_%H%M%S"), label, suffix)
+        backup_dir = os.path.join(backup_root, name)
+        temp_dir = os.path.join(backup_root, ".tmp-%s-%s" % (name, uuid.uuid4().hex[:8]))
+        files_dir = os.path.join(temp_dir, "files")
+        created_at = time.time()
         manifest = {
             "schema": "cfquant.project.backup",
-            "created_at": time.time(),
-            "created_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "format_version": 2,
+            "complete": True,
+            "created_at": created_at,
+            "created_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at)),
             "project_dir": BASE_DIR,
             "label": label,
+            "managed_files": [],
             "files": {},
         }
-        for rel_path in rel_files:
-            if self._is_excluded_path(rel_path, is_dir=False):
-                continue
-            src = self._safe_target_path(rel_path)
-            item = {"existed": os.path.isfile(src)}
-            if os.path.isfile(src):
-                dst = os.path.join(files_dir, rel_path.replace("/", os.sep))
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-                try:
-                    item["size"] = os.path.getsize(src)
-                except Exception:
-                    pass
-            manifest["files"][rel_path] = item
-        self._write_json_file(os.path.join(backup_dir, "manifest.json"), manifest)
-        return self._backup_info(backup_dir)
+        try:
+            os.makedirs(files_dir, exist_ok=True)
+            normalized_managed = []
+            for rel_path in managed_rel_files:
+                normalized = self._normalize_rel(rel_path)
+                if not normalized or self._is_excluded_path(normalized, is_dir=False):
+                    continue
+                if normalized not in normalized_managed:
+                    normalized_managed.append(normalized)
+            manifest["managed_files"] = sorted(normalized_managed)
+            for rel_path in rel_files:
+                rel_path = self._normalize_rel(rel_path)
+                if not rel_path or self._is_excluded_path(rel_path, is_dir=False):
+                    continue
+                src = self._safe_target_path(rel_path)
+                existed = os.path.isfile(src)
+                item = {
+                    "existed": existed,
+                    "type": "file" if existed else "missing",
+                }
+                if existed:
+                    dst = self._safe_backup_path(files_dir, rel_path)
+                    parent = os.path.dirname(dst)
+                    if parent:
+                        os.makedirs(parent, exist_ok=True)
+                    shutil.copy2(src, dst)
+                    try:
+                        item["size"] = os.path.getsize(src)
+                    except Exception:
+                        pass
+                manifest["files"][rel_path] = item
+            manifest["file_count"] = len(manifest["files"])
+            self._write_json_file(os.path.join(temp_dir, "manifest.json"), manifest)
+            os.replace(temp_dir, backup_dir)
+            return self._backup_info(backup_dir)
+        except Exception:
+            self._remove_path(temp_dir)
+            raise
 
     def _restore_backup(self, backup):
-        backup_dir = backup.get("path") if isinstance(backup, dict) else str(backup or "")
-        backup_dir = os.path.abspath(backup_dir)
-        if not backup_dir.startswith(os.path.abspath(self._backup_root()) + os.sep):
-            raise RuntimeError("非法项目备份路径: %s" % backup_dir)
-        manifest = self._read_json_file(os.path.join(backup_dir, "manifest.json"))
+        backup_dir = self._safe_backup_dir(backup)
+        manifest = self._read_backup_manifest(backup_dir)
         files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
         files_dir = os.path.join(backup_dir, "files")
+        complete = bool(manifest.get("complete")) and int(manifest.get("format_version") or 0) >= 2
+        desired_files = set()
         for rel_path, item in files.items():
+            rel_path = self._normalize_rel(rel_path)
+            if not rel_path:
+                continue
             if self._is_excluded_path(rel_path, is_dir=False):
                 continue
             dst = self._safe_target_path(rel_path)
             existed = bool(item.get("existed")) if isinstance(item, dict) else False
             if existed:
-                src = os.path.join(files_dir, rel_path.replace("/", os.sep))
-                if os.path.isfile(src):
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    shutil.copy2(src, dst)
+                src = self._safe_backup_path(files_dir, rel_path)
+                if not os.path.isfile(src):
+                    raise RuntimeError("项目备份文件缺失: %s" % rel_path)
+                self._prepare_target_file(dst)
+                shutil.copy2(src, dst)
+                desired_files.add(rel_path)
+            elif complete:
+                self._remove_path(dst)
             elif os.path.isfile(dst):
                 os.remove(dst)
+        if complete:
+            current_files = set(self._source_rel_files(BASE_DIR))
+            stale_files = sorted(current_files - desired_files, reverse=True)
+            for rel_path in stale_files:
+                self._remove_path(self._safe_target_path(rel_path))
 
     def _entry_update_info(self, changed_rel_files):
         entry_files = []
@@ -9005,9 +9212,8 @@ class CfquantProjectUpdater(object):
         )
 
     def _entry_rollback_info(self, backup):
-        backup_dir = backup.get("path") if isinstance(backup, dict) else str(backup or "")
-        backup_dir = os.path.abspath(backup_dir)
-        manifest = self._read_json_file(os.path.join(backup_dir, "manifest.json"))
+        backup_dir = self._safe_backup_dir(backup)
+        manifest = self._read_backup_manifest(backup_dir)
         files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
         files_dir = os.path.join(backup_dir, "files")
         entry_files = []
@@ -9018,7 +9224,7 @@ class CfquantProjectUpdater(object):
             filename = os.path.basename(normalized)
             if filename not in QMT_ENTRY_SCRIPT_NAMES:
                 continue
-            backup_path = os.path.join(files_dir, normalized.replace("/", os.sep))
+            backup_path = self._safe_backup_path(files_dir, normalized)
             current_path = self._safe_target_path(normalized)
             existed = bool(item.get("existed")) if isinstance(item, dict) else False
             if existed and not file_content_equal(backup_path, current_path):
@@ -9061,11 +9267,35 @@ class CfquantProjectUpdater(object):
         os.makedirs(PROJECT_UPDATE_DIR, exist_ok=True)
         self._write_json_file(os.path.join(PROJECT_UPDATE_DIR, "last_update.json"), payload)
 
+    def _write_rollback_meta(
+        self,
+        restored_backup,
+        rollback_backup,
+        entry_info,
+        editable_install,
+        qmt_core_deploy,
+    ):
+        payload = {
+            "updated_at": time.time(),
+            "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+            "project_dir": BASE_DIR,
+            "operation": "rollback",
+            "restored_backup": restored_backup,
+            "rollback_backup": rollback_backup,
+            "entry_manual_update": entry_info,
+            "editable_install": editable_install or {},
+            "qmt_core_deploy": qmt_core_deploy or {},
+            "current_version": self._read_project_version(BASE_DIR) or current_core_version(),
+        }
+        os.makedirs(PROJECT_UPDATE_DIR, exist_ok=True)
+        self._write_json_file(os.path.join(PROJECT_UPDATE_DIR, "last_update.json"), payload)
+
     def _read_install_meta(self):
         return self._read_json_file(os.path.join(PROJECT_UPDATE_DIR, "last_update.json"))
 
     def _manifest_rel_files(self, backup):
-        manifest = self._read_json_file(os.path.join(backup.get("path") or "", "manifest.json"))
+        backup_dir = self._safe_backup_dir(backup)
+        manifest = self._read_backup_manifest(backup_dir)
         files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
         return list(files.keys())
 
@@ -9076,24 +9306,36 @@ class CfquantProjectUpdater(object):
         rows = []
         for name in os.listdir(backup_root):
             path = os.path.join(backup_root, name)
-            if os.path.isdir(path):
+            if not os.path.isdir(path) or not os.path.isfile(os.path.join(path, "manifest.json")):
+                continue
+            try:
                 rows.append(self._backup_info(path))
+            except Exception as error:
+                safe_print("project backup ignored %s: %s" % (path, error))
         rows.sort(key=lambda row: row.get("created_at") or 0, reverse=True)
         return rows
 
     def _backup_info(self, path):
         stat_result = os.stat(path)
-        manifest = self._read_json_file(os.path.join(path, "manifest.json"))
+        manifest = self._read_backup_manifest(path)
         files = manifest.get("files") if isinstance(manifest.get("files"), dict) else {}
         files_dir = os.path.join(path, "files")
+        created_at = manifest.get("created_at")
+        if not isinstance(created_at, (int, float)):
+            created_at = stat_result.st_mtime
         return {
             "name": os.path.basename(path),
             "path": os.path.abspath(path),
-            "created_at": stat_result.st_mtime,
-            "created_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat_result.st_mtime)),
+            "created_at": created_at,
+            "created_at_text": manifest.get("created_at_text") or time.strftime(
+                "%Y-%m-%d %H:%M:%S",
+                time.localtime(created_at),
+            ),
             "version": self._read_project_version(files_dir),
             "file_count": len(files),
             "label": manifest.get("label") or "",
+            "complete": bool(manifest.get("complete")) and int(manifest.get("format_version") or 0) >= 2,
+            "managed_file_count": len(manifest.get("managed_files") or files),
         }
 
     def _prune_backups(self):
@@ -9101,7 +9343,7 @@ class CfquantProjectUpdater(object):
         removed = []
         for row in rows[self.BACKUP_KEEP:]:
             try:
-                UPDATER._remove_tree(row["path"])
+                self._remove_path(row["path"])
                 removed.append(row)
             except Exception as e:
                 safe_print("project backup prune failed %s: %s" % (row.get("path"), e))
@@ -9130,7 +9372,12 @@ class CfquantProjectUpdater(object):
         if not rel_path:
             return False
         parts = [part.lower() for part in rel_path.split("/") if part]
-        if any(part in self.EXCLUDED_DIR_NAMES for part in parts):
+        if any(
+            part in self.EXCLUDED_DIR_NAMES
+            or part.startswith(self.EXCLUDED_DIR_PREFIXES)
+            or (is_dir and part.endswith(".egg-info"))
+            for part in parts
+        ):
             return True
         if rel_path.lower() in {item.lower() for item in self.PRESERVED_REL_PATHS}:
             return True
@@ -9144,9 +9391,72 @@ class CfquantProjectUpdater(object):
         rel_path = self._normalize_rel(rel_path)
         target = os.path.abspath(os.path.join(BASE_DIR, rel_path.replace("/", os.sep)))
         root = os.path.abspath(BASE_DIR)
-        if target != root and not target.startswith(root + os.sep):
+        try:
+            inside_root = os.path.commonpath([root, target]) == root
+        except ValueError:
+            inside_root = False
+        if target == root or not inside_root:
             raise RuntimeError("项目更新路径越界: %s" % rel_path)
         return target
+
+    def _safe_backup_dir(self, backup):
+        backup_dir = backup.get("path") if isinstance(backup, dict) else str(backup or "")
+        backup_dir = os.path.abspath(backup_dir)
+        backup_root = os.path.abspath(self._backup_root())
+        try:
+            inside_root = os.path.commonpath([backup_root, backup_dir]) == backup_root
+        except ValueError:
+            inside_root = False
+        if backup_dir == backup_root or not inside_root:
+            raise RuntimeError("非法项目备份路径: %s" % backup_dir)
+        return backup_dir
+
+    def _safe_backup_path(self, files_dir, rel_path):
+        files_dir = os.path.abspath(files_dir)
+        normalized = self._normalize_rel(rel_path)
+        target = os.path.abspath(os.path.join(files_dir, normalized.replace("/", os.sep)))
+        try:
+            inside_root = os.path.commonpath([files_dir, target]) == files_dir
+        except ValueError:
+            inside_root = False
+        if not normalized or not inside_root:
+            raise RuntimeError("项目备份文件路径越界: %s" % rel_path)
+        return target
+
+    def _read_backup_manifest(self, backup_dir):
+        manifest_path = os.path.join(backup_dir, "manifest.json")
+        manifest = self._read_json_file(manifest_path)
+        if manifest.get("schema") != "cfquant.project.backup":
+            raise RuntimeError("项目备份清单无效: %s" % backup_dir)
+        if not isinstance(manifest.get("files"), dict):
+            raise RuntimeError("项目备份清单缺少文件列表: %s" % backup_dir)
+        return manifest
+
+    def _prepare_target_file(self, path):
+        if os.path.islink(path) or os.path.isdir(path):
+            self._remove_path(path)
+        elif os.path.exists(path) and not os.path.isfile(path):
+            self._remove_path(path)
+        parent = os.path.dirname(path)
+        if parent:
+            if os.path.exists(parent) and not os.path.isdir(parent):
+                self._remove_path(parent)
+            os.makedirs(parent, exist_ok=True)
+
+    def _remove_path(self, path):
+        if not path or not os.path.lexists(path):
+            return
+        if os.path.islink(path) or os.path.isfile(path):
+            os.remove(path)
+            return
+        if os.path.isdir(path):
+            def onerror(func, failed_path, exc_info):
+                try:
+                    os.chmod(failed_path, stat.S_IWRITE)
+                    func(failed_path)
+                except Exception:
+                    raise
+            shutil.rmtree(path, onerror=onerror)
 
     def _backup_root(self):
         return os.path.join(PROJECT_UPDATE_DIR, "backups")
@@ -9468,21 +9778,21 @@ def _auto_deploy_qmt_core_result_summary(results):
         for item in results
     )
     if errors:
-        message = "cfquant 核心包自动复制部分失败：%s" % "；".join(
+        message = "cfquant 核心包自动同步部分失败：%s" % "；".join(
             "%s(%s)" % (item.get("qmt_role") or item.get("market") or "QMT", item.get("error"))
             for item in errors[:3]
         )
     elif updated:
-        message = "cfquant 核心包已自动复制到 %d 个 QMT 目录" % len(updated)
+        message = "cfquant 核心包已自动同步到 %d 个 QMT 目录" % len(updated)
     elif skipped:
-        message = "cfquant 核心包无需复制或已跳过"
+        message = "cfquant 核心包无需同步或已跳过"
     elif warnings:
-        message = "cfquant 核心包自动复制有提示：%s" % "；".join(
+        message = "cfquant 核心包自动同步有提示：%s" % "；".join(
             item.get("warning") or item.get("message") or ""
             for item in warnings[:3]
         )
     else:
-        message = "没有可自动复制的 QMT 目录"
+        message = "没有可自动同步的 QMT 目录"
     return {
         "ok": not errors,
         "updated_count": len(updated),
@@ -9563,8 +9873,8 @@ def auto_deploy_qmt_core_for_account(row, enabled=True):
         results = [{
             "updated": False,
             "skipped": True,
-            "warning": "已按请求跳过 cfquant 核心包自动复制",
-            "message": "已按请求跳过 cfquant 核心包自动复制",
+            "warning": "已按请求跳过 cfquant 核心包自动同步",
+            "message": "已按请求跳过 cfquant 核心包自动同步",
         }]
         return {
             "enabled": False,
@@ -9577,8 +9887,8 @@ def auto_deploy_qmt_core_for_account(row, enabled=True):
         result = {
             "updated": False,
             "skipped": True,
-            "warning": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
-            "message": "QMT 目录未填写，已跳过 cfquant 核心包自动复制",
+            "warning": "QMT 目录未填写，已跳过 cfquant 核心包自动同步",
+            "message": "QMT 目录未填写，已跳过 cfquant 核心包自动同步",
         }
         results.append(result)
     else:
@@ -9590,8 +9900,8 @@ def auto_deploy_qmt_core_for_account(row, enabled=True):
                     "qmt_role": target.get("qmt_role") or "normal",
                     "bridge_id": target.get("bridge_id") or DEFAULT_BRIDGE_ID,
                     "qmt_dir": target.get("qmt_dir") or "",
-                    "error": "更新器未初始化，无法自动复制 cfquant 核心包",
-                    "message": "更新器未初始化，无法自动复制 cfquant 核心包",
+                    "error": "更新器未初始化，无法自动同步 cfquant 核心包",
+                    "message": "更新器未初始化，无法自动同步 cfquant 核心包",
                 })
                 continue
             result = UPDATER.install_local_core_to_qmt_dir(
@@ -10088,7 +10398,7 @@ def qmt_auto_login_complete_for_account(row):
     return result
 
 
-QMT_AUTO_LOGIN_REMINDER = "QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。"
+QMT_AUTO_LOGIN_REMINDER = "国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码，然后等待自动登录完成。所有 QMT 都要先完成 Python 库下载。"
 
 
 def _qmt_auto_login_first_pid(processes, launch=None):
@@ -10384,7 +10694,7 @@ def auto_deploy_qmt_core_for_all_accounts(source_dir=None):
         "ok": bool(summary.get("ok", True) and not identity_errors),
     })
     if not targets:
-        summary["message"] = "未配置 QMT 绑定目录，Web 已更新；绑定 QMT 后会自动复制核心包"
+        summary["message"] = "未配置 QMT 绑定目录，Web 已更新；绑定 QMT 后会自动同步核心包"
     elif identity_errors:
         summary["message"] = "%s；%d 个 QMT 身份配置写入失败" % (
             summary.get("message") or "核心包同步完成",
@@ -14683,9 +14993,16 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/project-updates/upload":
             self._handle_project_update_upload(parsed)
             return
+        trade_guard = PROJECT_UPDATER.trade_request(parsed.path)
+        try:
+            trade_guard.__enter__()
+        except ProjectUpdateBusyError as e:
+            self._write_json(fail(e, 409), status=409)
+            return
         try:
             body = self._read_json_body()
         except Exception as e:
+            trade_guard.__exit__(type(e), e, e.__traceback__)
             self._write_json(fail("invalid json: %s" % e, 400), status=400)
             return
         try:
@@ -14834,8 +15151,12 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._write_json(fail("not found", 404), status=404)
+        except ProjectUpdateBusyError as e:
+            self._write_json(fail(e, 409), status=409)
         except Exception as e:
             self._write_json(fail(e, 400), status=400)
+        finally:
+            trade_guard.__exit__(None, None, None)
 
     def _read_json_body(self):
         length = int(self.headers.get("Content-Length") or 0)
@@ -15002,6 +15323,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self._write_json(ok(result))
             if reload_requested:
                 schedule_web_reload(self.server, result["reload"])
+        except ProjectUpdateBusyError as e:
+            self._write_json(fail(e, 409), status=409)
         except Exception as e:
             self._write_json(fail(e, 400), status=400)
 

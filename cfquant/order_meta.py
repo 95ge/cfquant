@@ -356,6 +356,18 @@ def apply_record_to_callback(data, record, match_info=None):
     if not is_empty(record.get("client_order_id")) and is_empty(data.get("client_order_id")):
         data["client_order_id"] = normalize_text(record.get("client_order_id"))
 
+    order_id_ref = normalize_order_ref(record.get("order_id"))
+    if order_id_ref:
+        order_id = int(order_id_ref) if order_id_ref.isdigit() else record.get("order_id")
+        if not normalize_order_ref(data.get("order_id")):
+            data["order_id"] = order_id
+        for name in ("m_nRef", "m_nOrderID"):
+            if not normalize_order_ref(data.get(name)):
+                data[name] = order_id
+        for name in ("m_strOrderRef", "m_strOrderID"):
+            if is_empty(data.get(name)) or normalize_order_ref(data.get(name)) in ("0", "-1"):
+                data[name] = order_id_ref
+
     if is_empty(data.get("order_source")) or normalize_text(data.get("order_source")).lower() == "other":
         data["order_source"] = "cfquant"
     data["cfquant_order_meta_hit"] = True

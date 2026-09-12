@@ -72,6 +72,7 @@ runtime/cli-qmt-export/
 .updates/
 .cfquant_updates/
 .cfquant_project_updates/
+.cfquant_ops/
 .pytest_cache/
 .mypy_cache/
 .tmp_pytest*/

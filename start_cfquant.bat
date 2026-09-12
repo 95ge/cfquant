@@ -117,7 +117,8 @@ echo Press Ctrl+C to stop the service.
 echo.
 call :log "starting foreground web dashboard port=%WEB_PORT%"
 "%PYTHON_EXE%" "%~dp0cfquant_web_server.py" --port %WEB_PORT%
-set "WEB_EXIT_CODE=%errorlevel%"
+set "WEB_EXIT_CODE=0"
+if errorlevel 1 set "WEB_EXIT_CODE=1"
 if not "%WEB_EXIT_CODE%"=="0" (
     echo.
     echo [ERROR] cfquant web dashboard exited with code %WEB_EXIT_CODE%.
@@ -151,7 +152,8 @@ exit /b 0
 :is_port_open
 set "CFQUANT_START_PORT=%~1"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close(); exit 0 }; $client.Close(); exit 1 } catch { exit 1 }"
-set "PORT_RESULT=%errorlevel%"
+set "PORT_RESULT=0"
+if errorlevel 1 set "PORT_RESULT=1"
 set "CFQUANT_START_PORT="
 exit /b %PORT_RESULT%
 
@@ -159,7 +161,8 @@ exit /b %PORT_RESULT%
 set "CFQUANT_START_PORT=%~1"
 set "CFQUANT_START_WAIT=%~2"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; $wait=[int]$env:CFQUANT_START_WAIT; $deadline=(Get-Date).AddSeconds($wait); $url='http://127.0.0.1:' + $port + '/api/health'; while ((Get-Date) -lt $deadline) { try { $req=[Net.WebRequest]::Create($url); $req.Method='GET'; $req.Timeout=1000; $req.ReadWriteTimeout=1000; $req.UserAgent='cfquant-start'; $res=$req.GetResponse(); try { if ([int]$res.StatusCode -eq 200) { $reader=[IO.StreamReader]::new($res.GetResponseStream(), [Text.Encoding]::UTF8); $content=$reader.ReadToEnd(); $reader.Close(); $payload=$content | ConvertFrom-Json; if ($payload.ok -eq $true -and $payload.data.status -eq 'ok') { exit 0 } } } finally { $res.Close() } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
-set "WAIT_RESULT=%errorlevel%"
+set "WAIT_RESULT=0"
+if errorlevel 1 set "WAIT_RESULT=1"
 set "CFQUANT_START_PORT="
 set "CFQUANT_START_WAIT="
 exit /b %WAIT_RESULT%

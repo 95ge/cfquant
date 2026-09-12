@@ -156,6 +156,9 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
     assert len(saved) == 1
     assert saved[0]['account_type'] == 'CREDIT'
     assert saved[0]['qmt_auto_login']['enabled'] is True
+    if entry == 'setup':
+        assert 'admin_username' not in saved[0]
+        assert 'admin_password' not in saved[0]
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('等待自动登录完成')
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('请手动输入密码登录')
@@ -172,6 +175,18 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
     expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('1234')
     page.locator('#closeBindingQmtGuideBottomBtn').click()
     expect(page.locator('#onboardingWizard')).not_to_be_visible()
+    assert errors == []
+
+
+def test_setup_help_tooltip_is_clickable_and_admin_is_optional(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=True)
+    expect(page.locator('#setupAdminFields')).not_to_be_visible()
+    trigger = page.locator('#setupOverlay .help-tooltip-trigger').first
+    trigger.click()
+    assert trigger.get_attribute('aria-expanded') == 'true'
+    assert trigger.evaluate("(node) => node.classList.contains('is-open')")
+    page.locator('#setupOverlay').click(position={'x': 10, 'y': 10})
+    assert trigger.get_attribute('aria-expanded') == 'false'
     assert errors == []
 
 
@@ -270,7 +285,8 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     expect(page.locator('#bindingQmtAutoLoginPanel')).to_be_visible()
     expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('1234')
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('国金证券 QMT 目前不支持自动登录，请手动输入密码登录')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('国金 QMT：请手动输入密码登录')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('非国金 QMT')
     assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05']}
     assert errors == []
 

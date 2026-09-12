@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260912_01_api_test_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260913_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -109,7 +109,7 @@
         <div>
           <span class="setup-kicker">第一次启动</span>
           <h2>先连接 QMT</h2>
-          <p>填写账号和目录，保存后进入系统。</p>
+          <p>填写账号和目录，保存后系统会自动完成部署。</p>
         </div>
         <button type="button" data-open-tutorial data-tutorial-return="返回初始化">阅读教程</button>
       </div>
@@ -129,16 +129,26 @@
       </ol>
       <form id="setupForm" class="auth-form">
         <section class="setup-section setup-auth-choice">
+          <div class="setup-section-head">
+            <div class="setup-section-copy">
+              <strong>网页登录管理</strong>
+              <span>可选项</span>
+            </div>
+            <button type="button" class="help-tooltip-trigger" aria-label="网页登录管理说明" aria-expanded="false" data-help-text="关闭后不创建网页登录管理员，初始化仍可继续；以后可以在设置页开启。">?</button>
+          </div>
           <label class="toggle">
             <input id="setupEnableWebAuth" type="checkbox">
             <span>启用网页登录管理</span>
           </label>
-          <span class="metric-note">默认关闭；启用后需要设置管理员账号和密码。</span>
+          <span class="metric-note">可选；关闭时不设置管理员，也能完成初始化。</span>
         </section>
         <section id="setupAdminFields" class="setup-section setup-admin-fields hidden">
           <div class="setup-section-head">
-            <strong>管理员</strong>
-            <span>创建登录账号</span>
+            <div class="setup-section-copy">
+              <strong>管理员</strong>
+              <span>创建登录账号</span>
+            </div>
+            <button type="button" class="help-tooltip-trigger" aria-label="管理员设置说明" aria-expanded="false" data-help-text="只有勾选启用网页登录管理时才需要填写。管理员密码至少 6 位，与 QMT 资金账号无关。">?</button>
           </div>
           <div class="setup-fields-grid">
             <label class="field">
@@ -157,8 +167,11 @@
         </section>
         <section class="setup-section">
           <div class="setup-section-head">
-            <strong>交易账号</strong>
-            <span>默认账号</span>
+            <div class="setup-section-copy">
+              <strong>交易账号</strong>
+              <span>默认账号</span>
+            </div>
+            <button type="button" class="help-tooltip-trigger" aria-label="交易账号说明" aria-expanded="false" data-help-text="这里填写 QMT 登录使用的资金账号和账户类型，不是网页登录管理员账号。">?</button>
           </div>
           <div class="setup-fields-grid">
             <label class="field">
@@ -180,14 +193,17 @@
         </section>
         <section class="setup-section">
           <div class="setup-section-head">
-            <strong>QMT 连接</strong>
-            <span>填写安装目录或 <code>bin.x64</code></span>
+            <div class="setup-section-copy">
+              <strong>QMT 连接</strong>
+              <span>填写安装目录或 <code>bin.x64</code></span>
+            </div>
+            <button type="button" class="help-tooltip-trigger" aria-label="QMT 连接说明" aria-expanded="false" data-help-text="保存后系统自动同步 cfquant 项目代码、QMT 内部策略代码和身份配置，并按选择配置自动启动。无需手工复制，只需先确认对应 QMT 已完成 Python 库下载。">?</button>
           </div>
           <div class="setup-fields-grid">
             <label class="field wide">
               <span>普通端 QMT 安装目录或核心目录</span>
               <input id="setupQmtDir" name="qmt_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64">
-              <small>保存后会自动将 cfquant 核心包复制到对应的 bin.x64\cfquant</small>
+              <small>安装后自动同步项目代码、QMT 内部策略代码和身份配置到对应目录；无需手工复制，请先完成 QMT Python 库下载。</small>
             </label>
             <label class="field wide">
               <span>运行模式</span>
@@ -200,14 +216,30 @@
             <label id="setupQmtTradeDirField" class="field wide hidden">
               <span>极速交易端 QMT 安装目录或核心目录</span>
               <input id="setupQmtTradeDir" name="qmt_trade_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64">
-              <small>高级模式需填写另一个 QMT，保存后同样自动复制核心包</small>
+              <small>高级模式需填写另一个 QMT，保存后系统会自动同步对应代码和身份配置。</small>
             </label>
             <div id="setupStrategySettings" class="qmt-strategy-settings wide"></div>
             <label class="toggle wide">
               <input id="setupQmtAutoLogin" type="checkbox">
               <span>自动启动 QMT</span>
             </label>
-            <small class="wide">QMT 已设置自动登录时，等待自动登录即可；国金证券 QMT 需手动输入密码登录。</small>
+            <div class="qmt-login-prerequisite wide" role="note">
+              <div class="qmt-login-prerequisite-head">
+                <strong>自动启动前提</strong>
+                <button type="button" class="help-tooltip-trigger" aria-label="QMT 自动启动前提说明" aria-expanded="false" data-help-text="系统可以启动 QMT 进程，但登录和 QMT 内部初始化仍取决于券商客户端设置。">?</button>
+              </div>
+              <div class="qmt-login-prerequisite-grid">
+                <div>
+                  <strong>国金 QMT</strong>
+                  <span>请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。</span>
+                </div>
+                <div>
+                  <strong>非国金 QMT</strong>
+                  <span>请在登录界面勾选自动登录和记住密码，之后等待自动登录完成。</span>
+                </div>
+              </div>
+              <small>所有 QMT 都要先完成 Python 库下载，否则自动启动后策略可能无法加载。</small>
+            </div>
           </div>
         </section>
         <div class="setup-actions">
@@ -1120,12 +1152,32 @@
                       </div>
                     </div>
                     <div class="update-status-row">
-                      <span id="projectUpdateStatus" class="metric-note">未加载项目更新状态</span>
+                      <span id="projectUpdateStatus" class="metric-note" aria-live="polite">未加载项目更新状态</span>
+                    </div>
+                    <div class="update-safety-panel">
+                      <div>
+                        <span>更新保护</span>
+                        <strong>先备份，再更新</strong>
+                        <small>每次更新前自动创建完整回退点。更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本，并在非交易时段操作。</small>
+                      </div>
+                      <span id="projectUpdateBackupSummary" class="metric-note" aria-live="polite">暂无可回退版本</span>
                     </div>
                     <div id="projectUpdateVersionInfo" class="update-version-info"></div>
                     <div class="update-primary-actions">
                       <button id="runProjectGithubUpdateBtn" class="primary" type="button">立即更新</button>
                       <button id="refreshProjectUpdateStatusBtn" type="button">刷新版本</button>
+                    </div>
+                    <div class="update-rollback-row">
+                      <div class="update-rollback-copy">
+                        <span>回退版本</span>
+                        <strong>恢复到更新前的项目版本</strong>
+                        <small>回退前会再次备份当前版本；完成后 Web 服务会重启，QMT 入口脚本需要重新启动。</small>
+                      </div>
+                      <label class="field">
+                        <span>可回退版本备份</span>
+                        <select id="projectRollbackBackupSelect"></select>
+                      </label>
+                      <button id="rollbackProjectUpdateBtn" class="danger" type="button">回滚版本并重启</button>
                     </div>
                     <details class="update-advanced">
                       <summary>高级选项</summary>
@@ -1145,11 +1197,6 @@
                           <input id="projectUpdateZipInput" type="file" accept=".zip,application/zip">
                         </label>
                         <button id="uploadProjectZipUpdateBtn" class="primary" type="button">上传 zip 更新</button>
-                        <label class="field">
-                          <span>可回滚版本备份</span>
-                          <select id="projectRollbackBackupSelect"></select>
-                        </label>
-                        <button id="rollbackProjectUpdateBtn" class="danger" type="button">回滚版本并重启</button>
                       </div>
                     </details>
                     <div id="projectUpdateNoticeBox" class="update-notice hidden"></div>
@@ -1233,10 +1280,10 @@
                 <article class="tutorial-topic" data-guide-panel="onboarding">
                   <div class="guide-section">
                     <h3>先把 cfquant 跑起来</h3>
-                    <p>填写账号、选择模式并保存，系统自动部署策略，然后按提示启动并登录 QMT。</p>
+                    <p>填写账号、选择模式并保存，系统自动同步项目代码和 QMT 内部策略代码，然后按提示启动并登录 QMT。</p>
                     <div class="guide-callout">
                       <strong>推荐</strong>
-                      <span>第一次用通用模式，QMT 目录填 <code>bin.x64</code>。</span>
+                      <span>第一次用通用模式，QMT 目录填 <code>bin.x64</code>；无需手工复制代码，只需先完成 QMT Python 库下载。</span>
                     </div>
                     <div class="onboarding-inline-actions">
                       <button id="openOnboardingInlineBtn" class="primary" type="button">开始初始化向导</button>
@@ -1279,8 +1326,8 @@
                           </div>
                           <div class="onboarding-quick-item">
                             <span>3</span>
-                            <strong>部署脚本</strong>
-                            <small>保存绑定后自动导入策略。</small>
+                            <strong>自动同步</strong>
+                            <small>保存后自动同步项目和内部策略代码。</small>
                           </div>
                           <div class="onboarding-quick-item">
                             <span>4</span>
@@ -1299,8 +1346,11 @@
 
                       <form id="onboardingConfigForm" class="onboarding-panel" data-onboarding-panel="config">
                         <div class="onboarding-panel-head">
-                          <strong>账号配置</strong>
-                          <span>填资金账号、模式和 QMT 目录。</span>
+                          <div class="onboarding-panel-copy">
+                            <strong>账号配置</strong>
+                            <span>填资金账号、模式和 QMT 目录。</span>
+                          </div>
+                          <button type="button" class="help-tooltip-trigger" aria-label="账号配置说明" aria-expanded="false" data-help-text="保存后系统会自动同步项目代码、QMT 内部策略代码和身份配置；不需要手工复制文件。">?</button>
                         </div>
                         <div class="onboarding-grid">
                           <label class="field">
@@ -1329,12 +1379,12 @@
                           <label class="field wide">
                             <span>QMT 安装目录或核心目录</span>
                             <input id="onboardingQmtDir" autocomplete="off" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64">
-                            <small>保存后系统会自动复制核心包到 <code>bin.x64\cfquant</code>。</small>
+                            <small>保存后系统会自动同步项目代码、QMT 内部策略代码和身份配置；无需手工复制，请先完成 QMT Python 库下载。</small>
                           </label>
                           <label id="onboardingQmtTradeDirField" class="field wide hidden">
                             <span>第二个 QMT 安装目录或核心目录</span>
                             <input id="onboardingQmtTradeDir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64">
-                            <small>仅高级模式必填，保存后同样自动复制核心包。</small>
+                            <small>仅高级模式必填，保存后系统会自动同步对应代码和身份配置。</small>
                           </label>
                           <label class="toggle wide">
                             <input id="onboardingDataProvider" type="checkbox" checked>
@@ -1345,7 +1395,23 @@
                             <input id="onboardingQmtAutoLogin" type="checkbox">
                             <span>自动启动 QMT</span>
                           </label>
-                          <small class="wide">QMT 已设置自动登录时，等待自动登录即可；国金证券 QMT 需手动输入密码登录。</small>
+                          <div class="qmt-login-prerequisite wide" role="note">
+                            <div class="qmt-login-prerequisite-head">
+                              <strong>自动启动前提</strong>
+                              <button type="button" class="help-tooltip-trigger" aria-label="QMT 自动启动前提说明" aria-expanded="false" data-help-text="系统可以启动 QMT 进程，但登录和 QMT 内部初始化仍取决于券商客户端设置。">?</button>
+                            </div>
+                            <div class="qmt-login-prerequisite-grid">
+                              <div>
+                                <strong>国金 QMT</strong>
+                                <span>请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。</span>
+                              </div>
+                              <div>
+                                <strong>非国金 QMT</strong>
+                                <span>请在登录界面勾选自动登录和记住密码，之后等待自动登录完成。</span>
+                              </div>
+                            </div>
+                            <small>所有 QMT 都要先完成 Python 库下载，否则自动启动后策略可能无法加载。</small>
+                          </div>
                         </div>
                         <div class="onboarding-actions">
                           <button id="onboardingBackConfigBtn" class="onboarding-back-step" type="button">返回上一步</button>
@@ -1357,23 +1423,45 @@
 
                       <section class="onboarding-panel" data-onboarding-panel="deploy">
                         <div class="onboarding-panel-head">
-                          <strong>QMT 启动提醒</strong>
-                          <span>保存绑定后，按部署状态提示重启或登录 QMT。</span>
+                          <div class="onboarding-panel-copy">
+                            <strong>QMT 启动提醒</strong>
+                            <span>保存绑定后，按同步状态提示重启或登录 QMT。</span>
+                          </div>
+                          <button type="button" class="help-tooltip-trigger" aria-label="QMT 启动说明" aria-expanded="false" data-help-text="系统负责同步代码和配置并启动 QMT；QMT 登录界面的选项及国金 QMT 内部初始化需要在 QMT 中完成。">?</button>
                         </div>
                         <div id="onboardingDeployPaths" class="onboarding-deploy-list"></div>
-                          <div id="onboardingDeployNotice" class="guide-callout"></div>
-                          <p>QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。</p>
-                           <div class="onboarding-actions">
-                             <button id="onboardingBackDeployBtn" class="onboarding-back-step" type="button">返回上一步</button>
-                            <button id="onboardingGoBridgeBtn" class="primary" type="button">检测连接</button>
+                        <div id="onboardingDeployNotice" class="guide-callout"></div>
+                        <div class="qmt-login-prerequisite compact" role="note">
+                          <div class="qmt-login-prerequisite-head">
+                            <strong>登录前提</strong>
+                            <button type="button" class="help-tooltip-trigger" aria-label="QMT 登录前提说明" aria-expanded="false" data-help-text="登录前提不由 cfquant 自动修改，请按 QMT 类型完成对应设置。">?</button>
+                          </div>
+                          <div class="qmt-login-prerequisite-grid">
+                            <div>
+                              <strong>国金 QMT</strong>
+                              <span>请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。</span>
+                            </div>
+                            <div>
+                              <strong>非国金 QMT</strong>
+                              <span>请在登录界面勾选自动登录和记住密码，之后等待自动登录完成。</span>
+                            </div>
+                          </div>
+                          <small>所有 QMT 都要先完成 Python 库下载。</small>
+                        </div>
+                        <div class="onboarding-actions">
+                          <button id="onboardingBackDeployBtn" class="onboarding-back-step" type="button">返回上一步</button>
+                          <button id="onboardingGoBridgeBtn" class="primary" type="button">检测连接</button>
                           <span id="onboardingDeployStatus" class="metric-note"></span>
                         </div>
                       </section>
 
                       <section class="onboarding-panel" data-onboarding-panel="bridge">
                         <div class="onboarding-panel-head">
-                          <strong>QMT 连接检测</strong>
-                          <span>完成 QMT 登录后检测通道；未启用策略自动运行时，请在“模型交易”运行已导入的托管策略。国金证券 QMT 需手动输入密码登录。</span>
+                          <div class="onboarding-panel-copy">
+                            <strong>QMT 连接检测</strong>
+                            <span>完成 QMT 登录和内部初始化后检测通道；未启用策略自动运行时，请在“模型交易”运行已同步的托管策略。</span>
+                          </div>
+                          <button type="button" class="help-tooltip-trigger" aria-label="QMT 连接检测说明" aria-expanded="false" data-help-text="只有 QMT 登录完成、Python 库可用且托管策略已上线，连接检测才会通过。">?</button>
                         </div>
                         <div id="onboardingRestartChecklist" class="onboarding-restart-checklist"></div>
                         <div id="onboardingBridgeWaiting" class="onboarding-bridge-waiting hidden" aria-live="polite">
@@ -1394,8 +1482,11 @@
 
                       <section class="onboarding-panel" data-onboarding-panel="data">
                         <div class="onboarding-panel-head">
-                          <strong>QMT 已在线，完成接口测试</strong>
-                          <span>可以直接验证资金和持仓，也可以进入接口调试页测试具体接口。</span>
+                          <div class="onboarding-panel-copy">
+                            <strong>QMT 已在线，完成接口测试</strong>
+                            <span>可以直接验证资金和持仓，也可以进入接口调试页测试具体接口。</span>
+                          </div>
+                          <button type="button" class="help-tooltip-trigger" aria-label="接口测试说明" aria-expanded="false" data-help-text="资金和持仓查询成功，说明账号路由、QMT 通道和基础策略已经基本可用。">?</button>
                         </div>
                         <div class="onboarding-api-ready">
                           <strong>下一步：测试“查资金”接口</strong>
@@ -1523,7 +1614,7 @@
                     <ol class="guide-list detailed">
                       <li><strong>启动服务。</strong>运行 <code>start_cfquant.bat</code>，或执行 <code>cfquant --open-browser</code>。</li>
                       <li><strong>完成初始化。</strong>填写资金账号、账户类型、QMT 安装目录或 <code>bin.x64</code> 目录和运行模式。</li>
-                      <li><strong>启动 QMT。</strong>保存绑定后系统自动部署策略，按提示重启或登录 QMT；国金证券 QMT 需手动输入密码登录。</li>
+                      <li><strong>启动 QMT。</strong>保存绑定后系统自动同步项目代码和 QMT 内部策略代码，并按选择配置启动；随后按登录前提完成 QMT 登录。</li>
                       <li><strong>启动脚本。</strong>通用模式启动一个入口；高级模式分别启动普通端和极速交易端。</li>
                       <li><strong>验证账号。</strong>回到“绑定”页刷新状态，再查资金、持仓。</li>
                       <li><strong>接入外部程序。</strong>先在“接口”页调通参数，再改外部 Python 代码。</li>
@@ -2258,8 +2349,8 @@ else:
                           <li><strong>检查连接。</strong>登录后查看绑定列表中的通道状态，或点击“检测连接”。未勾选“QMT 启动后自动运行”时，在“模型交易”运行已导入的托管策略。</li>
                         </ol>
                         <div class="guide-callout warning">
-                          <strong>国金证券登录</strong>
-                          <span>国金证券 QMT 目前不支持自动登录，每次启动后请手动输入密码登录。</span>
+                          <strong>QMT 登录前提</strong>
+                          <span>国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码。所有 QMT 都要先完成 Python 库下载。</span>
                         </div>
                         <div class="guide-callout">
                           <strong>等待退出或部署失败</strong>
@@ -2282,8 +2373,8 @@ else:
                           <li><strong>检查连接。</strong>登录后查看绑定列表中的通道状态，或点击“检测连接”。未勾选“QMT 启动后自动运行”时，在“模型交易”运行已导入的托管策略。</li>
                         </ol>
                         <div class="guide-callout warning">
-                          <strong>国金证券登录</strong>
-                          <span>国金证券 QMT 目前不支持自动登录，每次启动后请手动输入密码登录。</span>
+                          <strong>QMT 登录前提</strong>
+                          <span>国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码。所有 QMT 都要先完成 Python 库下载。</span>
                         </div>
                         <div class="guide-callout">
                           <strong>等待退出或部署失败</strong>
@@ -2306,8 +2397,8 @@ else:
                           <li><strong>检查连接。</strong>登录后查看绑定列表中的通道状态，或点击“检测连接”。未勾选“QMT 启动后自动运行”时，在“模型交易”运行已导入的托管策略。</li>
                         </ol>
                         <div class="guide-callout warning">
-                          <strong>国金证券登录</strong>
-                          <span>国金证券 QMT 目前不支持自动登录，每次启动后请手动输入密码登录。</span>
+                          <strong>QMT 登录前提</strong>
+                          <span>国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码。所有 QMT 都要先完成 Python 库下载。</span>
                         </div>
                         <div class="guide-callout">
                           <strong>等待退出或部署失败</strong>
@@ -2450,7 +2541,7 @@ else:
                           </tr>
                           <tr>
                             <td>QMT 目录</td>
-                            <td>填写对应 QMT 的安装目录或 <code>bin.x64</code>，用于自动复制核心包、身份文件和后续更新。</td>
+                            <td>填写对应 QMT 的安装目录或 <code>bin.x64</code>，用于自动同步项目代码、内部策略代码、身份文件和后续更新。</td>
                           </tr>
                           <tr>
                             <td>运行模式</td>
@@ -2693,7 +2784,10 @@ else:
           <strong id="bindingDialogTitle">添加账号绑定</strong>
           <span id="bindingDialogSubtitle">保存后系统会按账号自动路由到对应 QMT 通道。</span>
         </div>
-        <button id="closeBindingDialogBtn" type="button" aria-label="关闭绑定编辑">关闭</button>
+        <div class="onboarding-head-actions">
+          <button type="button" class="help-tooltip-trigger" aria-label="绑定流程说明" aria-expanded="false" data-help-text="保存绑定后系统自动同步项目代码、QMT 内部策略代码和身份配置；填写 QMT 目录即可，无需手工复制。">?</button>
+          <button id="closeBindingDialogBtn" type="button" aria-label="关闭绑定编辑">关闭</button>
+        </div>
       </div>
       <form id="bindingForm" class="form-grid binding-dialog-form">
         <label class="field">
@@ -2721,7 +2815,7 @@ else:
         <label class="field wide">
           <span>QMT 安装目录或核心目录（可选）</span>
           <input id="bindingQmtDir" name="qmt_dir" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64" autocomplete="off">
-          <small>保存后会自动复制 cfquant 到 bin.x64\cfquant。留空时该账号仍可运行，但自动复制、自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
+          <small>保存后自动同步项目代码、QMT 内部策略代码和身份配置到对应目录；无需手工复制。留空时该账号仍可运行，但自动同步、自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
         </label>
         <label class="toggle binding-dialog-wide-row">
           <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox">
@@ -2729,11 +2823,31 @@ else:
         </label>
         <div id="bindingQmtAutoLoginSettings" class="binding-qmt-autostart-settings binding-dialog-wide-row hidden">
           <div class="binding-qmt-autostart-head">
-            <strong>每日重启时间</strong>
-            <span>系统会启动绑定目录的 QMT，并按下列时间重启。QMT 已设置自动登录时，等待自动登录即可；国金证券 QMT 需手动输入密码登录。</span>
+            <div class="qmt-section-heading">
+              <strong>每日重启时间</strong>
+              <button type="button" class="help-tooltip-trigger" aria-label="QMT 自动启动设置说明" aria-expanded="false" data-help-text="勾选后系统会启动绑定目录的 QMT，并按设置的时间重启；QMT 登录前提仍需在客户端内完成。">?</button>
+            </div>
+            <span>系统会启动绑定目录的 QMT，并按下列时间重启。</span>
           </div>
           <div id="bindingQmtRestartTimes" class="binding-qmt-restart-times"></div>
           <button id="addBindingQmtRestartTimeBtn" type="button">添加重启时间</button>
+        </div>
+        <div class="qmt-login-prerequisite wide" role="note">
+          <div class="qmt-login-prerequisite-head">
+            <strong>自动启动前提</strong>
+            <button type="button" class="help-tooltip-trigger" aria-label="QMT 自动启动前提说明" aria-expanded="false" data-help-text="系统可以启动 QMT 进程，但登录和 QMT 内部初始化仍取决于券商客户端设置。">?</button>
+          </div>
+          <div class="qmt-login-prerequisite-grid">
+            <div>
+              <strong>国金 QMT</strong>
+              <span>请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。</span>
+            </div>
+            <div>
+              <strong>非国金 QMT</strong>
+              <span>请在登录界面勾选自动登录和记住密码，之后等待自动登录完成。</span>
+            </div>
+          </div>
+          <small>所有 QMT 都要先完成 Python 库下载，否则自动启动后策略可能无法加载。</small>
         </div>
         <label class="field wide">
           <span>账号模式</span>
@@ -2746,7 +2860,7 @@ else:
         <label id="bindingQmtTradeDirField" class="field wide hidden">
           <span>高级模式极速交易端 QMT 安装目录或核心目录</span>
           <input id="bindingQmtTradeDir" name="qmt_trade_dir" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64" autocomplete="off">
-          <small>高级模式必须填写与普通端不同的第二个 QMT，保存后会自动复制核心包并写入身份配置。</small>
+          <small>高级模式必须填写与普通端不同的第二个 QMT，保存后系统会自动同步对应代码并写入身份配置。</small>
         </label>
         <details class="market-routing-panel binding-dialog-bleed wide" open>
           <summary class="market-routing-head">
@@ -2834,12 +2948,13 @@ else:
         </div>
         <div class="onboarding-head-actions">
           <button type="button" data-open-tutorial data-tutorial-return="返回部署">阅读教程</button>
+          <button type="button" class="help-tooltip-trigger" aria-label="QMT 启动提醒说明" aria-expanded="false" data-help-text="先确认代码同步和身份配置成功，再按 QMT 类型完成登录；连接检测需要等待策略上线。">?</button>
           <button id="closeBindingQmtGuideBtn" type="button" aria-label="关闭 QMT 策略指引">关闭</button>
         </div>
       </div>
       <div class="binding-qmt-guide-body">
         <div id="bindingQmtGuideInstruction" class="binding-qmt-guide-instruction"></div>
-        <p id="bindingQmtLoginReminder">QMT 已设置自动登录时，请等待自动登录完成；未设置时请手动登录。国金证券 QMT 目前不支持自动登录，请手动输入密码登录。</p>
+        <p id="bindingQmtLoginReminder" class="qmt-login-reminder">国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码，然后等待自动登录完成。所有 QMT 都要先完成 Python 库下载。</p>
         <div>
           <div class="binding-qmt-guide-section-head">
             <strong>自动部署状态</strong>
@@ -2928,6 +3043,6 @@ else:
   <script src="/cftrader-api-data.js?v=20260911_02"></script>
   <script src="/api-tester.js?v=20260911_02"></script>
   <script src="/python-api.js?v=20260911_api_test_01"></script>
-  <script src="/app.js?v=web_20260911_07_password_file_path"></script>
+  <script src="/app.js?v=web_20260913_01"></script>
 </body>
 </html>

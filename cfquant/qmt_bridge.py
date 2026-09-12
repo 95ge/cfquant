@@ -196,6 +196,8 @@ class CfquantQmtBridge(object):
             "xttrader.order_stock_async",
             "xttrader.cancel_order_stock",
             "xttrader.cancel_order_stock_async",
+            "xttrader.cancel_order_stock_sysid",
+            "xttrader.cancel_order_stock_sysid_async",
             "cftrader.cancel_order_stock_batch",
             "cftrader.cancel_order_stock_batch_async",
         }
@@ -286,6 +288,10 @@ class CfquantQmtBridge(object):
             return self._cancel_order_stock(params)
         if action == "xttrader.cancel_order_stock_async":
             return self._cancel_order_stock_async(params, msg)
+        if action == "xttrader.cancel_order_stock_sysid":
+            return self._cancel_order_stock_sysid(params)
+        if action == "xttrader.cancel_order_stock_sysid_async":
+            return self._cancel_order_stock_sysid_async(params, msg)
         if action == "xttrader.query_stock_asset":
             return self._query_trade_detail(params, "ACCOUNT")
         if action == "xttrader.query_stock_orders":
@@ -990,9 +996,38 @@ class CfquantQmtBridge(object):
             "seq": seq,
             "account_id": (params.get("account") or {}).get("account_id", ""),
             "order_id": params.get("order_id"),
+            "order_sysid": result.get("order_sysid", "") if isinstance(result, dict) else "",
+            "error_msg": result.get("error_msg", "") if isinstance(result, dict) else "",
         })
         self._send_trader_event(client_id, "on_cancel_order_stock_async_response", data)
         return {"seq": seq, "request_result": result}
+
+    def _cancel_order_stock_sysid(self, params):
+        row = dict(params)
+        row["order_id"] = params.get("sysid", params.get("order_id", ""))
+        result = self._cancel_order_stock(row)
+        if isinstance(result, dict):
+            result["market"] = params.get("market")
+            result["sysid"] = params.get("sysid")
+            result["order_sysid"] = params.get("sysid", "")
+        return result
+
+    def _cancel_order_stock_sysid_async(self, params, msg):
+        result = self._cancel_order_stock_sysid(params)
+        account = params.get("account") or {}
+        data = {
+            "seq": params.get("seq"),
+            "account_id": account.get("account_id", params.get("account_id", "")),
+            "account_type": self._account_type_name(
+                account.get("account_type") or params.get("account_type")
+            ).upper(),
+            "order_id": params.get("sysid", params.get("order_id")),
+            "order_sysid": params.get("sysid", ""),
+            "cancel_result": result.get("cancel_result", -1) if isinstance(result, dict) else result,
+            "error_msg": result.get("error_msg", "") if isinstance(result, dict) else "",
+        }
+        self._send_trader_event(msg.get("client_id"), "on_cancel_order_stock_async_response", data)
+        return result
 
     def _query_trade_detail(self, params, datatype):
         account = params.get("account") or {}

@@ -18,7 +18,8 @@ if defined CFQUANT_START_WEB_PORT set "WEB_PORT=%CFQUANT_START_WEB_PORT%"
 echo Restarting cfquant local services, keeping LTtx running...
 set "CFQUANT_STOP_NO_PAUSE=1"
 call "%~dp0stop_cfquant.bat" --keep-lttx
-set "STOP_CODE=%errorlevel%"
+set "STOP_CODE=0"
+if errorlevel 1 set "STOP_CODE=1"
 if not "%STOP_CODE%"=="0" (
     echo cfquant stop returned %STOP_CODE%. Will continue only if web port %WEB_PORT% is released.
     call :log "stop returned code=%STOP_CODE%"
@@ -26,7 +27,8 @@ if not "%STOP_CODE%"=="0" (
 
 set "CFQUANT_RESTART_WAIT_SECONDS=20"
 call :wait_for_port_release %WEB_PORT% %CFQUANT_RESTART_WAIT_SECONDS%
-set "WAIT_CODE=%errorlevel%"
+set "WAIT_CODE=0"
+if errorlevel 1 set "WAIT_CODE=1"
 set "CFQUANT_RESTART_WAIT_SECONDS="
 
 if not "%WAIT_CODE%"=="0" (
@@ -41,7 +43,8 @@ timeout /t 1 /nobreak >nul
 set "CFQUANT_RESTART_PREV_START_NO_PAUSE=%CFQUANT_START_NO_PAUSE%"
 set "CFQUANT_START_NO_PAUSE=1"
 call "%~dp0start_cfquant.bat" %*
-set "START_CODE=%errorlevel%"
+set "START_CODE=0"
+if errorlevel 1 set "START_CODE=1"
 if defined CFQUANT_RESTART_PREV_START_NO_PAUSE (
     set "CFQUANT_START_NO_PAUSE=%CFQUANT_RESTART_PREV_START_NO_PAUSE%"
 ) else (
@@ -62,7 +65,8 @@ endlocal & exit /b %START_CODE%
 set "CFQUANT_RESTART_PORT=%~1"
 set "CFQUANT_RESTART_WAIT=%~2"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_RESTART_PORT; $wait=[int]$env:CFQUANT_RESTART_WAIT; $deadline=(Get-Date).AddSeconds($wait); while ((Get-Date) -lt $deadline) { try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close() } else { $client.Close(); exit 0 } } catch { exit 0 }; Start-Sleep -Milliseconds 500 }; exit 1"
-set "WAIT_RESULT=%errorlevel%"
+set "WAIT_RESULT=0"
+if errorlevel 1 set "WAIT_RESULT=1"
 set "CFQUANT_RESTART_PORT="
 set "CFQUANT_RESTART_WAIT="
 exit /b %WAIT_RESULT%

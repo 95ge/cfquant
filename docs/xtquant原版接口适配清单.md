@@ -142,8 +142,8 @@
 | `order_stock_async` | 提交异步委托，通过请求序号关联回报 | ✅ 已适配 | 已实现请求序号、委托关联和异步回报事件。 |
 | `cancel_order_stock` | 按委托编号提交撤单 | ✅ 已适配 | 已映射大 QMT `cancel`。 |
 | `cancel_order_stock_sysid` | 按市场及柜台合同编号提交撤单 | ✅ 部分适配 | 目前将 `sysid` 交给普通撤单流程；市场区分及柜台编号识别尚需验证，关键字名也与官网的 `order_sysid` 不同。 |
-| `cancel_order_stock_async` | 按委托编号撤单并反馈异步结果 | ✅ 已适配 | 已提供请求序号和桥撤单响应事件。 |
-| `cancel_order_stock_sysid_async` | 按柜台合同编号撤单并反馈异步结果 | ✅ 部分适配 | 具备回报事件，但沿用上述 `sysid` 撤单的限制。 |
+| `cancel_order_stock_async` | 按委托编号撤单并反馈异步结果 | ✅ 已适配 | 已提供请求序号、`XtCancelOrderResponse` 转换、回报去重；桥明确拒绝时返回 `-1`。 |
+| `cancel_order_stock_sysid_async` | 按柜台合同编号撤单并反馈异步结果 | ✅ 部分适配 | 已提供请求序号、市场/柜台合同号透传、`XtCancelOrderResponse` 转换和重复回报过滤；底层仍复用 QMT `cancel`，真实 `sysid` 格式需按 QMT 版本验证。 |
 | `fund_transfer` | 在指定方向进行资金划拨 | ❌ 条件待验证 | 仅转发终端资金划拨函数。 |
 | `sync_transaction_from_external` | 将外部成交记录导入交易系统 | ❌ 条件待验证 | 仅转发对应录入函数；此功能不是数据导出。 |
 

@@ -10,7 +10,18 @@ from cfquant.pipe_bridge import PipeNormalQmtBridge, PipeTradeBridge
 from cfquant.protocol import decode_value, loads_message, pack_request, pack_response
 from cfquant.tx_trade_bridge import TxTradeBridge
 from cfquant.xttrader import XtQuantTrader
-from cfquant.xttype import StockAccount, StkCompacts, XtCreditDetail, XtSmtAppointmentResponse
+from cfquant.xttype import (
+    CreditAssure,
+    CreditSloCode,
+    CreditSubjects,
+    DictObject,
+    StockAccount,
+    StkCompacts,
+    XtAccountStatus,
+    XtCreditDetail,
+    XtPositionStatistics,
+    XtSmtAppointmentResponse,
+)
 
 
 ACCOUNT = StockAccount("C123", "CREDIT")
@@ -77,6 +88,55 @@ def test_native_credit_fields_override_legacy_aliases():
     row = trader.query_credit_detail(ACCOUNT)[0]
     assert row.m_dMarketValue == 300.0 and row.m_dTotalDebt == 0.0
     assert row.m_dFinUsedQuota == 70.0
+
+
+@pytest.mark.parametrize("method, expected_type", [
+    ("query_account_info", DictObject),
+    ("query_account_infos", DictObject),
+    ("query_account_status", XtAccountStatus),
+    ("query_position_statistics", XtPositionStatistics),
+    ("query_credit_detail", XtCreditDetail),
+    ("query_stk_compacts", StkCompacts),
+    ("query_credit_subjects", CreditSubjects),
+    ("query_credit_slo_code", CreditSloCode),
+    ("query_credit_assure", CreditAssure),
+    ("query_secu_account", DictObject),
+    ("query_bank_info", DictObject),
+    ("query_bank_amount", DictObject),
+    ("query_bank_transfer_stream", DictObject),
+])
+def test_compat_object_queries_restore_native_object_types(method, expected_type):
+    trader = XtQuantTrader()
+    trader._trade_request = lambda *args, **kwargs: [{"m_dAvailable": 12.5}]
+    no_account = method in ("query_account_info", "query_account_infos", "query_account_status")
+    if no_account:
+        result = getattr(trader, method)()
+    elif method == "query_bank_amount":
+        result = getattr(trader, method)(ACCOUNT, "001", "bank-account", "bank-password")
+    elif method == "query_bank_transfer_stream":
+        result = getattr(trader, method)(ACCOUNT, "20260101", "20260131")
+    else:
+        result = getattr(trader, method)(ACCOUNT)
+    assert isinstance(result[0], expected_type)
+
+
+def test_compat_dict_queries_keep_native_dict_types():
+    payloads = {
+        "query_com_fund": {"enableBalance": 12.5},
+        "query_com_position": [{"stock_code": "600000.SH"}],
+        "query_ipo_data": {"code": "730000.SH"},
+        "query_new_purchase_limit": {"600000.SH": 1000},
+    }
+
+    def request(action, params):
+        return payloads[action.rsplit(".", 1)[1]]
+
+    trader = XtQuantTrader()
+    trader._trade_request = request
+    assert isinstance(trader.query_com_fund(ACCOUNT), dict)
+    assert isinstance(trader.query_com_position(ACCOUNT)[0], dict)
+    assert isinstance(trader.query_ipo_data(), dict)
+    assert isinstance(trader.query_new_purchase_limit(ACCOUNT), dict)
 
 
 @pytest.mark.parametrize("cls", BRIDGES)

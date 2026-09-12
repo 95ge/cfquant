@@ -179,6 +179,8 @@ def event_title(event_name):
         "on_stock_trade": "收到成交回调",
         "on_order_error": "收到委托错误回调",
         "on_cancel_error": "收到撤单错误回调",
+        "on_order_stock_async_response": "收到异步委托回调",
+        "on_cancel_order_stock_async_response": "收到异步撤单回调",
         "on_connected": "交易通道已连接",
         "on_disconnected": "交易通道已断开",
     }
@@ -234,6 +236,28 @@ def error_fields(payload):
     }
 
 
+def async_order_fields(payload):
+    return {
+        "account_id": pick(payload, "account_id", "m_strAccountID"),
+        "seq": pick(payload, "seq", "m_nSeq", "request_id"),
+        "order_id": pick(payload, "order_id", "m_nRef", "m_nOrderID", "m_strOrderID"),
+        "error_msg": pick(payload, "error_msg", "m_strErrorMsg", "message", "msg"),
+        "strategy_name": pick(payload, "strategy_name", "m_strStrategyName"),
+        "order_remark": pick(payload, "order_remark", "m_strRemark", "m_strOrderRemark"),
+    }
+
+
+def async_cancel_fields(payload):
+    return {
+        "account_id": pick(payload, "account_id", "m_strAccountID"),
+        "seq": pick(payload, "seq", "m_nSeq", "request_id"),
+        "order_id": pick(payload, "order_id", "m_nOrderID", "m_strOrderID"),
+        "order_sysid": pick(payload, "order_sysid", "m_strOrderSysID", "sysid"),
+        "cancel_result": pick(payload, "cancel_result", "result", "m_nCancelResult"),
+        "error_msg": pick(payload, "error_msg", "m_strErrorMsg", "message", "msg"),
+    }
+
+
 def event_fields(event_name, payload):
     if event_name == "on_stock_order":
         return order_fields(payload)
@@ -241,6 +265,10 @@ def event_fields(event_name, payload):
         return trade_fields(payload)
     if event_name in ("on_order_error", "on_cancel_error"):
         return error_fields(payload)
+    if event_name == "on_order_stock_async_response":
+        return async_order_fields(payload)
+    if event_name == "on_cancel_order_stock_async_response":
+        return async_cancel_fields(payload)
     return {}
 
 
@@ -325,6 +353,12 @@ class CallbackPrinter(XtQuantTraderCallback):
 
     def on_cancel_error(self, cancel_error):
         self._emit_payload("on_cancel_error", cancel_error)
+
+    def on_order_stock_async_response(self, response):
+        self._emit_payload("on_order_stock_async_response", response)
+
+    def on_cancel_order_stock_async_response(self, response):
+        self._emit_payload("on_cancel_order_stock_async_response", response)
 
     def _next_seq(self, event_name):
         with self.lock:
@@ -427,6 +461,8 @@ def wait_forever(stop_event, callback, heartbeat_interval=30.0, duration=0.0):
                 stock_trade_callbacks=counts.get("on_stock_trade", 0),
                 order_error_callbacks=counts.get("on_order_error", 0),
                 cancel_error_callbacks=counts.get("on_cancel_error", 0),
+                async_order_callbacks=counts.get("on_order_stock_async_response", 0),
+                async_cancel_callbacks=counts.get("on_cancel_order_stock_async_response", 0),
             )
             next_heartbeat = now + heartbeat_interval
         wait_timeout = 0.2
