@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260913_01';
+const FRONTEND_VERSION = 'web_20260913_02';
 
 const state = {
   accountId: '',
@@ -43,6 +43,7 @@ const state = {
   accountPairs: {},
   accountConfigs: {},
   setup: null,
+  pythonEnvironment: null,
   accountRouteMode: null,
   accountRouteFallback: false,
   envBridges: {},
@@ -119,6 +120,9 @@ const state = {
   bindingQmtGuideAutoLogin: null,
   bindingQmtAutoLoginBusy: false,
   bindingQmtGuideContext: '',
+  bindingQmtGuideCheckInFlight: false,
+  bindingQmtGuideCheckAttempt: 0,
+  bindingQmtGuideCheckToken: 0,
   onboardingBindingValues: null,
   onboardingBindingFlowContext: '',
   onboardingBindingFlowReturnTarget: '',
@@ -126,6 +130,9 @@ const state = {
   onboardingBridgeCheckInFlight: false,
   onboardingBridgeCheckToken: 0,
   onboardingBridgeCheckAttempt: 0,
+  bindingQmtProcessCheckInFlight: false,
+  bindingQmtProcessCheckToken: 0,
+  bindingQmtProcessResolver: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -306,16 +313,84 @@ function qmtDeploymentTargets(values = {}) {
       ...values, market_bridges: values.marketBridges || values.market_bridges || {},
     });
     return ['SH', 'SZ'].map((market) => ({
-      role: `${QMT_MARKET_LABELS[market]} QMT`, qmt_dir: routes[market].qmt_dir || '',
+      role: `${QMT_MARKET_LABELS[market]} QMT`, qmt_dir: qmtDeploymentPath(routes[market].qmt_dir || ''),
     }));
   }
   if (normalizeTransportMode(values.mode) === 'lttx') {
     return [
-      { role: '普通端 QMT', qmt_dir: values.qmt_dir || '' },
-      { role: '极速交易端 QMT', qmt_dir: values.qmt_trade_dir || '' },
+      { role: '普通端 QMT', qmt_dir: qmtDeploymentPath(values.qmt_dir || '') },
+      { role: '极速交易端 QMT', qmt_dir: qmtDeploymentPath(values.qmt_trade_dir || '') },
     ];
   }
-  return [{ role: `${transportModeLabel(values.mode)} QMT`, qmt_dir: values.qmt_dir || '' }];
+  return [{ role: `${transportModeLabel(values.mode)} QMT`, qmt_dir: qmtDeploymentPath(values.qmt_dir || '') }];
+}
+
+function qmtDeploymentPath(path) {
+  return qmtCoreDirPath(path);
+}
+
+function normalizeQmtDeploymentTargets(values = {}) {
+  const next = { ...(values || {}) };
+  if (next.qmt_dir) next.qmt_dir = qmtDeploymentPath(next.qmt_dir);
+  if (next.qmt_trade_dir) next.qmt_trade_dir = qmtDeploymentPath(next.qmt_trade_dir);
+  if (next.qmtTradeDir) next.qmtTradeDir = qmtDeploymentPath(next.qmtTradeDir);
+  const routes = next.marketBridges || next.market_bridges;
+  if (routes && typeof routes === 'object') {
+    const normalizedRoutes = {};
+    ['SH', 'SZ'].forEach((market) => {
+      const row = routes[market] || routes[market.toLowerCase()] || {};
+      normalizedRoutes[market] = {
+        ...row,
+        qmt_dir: row.qmt_dir ? qmtDeploymentPath(row.qmt_dir) : '',
+      };
+    });
+    if (next.marketBridges) next.marketBridges = normalizedRoutes;
+    if (next.market_bridges) next.market_bridges = normalizedRoutes;
+  }
+  return next;
+}
+
+function defaultQmtAutoLoginSettings(value = undefined) {
+  return value === undefined || value === null
+    ? { enabled: true, restart_times: [] }
+    : normalizeQmtAutoLoginSettings(value);
+}
+
+function strategyDeployTargetDetail(target = {}) {
+  target = target && typeof target === 'object' ? target : {};
+  const strategies = Array.isArray(target.strategies)
+    ? target.strategies.filter(Boolean)
+    : (target.strategies ? [target.strategies] : []);
+  const name = strategies.join(' / ') || target.root || target.role || 'QMT';
+  const reasons = [target.error, target.detail, target.reason, target.message]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  let reason = reasons.find((value) => !['error', '策略部署失败'].includes(value))
+    || reasons[0] || target.state || '';
+  if (target.state === 'error' && (!reason || reason === 'error' || reason === '策略部署失败')) {
+    reason = '策略部署失败，后端未返回具体原因，请查看 QMT 目录、权限和日志';
+  }
+  if (!reason) reason = '等待部署状态';
+  const root = target.root && !String(name).includes(String(target.root)) ? `，目录：${target.root}` : '';
+  return `${name}：${reason}${root}`;
+}
+
+function strategyDeployTopLevelDetail(deploy = {}) {
+  const error = String(deploy.error || '').trim();
+  const message = String(deploy.message || '').trim();
+  return (message && message !== '策略部署失败' ? message : error || message);
+}
+
+function strategyDeployErrorDetail(deploy = {}) {
+  if (!deploy || typeof deploy !== 'object') return '';
+  const details = [];
+  const topLevel = strategyDeployTopLevelDetail(deploy);
+  if (topLevel) details.push(topLevel);
+  (deploy.targets || []).forEach((target) => {
+    if (!target) return;
+    if (target.error || target.state === 'error') details.push(strategyDeployTargetDetail(target));
+  });
+  return details.filter(Boolean).join('；');
 }
 
 function qmtStartupInstruction(values = {}) {
@@ -325,7 +400,8 @@ function qmtStartupInstruction(values = {}) {
   const autoLogin = values.qmt_auto_login || {};
   if (values.enabled === false) return '账号绑定已停用；需要使用时，请启用绑定并保存。';
   if (deploy.error || targets.some((target) => target.error || target.state === 'error')) {
-    return '策略部署失败，请根据下方错误检查 QMT 目录、权限和账号配置，然后重新保存绑定。';
+    const detail = strategyDeployErrorDetail(deploy);
+    return `策略部署失败${detail ? `：${detail}` : ''}。请根据下方错误检查 QMT 目录、权限和账号配置，然后返回上一步重新保存绑定。`;
   }
   if (strategy.enabled === false) {
     return '自动导入并管理 QMT 策略未启用。请返回账号配置，勾选后保存以完成自动部署。';
@@ -1146,6 +1222,37 @@ function renderBindingQmtAutoLoginStatus(autoLogin = state.bindingQmtGuideAutoLo
   if (status) status.innerHTML = enabled ? bindingQmtAutoLoginStatusHtml(autoLogin) : '';
 }
 
+function bindingQmtLoginCheckHtml(data = null, error = null) {
+  const values = state.bindingQmtGuideValues || {};
+  const readiness = onboardingBridgeReadiness(data || state.bridgeStatus, values);
+  const rows = [];
+  rows.push(`<div class="binding-qmt-status-row is-info"><strong>检测次数</strong><span>${esc(state.bindingQmtGuideCheckAttempt ? `第 ${state.bindingQmtGuideCheckAttempt} 次` : '尚未检测')}</span></div>`);
+  readiness.requirements.forEach((item) => {
+    const status = error ? 'error' : (item.online ? 'success' : 'warn');
+    const text = error ? `检测失败：${error.message}` : `${item.detail}：${item.online ? '在线' : '等待上线'}`;
+    rows.push(`<div class="binding-qmt-status-row is-${status}"><strong>${esc(item.label)}</strong><span>${esc(text)}</span></div>`);
+  });
+  return rows.join('');
+}
+
+function renderBindingQmtLoginCheck(data = null, error = null) {
+  const panel = $('bindingQmtLoginCheckPanel');
+  const status = $('bindingQmtLoginCheckStatus');
+  if (!panel || !status) return;
+  const shouldShow = !!data || !!error || state.bindingQmtGuideCheckInFlight || state.bindingQmtGuideCheckAttempt > 0;
+  panel.classList.toggle('hidden', !shouldShow);
+  if (shouldShow) status.innerHTML = bindingQmtLoginCheckHtml(data, error);
+}
+
+function setBindingQmtGuideCheckBusy(busy) {
+  state.bindingQmtGuideCheckInFlight = !!busy;
+  const button = $('checkBindingQmtConnectionBtn');
+  if (button) {
+    button.disabled = !!busy;
+    button.textContent = busy ? '正在检测...' : '检测 QMT 登录';
+  }
+}
+
 function finishBindingQmtGuide() {
   closeBindingQmtGuide();
 }
@@ -1154,30 +1261,69 @@ function closeBindingQmtGuide() {
   const overlay = $('bindingQmtGuideOverlay');
   if (!overlay) return;
   state.bindingQmtGuideContext = '';
+  state.bindingQmtGuideCheckToken += 1;
+  setBindingQmtGuideCheckBusy(false);
   overlay.classList.add('hidden');
   overlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('binding-dialog-open');
 }
 
-function checkBindingQmtConnection() {
+async function checkBindingQmtConnection() {
   const values = state.bindingQmtGuideValues;
-  const context = state.bindingQmtGuideContext;
-  closeBindingQmtGuide();
-  beginOnboardingRestartFlow(values, { context, returnTarget: 'qmt-guide' });
+  if (!values || !values.account_id) {
+    renderBindingQmtLoginCheck(null, new Error('缺少账号信息，请返回上一步重新保存绑定'));
+    return;
+  }
+  if (state.bindingQmtGuideCheckInFlight) return;
+  const checkToken = ++state.bindingQmtGuideCheckToken;
+  state.bindingQmtGuideCheckAttempt += 1;
+  setBindingQmtGuideCheckBusy(true);
+  renderBindingQmtLoginCheck(null, null);
+  try {
+    const params = new URLSearchParams();
+    params.set('account_id', values.account_id);
+    params.set('account_type', values.account_type || 'STOCK');
+    if (values.account_key) params.set('account_key', values.account_key);
+    params.set('bridge_id', values.bridge_id || bridgeIdForAccount(values.account_id, values.account_type) || selectedBridge());
+    const data = await api(`/api/status?${params.toString()}`);
+    if (checkToken !== state.bindingQmtGuideCheckToken
+        || state.bindingQmtGuideValues !== values) return;
+    state.bridgeStatus = data;
+    renderBindingQmtLoginCheck(data, null);
+    const readiness = onboardingBridgeReadiness(data, values);
+    const instruction = $('bindingQmtGuideInstruction');
+    if (readiness.ready) {
+      if (instruction) instruction.textContent = 'QMT 登录和通道检测成功，托管策略已在线，可以查看账号状态或测试接口。';
+      setBindingNotice('QMT 登录和通道检测成功。', 'success');
+    } else if (instruction) {
+      instruction.textContent = `仍有 QMT 通道未在线，请完成登录并确认托管策略已运行后再次检测。${qmtStartupInstruction(values)}`;
+    }
+  } catch (error) {
+    if (checkToken !== state.bindingQmtGuideCheckToken
+        || state.bindingQmtGuideValues !== values) return;
+    renderBindingQmtLoginCheck(null, error);
+    const instruction = $('bindingQmtGuideInstruction');
+    if (instruction) instruction.textContent = `检测失败：${error.message}。请完成 QMT 登录后重新检测。`;
+  } finally {
+    if (checkToken === state.bindingQmtGuideCheckToken) setBindingQmtGuideCheckBusy(false);
+  }
 }
 
 function showBindingQmtGuide(values, deploy, options = {}) {
   const overlay = $('bindingQmtGuideOverlay');
   if (!overlay) return;
-  values = {
+  values = normalizeQmtDeploymentTargets({
     ...(values || {}),
     qmt_auto_login: options.qmtAutoLogin || (values || {}).qmt_auto_login,
     qmt_strategy_deploy: options.qmtStrategyDeploy || (values || {}).qmt_strategy_deploy,
-  };
+  });
   state.bindingQmtGuideValues = values;
   if (deploy !== undefined) state.bindingQmtGuideDeploy = deploy;
   state.bindingQmtGuideAutoLogin = values.qmt_auto_login || null;
   state.bindingQmtAutoLoginBusy = false;
+  state.bindingQmtGuideCheckToken += 1;
+  setBindingQmtGuideCheckBusy(false);
+  state.bindingQmtGuideCheckAttempt = 0;
   state.bindingQmtGuideContext = options.context || '';
   const title = $('bindingQmtGuideTitle');
   const subtitle = $('bindingQmtGuideSubtitle');
@@ -1199,6 +1345,7 @@ function showBindingQmtGuide(values, deploy, options = {}) {
   if (targets) targets.innerHTML = qmtDeploymentTargets(values).map((target) =>
     `<div class="binding-qmt-status-row is-info"><strong>${esc(target.role)}</strong><span><code>${esc(target.qmt_dir || '未填写 QMT 目录')}</code></span></div>`
   ).join('');
+  renderBindingQmtLoginCheck(null, null);
   overlay.classList.remove('hidden');
   overlay.setAttribute('aria-hidden', 'false');
   const dialog = overlay.querySelector('.binding-qmt-guide-dialog');
@@ -2314,7 +2461,7 @@ function syncAdvancedQmtDirField(inputId, mode) {
 }
 
 function qmtDirsAreSame(first, second) {
-  const normalize = (value) => String(value || '').trim().replace(/[\\/]+$/, '').toLowerCase();
+  const normalize = (value) => qmtDeploymentPath(value).replace(/[\\/]+$/, '').toLowerCase();
   return normalize(first) && normalize(first) === normalize(second);
 }
 
@@ -2413,7 +2560,7 @@ function mountQmtStrategySettings() {
     target.innerHTML = `
       <label class="toggle wide"><input id="${prefix}StrategyEnabled" type="checkbox" checked><span>自动导入并管理 QMT 策略</span></label>
       <label class="field"><span>模型运行方式</span><select id="${prefix}StrategyRunMode"><option value="1" selected>实盘运行</option><option value="0">模拟运行</option></select></label>
-      <label class="toggle"><input id="${prefix}StrategyAutorun" type="checkbox"><span>QMT 启动后自动运行</span></label>
+      <label class="toggle"><input id="${prefix}StrategyAutorun" type="checkbox" checked><span>QMT 启动后自动运行</span></label>
       <label class="field"><span>主图品种</span><input id="${prefix}StrategyStock" value="SH000300" autocomplete="off"></label>
       <details class="wide"><summary>模型账号 Key（自动识别 / 手动指定）</summary>
         <div class="qmt-strategy-account-keys">${[['normal', '普通端'], ['trade', '高级模式交易端'], ['SH', '上海交易端'], ['SZ', '深圳交易端']].map(([role, label]) => `
@@ -2439,7 +2586,7 @@ function fillQmtStrategySettings(prefix, settings) {
   const value = settings || {};
   $(`${prefix}StrategyEnabled`).checked = value.enabled !== false;
   $(`${prefix}StrategyRunMode`).value = value.live !== false ? '1' : '0';
-  $(`${prefix}StrategyAutorun`).checked = !!value.autorun;
+  $(`${prefix}StrategyAutorun`).checked = value.autorun !== false;
   $(`${prefix}StrategyStock`).value = value.stock || 'SH000300';
   ['normal', 'trade', 'SH', 'SZ'].forEach((role) => {
     $(`${prefix}StrategyKey_${role}`).value = (value.account_keys || {})[role] || '';
@@ -2461,11 +2608,8 @@ function readQmtStrategySettings(prefix) {
 
 function qmtStrategyDeploySummary(deploy) {
   if (!deploy) return '';
-  if (deploy.error) return deploy.message || deploy.error;
-  return (deploy.targets || []).map((target) => {
-    const label = (target.strategies || []).join(' / ') || target.root || 'QMT';
-    return `${label}：${target.error || target.message || target.state || '等待部署状态'}`;
-  }).join('；') || deploy.message || '';
+  if (deploy.error) return strategyDeployTopLevelDetail(deploy);
+  return (deploy.targets || []).map((target) => strategyDeployTargetDetail(target)).join('；') || deploy.message || '';
 }
 
 function bindingSaveSummary({
@@ -3377,6 +3521,8 @@ function returnFromBindingQmtGuide() {
   overlay.classList.add('hidden');
   overlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('binding-dialog-open');
+  state.bindingQmtGuideCheckToken += 1;
+  setBindingQmtGuideCheckBusy(false);
   state.bindingQmtGuideContext = '';
   if (context === 'onboarding') {
     state.accountId = values.account_id;
@@ -3401,8 +3547,10 @@ function returnFromBindingQmtGuide() {
     qmtTradeDir: values.qmt_trade_dir,
     mode: values.mode,
     dataProvider: values.data_provider !== false,
-    marketRoutingEnabled: !!values.marketRoutingEnabled,
-    marketBridges: values.marketBridges || {},
+    marketRoutingEnabled: !!(values.marketRoutingEnabled || values.market_routing_enabled),
+    marketBridges: values.marketBridges || values.market_bridges || {},
+    qmtAutoLogin: values.qmt_auto_login,
+    qmtStrategy: values.qmt_strategy,
   });
 }
 
@@ -4712,6 +4860,17 @@ async function loginWebAuth(event) {
   }
 }
 
+function syncPythonEnvironmentField(prefix) {
+  const mode = $(`${prefix}PythonEnvironmentMode`);
+  const input = $(`${prefix}PythonExecutable`);
+  if (!mode || !input) return;
+  const custom = mode.value === 'custom';
+  input.classList.toggle('hidden', !custom);
+  input.disabled = !custom;
+  if (custom) input.required = true;
+  else input.required = false;
+}
+
 function showSetupOverlay(message = '') {
   const overlay = $('setupOverlay');
   if (!overlay) return;
@@ -4721,6 +4880,8 @@ function showSetupOverlay(message = '') {
   const qmtDirInput = $('setupQmtDir');
   const qmtTradeDirInput = $('setupQmtTradeDir');
   const modeInput = $('setupMode');
+  const pythonModeInput = $('setupPythonEnvironmentMode');
+  const pythonExecutableInput = $('setupPythonExecutable');
   const adminFields = $('setupAdminFields');
   const adminUsernameInput = $('setupAdminUsername');
   const adminPasswordInput = $('setupAdminPassword');
@@ -4739,12 +4900,20 @@ function showSetupOverlay(message = '') {
     accountTypeInput.value = normalizeAccountType(setup.default_account_type || state.defaultAccountType || (defaultConfig && defaultConfig.account_type) || 'STOCK');
   }
   if (qmtDirInput && !qmtDirInput.value) {
-    qmtDirInput.value = setup.default_qmt_dir || (defaultConfig && defaultConfig.qmt_dir) || '';
+    qmtDirInput.value = qmtDeploymentPath(setup.default_qmt_dir || (defaultConfig && defaultConfig.qmt_dir) || '');
   }
   if (modeInput) modeInput.value = setup.default_mode || (defaultConfig && defaultConfig.mode) || 'ctypes';
+  const pythonEnvironment = setup.python_environment || {};
+  if (pythonModeInput) pythonModeInput.value = pythonEnvironment.mode || 'default';
+  if (pythonExecutableInput && !pythonExecutableInput.value) pythonExecutableInput.value = pythonEnvironment.configured_executable || '';
+  syncPythonEnvironmentField('setup');
   if (qmtTradeDirInput && !qmtTradeDirInput.value) {
-    qmtTradeDirInput.value = setup.default_qmt_trade_dir || (defaultConfig && defaultConfig.qmt_trade_dir) || '';
+    qmtTradeDirInput.value = qmtDeploymentPath(setup.default_qmt_trade_dir || (defaultConfig && defaultConfig.qmt_trade_dir) || '');
   }
+  if ($('setupQmtAutoLogin')) {
+    $('setupQmtAutoLogin').checked = defaultQmtAutoLoginSettings(defaultConfig && defaultConfig.account_id ? defaultConfig.qmt_auto_login : undefined).enabled;
+  }
+  fillQmtStrategySettings('setup', defaultConfig && defaultConfig.account_id ? (defaultConfig.qmt_strategy || { enabled: false }) : undefined);
   syncAdvancedQmtDirField('setupQmtTradeDir', modeInput && modeInput.value);
   updateSetupSteps('config');
   const status = $('setupStatus');
@@ -4799,12 +4968,22 @@ async function submitSetupForm(event) {
   const body = {
     account_id: $('setupAccountId') ? $('setupAccountId').value.trim() : '',
     account_type: $('setupAccountType') ? $('setupAccountType').value : 'STOCK',
-    qmt_dir: $('setupQmtDir') ? $('setupQmtDir').value.trim() : '',
-    qmt_trade_dir: $('setupQmtTradeDir') ? $('setupQmtTradeDir').value.trim() : '',
+    qmt_dir: $('setupQmtDir') ? qmtDeploymentPath($('setupQmtDir').value) : '',
+    qmt_trade_dir: $('setupQmtTradeDir') ? qmtDeploymentPath($('setupQmtTradeDir').value) : '',
     mode: $('setupMode') ? $('setupMode').value : 'ctypes',
+    python_environment: {
+      mode: $('setupPythonEnvironmentMode') ? $('setupPythonEnvironmentMode').value : 'default',
+      python_executable: $('setupPythonExecutable') ? $('setupPythonExecutable').value.trim() : '',
+    },
     qmt_strategy: readQmtStrategySettings('setup'),
     web_auth_enabled: !!($('setupEnableWebAuth') && $('setupEnableWebAuth').checked),
   };
+  if (body.python_environment.mode === 'custom' && !body.python_environment.python_executable) {
+    if (status) status.textContent = '请输入指定 Python 解释器路径';
+    const input = $('setupPythonExecutable');
+    if (input) input.focus();
+    return;
+  }
   body.qmt_auto_login = { enabled: !!($('setupQmtAutoLogin') && $('setupQmtAutoLogin').checked), restart_times: [] };
   if (adminRequired) {
     const adminUsername = $('setupAdminUsername') ? $('setupAdminUsername').value.trim() : '';
@@ -8472,22 +8651,22 @@ function syncBindingForm() {
   if (form.account_type) form.account_type.value = normalizeAccountType(info.accountType || 'STOCK');
   const config = info.config;
   if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
-  if (form.qmt_dir) form.qmt_dir.value = config && config.qmt_dir ? config.qmt_dir : '';
+  if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(config && config.qmt_dir ? config.qmt_dir : '');
   if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
-  if (form.qmt_trade_dir) form.qmt_trade_dir.value = config && config.qmt_trade_dir ? config.qmt_trade_dir : '';
+  if (form.qmt_trade_dir) form.qmt_trade_dir.value = qmtDeploymentPath(config && config.qmt_trade_dir ? config.qmt_trade_dir : '');
   syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
   if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
   if (form.enabled) form.enabled.checked = config ? accountConfigEnabled(config) : true;
   const routes = normalizeMarketRoutes(config || {});
   if (form.market_routing_enabled) form.market_routing_enabled.checked = isMarketRoutingEnabled(config || {});
-  if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
+  if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = qmtDeploymentPath(routes.SH.qmt_dir || '');
   if (form.market_sh_bridge_id) form.market_sh_bridge_id.value = routes.SH.bridge_id || '';
   if (form.market_sh_position_account_id) form.market_sh_position_account_id.value = marketPositionAccountValue(routes.SH);
-  if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = routes.SZ.qmt_dir || '';
+  if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = qmtDeploymentPath(routes.SZ.qmt_dir || '');
   if (form.market_sz_bridge_id) form.market_sz_bridge_id.value = routes.SZ.bridge_id || '';
   if (form.market_sz_position_account_id) form.market_sz_position_account_id.value = marketPositionAccountValue(routes.SZ);
   if (form.qmt_auto_login) {
-    const settings = normalizeQmtAutoLoginSettings(config && config.qmt_auto_login);
+    const settings = defaultQmtAutoLoginSettings(config ? config.qmt_auto_login : undefined);
     form.qmt_auto_login.checked = settings.enabled;
     renderBindingQmtRestartTimes(settings.restart_times);
     syncBindingQmtAutoLoginSettingsVisibility();
@@ -8511,22 +8690,22 @@ function fillBindingForm(values = {}) {
   if (form.display_name) form.display_name.value = values.displayName || '';
   form.account_id.value = values.accountId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
-  if (form.qmt_dir) form.qmt_dir.value = values.qmtDir || '';
+  if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(values.qmtDir || '');
   if (form.mode) form.mode.value = values.mode || 'ctypes';
-  if (form.qmt_trade_dir) form.qmt_trade_dir.value = values.qmtTradeDir || '';
+  if (form.qmt_trade_dir) form.qmt_trade_dir.value = qmtDeploymentPath(values.qmtTradeDir || '');
   syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
   if (form.data_provider) form.data_provider.checked = !!values.dataProvider;
   if (form.enabled) form.enabled.checked = configBool(values.enabled, true);
   const routes = normalizeMarketRoutes({ market_bridges: values.marketBridges || {} });
   if (form.market_routing_enabled) form.market_routing_enabled.checked = !!values.marketRoutingEnabled;
-  if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = routes.SH.qmt_dir || '';
+  if (form.market_sh_qmt_dir) form.market_sh_qmt_dir.value = qmtDeploymentPath(routes.SH.qmt_dir || '');
   if (form.market_sh_bridge_id) form.market_sh_bridge_id.value = routes.SH.bridge_id || '';
   if (form.market_sh_position_account_id) form.market_sh_position_account_id.value = marketPositionAccountValue(routes.SH);
-  if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = routes.SZ.qmt_dir || '';
+  if (form.market_sz_qmt_dir) form.market_sz_qmt_dir.value = qmtDeploymentPath(routes.SZ.qmt_dir || '');
   if (form.market_sz_bridge_id) form.market_sz_bridge_id.value = routes.SZ.bridge_id || '';
   if (form.market_sz_position_account_id) form.market_sz_position_account_id.value = marketPositionAccountValue(routes.SZ);
   if (form.qmt_auto_login) {
-    const settings = normalizeQmtAutoLoginSettings(values.qmtAutoLogin);
+    const settings = defaultQmtAutoLoginSettings(values.qmtAutoLogin);
     form.qmt_auto_login.checked = settings.enabled;
     renderBindingQmtRestartTimes(settings.restart_times);
     syncBindingQmtAutoLoginSettingsVisibility();
@@ -8679,14 +8858,104 @@ async function submitBridgeForm(event) {
   }
 }
 
+function bindingQmtProcessTargetsFromForm(form = $('bindingForm')) {
+  if (!form) return [];
+  const entries = [
+    ['QMT', form.qmt_dir && form.qmt_dir.value],
+    ['交易端 QMT', form.qmt_trade_dir && form.qmt_trade_dir.value],
+    ['SH QMT', form.market_sh_qmt_dir && form.market_sh_qmt_dir.value],
+    ['SZ QMT', form.market_sz_qmt_dir && form.market_sz_qmt_dir.value],
+  ];
+  const seen = new Set();
+  return entries.map(([label, value]) => ({ label, path: qmtDeploymentPath(value || '') }))
+    .filter((item) => item.path && !seen.has(item.path.toLowerCase()) && seen.add(item.path.toLowerCase()));
+}
+
+function renderBindingQmtProcessStatus(results = []) {
+  const status = $('bindingQmtProcessStatus');
+  const tradeStatus = $('bindingQmtTradeProcessStatus');
+  const running = results.filter((item) => item.running);
+  const errors = results.filter((item) => item.error);
+  const text = results.length
+    ? results.map((item) => {
+      const prefix = item.label ? `${item.label}: ` : '';
+      if (item.error) return `${prefix}无法定位 XtItClient.exe（${item.error}）`;
+      if (item.running) return `${prefix}正在运行，PID ${item.pids.join(', ')}`;
+      return `${prefix}未检测到运行中的 QMT`;
+    }).join('；')
+    : '输入目录后将检测对应 QMT 进程和 PID。';
+  if (status) status.textContent = text;
+  if (tradeStatus) tradeStatus.textContent = running.length ? `检测到运行中的 QMT：${running.map((item) => item.pids.join(', ')).join(', ')}` : '';
+  return { running, errors };
+}
+
+async function checkBindingQmtProcesses(targets = bindingQmtProcessTargetsFromForm()) {
+  const token = ++state.bindingQmtProcessCheckToken;
+  state.bindingQmtProcessCheckInFlight = true;
+  try {
+    const results = await Promise.all(targets.map(async (target) => {
+      try {
+        const data = await api(`/api/qmt/processes?qmt_dir=${encodeURIComponent(target.path)}`);
+        return { ...data, label: target.label };
+      } catch (error) {
+        return { qmt_dir: target.path, label: target.label, error: error.message, running: false, pids: [], processes: [] };
+      }
+    }));
+    if (token === state.bindingQmtProcessCheckToken) renderBindingQmtProcessStatus(results);
+    return results;
+  } finally {
+    if (token === state.bindingQmtProcessCheckToken) state.bindingQmtProcessCheckInFlight = false;
+  }
+}
+
+function closeBindingQmtProcessPrompt(result) {
+  const overlay = $('bindingQmtProcessOverlay');
+  if (overlay) {
+    overlay.classList.add('hidden');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+  document.body.classList.remove('binding-dialog-open');
+  const resolver = state.bindingQmtProcessResolver;
+  state.bindingQmtProcessResolver = null;
+  if (resolver) resolver(!!result);
+}
+
+function showBindingQmtProcessPrompt(results) {
+  const overlay = $('bindingQmtProcessOverlay');
+  const status = $('bindingQmtProcessPromptStatus');
+  if (!overlay) return Promise.resolve(false);
+  if (status) status.textContent = results.filter((item) => item.running).map((item) => `${item.label || 'QMT'}：PID ${item.pids.join(', ')}`).join('；');
+  overlay.classList.remove('hidden');
+  overlay.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('binding-dialog-open');
+  return new Promise((resolve) => { state.bindingQmtProcessResolver = resolve; });
+}
+
+async function recheckBindingQmtProcesses() {
+  const targets = bindingQmtProcessTargetsFromForm();
+  const results = await checkBindingQmtProcesses(targets);
+  if (results.some((item) => item.running)) {
+    const status = $('bindingQmtProcessPromptStatus');
+    if (status) status.textContent = results.filter((item) => item.running).map((item) => `${item.label || 'QMT'}：仍在运行，PID ${item.pids.join(', ')}`).join('；');
+    return;
+  }
+  closeBindingQmtProcessPrompt(true);
+}
+
+async function ensureBindingQmtStopped(targets) {
+  const results = await checkBindingQmtProcesses(targets);
+  if (!results.some((item) => item.running)) return true;
+  return showBindingQmtProcessPrompt(results);
+}
+
 async function submitBindingForm(event) {
   event.preventDefault();
   const form = event.currentTarget;
   const accountId = form.account_id.value.trim();
   const displayName = form.display_name ? form.display_name.value.trim() : '';
   const accountType = normalizeAccountType(form.account_type ? form.account_type.value : 'STOCK');
-  const qmtDir = form.qmt_dir ? form.qmt_dir.value.trim() : '';
-  const qmtTradeDir = form.qmt_trade_dir ? form.qmt_trade_dir.value.trim() : '';
+  const qmtDir = form.qmt_dir ? qmtDeploymentPath(form.qmt_dir.value) : '';
+  const qmtTradeDir = form.qmt_trade_dir ? qmtDeploymentPath(form.qmt_trade_dir.value) : '';
   const mode = form.mode ? form.mode.value : 'ctypes';
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
   const enabled = !(form.enabled && !form.enabled.checked);
@@ -8707,12 +8976,12 @@ async function submitBindingForm(event) {
   const marketBridges = {
     SH: {
       bridge_id: form.market_sh_bridge_id ? form.market_sh_bridge_id.value.trim() : '',
-      qmt_dir: form.market_sh_qmt_dir ? form.market_sh_qmt_dir.value.trim() : '',
+      qmt_dir: form.market_sh_qmt_dir ? qmtDeploymentPath(form.market_sh_qmt_dir.value) : '',
       ...marketPositionAccountPayload(form.market_sh_position_account_id ? form.market_sh_position_account_id.value : ''),
     },
     SZ: {
       bridge_id: form.market_sz_bridge_id ? form.market_sz_bridge_id.value.trim() : '',
-      qmt_dir: form.market_sz_qmt_dir ? form.market_sz_qmt_dir.value.trim() : '',
+      qmt_dir: form.market_sz_qmt_dir ? qmtDeploymentPath(form.market_sz_qmt_dir.value) : '',
       ...marketPositionAccountPayload(form.market_sz_position_account_id ? form.market_sz_position_account_id.value : ''),
     },
   };
@@ -8731,6 +9000,15 @@ async function submitBindingForm(event) {
       if (input) input.focus();
       return;
     }
+  }
+  const processTargets = [
+    { label: 'QMT', path: qmtDir },
+    { label: '交易端 QMT', path: qmtTradeDir },
+    { label: 'SH QMT', path: marketBridges.SH.qmt_dir },
+    { label: 'SZ QMT', path: marketBridges.SZ.qmt_dir },
+  ].filter((item) => item.path);
+  if (enabled && processTargets.length) {
+    if (!await ensureBindingQmtStopped(processTargets)) return;
   }
   setBindingSaveBusy(true);
   setBindingNotice('正在保存绑定并刷新连接状态...', 'busy', { autoHide: false });
@@ -8873,6 +9151,10 @@ async function refreshConfig() {
   state.accountPairs = data.account_pairs || {};
   state.accountConfigs = data.account_configs || {};
   state.setup = data.setup || null;
+  state.pythonEnvironment = data.python_environment || (data.setup && data.setup.python_environment) || null;
+  renderPythonEnvironmentSettings(state.pythonEnvironment);
+  state.pythonEnvironment = data.python_environment || (data.setup && data.setup.python_environment) || null;
+  renderPythonEnvironmentSettings(state.pythonEnvironment);
   state.defaultAccountId = Object.prototype.hasOwnProperty.call(data, 'default_account_id')
     ? (data.default_account_id || '')
     : ((data.setup && data.setup.default_account_id) || '');
@@ -8893,6 +9175,39 @@ async function refreshConfig() {
   refreshTestsIfVisible();
   await refreshBindingStatuses();
   await refreshUpdateStatus({ log: false }).catch((error) => log('更新状态刷新失败', { error: error.message }));
+}
+
+function renderPythonEnvironmentSettings(info = state.pythonEnvironment || {}) {
+  const mode = $('settingsPythonEnvironmentMode');
+  const input = $('settingsPythonExecutable');
+  if (mode) mode.value = info.mode || 'default';
+  if (input && document.activeElement !== input) input.value = info.configured_executable || '';
+  syncPythonEnvironmentField('settings');
+}
+
+async function savePythonEnvironmentFromUi(event) {
+  if (event) event.preventDefault();
+  const mode = $('settingsPythonEnvironmentMode') ? $('settingsPythonEnvironmentMode').value : 'default';
+  const executable = $('settingsPythonExecutable') ? $('settingsPythonExecutable').value.trim() : '';
+  const status = $('pythonEnvironmentStatus');
+  if (mode === 'custom' && !executable) {
+    if (status) status.textContent = '请输入指定 Python 解释器路径';
+    return;
+  }
+  if (status) status.textContent = '正在保存...';
+  try {
+    const data = await api('/api/python-environment', {
+      method: 'POST',
+      body: JSON.stringify({ python_environment: { mode, python_executable: executable } }),
+    });
+    state.pythonEnvironment = data.python_environment || null;
+    state.setup = data.setup || state.setup;
+    renderPythonEnvironmentSettings(state.pythonEnvironment);
+    if (status) status.textContent = '已保存；新启动的子服务将使用该环境。';
+    log('Python 环境设置已保存', { mode, configured: !!executable });
+  } catch (error) {
+    if (status) status.textContent = `保存失败：${error.message}`;
+  }
 }
 
 async function refreshBindingStatuses() {
@@ -11282,6 +11597,12 @@ function qmtPythonDirPath(path) {
   return installDir ? joinWinPath(installDir, 'python') : '';
 }
 
+function normalizeQmtDirInput(input) {
+  if (!input) return;
+  const value = qmtDeploymentPath(input.value);
+  if (value) input.value = value;
+}
+
 function accountConfigQmtTradeDir(config = {}) {
   return String(config.qmt_trade_dir
     || config.trade_qmt_dir
@@ -11361,7 +11682,7 @@ function fillOnboardingQmtTradeDirFromSaved() {
   if (input.value.trim()) return false;
   const saved = onboardingSavedQmtTradeDir();
   if (!saved) return false;
-  input.value = saved;
+  input.value = qmtDeploymentPath(saved);
   return true;
 }
 
@@ -11375,18 +11696,22 @@ function onboardingValues() {
       ? $('onboardingAccountType').value
       : (config.account_type || state.accountType || state.defaultAccountType || 'STOCK')
   );
-  const qmtDir = $('onboardingQmtDir') ? $('onboardingQmtDir').value.trim() : (config.qmt_dir || '');
+  const qmtDir = $('onboardingQmtDir') ? qmtDeploymentPath($('onboardingQmtDir').value) : qmtDeploymentPath(config.qmt_dir || '');
   const values = {
     account_id: accountId,
     account_type: accountType,
     account_key: config.account_key || makeAccountKey(accountId, accountType, config.bridge_id || state.defaultBridgeId || 'default'),
     qmt_dir: qmtDir,
-    qmt_trade_dir: $('onboardingQmtTradeDir') ? $('onboardingQmtTradeDir').value.trim() : accountConfigQmtTradeDir(config),
+    qmt_trade_dir: $('onboardingQmtTradeDir') ? qmtDeploymentPath($('onboardingQmtTradeDir').value) : qmtDeploymentPath(accountConfigQmtTradeDir(config)),
     mode: $('onboardingMode') ? $('onboardingMode').value : (config.mode || 'ctypes'),
+    python_environment: {
+      mode: $('onboardingPythonEnvironmentMode') ? $('onboardingPythonEnvironmentMode').value : ((state.setup && state.setup.python_environment && state.setup.python_environment.mode) || 'default'),
+      python_executable: $('onboardingPythonExecutable') ? $('onboardingPythonExecutable').value.trim() : ((state.setup && state.setup.python_environment && state.setup.python_environment.configured_executable) || ''),
+    },
     qmt_strategy: readQmtStrategySettings('onboarding'),
     data_provider: $('onboardingDataProvider') ? $('onboardingDataProvider').checked : !!config.data_provider,
   };
-  values.qmt_auto_login = normalizeQmtAutoLoginSettings(config.qmt_auto_login);
+  values.qmt_auto_login = defaultQmtAutoLoginSettings(config && config.account_id ? config.qmt_auto_login : undefined);
   if ($('onboardingQmtAutoLogin')) values.qmt_auto_login.enabled = $('onboardingQmtAutoLogin').checked;
   return values;
 }
@@ -11651,19 +11976,25 @@ function syncOnboardingWizard(options = {}) {
   }
   const qmtInput = $('onboardingQmtDir');
   if (qmtInput && (shouldFill || !qmtInput.value.trim())) {
-    qmtInput.value = config.qmt_dir || (state.setup && state.setup.default_qmt_dir) || '';
+    qmtInput.value = qmtDeploymentPath(config.qmt_dir || (state.setup && state.setup.default_qmt_dir) || '');
   }
   const qmtTradeInput = $('onboardingQmtTradeDir');
   if (qmtTradeInput && (shouldFill || !qmtTradeInput.value.trim())) {
-    qmtTradeInput.value = accountConfigQmtTradeDir(config) || (state.setup && state.setup.default_qmt_trade_dir) || '';
+    qmtTradeInput.value = qmtDeploymentPath(accountConfigQmtTradeDir(config) || (state.setup && state.setup.default_qmt_trade_dir) || '');
   }
   const modeInput = $('onboardingMode');
   if (modeInput) {
     modeInput.value = config.mode || (state.setup && state.setup.default_mode) || 'ctypes';
   }
+  const pythonEnvironment = (state.setup && state.setup.python_environment) || {};
+  const pythonModeInput = $('onboardingPythonEnvironmentMode');
+  const pythonExecutableInput = $('onboardingPythonExecutable');
+  if (pythonModeInput && (shouldFill || !pythonModeInput.value)) pythonModeInput.value = pythonEnvironment.mode || 'default';
+  if (pythonExecutableInput && (shouldFill || !pythonExecutableInput.value)) pythonExecutableInput.value = pythonEnvironment.configured_executable || '';
+  syncPythonEnvironmentField('onboarding');
   if (shouldFill) fillQmtStrategySettings('onboarding', config.account_id ? (config.qmt_strategy || { enabled: false }) : undefined);
   if (shouldFill && $('onboardingQmtAutoLogin')) {
-    $('onboardingQmtAutoLogin').checked = normalizeQmtAutoLoginSettings(config.qmt_auto_login).enabled;
+    $('onboardingQmtAutoLogin').checked = defaultQmtAutoLoginSettings(config && config.account_id ? config.qmt_auto_login : undefined).enabled;
   }
   syncAdvancedQmtDirField('onboardingQmtTradeDir', modeInput && modeInput.value);
   fillOnboardingQmtTradeDirFromSaved();
@@ -11685,6 +12016,12 @@ function syncOnboardingWizard(options = {}) {
 async function saveOnboardingConfig(event) {
   if (event) event.preventDefault();
   const values = onboardingValues();
+  if (values.python_environment && values.python_environment.mode === 'custom' && !values.python_environment.python_executable) {
+    setOnboardingStatus('onboardingConfigStatus', '请输入指定 Python 解释器路径', 'error');
+    const input = $('onboardingPythonExecutable');
+    if (input) input.focus();
+    return;
+  }
   if (normalizeTransportMode(values.mode) === 'lttx') {
     if (!values.qmt_dir || !values.qmt_trade_dir) {
       setOnboardingStatus('onboardingConfigStatus', '高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error');
@@ -11994,10 +12331,19 @@ function wireOnboardingGuide() {
   if (backBridgeBtn) backBridgeBtn.addEventListener('click', returnOnboardingToPreviousStep);
   const backDataBtn = $('onboardingBackDataBtn');
   if (backDataBtn) backDataBtn.addEventListener('click', returnOnboardingToPreviousStep);
-  ['onboardingAccountId', 'onboardingAccountType', 'onboardingQmtDir', 'onboardingQmtTradeDir', 'onboardingMode', 'onboardingDataProvider'].forEach((id) => {
+  ['onboardingAccountId', 'onboardingAccountType', 'onboardingQmtDir', 'onboardingQmtTradeDir', 'onboardingMode', 'onboardingDataProvider', 'onboardingQmtAutoLogin', 'onboardingPythonEnvironmentMode', 'onboardingPythonExecutable'].forEach((id) => {
     const input = $(id);
     if (input) input.addEventListener('input', renderOnboardingDeployPlan);
     if (input) input.addEventListener('change', renderOnboardingDeployPlan);
+  });
+  const onboardingPythonMode = $('onboardingPythonEnvironmentMode');
+  if (onboardingPythonMode) onboardingPythonMode.addEventListener('change', () => syncPythonEnvironmentField('onboarding'));
+  ['onboardingQmtDir', 'onboardingQmtTradeDir'].forEach((id) => {
+    const input = $(id);
+    if (input) input.addEventListener('blur', () => {
+      normalizeQmtDirInput(input);
+      renderOnboardingDeployPlan();
+    });
   });
   const onboardingMode = $('onboardingMode');
   if (onboardingMode) {
@@ -12648,6 +12994,16 @@ async function boot() {
       syncAdvancedQmtDirField('bindingQmtTradeDir', bindingMode.value);
     });
   }
+  ['bindingQmtDir', 'bindingQmtTradeDir', 'bindingMarketShQmtDir', 'bindingMarketSzQmtDir'].forEach((id) => {
+    const input = $(id);
+    if (input) {
+      input.addEventListener('blur', () => normalizeQmtDirInput(input));
+      input.addEventListener('input', () => {
+        clearTimeout(input._qmtProcessTimer);
+        input._qmtProcessTimer = setTimeout(() => checkBindingQmtProcesses(bindingQmtProcessTargetsFromForm()), 350);
+      });
+    }
+  });
   const bindingQmtAutoLogin = $('bindingQmtAutoLogin');
   if (bindingQmtAutoLogin) {
     bindingQmtAutoLogin.addEventListener('change', () => {
@@ -12695,6 +13051,15 @@ async function boot() {
   if (closeBindingQmtGuideBottomBtn) closeBindingQmtGuideBottomBtn.addEventListener('click', finishBindingQmtGuide);
   const checkBindingQmtConnectionBtn = $('checkBindingQmtConnectionBtn');
   if (checkBindingQmtConnectionBtn) checkBindingQmtConnectionBtn.addEventListener('click', checkBindingQmtConnection);
+  const bindingQmtProcessCloseLaterBtn = $('bindingQmtProcessCloseLaterBtn');
+  if (bindingQmtProcessCloseLaterBtn) bindingQmtProcessCloseLaterBtn.addEventListener('click', () => {
+    closeBindingQmtProcessPrompt(false);
+    setBindingNotice('请先关闭 QMT，然后再次点击保存绑定。', 'warn', { autoHide: false });
+  });
+  const bindingQmtProcessRecheckBtn = $('bindingQmtProcessRecheckBtn');
+  if (bindingQmtProcessRecheckBtn) bindingQmtProcessRecheckBtn.addEventListener('click', () => recheckBindingQmtProcesses());
+  const bindingQmtProcessCancelBtn = $('bindingQmtProcessCancelBtn');
+  if (bindingQmtProcessCancelBtn) bindingQmtProcessCancelBtn.addEventListener('click', () => closeBindingQmtProcessPrompt(false));
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && bindingDialogOverlay && !bindingDialogOverlay.classList.contains('hidden')) {
       closeBindingDialog();
@@ -12799,6 +13164,10 @@ async function boot() {
     event.preventDefault();
     saveServerAccessFromUi('api').catch((error) => log('访问设置保存失败', { error: error.message }));
   });
+  const pythonEnvironmentForm = $('pythonEnvironmentForm');
+  if (pythonEnvironmentForm) pythonEnvironmentForm.addEventListener('submit', savePythonEnvironmentFromUi);
+  const settingsPythonMode = $('settingsPythonEnvironmentMode');
+  if (settingsPythonMode) settingsPythonMode.addEventListener('change', () => syncPythonEnvironmentField('settings'));
   $('reloadWebServerBtn').addEventListener('click', () => {
     saveServerAccessFromUi('api', { reload: true }).catch((error) => log('Web 重载失败', { error: error.message }));
   });
@@ -12825,6 +13194,12 @@ async function boot() {
   if (setupMode) {
     setupMode.addEventListener('change', () => syncAdvancedQmtDirField('setupQmtTradeDir', setupMode.value));
   }
+  const setupPythonMode = $('setupPythonEnvironmentMode');
+  if (setupPythonMode) setupPythonMode.addEventListener('change', () => syncPythonEnvironmentField('setup'));
+  ['setupQmtDir', 'setupQmtTradeDir'].forEach((id) => {
+    const input = $(id);
+    if (input) input.addEventListener('blur', () => normalizeQmtDirInput(input));
+  });
   $('reinitializeSetupBtn').addEventListener('click', reinitializeSetup);
   $('logCleanupForm').addEventListener('submit', (event) => {
     event.preventDefault();

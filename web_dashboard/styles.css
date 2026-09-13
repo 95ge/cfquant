@@ -4081,6 +4081,19 @@ th.num .sort-header {
   display: none;
 }
 
+.binding-qmt-login-check-panel {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #d7dee8;
+  border-radius: 6px;
+  background: #fbfcfd;
+}
+
+.binding-qmt-login-check-panel.hidden {
+  display: none;
+}
+
 .binding-qmt-autostart-settings {
   display: grid;
   gap: 10px;

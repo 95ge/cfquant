@@ -173,13 +173,23 @@ def _model_items(document):
     return section, list(section.getElementsByTagName("item"))
 
 
-def _strategy_slot_name(mode, group_key, role):
-    """Return the stable QMT model name for one managed deployment slot."""
-    return "CFQ_%s_%s_%s" % (
-        str(mode or "").upper(),
-        str(group_key or "").upper()[:8],
-        str(role or "normal").upper(),
-    )
+def _strategy_slot_name(account_id, role="normal"):
+    """Return a deterministic name shared by all modes for one account.
+
+    A mode switch must replace the existing model instead of creating a
+    second autorun model. Independent SH/SZ routes are the one case where a
+    single account receives distinct names.
+    """
+    account = re.sub(r"[^A-Z0-9]+", "_", str(account_id or "").upper()).strip("_") or "ACCOUNT"
+    market = str(role or "normal").upper()
+    suffix = "_%s" % market if market in ("SH", "SZ") else ""
+    return ("CFQ_%s%s" % (account, suffix))[:64]
+
+
+def _is_managed_strategy_name(name):
+    """Recognize current and historical cfquant model names."""
+    text = str(name or "").strip().upper()
+    return text.startswith("CFQ_") or text in {item.upper() for item in LEGACY_NAMES}
 
 
 def _valid_managed_strategy_name(name):
@@ -491,13 +501,11 @@ class QmtStrategyManager:
                 for role in group["roles"]:
                     old_role = previous_roles.get(role["role"])
                     old_name = old_role.get("name") if isinstance(old_role, dict) else ""
-                    if (previous.get("mode") == row["mode"]
-                            and _valid_managed_strategy_name(old_name)):
+                    expected_name = _strategy_slot_name(row["account_id"], role["role"])
+                    if old_name == expected_name:
                         role_names[role["role"]] = old_name
                     else:
-                        role_names[role["role"]] = _strategy_slot_name(
-                            row["mode"], key, role["role"]
-                        )
+                        role_names[role["role"]] = expected_name
                 current_names = set(role_names.values())
                 retired = set(previous.get("retired", []))
                 retired.update(
@@ -619,10 +627,13 @@ class QmtStrategyManager:
         section, items = _model_items(document)
         owned_names = set(job.get("retired", [])) | {role["name"] for role in job["roles"]}
         changed = False
+        disabled_names = set(job.get("retired", [])) | LEGACY_NAMES
         for item in items:
+            item_name = item.getAttribute("name")
             if (item.getAttribute("account") == job["account_id"]
-                    and item.getAttribute("name") in (set(job.get("retired", [])) | LEGACY_NAMES
-                                                      | (owned_names if not job["enabled"] else set()))
+                    and (_is_managed_strategy_name(item_name) or item_name in disabled_names)
+                    and (item_name not in {role["name"] for role in job["roles"]}
+                         or not job["enabled"])
                     and item.getAttribute("startupAutorun") != "0"):
                 item.setAttribute("startupAutorun", "0")
                 changed = True

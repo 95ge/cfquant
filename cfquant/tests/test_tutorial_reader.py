@@ -143,7 +143,12 @@ def test_first_setup_can_read_without_saving_and_preserves_draft(page, frontend_
     page.locator('[data-python-back]').click()
     page.locator('#tutorialReader [data-guide="quickstart"]').click()
     page.locator("#closeTutorialReaderBtn").click()
-    for field, value in draft.items():
+    expected_draft = {
+        **draft,
+        "setupQmtDir": r"D:\QMT-DRAFT\bin.x64",
+        "setupQmtTradeDir": r"D:\QMT-TRADE-DRAFT\bin.x64",
+    }
+    for field, value in expected_draft.items():
         expect(page.locator("#" + field)).to_have_value(value)
     expect(page.locator("#setupAccountType")).to_have_value("CREDIT")
     expect(page.locator("#setupMode")).to_have_value("lttx")

@@ -41,6 +41,27 @@ def test_initialize_web_setup_can_skip_optional_admin_registration(web_config, m
     assert data["setup"]["setup_required"] is False
 
 
+def test_initialize_web_setup_persists_custom_python_environment(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    python_exe = tmp_path / "python.exe"
+    python_exe.write_bytes(b"")
+    monkeypatch.setattr(web, "auto_deploy_qmt_core_for_account", lambda *args, **kwargs: {"summary": {"ok": True}, "results": []})
+    monkeypatch.setattr(web, "write_qmt_bridge_identity", lambda row: {"written": True})
+    monkeypatch.setattr(web, "write_qmt_market_bridge_identities", lambda row: [])
+    monkeypatch.setattr(web, "configure_account_qmt_strategies", lambda row, identity: {})
+    monkeypatch.setattr(web, "qmt_auto_login_apply_for_account", lambda row, request=None: {"enabled": False})
+    monkeypatch.setattr(web, "ensure_account_runtime", lambda mode: {"mode": mode})
+    result = web.initialize_web_setup({
+        "account_id": "1000000001",
+        "python_environment": {"mode": "custom", "python_executable": str(python_exe)},
+        "qmt_dir": str(tmp_path / "bin.x64"),
+        "web_auth_enabled": False,
+    })
+    assert result["python_environment"]["mode"] == "custom"
+    assert config.python_executable() == str(python_exe)
+    assert web.PIPE_HUB._python_exe() == str(python_exe)
+
+
 def test_web_reload_info_uses_target_port_and_preserves_previous_listener(web_config, monkeypatch):
     web, _ = web_config
     monkeypatch.setattr(web, "WEB_BOUND_HOST", "127.0.0.1")
@@ -312,3 +333,44 @@ def test_reset_web_auth_password_enables_auth_when_it_was_not_configured(web_con
     assert result["username"] == "admin"
     assert config.web_auth_enabled()
     assert config.verify_web_auth("admin", new_password)
+
+
+def test_qmt_process_snapshot_matches_directory_and_reports_pids(web_config, monkeypatch, tmp_path):
+    web, _ = web_config
+    qmt_bin = tmp_path / "QMT" / "bin.x64"
+    qmt_bin.mkdir(parents=True)
+    (qmt_bin / "XtItClient.exe").write_bytes(b"")
+    monkeypatch.setattr(web, "_qmt_auto_login_processes", lambda path: [{
+        "pid": 2718,
+        "name": "XtItClient.exe",
+        "executable_path": os.path.join(str(path), "XtItClient.exe"),
+    }])
+    result = web.qmt_process_snapshot(str(qmt_bin.parent))
+    assert result["running"] is True
+    assert result["pids"] == [2718]
+    assert result["exe_path"].lower().endswith("bin.x64\\xtitclient.exe")
+
+
+def test_qmt_process_preflight_rejects_running_strategy_before_mutation(web_config, monkeypatch, tmp_path):
+    web, _ = web_config
+    calls = []
+    monkeypatch.setattr(web, "qmt_process_snapshots_for_request", lambda **kwargs: [{
+        "qmt_dir": str(tmp_path), "running": True, "pids": [1234],
+    }])
+    with pytest.raises(RuntimeError, match="PID 1234"):
+        web.qmt_process_preflight(body={
+            "qmt_dir": str(tmp_path),
+            "qmt_strategy": {"enabled": True},
+        })
+    assert calls == []
+
+
+def test_qmt_process_snapshot_request_uses_saved_row_when_body_has_only_account_key(web_config, monkeypatch, tmp_path):
+    web, _ = web_config
+    captured = []
+    monkeypatch.setattr(web, "qmt_process_snapshot", lambda path: captured.append(path) or {"running": False})
+    web.qmt_process_snapshots_for_request(
+        body={"account_key": "900010001595"},
+        row={"qmt_dir": str(tmp_path / "QMT")},
+    )
+    assert captured == [web.normalize_optional_path(str(tmp_path / "QMT"))]

@@ -72,13 +72,12 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
         openBindingDialog();
     }""")
     expect(page.locator('#bindingStrategyEnabled')).to_be_checked()
-    expect(page.locator('#bindingStrategyAutorun')).not_to_be_checked()
+    expect(page.locator('#bindingStrategyAutorun')).to_be_checked()
     expect(page.locator('#bindingStrategyRunMode')).to_have_value('1')
     page.locator('#bindingAccountId').fill('1000000001')
     page.locator('#bindingQmtDir').fill('D:\\QMT-FAKE')
     page.locator('#bindingMode').select_option('lite')
     page.locator('#bindingStrategyRunMode').select_option('1')
-    page.locator('#bindingStrategyAutorun').check()
     page.locator('#bindingStrategySettings details summary').click()
     page.locator('#bindingStrategyKey_normal').fill('2____101____201____49____1000000001____')
     page.locator('#bindingStrategySettings').scroll_into_view_if_needed()
@@ -99,6 +98,7 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
     page.locator('#bindingForm button[type="submit"]').click()
     expect(page.locator('#bindingDialogOverlay')).not_to_be_visible()
     assert len(saved) == 1
+    assert saved[0]['qmt_dir'].endswith('\\bin.x64')
     assert saved[0]['qmt_strategy'] == {'enabled': True, 'live': True, 'autorun': True,
         'stock': 'SH000300', 'account_keys': {'normal': '2____101____201____49____1000000001____',
                                             'trade': '', 'SH': '', 'SZ': ''}}
@@ -106,7 +106,26 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('请正常退出')
     expect(page.locator('#bindingQmtGuideOverlay [data-qmt-script-copy]')).to_have_count(0)
     assert page.locator('body').inner_text().find('Waiting for QMT exit') >= 0
-    page.locator('#closeBindingQmtGuideBottomBtn').click()
+    page.route('**/api/status*', lambda route: route.fulfill(json={
+        'ok': True,
+        'data': {
+            'account_id': '1000000001',
+            'account_type': 'STOCK',
+            'bridge_id': 'bridge',
+            'status': {'normal': {'online': True}, 'trade': {'online': True}},
+            'market_routing_enabled': False,
+        },
+    }))
+    page.locator('#checkBindingQmtConnectionBtn').click()
+    expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
+    expect(page.locator('#bindingQmtLoginCheckStatus')).to_contain_text('在线')
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('检测成功')
+    page.locator('#backBindingQmtGuideBtn').click()
+    expect(page.locator('#bindingDialogOverlay')).to_be_visible()
+    expect(page.locator('#bindingQmtDir')).to_have_value('D:\\QMT-FAKE\\bin.x64')
+    expect(page.locator('#bindingQmtAutoLogin')).to_be_checked()
+    expect(page.locator('#bindingStrategyAutorun')).to_be_checked()
+    page.locator('#cancelBindingDialogBtn').click()
     expect(page.locator('#bindingQmtGuideOverlay')).not_to_be_visible()
     expect(page.locator('#onboardingWizard')).not_to_be_visible()
     assert not page.evaluate('state.onboardingBindingFlowActive')
@@ -126,8 +145,8 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
     page.locator(f'#{entry}AccountId').fill('900010001595')
     page.locator(f'#{entry}AccountType').select_option('CREDIT')
     page.locator(f'#{entry}QmtDir').fill('D:/GUOJIN-QMT-FAKE/bin.x64')
-    page.locator(f'#{entry}QmtAutoLogin').check()
-    page.locator(f'#{entry}StrategyAutorun').check()
+    expect(page.locator(f'#{entry}QmtAutoLogin')).to_be_checked()
+    expect(page.locator(f'#{entry}StrategyAutorun')).to_be_checked()
     saved = []
 
     def respond(route):
@@ -167,14 +186,28 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
     assert page.locator('.binding-qmt-guide-dialog').evaluate('(el) => el.scrollWidth <= el.clientWidth')
     expect(page.locator('#bindingQmtGuideTitle')).to_be_in_viewport()
     page.screenshot(path=str(tmp_path / 'qmt-startup-reminder.png'))
+    page.route('**/api/status*', lambda route: route.fulfill(json={
+        'ok': True,
+        'data': {
+            'account_id': '900010001595',
+            'account_type': 'CREDIT',
+            'bridge_id': 'default',
+            'status': {'normal': {'online': True}, 'trade': {'online': True}},
+            'market_routing_enabled': False,
+        },
+    }))
     page.locator('#checkBindingQmtConnectionBtn').click()
-    expect(page.locator('#onboardingWizard')).to_be_visible()
-    expect(page.locator('#onboardingRestartChecklist')).to_contain_text('已勾选自动启动 QMT')
-    page.locator('#onboardingBackBridgeBtn').click()
     expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
-    expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('1234')
-    page.locator('#closeBindingQmtGuideBottomBtn').click()
+    expect(page.locator('#bindingQmtLoginCheckPanel')).to_be_visible()
+    expect(page.locator('#bindingQmtLoginCheckStatus')).to_contain_text('在线')
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('检测成功')
+    page.locator('#backBindingQmtGuideBtn').click()
+    expect(page.locator('#onboardingWizard')).to_be_visible()
+    expect(page.locator('#onboardingConfigForm')).to_be_visible()
+    expect(page.locator('#onboardingQmtDir')).to_have_value('D:/GUOJIN-QMT-FAKE/bin.x64')
+    page.locator('#closeOnboardingBtn').click()
     expect(page.locator('#onboardingWizard')).not_to_be_visible()
+    expect(page.locator('#bindingQmtGuideOverlay')).not_to_be_visible()
     assert errors == []
 
 
@@ -213,9 +246,12 @@ def test_startup_reminders_distinguish_pending_failure_disabled_and_manual_run(p
         assert expected in result
         assert '粘贴' not in result
     page.evaluate("""() => showBindingQmtGuide({
-        qmt_strategy_deploy: {targets: [{state: 'error', error: 'invalid directory'}]}
+        qmt_strategy_deploy: {targets: [{state: 'error',
+            strategies: ['CFQ_CTYPES_5CF95C06_NORMAL'], error: 'invalid directory'}]}
     })""")
+    expect(page.locator('#bindingQmtStrategyStatus')).to_contain_text('CFQ_CTYPES_5CF95C06_NORMAL')
     expect(page.locator('#bindingQmtStrategyStatus')).to_contain_text('invalid directory')
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('invalid directory')
     assert errors == []
 
 
@@ -256,10 +292,9 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
         setView('bindings');
         openBindingDialog();
     }""")
-    expect(page.locator('#bindingQmtAutoLogin')).not_to_be_checked()
+    expect(page.locator('#bindingQmtAutoLogin')).to_be_checked()
     page.locator('#bindingDisplayName').fill('国金证券')
-    expect(page.locator('#bindingQmtAutoLogin')).not_to_be_checked()
-    page.locator('#bindingQmtAutoLogin').check()
+    expect(page.locator('#bindingQmtAutoLogin')).to_be_checked()
     expect(page.locator('#bindingQmtAutoLoginSettings')).to_be_visible()
     page.locator('#addBindingQmtRestartTimeBtn').click()
     page.locator('.binding-qmt-restart-time').nth(0).fill('06:30')
@@ -288,6 +323,7 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('国金 QMT：请手动输入密码登录')
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('非国金 QMT')
     assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05']}
+    assert saved[0]['qmt_dir'].endswith('\\bin.x64')
     assert errors == []
 
 

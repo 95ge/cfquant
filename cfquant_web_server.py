@@ -2219,6 +2219,7 @@ class WebRuntimeConfig(object):
             "qmt_log_language": os.environ.get("CFQUANT_QMT_LOG_LANGUAGE", "zh"),
             "qmt_log_enabled": normalize_log_enabled(os.environ.get("CFQUANT_QMT_LOG_ENABLED", "1")),
             "transport_mode": os.environ.get("CFQUANT_WEB_TRANSPORT_MODE", os.environ.get("CFQUANT_TRANSPORT", "ctypes")),
+            "python_executable": "",
         }
         self.load()
 
@@ -2243,6 +2244,10 @@ class WebRuntimeConfig(object):
                             account_type=self._data["default_account_type"],
                         )
                         self._data["initialized"] = bool(raw.get("initialized"))
+                        try:
+                            self._data["python_executable"] = normalize_python_executable(raw.get("python_executable"), allow_empty=True)
+                        except Exception:
+                            self._data["python_executable"] = ""
                         self._data["data_provider_account_id"] = str(
                             raw.get("data_provider_account_id") or ""
                         ).strip()
@@ -2496,7 +2501,32 @@ class WebRuntimeConfig(object):
             "data_provider_account_type": provider_type,
             "data_provider_account_key": provider_key,
             "account_configs": configs,
+            "python_environment": self.python_environment_info(),
         }
+
+    def python_executable(self):
+        with self._lock:
+            configured = str(self._data.get("python_executable") or "").strip()
+        return configured or sys.executable
+
+    def python_environment_info(self):
+        with self._lock:
+            configured = str(self._data.get("python_executable") or "").strip()
+        executable = configured or sys.executable
+        return {
+            "mode": "custom" if configured else "default",
+            "python_executable": executable,
+            "configured_executable": configured,
+            "exists": bool(executable and os.path.isfile(executable)),
+            "is_current": os.path.normcase(os.path.abspath(executable)) == os.path.normcase(os.path.abspath(sys.executable)),
+        }
+
+    def set_python_environment(self, executable=None):
+        normalized = normalize_python_executable(executable, allow_empty=True)
+        with self._lock:
+            self._data["python_executable"] = normalized
+            self._save_locked()
+        return self.python_environment_info()
 
     def save_account_config(
         self,
@@ -2794,6 +2824,7 @@ class WebRuntimeConfig(object):
             self._data["data_provider_account_type"] = "STOCK"
             self._data["data_provider_account_key"] = ""
             self._data["transport_mode"] = "ctypes"
+            self._data["python_executable"] = ""
             self._save_locked()
             self._save_settings_locked({"transport_mode": "ctypes"})
         return self.setup_info()
@@ -3330,6 +3361,7 @@ class WebRuntimeConfig(object):
                 "data_provider_account_type": self._data.get("data_provider_account_type") or "STOCK",
                 "data_provider_account_key": self._data.get("data_provider_account_key") or "",
                 "web_port": normalize_web_port(self._data.get("web_port"), default=8765),
+                "python_executable": str(self._data.get("python_executable") or ""),
             }, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(temp_path, self.path)
 
@@ -4996,7 +5028,7 @@ class PipeHubManager(object):
         self._status_cache_at = 0.0
 
     def _python_exe(self):
-        return sys.executable
+        return runtime_python_executable()
 
     def _entry_path(self):
         entry = os.path.abspath(PIPE_HUB_ENTRY)
@@ -6958,6 +6990,34 @@ def normalize_optional_path(value):
     if not value:
         return ""
     return os.path.abspath(os.path.expandvars(os.path.expanduser(value)))
+
+
+def normalize_python_executable(value, allow_empty=False):
+    raw = str(value or "").strip().strip('"').strip("'")
+    if not raw:
+        if allow_empty:
+            return ""
+        raise ValueError("Python executable is required")
+    path = normalize_optional_path(raw)
+    if os.path.isdir(path):
+        candidates = [os.path.join(path, "python.exe"), os.path.join(path, "pythonw.exe"), os.path.join(path, "python")]
+        path = next((candidate for candidate in candidates if os.path.isfile(candidate)), path)
+    if not os.path.isfile(path):
+        raise ValueError("Python executable not found: %s" % raw)
+    name = os.path.basename(path).lower()
+    if name not in ("python.exe", "pythonw.exe", "python"):
+        raise ValueError("path must point to python.exe or a Python executable: %s" % raw)
+    return path
+
+
+def runtime_python_executable():
+    config = globals().get("WEB_CONFIG")
+    try:
+        if config is not None:
+            return config.python_executable()
+    except Exception:
+        pass
+    return sys.executable
 
 
 def safe_print(message):
@@ -9010,7 +9070,7 @@ class CfquantProjectUpdater(object):
     def _run_editable_install(self, reason):
         result = _editable_install.run_editable_install(
             BASE_DIR,
-            python_exe=sys.executable,
+            python_exe=runtime_python_executable(),
             timeout=SOURCE_EDITABLE_INSTALL_TIMEOUT_SECONDS,
         )
         result["reason"] = reason
@@ -10120,6 +10180,94 @@ $target = %s
     return run_powershell_json(script, timeout=3.0)
 
 
+def qmt_process_snapshot(qmt_dir):
+    """Return QMT processes whose executable belongs to the configured directory."""
+    configured = normalize_optional_path(qmt_dir)
+    result = {
+        "qmt_dir": configured,
+        "bin_dir": "",
+        "exe_path": "",
+        "running": False,
+        "processes": [],
+        "pids": [],
+        "error": "",
+    }
+    if not configured:
+        return result
+    try:
+        paths = _qmt_auto_login_paths(configured)
+        processes = _qmt_auto_login_processes(paths["bin_dir"])
+    except Exception as error:
+        result["error"] = str(error)
+        return result
+    result.update({
+        "qmt_dir": configured,
+        "bin_dir": paths["bin_dir"],
+        "exe_path": paths["exe_path"],
+        "processes": processes or [],
+    })
+    result["pids"] = [int(row.get("pid") or 0) for row in result["processes"] if row.get("pid")]
+    result["running"] = bool(result["processes"])
+    return result
+
+
+def qmt_process_snapshots_for_request(body=None, row=None):
+    """Collect process status for every QMT directory used by an account."""
+    body = body or {}
+    row = row or {}
+    source = dict(row or {})
+    source.update({
+        key: value for key, value in (body or {}).items()
+        if key in {
+            "qmt_dir", "python_dir", "qmt_trade_dir", "trade_qmt_dir",
+            "advanced_qmt_dir", "market_bridges", "market_routes",
+        } and value not in (None, "")
+    })
+    values = [
+        source.get("qmt_dir") or source.get("python_dir"),
+        source.get("qmt_trade_dir") or source.get("trade_qmt_dir") or source.get("advanced_qmt_dir"),
+    ]
+    market_bridges = source.get("market_bridges") or source.get("market_routes") or []
+    if isinstance(market_bridges, dict):
+        market_bridges = list(market_bridges.values())
+    if isinstance(market_bridges, list):
+        for market in market_bridges:
+            if isinstance(market, dict):
+                values.append(market.get("qmt_dir") or market.get("python_dir"))
+    snapshots = []
+    seen = set()
+    for value in values:
+        configured = normalize_optional_path(value)
+        if not configured:
+            continue
+        key = os.path.normcase(configured)
+        if key in seen:
+            continue
+        seen.add(key)
+        snapshots.append(qmt_process_snapshot(configured))
+    return snapshots
+
+
+def qmt_process_preflight(body=None, row=None):
+    """Reject configuration mutations while a configured QMT instance is active."""
+    body = body or {}
+    row = row or {}
+    enabled = parse_config_bool(body.get("enabled"), True) if "enabled" in body else (
+        account_config_is_enabled(row) if row else True
+    )
+    if not enabled:
+        return []
+    snapshots = qmt_process_snapshots_for_request(body=body, row=row)
+    running = [item for item in snapshots if item.get("running")]
+    if running:
+        details = "; ".join(
+            "%s (PID %s)" % (item.get("qmt_dir") or item.get("bin_dir"), ",".join(str(pid) for pid in item.get("pids") or []))
+            for item in running
+        )
+        raise RuntimeError("QMT is running for configured directory; close it before strategy deployment: %s" % details)
+    return snapshots
+
+
 def _qmt_auto_login_pid_matches(pid, bin_dir):
     try:
         pid = int(pid)
@@ -11112,7 +11260,7 @@ def start_lttx_server():
     stderr = open(LTTX_STDERR_LOG, "a", encoding="utf-8", buffering=1)
     try:
         process = subprocess.Popen(
-            [sys.executable, entry],
+            [runtime_python_executable(), entry],
             cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=stdout,
@@ -13111,6 +13259,8 @@ def ensure_account_runtime(mode):
 @serialized_account_configuration
 def save_account_runtime_config(body):
     body = body or {}
+    # Check every configured QMT instance before writing config files or injecting strategies.
+    qmt_process_preflight(body=body)
     account_id = str(body.get("account_id") or "").strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     bridge_id = body.get("bridge_id")
@@ -13207,6 +13357,7 @@ def complete_qmt_auto_login(body):
 @serialized_account_configuration
 def update_account_qmt_core(body):
     row = account_config_for_request(body)
+    qmt_process_preflight(body=body, row=row)
     qmt_core_deploy = auto_deploy_qmt_core_for_account(row, enabled=True)
     identity = write_qmt_bridge_identity(row)
     identity["market_identities"] = write_qmt_market_bridge_identities(row)
@@ -13279,6 +13430,21 @@ def delete_account_runtime_config(body):
 @serialized_account_configuration
 def initialize_web_setup(body):
     body = body or {}
+    qmt_process_preflight(body=body)
+    python_environment = body.get("python_environment")
+    if isinstance(python_environment, dict):
+        python_mode = str(python_environment.get("mode") or "default").strip().lower()
+        python_value = python_environment.get("python_executable") or python_environment.get("executable")
+    else:
+        python_mode = str(body.get("python_environment_mode") or "default").strip().lower()
+        python_value = body.get("python_executable")
+    if python_mode in ("default", "system", "built_in", "builtin"):
+        python_value = ""
+    elif python_mode not in ("custom", "specified"):
+        raise ValueError("python_environment mode must be default or custom")
+    elif not str(python_value or "").strip():
+        raise ValueError("custom Python environment requires python_executable")
+    WEB_CONFIG.set_python_environment(python_value)
     account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
     account_type = normalize_account_type(body.get("account_type") or "STOCK")
     display_name = body.get("display_name") if "display_name" in body else body.get("account_name")
@@ -13364,6 +13530,7 @@ def initialize_web_setup(body):
         "setup": WEB_CONFIG.setup_info(),
         "server_access": server_access or server_access_info(include_auth_details=True),
         "web_auth": web_auth or WEB_CONFIG.web_auth_info(include_username=True),
+        "python_environment": WEB_CONFIG.python_environment_info(),
         "bridges": WEB_CONFIG.bridges(),
         "account_pairs": WEB_CONFIG.account_pairs(),
         "account_configs": WEB_CONFIG.account_configs(),
@@ -13410,6 +13577,23 @@ def set_data_provider(body):
         "account_pairs": WEB_CONFIG.account_pairs(),
         "account_configs": WEB_CONFIG.account_configs(),
         "bridges": WEB_CONFIG.bridges(),
+    }
+
+
+def save_python_environment(body):
+    body = body or {}
+    environment = body.get("python_environment") if isinstance(body.get("python_environment"), dict) else body
+    mode = str(environment.get("mode") or environment.get("python_environment_mode") or "default").strip().lower()
+    value = environment.get("python_executable") or environment.get("executable")
+    if mode in ("default", "system", "built_in", "builtin"):
+        value = ""
+    elif mode not in ("custom", "specified"):
+        raise ValueError("python_environment mode must be default or custom")
+    elif not str(value or "").strip():
+        raise ValueError("custom Python environment requires python_executable")
+    return {
+        "python_environment": WEB_CONFIG.set_python_environment(value),
+        "setup": WEB_CONFIG.setup_info(),
     }
 
 
@@ -15058,6 +15242,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(save_log_cleanup_settings(body)))
             elif parsed.path == "/api/qmt-log-language":
                 self._write_json(ok(save_qmt_log_language(body)))
+            elif parsed.path == "/api/python-environment":
+                self._write_json(ok(save_python_environment(body)))
             elif parsed.path == "/api/log-cleanup/run":
                 self._write_json(ok(run_log_cleanup(body)))
             elif parsed.path == "/api/updates/github":
@@ -15432,6 +15618,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "web_auth": WEB_CONFIG.web_auth_info(include_username=True),
                     "user_profile": user_profile_response(),
                     "transport": WEB_CONFIG.transport_info(),
+                    "python_environment": WEB_CONFIG.python_environment_info(),
                     "pipe_hub": PIPE_HUB.status(),
                     "log_cleanup": log_cleanup_info(),
                     "qmt_log_language": qmt_log_language_info(),
@@ -15529,6 +15716,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     account_route_status(account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
                     if account_id else STATUS_MONITOR.latest(bridge_id=bridge_id)
                 ))
+            elif parsed.path == "/api/qmt/processes":
+                qmt_dir = (query.get("qmt_dir") or query.get("path") or [""])[0]
+                self._write_json(ok(qmt_process_snapshot(qmt_dir)))
             elif parsed.path == "/api/bindings/status":
                 self._write_json(ok(binding_status_snapshot()))
             elif parsed.path == "/api/callbacks":
@@ -15923,7 +16113,7 @@ def spawn_reloaded_web_server(reload_request):
     if use_restart_script:
         command = ["cmd.exe", "/d", "/c", 'call "%s"' % restart_script]
     else:
-        command = [sys.executable, os.path.abspath(__file__)]
+        command = [runtime_python_executable(), os.path.abspath(__file__)]
     if host and not use_restart_script:
         command.extend(["--host", host])
     if port and not use_restart_script:

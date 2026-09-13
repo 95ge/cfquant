@@ -238,15 +238,35 @@ def test_switch_and_delete_revoke_old_generation_and_disable_its_model(deploymen
     manager.configure(row, infos)
     new = next(iter(manager.jobs.values()))
     assert old["generation"] != new["generation"]
+    assert old["roles"][0]["name"] == new["roles"][0]["name"]
     assert json.loads(Path(old["control_path"]).read_text())["mode"] == "lite"
     running[0] = False
     manager.process_once()
-    assert models(root)[old["roles"][0]["name"]].getAttribute("startupAutorun") == "0"
+    assert models(root)[new["roles"][0]["name"]].getAttribute("startupAutorun") == "1"
     manager.reconcile({})
     assert json.loads(Path(new["control_path"]).read_text())["enabled"] is False
     manager.process_once()
     assert new["state"] == "disabled"
     assert not list((root / "formulas").glob("*.rzrk"))
+
+
+def test_historical_generated_name_is_disabled_for_the_same_account(deployment):
+    manager, row, infos, running, root = deployment
+    document, _ = _read_document(root / "config" / "indexUserConfig.xml")
+    section = document.getElementsByTagName("strategyTrade")[0]
+    item = document.createElement("item")
+    item.setAttribute("id", "10")
+    item.setAttribute("name", "CFQ_CTYPES_DEADBEEF_NORMAL")
+    item.setAttribute("account", ACCOUNT)
+    item.setAttribute("accountType", "3")
+    item.setAttribute("startupAutorun", "1")
+    section.appendChild(item)
+    root.joinpath("config", "indexUserConfig.xml").write_bytes(document.toxml(encoding="utf-8"))
+
+    manager.configure(row, infos)
+    manager.process_once()
+    assert models(root)["CFQ_CTYPES_DEADBEEF_NORMAL"].getAttribute("startupAutorun") == "0"
+    assert next(iter(manager.jobs.values()))["roles"][0]["name"] == "CFQ_%s" % ACCOUNT
 
 
 def test_independent_identity_for_two_accounts_in_one_qmt(deployment):
@@ -458,6 +478,7 @@ def test_market_routes_only_import_market_entries_and_use_their_own_stock(deploy
     for role in job["roles"]:
         model = models(root)[role["name"]]
         assert model.getAttribute("stock") == {"SH": "SH000300", "SZ": "SZ399001"}[role["role"]]
+    assert {role["name"] for role in job["roles"]} == {"CFQ_%s_SH" % ACCOUNT, "CFQ_%s_SZ" % ACCOUNT}
 
 
 def descriptor(tmp_path, generation, role="normal"):

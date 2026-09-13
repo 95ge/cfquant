@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260913_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20260913_02">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -213,6 +213,12 @@
                 <option value="lttx">高级模式（两个 QMT）</option>
               </select>
             </label>
+            <label class="field wide">
+              <span>cfquant Python 环境</span>
+              <select id="setupPythonEnvironmentMode"><option value="default">使用默认 Python 环境</option><option value="custom">使用指定 Python 解释器</option></select>
+              <input id="setupPythonExecutable" autocomplete="off" placeholder="例如 D:\Python311\python.exe">
+              <small>后续 Web、PipeHub、LTtx 和更新安装操作都使用此解释器。</small>
+            </label>
             <label id="setupQmtTradeDirField" class="field wide hidden">
               <span>极速交易端 QMT 安装目录或核心目录</span>
               <input id="setupQmtTradeDir" name="qmt_trade_dir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64">
@@ -220,7 +226,7 @@
             </label>
             <div id="setupStrategySettings" class="qmt-strategy-settings wide"></div>
             <label class="toggle wide">
-              <input id="setupQmtAutoLogin" type="checkbox">
+              <input id="setupQmtAutoLogin" type="checkbox" checked>
               <span>自动启动 QMT</span>
             </label>
             <div class="qmt-login-prerequisite wide" role="note">
@@ -926,6 +932,10 @@
                   <strong>QMT 日志</strong>
                   <span>显示开关</span>
                 </button>
+                <button class="settings-menu-item" type="button" data-settings-tab="python-environment">
+                  <strong>Python 环境</strong>
+                  <span>运行解释器</span>
+                </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="transport">
                   <strong>通信模式</strong>
                   <span>桥接模式</span>
@@ -1112,6 +1122,22 @@
                   </label>
                   <button id="saveQmtLogLanguageBtn" class="primary" type="submit">保存日志设置</button>
                   <span id="qmtLogLanguageStatus" class="metric-note"></span>
+                </form>
+              </section>
+              <section class="settings-section" data-settings-tab="python-environment">
+                <h3>Python 环境</h3>
+                <p class="settings-note">选择后，PipeHub、LTtx、更新安装和重启流程都会使用该解释器。</p>
+                <form id="pythonEnvironmentForm" class="api-serverbar">
+                  <label class="field">
+                    <span>运行环境</span>
+                    <select id="settingsPythonEnvironmentMode"><option value="default">使用默认 Python 环境</option><option value="custom">使用指定 Python 解释器</option></select>
+                  </label>
+                  <label class="field wide">
+                    <span>Python 解释器路径</span>
+                    <input id="settingsPythonExecutable" autocomplete="off" placeholder="例如 D:\Python311\python.exe">
+                  </label>
+                  <button id="savePythonEnvironmentBtn" class="primary" type="submit">保存 Python 环境</button>
+                  <span id="pythonEnvironmentStatus" class="metric-note" role="status"></span>
                 </form>
               </section>
               <section class="settings-section" data-settings-tab="transport">
@@ -1381,6 +1407,12 @@
                             <input id="onboardingQmtDir" autocomplete="off" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64">
                             <small>保存后系统会自动同步项目代码、QMT 内部策略代码和身份配置；无需手工复制，请先完成 QMT Python 库下载。</small>
                           </label>
+                          <label class="field wide">
+                            <span>cfquant Python 环境</span>
+                            <select id="onboardingPythonEnvironmentMode"><option value="default">使用默认 Python 环境</option><option value="custom">使用指定 Python 解释器</option></select>
+                            <input id="onboardingPythonExecutable" autocomplete="off" placeholder="例如 D:\Python311\python.exe">
+                            <small>后续 Web、PipeHub、LTtx 和更新安装操作都使用此解释器。</small>
+                          </label>
                           <label id="onboardingQmtTradeDirField" class="field wide hidden">
                             <span>第二个 QMT 安装目录或核心目录</span>
                             <input id="onboardingQmtTradeDir" autocomplete="off" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64">
@@ -1392,7 +1424,7 @@
                           </label>
                           <div id="onboardingStrategySettings" class="qmt-strategy-settings wide"></div>
                           <label class="toggle wide">
-                            <input id="onboardingQmtAutoLogin" type="checkbox">
+                            <input id="onboardingQmtAutoLogin" type="checkbox" checked>
                             <span>自动启动 QMT</span>
                           </label>
                           <div class="qmt-login-prerequisite wide" role="note">
@@ -2815,10 +2847,11 @@ else:
         <label class="field wide">
           <span>QMT 安装目录或核心目录（可选）</span>
           <input id="bindingQmtDir" name="qmt_dir" placeholder="D:\国金证券QMT交易端 或 D:\国金证券QMT交易端\bin.x64" autocomplete="off">
+          <div id="bindingQmtProcessStatus" class="metric-note" role="status" aria-live="polite">输入目录后将检测对应 QMT 进程和 PID。</div>
           <small>保存后自动同步项目代码、QMT 内部策略代码和身份配置到对应目录；无需手工复制。留空时该账号仍可运行，但自动同步、自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
         </label>
         <label class="toggle binding-dialog-wide-row">
-          <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox">
+          <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox" checked>
           <span>自动启动 QMT</span>
         </label>
         <div id="bindingQmtAutoLoginSettings" class="binding-qmt-autostart-settings binding-dialog-wide-row hidden">
@@ -2860,6 +2893,7 @@ else:
         <label id="bindingQmtTradeDirField" class="field wide hidden">
           <span>高级模式极速交易端 QMT 安装目录或核心目录</span>
           <input id="bindingQmtTradeDir" name="qmt_trade_dir" placeholder="D:\国金证券QMT交易端-交易端 或 D:\国金证券QMT交易端-交易端\bin.x64" autocomplete="off">
+          <div id="bindingQmtTradeProcessStatus" class="metric-note" role="status" aria-live="polite"></div>
           <small>高级模式必须填写与普通端不同的第二个 QMT，保存后系统会自动同步对应代码并写入身份配置。</small>
         </label>
         <details class="market-routing-panel binding-dialog-bleed wide" open>
@@ -2939,6 +2973,23 @@ else:
     </div>
   </div>
 
+  <div id="bindingQmtProcessOverlay" class="binding-dialog-overlay hidden" aria-hidden="true">
+    <div class="binding-dialog" role="dialog" aria-modal="true" aria-labelledby="bindingQmtProcessTitle">
+      <div class="binding-dialog-head">
+        <div>
+          <strong id="bindingQmtProcessTitle">检测到 QMT 正在运行</strong>
+          <span>策略部署需要先关闭对应目录启动的 QMT。</span>
+        </div>
+      </div>
+      <div id="bindingQmtProcessPromptStatus" class="binding-qmt-guide-status" role="status"></div>
+      <div class="binding-dialog-actions">
+        <button id="bindingQmtProcessCloseLaterBtn" type="button">我自己关闭 QMT</button>
+        <button id="bindingQmtProcessRecheckBtn" class="primary" type="button">我已手动关闭，再检查</button>
+        <button id="bindingQmtProcessCancelBtn" type="button">取消保存</button>
+      </div>
+    </div>
+  </div>
+
   <div id="bindingQmtGuideOverlay" class="binding-dialog-overlay binding-qmt-guide-overlay hidden" aria-hidden="true">
     <div class="binding-dialog binding-qmt-guide-dialog" role="dialog" aria-modal="true" aria-labelledby="bindingQmtGuideTitle">
       <div class="binding-dialog-head">
@@ -2974,10 +3025,16 @@ else:
           </div>
           <div id="bindingQmtGuideTargets" class="binding-qmt-guide-status"></div>
         </div>
+        <div id="bindingQmtLoginCheckPanel" class="binding-qmt-login-check-panel hidden">
+          <div class="binding-qmt-guide-section-head">
+            <strong>登录检测</strong>
+          </div>
+          <div id="bindingQmtLoginCheckStatus" class="binding-qmt-guide-status"></div>
+        </div>
       </div>
       <div class="binding-qmt-guide-actions">
         <button id="backBindingQmtGuideBtn" type="button">返回上一步</button>
-        <button id="checkBindingQmtConnectionBtn" type="button">检测连接</button>
+        <button id="checkBindingQmtConnectionBtn" type="button">检测 QMT 登录</button>
         <button id="closeBindingQmtGuideBottomBtn" class="primary" type="button">知道了</button>
       </div>
     </div>
@@ -3043,6 +3100,6 @@ else:
   <script src="/cftrader-api-data.js?v=20260911_02"></script>
   <script src="/api-tester.js?v=20260911_02"></script>
   <script src="/python-api.js?v=20260911_api_test_01"></script>
-  <script src="/app.js?v=web_20260913_01"></script>
+  <script src="/app.js?v=web_20260913_02"></script>
 </body>
 </html>
