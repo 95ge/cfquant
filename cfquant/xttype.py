@@ -2,6 +2,59 @@
 from . import xtconstant
 
 
+_QMT_COMPACT_PREFIXES = (
+    ("mstr", "m_str"),
+    ("md", "m_d"),
+    ("mn", "m_n"),
+    ("me", "m_e"),
+    ("mb", "m_b"),
+)
+
+
+def _compact_qmt_alias(name):
+    if not isinstance(name, str) or not name.startswith("m_"):
+        return ""
+    for _, expanded in _QMT_COMPACT_PREFIXES:
+        if name.startswith(expanded) and len(name) > len(expanded):
+            suffix = name[len(expanded):]
+            if suffix and suffix[0].isupper():
+                return "m%s%s" % (expanded[2:], suffix)
+    return ""
+
+
+def _expanded_qmt_alias(name):
+    if not isinstance(name, str) or not name.startswith("m"):
+        return ""
+    for compact, expanded in _QMT_COMPACT_PREFIXES:
+        if name.startswith(compact) and len(name) > len(compact):
+            suffix = name[len(compact):]
+            if suffix and suffix[0].isupper():
+                return "%s%s" % (expanded, suffix)
+    return ""
+
+
+def _unique_names(values):
+    result = []
+    seen = set()
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def _with_qmt_compact_aliases(*names):
+    values = []
+    for name in names:
+        if not name:
+            continue
+        values.append(name)
+        values.append(_compact_qmt_alias(name))
+        values.append(_expanded_qmt_alias(name))
+    return _unique_names(values)
+
+
 class DictObject(object):
     def __init__(self, **kwargs):
         self.__dict__.update(kwargs)
@@ -23,6 +76,12 @@ class DictObject(object):
             type(self).__name__,
             ", ".join("%s=%r" % item for item in sorted(self.__dict__.items())),
         )
+
+    def __getattr__(self, name):
+        for alias in (_expanded_qmt_alias(name), _compact_qmt_alias(name)):
+            if alias and alias in self.__dict__:
+                return self.__dict__[alias]
+        raise AttributeError("'%s' object has no attribute '%s'" % (type(self).__name__, name))
 
 
 _MISSING = object()
@@ -47,7 +106,7 @@ def _is_empty(value):
 
 
 def _first_value(data, names, default=_MISSING):
-    for name in names:
+    for name in _with_qmt_compact_aliases(*names):
         if name not in data:
             continue
         value = data.get(name)
@@ -224,6 +283,8 @@ def _apply_common_account_fields(data):
         "account_type",
         "m_nAccountType",
         "m_strAccountType",
+        "broker_type",
+        "m_nBrokerType",
     ), default=xtconstant.SECURITY_ACCOUNT)
     data["account_type"] = _normalize_account_type(account_type)
 
@@ -630,17 +691,44 @@ class XtPosition(DictObject):
 
 class _QmtQueryObject(DictObject):
     _field_aliases = {}
+    _extra_aliases = {}
     _account_type = xtconstant.CREDIT_ACCOUNT
+
+    @classmethod
+    def _expanded_aliases(cls, aliases):
+        expanded = {}
+        for target, sources in aliases.items():
+            expanded[target] = tuple(_with_qmt_compact_aliases(target, *(sources or ())))
+        return expanded
+
+    @classmethod
+    def known_field_names(cls):
+        names = [
+            "account_id",
+            "account_type",
+            "m_strAccountID",
+            "m_nAccountType",
+            "m_strAccountType",
+            "m_nBrokerType",
+        ]
+        for aliases in (cls._field_aliases, cls._extra_aliases):
+            for target, sources in aliases.items():
+                names.extend(_with_qmt_compact_aliases(target, *(sources or ())))
+        return set(_unique_names(names))
 
     @classmethod
     def from_any(cls, value, normalize=None):
         if value is None:
             return None
         data = _dict_from_any(value)
+        field_aliases = cls._expanded_aliases(cls._field_aliases)
+        extra_aliases = cls._expanded_aliases(cls._extra_aliases)
         names = ["account_id", "account_type", "m_strAccountID", "m_nAccountType", "m_strAccountType"]
-        for target, sources in cls._field_aliases.items():
-            names.append(target)
-            names.extend(sources)
+        for aliases in (field_aliases, extra_aliases):
+            for target, sources in aliases.items():
+                names.append(target)
+                names.extend(sources)
+        names = _unique_names(names)
         # Embedded QMT objects may expose C++ properties without a __dict__.
         if not isinstance(value, dict):
             data = data or {}
@@ -654,10 +742,12 @@ class _QmtQueryObject(DictObject):
             for name in names:
                 if name in data:
                     data[name] = normalize(data[name])
-        if not any(name in data for name in ("account_type", "m_nAccountType", "m_strAccountType")):
+        if not any(name in data for name in ("account_type", "m_nAccountType", "m_strAccountType", "broker_type", "m_nBrokerType")):
             data["account_type"] = cls._account_type
         _apply_common_account_fields(data)
-        for target, sources in cls._field_aliases.items():
+        for target, sources in field_aliases.items():
+            _set_first(data, target, sources)
+        for target, sources in extra_aliases.items():
             _set_first(data, target, sources)
         if cls._account_type == xtconstant.CREDIT_ACCOUNT and "exchange_id" in data:
             market = _exchange_suffix(data["exchange_id"])
@@ -889,11 +979,44 @@ class XtCancelOrderResponse(DictObject):
 
 
 class XtAccountStatus(DictObject):
-    pass
+    @classmethod
+    def from_any(cls, value):
+        data = _dict_from_any(value)
+        if data is None:
+            return value
+        _apply_common_account_fields(data)
+        _set_first(data, "status", (
+            "m_nStatus",
+            "m_nLoginStatus",
+            "login_status",
+        ), default=None)
+        return cls(**data)
+
+
+class XtAccountInfo(_QmtQueryObject):
+    _account_type = xtconstant.SECURITY_ACCOUNT
+    _field_aliases = {
+        "broker_type": ("m_nBrokerType",),
+        "platform_id": ("m_nPlatformID",),
+        "account_classification": ("m_nAccountClassification",),
+        "login_status": ("m_nLoginStatus", "m_nStatus", "status"),
+    }
 
 
 class XtBankTransferResponse(DictObject):
-    pass
+    @classmethod
+    def from_any(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return cls(seq=None, success=value[0], msg=value[1])
+        data = _dict_from_any(value)
+        if data is None:
+            return value
+        _set_first(data, "seq", ("m_nSeq", "request_id"), default=None)
+        _set_first(data, "success", ("m_bSuccess", "ok", "accepted"), default=None)
+        _set_first(data, "msg", ("m_strMsg", "m_strError", "message", "error", "error_msg"), default="")
+        return cls(**data)
 
 
 class XtSmtAppointmentResponse(DictObject):
@@ -923,6 +1046,6 @@ class XtSmtAppointmentResponse(DictObject):
 def to_objects(values, cls=DictObject):
     if values is None:
         return None
-    if isinstance(values, list):
+    if isinstance(values, (list, tuple)):
         return [cls.from_any(v) for v in values]
     return cls.from_any(values)

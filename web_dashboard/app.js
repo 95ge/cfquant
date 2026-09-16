@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260913_02';
+const FRONTEND_VERSION = 'web_20260916_01';
 
 const state = {
   accountId: '',
@@ -78,6 +78,7 @@ const state = {
   qmtUpdateProgressTimer: null,
   updateRestartNotice: null,
   versionInfo: null,
+  systemInfo: null,
   versionCheckInFlight: false,
   versionRemoteChecked: false,
   versionUpdateBusy: false,
@@ -267,8 +268,11 @@ const DEFAULT_UPDATE_REPO_URL = 'https://github.com/95ge/cfquant.git';
 const DEFAULT_OFFICIAL_SITE_URL = 'https://cfquant.org';
 const API_DEBUG_TIMEOUT_MS = 18000;
 const API_DEBUG_QMT_TIMEOUT_SECONDS = 12;
+const HELP_TOOLTIP_LAYER_ID = 'helpTooltipLayer';
 let mermaidRendererReady = false;
 let forceCloseVersionPopover = () => {};
+let activeHelpTooltipButton = null;
+let pinnedHelpTooltipButton = null;
 
 function normalizeTransportMode(mode) {
   const value = String(mode || 'ctypes').trim().toLowerCase();
@@ -432,25 +436,116 @@ function qmtStartupInstruction(values = {}) {
   return message;
 }
 
+function helpTooltipLayer() {
+  let layer = $(HELP_TOOLTIP_LAYER_ID);
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.id = HELP_TOOLTIP_LAYER_ID;
+    layer.className = 'help-tooltip-layer';
+    layer.setAttribute('role', 'tooltip');
+    layer.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(layer);
+  }
+  return layer;
+}
+
+function positionHelpTooltip(button = activeHelpTooltipButton) {
+  if (!button || !button.isConnected) {
+    closeHelpTooltips();
+    return;
+  }
+  const layer = helpTooltipLayer();
+  if (!layer.classList.contains('is-visible')) return;
+  const rect = button.getBoundingClientRect();
+  const margin = 16;
+  const gap = 8;
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const layerRect = layer.getBoundingClientRect();
+  const maxLeft = Math.max(margin, viewportWidth - layerRect.width - margin);
+  const left = Math.min(Math.max(margin, rect.right - layerRect.width), maxLeft);
+  const belowTop = rect.bottom + gap;
+  const aboveTop = rect.top - layerRect.height - gap;
+  const canFitBelow = belowTop + layerRect.height <= viewportHeight - margin;
+  const canFitAbove = aboveTop >= margin;
+  const placement = canFitBelow || !canFitAbove ? 'bottom' : 'top';
+  const preferredTop = placement === 'bottom' ? belowTop : aboveTop;
+  const maxTop = Math.max(margin, viewportHeight - layerRect.height - margin);
+  const top = Math.min(Math.max(margin, preferredTop), maxTop);
+  layer.dataset.placement = placement;
+  layer.style.left = `${Math.round(left)}px`;
+  layer.style.top = `${Math.round(top)}px`;
+}
+
+function showHelpTooltip(button, options = {}) {
+  if (!button || !button.dataset.helpText) return;
+  const layer = helpTooltipLayer();
+  activeHelpTooltipButton = button;
+  layer.textContent = button.dataset.helpText;
+  layer.classList.add('is-visible');
+  layer.setAttribute('aria-hidden', 'false');
+  button.setAttribute('aria-describedby', HELP_TOOLTIP_LAYER_ID);
+  if (options.pinned) {
+    pinnedHelpTooltipButton = button;
+    button.classList.add('is-open');
+    button.setAttribute('aria-expanded', 'true');
+  }
+  positionHelpTooltip(button);
+}
+
+function hideHelpTooltip(button = null) {
+  if (pinnedHelpTooltipButton && pinnedHelpTooltipButton === activeHelpTooltipButton) return;
+  if (button && activeHelpTooltipButton && activeHelpTooltipButton !== button) return;
+  const layer = $(HELP_TOOLTIP_LAYER_ID);
+  if (layer) {
+    layer.classList.remove('is-visible');
+    layer.setAttribute('aria-hidden', 'true');
+  }
+  activeHelpTooltipButton = null;
+}
+
 function closeHelpTooltips(except = null) {
   document.querySelectorAll('.help-tooltip-trigger.is-open').forEach((button) => {
     if (button === except) return;
     button.classList.remove('is-open');
     button.setAttribute('aria-expanded', 'false');
   });
+  if (except) {
+    pinnedHelpTooltipButton = except.classList.contains('is-open') ? except : null;
+    if (pinnedHelpTooltipButton) showHelpTooltip(pinnedHelpTooltipButton, { pinned: true });
+    return;
+  }
+  pinnedHelpTooltipButton = null;
+  const layer = $(HELP_TOOLTIP_LAYER_ID);
+  if (layer) {
+    layer.classList.remove('is-visible');
+    layer.setAttribute('aria-hidden', 'true');
+  }
+  activeHelpTooltipButton = null;
 }
 
 function wireHelpTooltips() {
   document.querySelectorAll('.help-tooltip-trigger').forEach((button) => {
     if (button.dataset.helpBound === '1') return;
     button.dataset.helpBound = '1';
+    button.addEventListener('mouseenter', () => {
+      if (!pinnedHelpTooltipButton) showHelpTooltip(button);
+    });
+    button.addEventListener('mouseleave', () => {
+      if (pinnedHelpTooltipButton !== button) hideHelpTooltip(button);
+    });
+    button.addEventListener('focus', () => {
+      if (!pinnedHelpTooltipButton) showHelpTooltip(button);
+    });
+    button.addEventListener('blur', () => {
+      if (pinnedHelpTooltipButton !== button) hideHelpTooltip(button);
+    });
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       const isOpen = button.classList.contains('is-open');
       closeHelpTooltips();
-      button.classList.toggle('is-open', !isOpen);
-      button.setAttribute('aria-expanded', String(!isOpen));
+      if (!isOpen) showHelpTooltip(button, { pinned: true });
     });
   });
   if (document.body.dataset.helpTooltipsWired === '1') return;
@@ -463,6 +558,8 @@ function wireHelpTooltips() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeHelpTooltips();
   });
+  window.addEventListener('resize', () => positionHelpTooltip());
+  window.addEventListener('scroll', () => positionHelpTooltip(), true);
 }
 
 async function copyTextWithFallback(text) {
@@ -1260,6 +1357,7 @@ function finishBindingQmtGuide() {
 function closeBindingQmtGuide() {
   const overlay = $('bindingQmtGuideOverlay');
   if (!overlay) return;
+  closeHelpTooltips();
   state.bindingQmtGuideContext = '';
   state.bindingQmtGuideCheckToken += 1;
   setBindingQmtGuideCheckBusy(false);
@@ -2358,14 +2456,16 @@ function apiUrl(path) {
   return `${currentApiBaseUrl()}${path}`;
 }
 
-function apiWsUrl(path) {
+function apiWsUrl(path, options = {}) {
   const base = new URL(currentApiBaseUrl());
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:';
   const url = new URL(`${base.protocol}//${base.host}${path}`);
   const token = state.webAuthToken || '';
-  if (webAuthEnabled() && token) {
+  if (options.preferApiKey && state.apiKey) {
+    url.searchParams.set('apikey', state.apiKey);
+  } else if (webAuthEnabled() && token) {
     url.searchParams.set('web_token', token);
-  } else if (!webAuthEnabled() && state.apiKey) {
+  } else if (state.apiKey) {
     url.searchParams.set('apikey', state.apiKey);
   }
   return url.toString();
@@ -2517,10 +2617,10 @@ function readBindingQmtAutoLoginSettings(form = $('bindingForm')) {
 function editableInstallSummaryText(payload) {
   const install = payload && payload.editable_install ? payload.editable_install : {};
   if (!install.attempted) return '';
-  if (!install.ok) return install.message || 'cfquant 源码可编辑安装失败';
+  if (!install.ok) return install.message ? `Python SDK 更新失败：${install.message}` : 'Python SDK 更新失败';
   const version = install.installed_version ? `安装后版本 ${install.installed_version}` : '安装后版本已刷新';
-  const details = install.python_executable ? `Python：${install.python_executable}，${version}` : version;
-  return `cfquant 源码可编辑安装已执行（${details}）`;
+  const details = install.python_executable ? `已在 ${install.python_executable} 中安装当前 cfquant 版本，${version}` : version;
+  return `Python SDK 已更新（${details}）`;
 }
 
 function qmtCoreDeploySummaryText(deploy) {
@@ -2932,6 +3032,7 @@ function renderProjectVersionLegacyRuntime(info) {
 function renderProjectVersion(info) {
   state.versionInfo = info || state.versionInfo || null;
   const data = state.versionInfo || {};
+  renderSystemInfo(data.system_info || null, data);
   const currentVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
   const remote = data.remote || {};
   const latestVersion = remote.core_version || remote.version || '--';
@@ -3027,6 +3128,75 @@ function renderProjectVersion(info) {
       <button type="button" data-version-action="open-update">更新设置</button>
     </div>
     <div class="version-action-status">${esc(projectUpdateBusy() ? '正在更新完整版本并同步已绑定 QMT 目录...' : '更新完成后，请完全退出并重启 QMT 加载新版本。')}</div>`;
+}
+
+function setSystemInfoText(id, value) {
+  const node = $(id);
+  if (node) node.textContent = value === undefined || value === null || value === '' ? '--' : String(value);
+}
+
+function renderSystemInfo(info = null, versionInfo = null) {
+  const version = versionInfo || state.versionInfo || {};
+  const merged = {
+    ...(state.systemInfo || {}),
+    ...((version && version.system_info) || {}),
+    ...(info || {}),
+  };
+  state.systemInfo = merged;
+  const coreVersion = merged.core_version || version.core_version || version.current_version || (version.local && version.local.version) || '';
+  const webVersion = merged.web_version || version.web_version || version.frontend_version || '';
+  const frontendVersion = merged.frontend_version || version.frontend_version || webVersion || '';
+  const versionText = coreVersion && webVersion && coreVersion !== webVersion
+    ? `${coreVersion} / ${webVersion}`
+    : (coreVersion || webVersion || '--');
+  const versionMeta = [
+    coreVersion ? `核心 ${coreVersion}` : '',
+    webVersion ? `Web ${webVersion}` : '',
+    frontendVersion ? `静态资源 ${frontendVersion}` : '',
+    FRONTEND_VERSION ? `浏览器 ${FRONTEND_VERSION}` : '',
+  ].filter(Boolean).join(' / ');
+  const updatedAt = merged.version_updated_at
+    || merged.web_version_date
+    || merged.core_version_date
+    || '';
+  const checkedAt = merged.checked_at_text
+    ? `数据刷新：${merged.checked_at_text}`
+    : '等待版本接口返回';
+  const startState = merged.start_script_exists === false
+    ? '未检测到文件，请确认项目目录是否完整。'
+    : '运行该 bat 可以启动当前 Web 服务。';
+
+  setSystemInfoText('systemInfoVersion', versionText);
+  setSystemInfoText('systemInfoVersionMeta', versionMeta || '当前进程正在使用的版本信息');
+  setSystemInfoText('systemInfoUpdatedAt', updatedAt || '--');
+  setSystemInfoText('systemInfoCheckedAt', checkedAt);
+  setSystemInfoText('systemInfoProjectDir', merged.project_dir || merged.base_dir || '');
+  setSystemInfoText('systemInfoStartScript', merged.start_script || '');
+  setSystemInfoText('systemInfoStartScriptState', startState);
+  setSystemInfoText('systemInfoPython', merged.python_executable || '');
+  setSystemInfoText('systemInfoRuntimeDir', merged.runtime_dir || '');
+  setSystemInfoText('systemInfoLogDir', merged.log_dir || '');
+  setSystemInfoText('systemInfoStaticDir', merged.static_dir || '');
+}
+
+async function copySystemInfoField(button) {
+  if (!button) return;
+  const key = button.dataset.copySystemInfo || '';
+  const value = state.systemInfo && key ? state.systemInfo[key] : '';
+  if (!value) return;
+  const original = button.textContent;
+  try {
+    await copyTextWithFallback(value);
+    button.textContent = '已复制';
+    window.setTimeout(() => {
+      if (button.isConnected) button.textContent = original || '复制';
+    }, 1200);
+  } catch (error) {
+    button.textContent = '复制失败';
+    window.setTimeout(() => {
+      if (button.isConnected) button.textContent = original || '复制';
+    }, 1600);
+  }
 }
 
 function renderProjectVersionLegacy(info) {
@@ -5257,7 +5427,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'upload', label: '上传项目源码 zip', percent: 42 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
       { key: 'install', label: '替换 Web 项目文件', percent: 82 },
-      { key: 'editable-install', label: '刷新源码可编辑安装', percent: 88 },
+      { key: 'editable-install', label: '更新 Python SDK', percent: 88 },
       { key: 'restart', label: '重启 Web 服务', percent: 94 },
       { key: 'done', label: '更新完成', percent: 100 },
     ];
@@ -5267,7 +5437,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'prepare', label: '确认 Web 回滚目标', percent: 12 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 36 },
       { key: 'restore', label: '恢复选中备份', percent: 76 },
-      { key: 'editable-install', label: '刷新源码可编辑安装', percent: 88 },
+      { key: 'editable-install', label: '更新 Python SDK', percent: 88 },
       { key: 'restart', label: '重启 Web 服务', percent: 94 },
       { key: 'done', label: '回滚完成', percent: 100 },
     ];
@@ -5278,7 +5448,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'download', label: '连接官网并下载发布包', percent: 38 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
       { key: 'install', label: '替换 Web 项目文件', percent: 82 },
-      { key: 'editable-install', label: '刷新源码可编辑安装', percent: 88 },
+      { key: 'editable-install', label: '更新 Python SDK', percent: 88 },
       { key: 'restart', label: '重启 Web 服务', percent: 94 },
       { key: 'done', label: '更新完成', percent: 100 },
     ];
@@ -5485,7 +5655,7 @@ function buildUpdateNoticeLines(payload, options = {}) {
   }
   if (editableInstall.attempted) {
     lines.push({
-      strong: editableInstall.ok ? '源码包安装已刷新' : '源码包安装异常',
+      strong: editableInstall.ok ? 'Python SDK 已更新' : 'Python SDK 更新异常',
       text: editableInstallSummaryText(payload),
     });
   }
@@ -6623,7 +6793,7 @@ function currentApiRequest(endpoint = apiEndpointById(state.apiEndpointId), form
     return {
       method: endpoint.method,
       endpointId: endpoint.id,
-      url: apiWsUrl(`${endpoint.path}${query.toString() ? `?${query.toString()}` : ''}`),
+      url: apiWsUrl(`${endpoint.path}${query.toString() ? `?${query.toString()}` : ''}`, { preferApiKey: true }),
       headers: {},
       body: null,
     };
@@ -6651,10 +6821,18 @@ function currentApiRequest(endpoint = apiEndpointById(state.apiEndpointId), form
 }
 
 function apiPreviewHeaders() {
-  if (webAuthEnabled() && state.webAuthToken) {
-    return { 'X-CFQUANT-WEB-TOKEN': maskApiKey(state.webAuthToken) };
+  return apiDebugAuthHeaders({ masked: true });
+}
+
+function apiDebugAuthHeaders(options = {}) {
+  const masked = !!options.masked;
+  if (state.apiKey) {
+    return { 'X-API-Key': masked ? maskApiKey(state.apiKey) : state.apiKey };
   }
-  return state.apiKey ? { 'X-API-Key': maskApiKey(state.apiKey) } : {};
+  if (webAuthEnabled() && state.webAuthToken) {
+    return { 'X-CFQUANT-WEB-TOKEN': masked ? maskApiKey(state.webAuthToken) : state.webAuthToken };
+  }
+  return {};
 }
 
 function maskApiKey(value) {
@@ -6897,7 +7075,7 @@ async function sendApiDebugRequest(event) {
       method: request.method,
       headers: {
         'Content-Type': 'application/json',
-        ...authHeaders(),
+        ...apiDebugAuthHeaders(),
       },
       body: request.body ? JSON.stringify(request.body) : undefined,
       signal: controller.signal,
@@ -8676,6 +8854,7 @@ function syncBindingForm() {
 function closeBindingDialog() {
   const overlay = $('bindingDialogOverlay');
   if (!overlay) return;
+  closeHelpTooltips();
   overlay.classList.add('hidden');
   overlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('binding-dialog-open');
@@ -9747,6 +9926,7 @@ async function loadConfigLegacy() {
   renderLogCleanup(data.log_cleanup);
   renderQmtLogLanguage(data.qmt_log_language);
   renderProjectVersion(data.version);
+  renderSystemInfo(data.system_info || (data.version && data.version.system_info) || null, data.version);
   if (!data.auth_required) {
     refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
     refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
@@ -9809,6 +9989,7 @@ async function loadConfig() {
   renderLogCleanup(data.log_cleanup);
   renderQmtLogLanguage(data.qmt_log_language);
   renderProjectVersion(data.version);
+  renderSystemInfo(data.system_info || (data.version && data.version.system_info) || null, data.version);
   if (!data.auth_required) {
     refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
     refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
@@ -12612,6 +12793,7 @@ function hideOnboardingModal(options = {}) {
     );
     return false;
   }
+  closeHelpTooltips();
   hideOnboardingSuccess();
   const wizard = $('onboardingWizard');
   const backdrop = $('onboardingBackdrop');
@@ -12771,6 +12953,21 @@ function wireSettingsNavigation() {
   document.querySelectorAll('.settings-menu-item').forEach((item) => {
     item.addEventListener('click', () => setSettingsTab(item.dataset.settingsTab));
   });
+  const systemInfoPanel = document.querySelector('.settings-section[data-settings-tab="system-info"]');
+  if (systemInfoPanel) {
+    systemInfoPanel.addEventListener('click', (event) => {
+      const button = event.target.closest('[data-copy-system-info]');
+      if (!button) return;
+      copySystemInfoField(button).catch((error) => log('系统信息复制失败', { error: error.message }));
+    });
+  }
+  const refreshButton = $('refreshSystemInfoBtn');
+  if (refreshButton) {
+    refreshButton.addEventListener('click', () => {
+      refreshProjectVersion({ remote: false, force: true, log: false })
+        .catch((error) => log('系统信息刷新失败', { error: error.message }));
+    });
+  }
   setSettingsTab(localStorage.getItem(SETTINGS_TAB_KEY) || 'api-key');
 }
 

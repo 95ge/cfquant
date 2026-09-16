@@ -1071,13 +1071,17 @@ body.binding-dialog-open {
 }
 
 .help-tooltip-trigger::after {
-  content: attr(data-help-text);
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 80;
+  content: none;
+  display: none;
+}
+
+.help-tooltip-layer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 6000;
   width: min(340px, calc(100vw - 32px));
-  min-width: 220px;
+  min-width: min(220px, calc(100vw - 32px));
   padding: 10px 12px;
   border: 1px solid #26384b;
   border-radius: 6px;
@@ -1089,6 +1093,7 @@ body.binding-dialog-open {
   line-height: 1.55;
   text-align: left;
   white-space: normal;
+  overflow-wrap: anywhere;
   opacity: 0;
   visibility: hidden;
   pointer-events: none;
@@ -1096,9 +1101,11 @@ body.binding-dialog-open {
   transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
 }
 
-.help-tooltip-trigger:hover::after,
-.help-tooltip-trigger:focus-visible::after,
-.help-tooltip-trigger.is-open::after {
+.help-tooltip-layer[data-placement="top"] {
+  transform: translateY(3px);
+}
+
+.help-tooltip-layer.is-visible {
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
@@ -4871,6 +4878,92 @@ th.num .sort-header {
 
 .settings-section-head h3 {
   margin-bottom: 5px;
+}
+
+.system-info-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.system-info-primary {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  padding: 14px 16px;
+  border: 1px solid #dfe8f2;
+  border-radius: 8px;
+  background: #fbfdff;
+  box-shadow: 0 1px 3px rgba(25, 44, 73, 0.05);
+}
+
+.system-info-primary span,
+.system-info-card span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.system-info-primary strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.system-info-primary small,
+.system-info-card small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.system-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.system-info-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e4ebf2;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.system-info-card.important {
+  border-color: #cbdcf3;
+  background: #f7fbff;
+}
+
+.system-info-card > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.system-info-card strong {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.system-info-card button,
+#refreshSystemInfoBtn {
+  min-height: 32px;
+  padding: 7px 10px;
+  white-space: nowrap;
 }
 
 .update-workspace {
@@ -8781,6 +8874,8 @@ tr.order-row-updated td {
   .server-access-summary,
   .server-settings-grid,
   .server-url-row,
+  .system-info-overview,
+  .system-info-grid,
   .update-bar,
   .update-version-info,
   .qmt-version-info,

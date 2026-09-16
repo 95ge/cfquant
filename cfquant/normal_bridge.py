@@ -344,6 +344,15 @@ class NormalQmtBridge(TxTradeBridge):
                     bool(order_meta.normalize_text(data.get("order_remark"))),
                 )
             )
+            if data.get("cfquant_order_id_reconciled"):
+                self._log(
+                    "normal bridge order id reconciled event=%s raw=%s canonical=%s"
+                    % (
+                        event_name,
+                        data.get("cfquant_callback_order_id") or "-",
+                        data.get("order_id") or "-",
+                    )
+                )
         else:
             self._log(
                 "normal bridge order meta miss event=%s account=%s type=%s refs=%s order_id=%s order_sysid=%s load=%s"

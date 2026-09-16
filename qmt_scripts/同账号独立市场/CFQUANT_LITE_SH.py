@@ -1069,7 +1069,10 @@ def encode_value(value):
     if isinstance(value, (list, tuple, set)):
         return [encode_value(v) for v in value]
     if type(value).__module__.split(".", 1)[0] == "numpy":
-        return encode_value(value.tolist())
+        if type(value).__name__ == "ndarray":
+            return _encode_ndarray(value)
+        item = getattr(value, "item", None)
+        return encode_value(item() if callable(item) else value.tolist())
     if _looks_like_dataframe(value):
         return _encode_dataframe(value)
     if _looks_like_series(value):
@@ -1131,13 +1134,37 @@ def _encode_dataframe(value):
     index_name = getattr(getattr(value, "index", None), "name", None)
     return {
         "__cf_type__": "dataframe",
-        "columns": [str(c) for c in getattr(value, "columns", [])],
-        "index": [str(i) for i in getattr(value, "index", [])],
+        "columns": [_encode_label(c) for c in getattr(value, "columns", [])],
+        "index": [_encode_label(i) for i in getattr(value, "index", [])],
         "data": rows,
-        "index_name": str(index_name) if index_name is not None else None,
-        "object_columns": [str(name) for name, dtype in getattr(value, "dtypes", {}).items()
+        "index_name": _encode_label(index_name) if index_name is not None else None,
+        "object_columns": [_encode_label(name) for name, dtype in getattr(value, "dtypes", {}).items()
                            if str(dtype) == "object" or str(dtype).startswith(("Int", "UInt"))],
     }
+
+
+def _encode_label(value):
+    if isinstance(value, tuple):
+        return {
+            "__cf_type__": "tuple",
+            "data": [_encode_label(item) for item in value],
+        }
+    return encode_value(value)
+
+
+def _encode_ndarray(value):
+    dtype = getattr(value, "dtype", None)
+    names = getattr(dtype, "names", None)
+    payload = {
+        "__cf_type__": "ndarray",
+        "shape": list(getattr(value, "shape", ())),
+        "data": encode_value(value.tolist()),
+    }
+    if names:
+        payload["dtype_descr"] = encode_value(dtype.descr)
+    elif dtype is not None:
+        payload["dtype"] = str(dtype)
+    return payload
 
 
 def _encode_series(value):
@@ -1147,9 +1174,9 @@ def _encode_series(value):
         raw_values = []
     return {
         "__cf_type__": "series",
-        "index": [str(i) for i in getattr(value, "index", [])],
+        "index": [_encode_label(i) for i in getattr(value, "index", [])],
         "data": [_clean_cell(v) for v in raw_values],
-        "name": str(value.name) if getattr(value, "name", None) is not None else None,
+        "name": _encode_label(value.name) if getattr(value, "name", None) is not None else None,
     }
 
 
@@ -1399,24 +1426,6 @@ XTDATA_MAINCHAIN_UNSUPPORTED = {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 L2_PERIODS = (
     "l2quote", "l2quoteaux", "l2order", "l2transaction",
     "l2transactioncount", "l2orderqueue",
@@ -1431,6 +1440,54 @@ L2_GET_PERIODS = {
 
 
 L2_THOUSAND_SUBSCRIPTIONS = ("subscribe_l2thousand", "subscribe_l2thousand_queue")
+
+
+KLINE_PERIODS = (
+    "1m", "5m", "15m", "30m", "60m", "1h",
+    "1d", "1w", "1mon", "1q", "1hy", "1y",
+)
+
+
+def market_data_legacy_shape(result, period, field_list=None, stock_list=None):
+    """Restore xtdata.get_market_data's native result layout from get_market_data_ex."""
+    if result is None or not isinstance(result, dict):
+        return result
+
+    if period in KLINE_PERIODS:
+        import pandas as pd
+
+        actual_stocks = list(result)
+        stocks = [code for code in (stock_list or []) if code in result]
+        stocks.extend(code for code in actual_stocks if code not in stocks)
+
+        available_fields = []
+        for code in actual_stocks:
+            frame = result.get(code)
+            for field in getattr(frame, "columns", []):
+                if field not in available_fields:
+                    available_fields.append(field)
+        requested_fields = field_list or []
+        fields = [field for field in requested_fields if field in available_fields]
+        fields.extend(field for field in available_fields if field not in fields)
+
+        converted = {}
+        for field in fields:
+            series = {}
+            for code in stocks:
+                frame = result.get(code)
+                if frame is not None and field in getattr(frame, "columns", []):
+                    series[code] = frame[field]
+            converted[field] = pd.DataFrame(series).T.reindex(stocks)
+        return converted
+
+    import numpy as np
+
+    converted = {}
+    for code, value in result.items():
+        if hasattr(value, "to_records"):
+            value = np.asarray(value.to_records(index=False))
+        converted[code] = value
+    return converted
 
 
 def quote_plain(value):
@@ -2688,8 +2745,11 @@ class TxTradeBridge(object):
                 if not order.get(name):
                     order[name] = order_remark
         if order_id is not None:
-            if self._normalize_order_id(order.get("order_id")) is None:
-                order["order_id"] = order_id
+            current_order_id = self._normalize_order_id(order.get("order_id"))
+            if current_order_id is not None and current_order_id != order_id:
+                order["cfquant_callback_order_id"] = order.get("order_id")
+                order["cfquant_order_id_reconciled"] = True
+            order["order_id"] = order_id
             for name in ("m_nRef", "m_nOrderID"):
                 if self._normalize_order_id(order.get(name)) is None:
                     order[name] = order_id
@@ -3023,10 +3083,22 @@ class TxTradeBridge(object):
 
     def _get_market_data(self, params):
         if params.get("period") in L2_PERIODS:
-            return self._get_market_data_ex(params)
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(
+                result,
+                params.get("period", "1d"),
+                params.get("field_list", []),
+                params.get("stock_list", []),
+            )
         func = self._get_callable("get_market_data")
         if not func:
-            return self._get_market_data_ex(params)
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(
+                result,
+                params.get("period", "1d"),
+                params.get("field_list", []),
+                params.get("stock_list", []),
+            )
         return func(
             params.get("field_list", []),
             params.get("stock_list", []),

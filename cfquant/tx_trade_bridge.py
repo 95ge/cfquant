@@ -13,7 +13,15 @@ from .batch_orders import (
     execute_qmt_batch,
     execute_qmt_cancel_batch,
 )
-from .level2 import L2_GET_PERIODS, L2_PERIODS, l2_query, quote_plain, require_l2_callable, thousand_price
+from .level2 import (
+    L2_GET_PERIODS,
+    L2_PERIODS,
+    l2_query,
+    market_data_legacy_shape,
+    quote_plain,
+    require_l2_callable,
+    thousand_price,
+)
 from .version import __version__ as CORE_VERSION
 from . import account_routing
 from . import order_meta
@@ -21,8 +29,8 @@ from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, se
 from .runtime_report import build_qmt_runtime_report, module_source_state, source_sha256, write_qmt_runtime_marker
 from .xttype import (
     CreditAssure, CreditSloCode, CreditSubjects, StkCompacts, XtCreditDetail, XtPositionStatistics,
-    XtSmtAppointmentResponse,
-    filter_cancelable_orders, normalize_order_price_type,
+    XtAccountInfo, XtAccountStatus, XtSmtAppointmentResponse,
+    filter_cancelable_orders, normalize_order_price_type, _with_qmt_compact_aliases,
 )
 
 
@@ -79,6 +87,28 @@ SMT_ASYNC_ARGUMENT_COUNTS = {
     "smt_negotiate_order": 6,
     "smt_compact_return": 4,
     "smt_compact_renewal": 5,
+}
+
+
+XTTRADER_OBJECT_QUERY_TYPES = {
+    "query_account_info": XtAccountInfo,
+    "query_account_infos": XtAccountInfo,
+    "query_account_status": XtAccountStatus,
+    "query_position_statistics": XtPositionStatistics,
+    "query_secu_account": None,
+    "query_bank_info": None,
+    "query_bank_amount": None,
+    "query_bank_transfer_stream": None,
+}
+
+
+XTTRADER_TRANSFER_RESULT_METHODS = {
+    "bank_transfer_in",
+    "bank_transfer_out",
+    "fund_transfer",
+    "secu_transfer",
+    "ctp_transfer_future_to_option",
+    "ctp_transfer_option_to_future",
 }
 
 
@@ -954,6 +984,7 @@ class TxTradeBridge(object):
             order_meta_record["request_result"] = self._plain_value(result)
             if order_id is not None:
                 order_meta_record["order_id"] = order_id
+                order_meta_record["canonical_order_id"] = order_id
                 order_meta_record["order_ref"] = str(order_id)
         if failed:
             if order_meta_record is not None:
@@ -981,6 +1012,7 @@ class TxTradeBridge(object):
             )
             if order_meta_record is not None and order_id is not None:
                 order_meta_record["order_id"] = order_id
+                order_meta_record["canonical_order_id"] = order_id
                 order_meta_record["order_ref"] = str(order_id)
                 order_meta_record["status"] = "bound"
                 self._publish_order_meta_record(order_meta_record, push=True, persist=True)
@@ -1377,8 +1409,7 @@ class TxTradeBridge(object):
                 if not order.get(name):
                     order[name] = order_remark
         if order_id is not None:
-            if self._normalize_order_id(order.get("order_id")) is None:
-                order["order_id"] = order_id
+            order_meta.reconcile_order_id(order, order_id)
             for name in ("m_nRef", "m_nOrderID"):
                 if self._normalize_order_id(order.get(name)) is None:
                     order[name] = order_id
@@ -1405,8 +1436,18 @@ class TxTradeBridge(object):
                 self._load_order_meta_store(account_id, account_type)
                 record, match_info = self._resolve_direct_query_order_meta(data, account_id, account_type)
             if record:
+                canonical_bound = False
+                query_order_id = self._normalize_order_id(data.get("order_id"))
+                if (
+                    query_order_id is not None
+                    and order_meta.canonical_order_id_from_record(record) is None
+                ):
+                    record["order_id"] = query_order_id
+                    record["canonical_order_id"] = query_order_id
+                    record["updated_at"] = time.time()
+                    canonical_bound = True
                 order_meta.apply_record_to_callback(data, record, match_info)
-                if match_info.get("bound_order_ref"):
+                if canonical_bound or match_info.get("bound_order_ref"):
                     self._persist_order_meta_record(record, payload=order_meta.encode_record(record))
         except Exception as e:
             self._log("query order meta enrich failed account=%s type=%s error=%s" % (account_id or "-", account_type or "-", e))
@@ -1629,10 +1670,14 @@ class TxTradeBridge(object):
             if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
                 raise ValueError("%s requires a list of SMT result dictionaries" % method)
             return self._plain_value(rows)
+        if method in XTTRADER_OBJECT_QUERY_TYPES and method != "query_position_statistics":
+            rows = self._generic_xttrader_call(method, params)
+            return self._format_compat_query_objects(rows, XTTRADER_OBJECT_QUERY_TYPES[method], force_list=True)
         if method == "query_position_statistics":
             if self._get_callable("get_trade_detail_data"):
                 return self._query_qmt_objects(params, XtPositionStatistics, "get_trade_detail_data", "FUTURE")
-            return self._generic_xttrader_call(method, params)
+            rows = self._generic_xttrader_call(method, params)
+            return self._format_compat_query_objects(rows, XtPositionStatistics, force_list=True)
         if method == "query_credit_detail":
             return self._query_credit_detail(params)
         if method == "query_stk_compacts":
@@ -1669,6 +1714,9 @@ class TxTradeBridge(object):
             return self._query_trade_detail(params, "deal")
         if method == "query_stock_positions_async":
             return self._query_trade_detail(params, "position")
+        if method in XTTRADER_TRANSFER_RESULT_METHODS:
+            result = self._generic_xttrader_call(method, params)
+            return self._format_transfer_result(result, params)
         return self._generic_xttrader_call(method, params)
 
     def _query_account_id(self, params):
@@ -1762,13 +1810,14 @@ class TxTradeBridge(object):
         if isinstance(rows, (str, bytes, dict)):
             raise ValueError("%s returned an invalid credit query result" % source)
         result = []
+        known_fields = cls.known_field_names() if hasattr(cls, "known_field_names") else set(getattr(cls, "_field_aliases", {}))
         for row in rows:
             if isinstance(row, dict):
                 data = self._plain_value(row)
             else:
                 data = {}
                 for name in dir(row):
-                    if not name.startswith("m_") and name not in ("account_id", "account_type") and name not in cls._field_aliases:
+                    if not name.startswith("m_") and name not in known_fields:
                         continue
                     value = getattr(row, name)
                     if not callable(value):
@@ -1824,6 +1873,94 @@ class TxTradeBridge(object):
                 raise ValueError("%s returned a different account" % source)
             result.append(data)
         return result
+
+    def _format_compat_query_objects(self, rows, cls=None, force_list=False):
+        if rows is None:
+            return None
+        is_list = isinstance(rows, (list, tuple))
+        values = list(rows) if is_list else [rows]
+        result = [self._format_compat_query_object(row, cls) for row in values]
+        return result if force_list or is_list else result[0]
+
+    def _format_compat_query_object(self, row, cls=None):
+        data = self._plain_object(row, self._known_query_fields(cls))
+        if not isinstance(data, dict):
+            return data
+        if cls is None:
+            return data
+        obj = cls.from_any(data)
+        if hasattr(obj, "__dict__"):
+            return self._plain_value(vars(obj))
+        return self._plain_value(obj)
+
+    def _known_query_fields(self, cls):
+        if cls is None:
+            return None
+        if hasattr(cls, "known_field_names"):
+            return cls.known_field_names()
+        if cls is XtAccountStatus:
+            return set(_with_qmt_compact_aliases(
+                "account_id",
+                "account_type",
+                "m_strAccountID",
+                "m_nAccountType",
+                "m_strAccountType",
+                "m_nBrokerType",
+                "status",
+                "m_nStatus",
+                "m_nLoginStatus",
+                "login_status",
+            ))
+        return None
+
+    def _plain_object(self, value, known_fields=None):
+        if value is None or isinstance(value, (str, bool, int, float, bytes)):
+            return self._plain_value(value)
+        if isinstance(value, dict):
+            return self._plain_value(value)
+        if isinstance(value, (list, tuple)):
+            return [self._plain_object(item, known_fields) for item in value]
+        if hasattr(value, "__dict__"):
+            return self._plain_value(vars(value))
+        data = {}
+        for name in dir(value):
+            if name.startswith("_"):
+                continue
+            if known_fields is not None and name not in known_fields and not name.startswith("m_"):
+                continue
+            try:
+                field = getattr(value, name)
+            except Exception as e:
+                self._log(
+                    "query object getattr failed type=%s field=%s error=%s"
+                    % (type(value).__name__, name, e)
+                )
+                continue
+            if callable(field):
+                continue
+            data[name] = self._plain_value(field)
+        return data if data else self._plain_value(value)
+
+    def _format_transfer_result(self, result, params):
+        seq = params.get("seq")
+        if isinstance(result, (list, tuple)) and len(result) >= 2:
+            return {"seq": seq, "success": self._plain_value(result[0]), "msg": self._plain_value(result[1])}
+        data = self._plain_object(result)
+        if isinstance(data, dict):
+            success = self._first_present(data, ("success", "m_bSuccess", "ok", "accepted"))
+            msg = self._first_present(data, ("msg", "m_strMsg", "m_strError", "message", "error", "error_msg"), "")
+            return {
+                "seq": seq if seq is not None else self._first_present(data, ("seq", "m_nSeq", "request_id")),
+                "success": success,
+                "msg": msg,
+            }
+        return data
+
+    def _first_present(self, data, names, default=None):
+        for name in names:
+            if name in data and data.get(name) is not None:
+                return data.get(name)
+        return default
 
     def _dispatch_xtdata_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
@@ -1980,10 +2117,22 @@ class TxTradeBridge(object):
 
     def _get_market_data(self, params):
         if params.get("period") in L2_PERIODS:
-            return self._get_market_data_ex(params)
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(
+                result,
+                params.get("period", "1d"),
+                params.get("field_list", []),
+                params.get("stock_list", []),
+            )
         func = self._get_callable("get_market_data")
         if not func:
-            return self._get_market_data_ex(params)
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(
+                result,
+                params.get("period", "1d"),
+                params.get("field_list", []),
+                params.get("stock_list", []),
+            )
         return func(
             params.get("field_list", []),
             params.get("stock_list", []),
@@ -3226,26 +3375,31 @@ class TxTradeBridge(object):
     def _get_value(self, obj, name):
         if obj is None:
             return None
-        try:
-            return self._plain_value(getattr(obj, name))
-        except AttributeError:
-            pass
-        except Exception as e:
-            self._log(
-                "trade detail getattr failed type=%s field=%s error=%s"
-                % (type(obj).__name__, name, e)
-            )
-        try:
-            getter = getattr(obj, "get", None)
-            if callable(getter):
-                return self._plain_value(getter(name))
-        except AttributeError:
-            pass
-        except Exception as e:
-            self._log(
-                "trade detail get failed type=%s field=%s error=%s"
-                % (type(obj).__name__, name, e)
-            )
+        for field_name in _with_qmt_compact_aliases(name):
+            try:
+                value = getattr(obj, field_name)
+                if value is not None:
+                    return self._plain_value(value)
+            except AttributeError:
+                pass
+            except Exception as e:
+                self._log(
+                    "trade detail getattr failed type=%s field=%s error=%s"
+                    % (type(obj).__name__, field_name, e)
+                )
+            try:
+                getter = getattr(obj, "get", None)
+                if callable(getter):
+                    value = getter(field_name)
+                    if value is not None:
+                        return self._plain_value(value)
+            except AttributeError:
+                pass
+            except Exception as e:
+                self._log(
+                    "trade detail get failed type=%s field=%s error=%s"
+                    % (type(obj).__name__, field_name, e)
+                )
         return None
 
     def _plain_value(self, value):

@@ -167,7 +167,7 @@
       const timer = setTimeout(() => controller.abort(), apiDebugTimeoutMs(request));
       try {
         const response = await fetch(request.url, { method: request.method,
-          headers: { 'Content-Type': 'application/json', ...authHeaders() },
+          headers: { 'Content-Type': 'application/json', ...apiDebugAuthHeaders() },
           body: request.body ? JSON.stringify(request.body) : undefined, signal: controller.signal });
         const text = await response.text();
         let payload;

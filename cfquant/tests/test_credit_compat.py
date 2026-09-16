@@ -17,6 +17,7 @@ from cfquant.xttype import (
     DictObject,
     StockAccount,
     StkCompacts,
+    XtAccountInfo,
     XtAccountStatus,
     XtCreditDetail,
     XtPositionStatistics,
@@ -55,14 +56,18 @@ def test_credit_asset_sdk_aliases_types_and_async(cls):
     raw = SimpleNamespace(m_strAccountID=b"C123", m_nBrokerType=3,
                           m_dInstrumentValue=500.0, m_dTotalDebit=120.0,
                           m_dFinUsedQuota=80.0, m_dSloUsedQuota=0.0,
-                          m_dFinEnableQuota=20.0, m_dAvailable=0.0)
+                          m_dFinEnableQuota=20.0, m_dAvailable=0.0,
+                          m_dEnableBailBalance=35.0)
     calls = []
     _, trader = wire({"get_trade_detail_data": lambda *args: calls.append(args) or [raw]}, cls)
     row = trader.query_credit_detail(ACCOUNT)[0]
+    assert not isinstance(row, dict)
     assert isinstance(row, XtCreditDetail)
     assert row.account_id == "C123" and row.account_type == xtconstant.CREDIT_ACCOUNT
     assert row.m_dMarketValue == 500.0 and row.m_dTotalDebt == 120.0
     assert row.m_dAvailable == 0.0
+    assert row.mdAvailable == 0.0
+    assert row.mdEnableBailBalance == 35.0
     assert row.m_dFinEnableQuota == 20.0
     assert not hasattr(row, "m_dFinDebt")
     assert not hasattr(row, "m_dFinFee")
@@ -74,10 +79,137 @@ def test_credit_asset_sdk_aliases_types_and_async(cls):
     try:
         assert trader.query_credit_detail_async(ACCOUNT, lambda rows: (received.extend(rows), done.set())) > 0
         assert done.wait(2)
+        assert not isinstance(received[0], dict)
+        assert received[0].mdAvailable == row.m_dAvailable
         assert vars(received[0]) == vars(row)
         assert calls == [("C123", "credit", "account")] * 2
     finally:
         trader.stop()
+
+
+def test_credit_detail_accepts_miniqmt_compact_field_names():
+    row = XtCreditDetail.from_any({
+        "account_id": "C123",
+        "account_type": xtconstant.CREDIT_ACCOUNT,
+        "mdAvailable": 12.5,
+        "mdEnableBailBalance": 6.5,
+    })
+
+    assert isinstance(row, XtCreditDetail)
+    assert row.m_dAvailable == 12.5
+    assert row.mdAvailable == 12.5
+    assert row.m_dEnableBailBalance == 6.5
+    assert row.mdEnableBailBalance == 6.5
+
+
+def test_dict_object_supports_qmt_compact_aliases_both_ways():
+    assert DictObject(m_dAvailable=1.5).mdAvailable == 1.5
+    assert DictObject(mdAvailable=2.5).m_dAvailable == 2.5
+
+
+@pytest.mark.parametrize("cls", BRIDGES)
+def test_credit_detail_extracts_miniqmt_compact_object_fields(cls):
+    raw = type("MiniCreditDetail", (), {
+        "__slots__": (),
+        "m_strAccountID": "C123",
+        "m_nBrokerType": 3,
+        "mdAvailable": 18.5,
+        "mdEnableBailBalance": 9.5,
+    })()
+    _, trader = wire({"get_trade_detail_data": lambda *args: [raw]}, cls)
+
+    row = trader.query_credit_detail(ACCOUNT)[0]
+
+    assert isinstance(row, XtCreditDetail)
+    assert row.m_dAvailable == row.mdAvailable == 18.5
+    assert row.m_dEnableBailBalance == row.mdEnableBailBalance == 9.5
+
+
+def test_credit_detail_restores_object_from_wire_dict():
+    trader = XtQuantTrader()
+    trader._trade_request = lambda *args, **kwargs: [{
+        "account_id": "C123",
+        "account_type": xtconstant.CREDIT_ACCOUNT,
+        "m_dAvailable": 12.5,
+    }]
+
+    row = trader.query_credit_detail(ACCOUNT)[0]
+
+    assert not isinstance(row, dict)
+    assert isinstance(row, XtCreditDetail)
+    assert row.m_dAvailable == row.mdAvailable == 12.5
+
+
+def test_account_infos_restore_documented_object_type():
+    trader = XtQuantTrader()
+    trader._trade_request = lambda *args, **kwargs: [{
+        "m_strAccountID": "C123",
+        "m_nBrokerType": xtconstant.CREDIT_ACCOUNT,
+        "m_nPlatformID": 7,
+        "m_nAccountClassification": 2,
+        "m_nLoginStatus": 1,
+    }]
+
+    row = trader.query_account_infos()[0]
+
+    assert not isinstance(row, dict)
+    assert isinstance(row, XtAccountInfo)
+    assert row.account_id == "C123"
+    assert row.account_type == xtconstant.CREDIT_ACCOUNT
+    assert row.broker_type == xtconstant.CREDIT_ACCOUNT
+    assert row.platform_id == 7
+    assert row.account_classification == 2
+    assert row.login_status == 1
+
+
+def test_object_query_bridge_preserves_slot_backed_native_objects():
+    future_account = StockAccount("F123", "FUTURE")
+    account_info = type("NativeAccountInfo", (), {
+        "__slots__": (),
+        "m_strAccountID": "C123",
+        "m_nBrokerType": xtconstant.CREDIT_ACCOUNT,
+        "m_nPlatformID": 7,
+    })()
+    account_status = type("NativeAccountStatus", (), {
+        "__slots__": (),
+        "m_strAccountID": "C123",
+        "m_nBrokerType": xtconstant.CREDIT_ACCOUNT,
+        "m_nStatus": 1,
+    })()
+    bank_info = type("NativeBankInfo", (), {
+        "__slots__": (),
+        "bank_no": "001",
+        "bank_name": "TESTBANK",
+    })()
+    position_stat = type("NativePositionStatistics", (), {
+        "__slots__": (),
+        "m_strAccountID": "F123",
+        "m_nBrokerType": xtconstant.FUTURE_ACCOUNT,
+        "m_strExchangeID": "IF",
+        "m_strInstrumentID": "IF2609",
+        "m_nPosition": 3,
+    })()
+    _, trader = wire({
+        "query_account_infos": lambda: [account_info],
+        "query_account_status": lambda: [account_status],
+        "query_bank_info": lambda *args: [bank_info],
+        "query_position_statistics": lambda *args: [position_stat],
+    })
+
+    info = trader.query_account_infos()[0]
+    status = trader.query_account_status()[0]
+    bank = trader.query_bank_info(ACCOUNT)[0]
+    stat = trader.query_position_statistics(future_account)[0]
+
+    assert isinstance(info, XtAccountInfo)
+    assert info.account_id == "C123" and info.platform_id == 7
+    assert isinstance(status, XtAccountStatus)
+    assert status.account_id == "C123" and status.status == 1
+    assert not isinstance(bank, dict)
+    assert isinstance(bank, DictObject)
+    assert bank.bank_no == "001" and bank.bank_name == "TESTBANK"
+    assert isinstance(stat, XtPositionStatistics)
+    assert stat.account_id == "F123" and stat.position == 3
 
 
 def test_native_credit_fields_override_legacy_aliases():
@@ -91,8 +223,8 @@ def test_native_credit_fields_override_legacy_aliases():
 
 
 @pytest.mark.parametrize("method, expected_type", [
-    ("query_account_info", DictObject),
-    ("query_account_infos", DictObject),
+    ("query_account_info", XtAccountInfo),
+    ("query_account_infos", XtAccountInfo),
     ("query_account_status", XtAccountStatus),
     ("query_position_statistics", XtPositionStatistics),
     ("query_credit_detail", XtCreditDetail),

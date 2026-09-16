@@ -19,6 +19,7 @@ from .xttype import (
     CreditSubjects,
     DictObject,
     StkCompacts,
+    XtAccountInfo,
     XtCreditDetail,
     XtAsset,
     XtAccountStatus,
@@ -49,8 +50,8 @@ _session_id_lock = threading.Lock()
 # query methods whose native API returns typed objects. Query methods absent
 # from this table intentionally keep the bridge's native dict/list shape.
 _COMPAT_QUERY_OBJECT_TYPES = {
-    "query_account_info": DictObject,
-    "query_account_infos": DictObject,
+    "query_account_info": XtAccountInfo,
+    "query_account_infos": XtAccountInfo,
     "query_account_status": XtAccountStatus,
     "query_position_statistics": XtPositionStatistics,
     "query_credit_detail": XtCreditDetail,
@@ -65,7 +66,64 @@ _COMPAT_QUERY_OBJECT_TYPES = {
 }
 
 
+_COMPAT_TRANSFER_RESULT_METHODS = {
+    "bank_transfer_in",
+    "bank_transfer_out",
+    "fund_transfer",
+    "secu_transfer",
+    "ctp_transfer_future_to_option",
+    "ctp_transfer_option_to_future",
+}
+
+
+_MISSING = object()
+
+
+def _result_field(value, *names):
+    if value is None:
+        return _MISSING
+    for name in names:
+        if isinstance(value, dict) and name in value:
+            return value.get(name)
+        try:
+            return getattr(value, name)
+        except AttributeError:
+            pass
+    return _MISSING
+
+
+def _restore_transfer_result(result):
+    if isinstance(result, (list, tuple)) and len(result) >= 2:
+        return (result[0], result[1])
+    success = _result_field(result, "success", "m_bSuccess", "ok", "accepted")
+    msg = _result_field(result, "msg", "m_strMsg", "m_strError", "message", "error", "error_msg")
+    if success is not _MISSING or msg is not _MISSING:
+        return (
+            False if success is _MISSING else success,
+            "" if msg is _MISSING else msg,
+        )
+    return result
+
+
+def _async_transfer_response(method, result, seq):
+    if method not in _COMPAT_TRANSFER_RESULT_METHODS:
+        return result
+    if isinstance(result, (list, tuple)) and len(result) >= 2:
+        return {"seq": seq, "success": result[0], "msg": result[1]}
+    if isinstance(result, dict):
+        data = dict(result)
+        data.setdefault("seq", seq)
+        return data
+    if hasattr(result, "__dict__"):
+        data = dict(vars(result))
+        data.setdefault("seq", seq)
+        return data
+    return result
+
+
 def _restore_compat_query_result(method, result):
+    if method in _COMPAT_TRANSFER_RESULT_METHODS:
+        return _restore_transfer_result(result)
     query_type = _COMPAT_QUERY_OBJECT_TYPES.get(method)
     return to_objects(result, query_type) if query_type else result
 
@@ -1005,7 +1063,7 @@ class XtQuantTrader(object):
             return seq
         result = self._compat_request(method, body)
         if callable_callback(callback):
-            callback(result)
+            callback(_async_transfer_response(method, result, seq))
         return seq
 
     def _submit_query(self, function, args, callback, seq=None):

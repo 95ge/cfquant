@@ -14,6 +14,10 @@ FRONTEND = Path(__file__).resolve().parents[2] / "web_dashboard"
 
 
 class StaticHandler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def log_message(self, *args):
         pass
 

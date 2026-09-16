@@ -585,14 +585,83 @@ def test_normal_bridge_keeps_bound_meta_pending_until_real_callback_ref_arrives(
     data = callback_payload["data"]
     assert data["strategy_name"] == strategy
     assert data["order_remark"] == "666666666"
+    assert data["order_id"] == 1090571181
+    assert data["cfquant_callback_order_id"] == 1090571185
+    assert data["cfquant_order_id_reconciled"] is True
     assert data["cfquant_order_meta_hit"] is True
     assert data["cfquant_order_meta_match"] == "pending_fifo"
+
+    query_row = bridge._format_trade_detail({
+        "m_strAccountID": "8885060548",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 1090571181,
+        "m_nOrderID": 1090571181,
+        "m_strOrderSysID": "635082606",
+        "m_nOrderType": 23,
+        "m_dLimitPrice": 11.5,
+        "m_nVolumeTotalOriginal": 100,
+    }, "order")
+    bridge._enrich_query_order_meta_fields(query_row, "8885060548", "STOCK")
+    assert query_row["order_id"] == data["order_id"]
 
     store_key = order_meta.account_store_key("default", "STOCK", "8885060548")
     assert order_meta.store_order_ref_key("1602193470259167414") in bridge.tx.store[store_key]
     assert order_meta.store_order_ref_key("1090571185") in bridge.tx.store[store_key]
     assert order_meta.store_order_ref_key("635082606") in bridge.tx.store[store_key]
     assert bridge.order_meta_cache.pending == []
+
+
+def test_query_binds_canonical_order_id_after_callback_arrives_first():
+    bridge = NormalQmtBridge(DummyContext(), show=False, schedule_timer=False)
+    bridge.tx = RecordingTx()
+    record = order_meta.normalize_record({
+        "bridge_id": "default",
+        "account_id": "A123",
+        "account_type": "STOCK",
+        "stock_code": "000001.SZ",
+        "order_type": 23,
+        "price": 10.0,
+        "order_volume": 100,
+        "order_remark": "async-001",
+        "user_order_id": "async-001",
+        "status": "pending",
+    })
+    bridge.order_meta_cache.upsert(record)
+
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "A123",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700021,
+        "m_nOrderID": 700021,
+        "m_strOrderSysID": "SYS-21",
+        "m_nOrderType": 23,
+        "m_dLimitPrice": 10.0,
+        "m_nVolumeTotalOriginal": 100,
+        "m_strRemark": "",
+        "m_strStrategyName": "",
+    })
+    callback_data = json.loads(bridge.tx.pushes[-1][1])["data"]
+    assert callback_data["order_id"] == 700021
+
+    query_row = bridge._format_trade_detail({
+        "m_strAccountID": "A123",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700020,
+        "m_nOrderID": 700020,
+        "m_strOrderSysID": "SYS-21",
+        "m_nOrderType": 23,
+        "m_dLimitPrice": 10.0,
+        "m_nVolumeTotalOriginal": 100,
+    }, "order")
+    bridge._enrich_query_order_meta_fields(query_row, "A123", "STOCK")
+
+    assert query_row["order_id"] == 700020
+    assert bridge.order_meta_cache.by_user[
+        ("default", "STOCK", "A123", "async-001")
+    ]["canonical_order_id"] == 700020
 
 
 def test_normal_bridge_fills_manual_cancel_callback_from_bound_order_ref():

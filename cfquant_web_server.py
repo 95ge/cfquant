@@ -208,6 +208,44 @@ def current_core_version():
     return current_core_version_info().get("version") or CORE_VERSION
 
 
+def _version_date_tuple(version):
+    match = re.search(r"(20\d{6})", str(version or ""))
+    if not match:
+        return None
+    value = match.group(1)
+    try:
+        return int(value[:4]), int(value[4:6]), int(value[6:8])
+    except Exception:
+        return None
+
+
+def version_date_text(version):
+    value = _version_date_tuple(version)
+    if not value:
+        return ""
+    return "%04d-%02d-%02d" % value
+
+
+def latest_version_date_text(*versions):
+    values = [_version_date_tuple(version) for version in versions]
+    values = [value for value in values if value]
+    if not values:
+        return ""
+    return "%04d-%02d-%02d" % max(values)
+
+
+def project_script_path(filename):
+    candidates = []
+    for base in (BASE_DIR, _SOURCE_ROOT, _PROJECT_DIR):
+        path = os.path.abspath(os.path.join(base, filename))
+        if path not in candidates:
+            candidates.append(path)
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return candidates[0] if candidates else os.path.abspath(filename)
+
+
 def normalize_official_site_url(site_url=None):
     value = str(site_url or DEFAULT_OFFICIAL_SITE_URL or "").strip()
     return value.rstrip("/")
@@ -1570,10 +1608,11 @@ def normalize_qmt_auto_login_restart_times(value):
 
 def normalize_qmt_auto_login_settings(value=None, existing=None):
     existing = existing if isinstance(existing, dict) else {}
+    default_enabled = parse_config_bool(existing.get("enabled"), True)
     if value is None:
         value = existing
     if isinstance(value, dict):
-        enabled = parse_config_bool(value.get("enabled"), parse_config_bool(existing.get("enabled"), False))
+        enabled = parse_config_bool(value.get("enabled"), default_enabled)
         if "restart_times" in value:
             restart_source = value.get("restart_times")
         elif "restartTimes" in value:
@@ -1585,7 +1624,7 @@ def normalize_qmt_auto_login_settings(value=None, existing=None):
         else:
             restart_source = existing.get("restart_times") or []
     else:
-        enabled = parse_config_bool(value, False)
+        enabled = parse_config_bool(value, default_enabled)
         restart_source = existing.get("restart_times") or []
     return {
         "enabled": bool(enabled),
@@ -14358,6 +14397,55 @@ def _local_project_version_info():
     }
 
 
+def project_system_info(version_info=None):
+    version_info = version_info if isinstance(version_info, dict) else {}
+    local = version_info.get("local") if isinstance(version_info.get("local"), dict) else {}
+    changelog = local.get("changelog") if isinstance(local.get("changelog"), dict) else {}
+    core_version = (
+        version_info.get("core_version")
+        or version_info.get("current_version")
+        or local.get("version")
+        or current_core_version()
+    )
+    web_version = version_info.get("web_version") or WEB_VERSION
+    frontend_version = version_info.get("frontend_version") or WEB_VERSION
+    changelog_version = changelog.get("version") or local.get("changelog_version") or ""
+    start_script = project_script_path("start_cfquant.bat")
+    restart_script = project_script_path("restart_cfquant.bat")
+    stop_script = project_script_path("stop_cfquant.bat")
+    project_dir = os.path.dirname(start_script) if os.path.isfile(start_script) else BASE_DIR
+    checked_at = time.time()
+    return {
+        "project_dir": os.path.abspath(project_dir),
+        "base_dir": BASE_DIR,
+        "source_root": _SOURCE_ROOT,
+        "package_dir": _PACKAGE_DIR,
+        "static_dir": STATIC_DIR,
+        "state_dir": STATE_DIR,
+        "runtime_dir": RUNTIME_DIR,
+        "log_dir": LOG_DIR,
+        "start_script": start_script,
+        "start_script_exists": os.path.isfile(start_script),
+        "restart_script": restart_script,
+        "restart_script_exists": os.path.isfile(restart_script),
+        "stop_script": stop_script,
+        "stop_script_exists": os.path.isfile(stop_script),
+        "python_executable": sys.executable,
+        "running_from_source": bool(_RUNNING_FROM_SOURCE),
+        "source_mode": "source" if _RUNNING_FROM_SOURCE else "installed",
+        "core_version": core_version,
+        "web_version": web_version,
+        "frontend_version": frontend_version,
+        "changelog_version": changelog_version,
+        "version_updated_at": latest_version_date_text(core_version, web_version, changelog_version),
+        "core_version_date": version_date_text(core_version),
+        "web_version_date": version_date_text(web_version),
+        "changelog_path": local.get("changelog_path") or "",
+        "checked_at": checked_at,
+        "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(checked_at)),
+    }
+
+
 def _remote_project_version_info(repo_url=None, ref=None, force=False):
     repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
     ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
@@ -15623,6 +15711,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "log_cleanup": log_cleanup_info(),
                     "qmt_log_language": qmt_log_language_info(),
                     "version": project_version_info(include_remote=False),
+                    "system_info": project_system_info(),
                 }))
             elif parsed.path == "/api/apikey":
                 self._write_json(ok(api_key_info()))
@@ -15682,13 +15771,15 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
                 ref = (query.get("ref") or query.get("branch") or query.get("tag") or [""])[0]
                 bridge_id = (query.get("bridge_id") or [""])[0]
-                self._write_json(ok(project_version_info(
+                version_info = project_version_info(
                     include_remote=include_remote,
                     force=force,
                     repo_url=repo_url,
                     ref=ref,
                     bridge_id=bridge_id,
-                )))
+                )
+                version_info["system_info"] = project_system_info(version_info)
+                self._write_json(ok(version_info))
             elif parsed.path == "/api/quotes/status":
                 self._write_json(ok(quote_status()))
             elif parsed.path == "/api/quotes/latest":

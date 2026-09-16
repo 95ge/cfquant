@@ -243,6 +243,53 @@ def test_order_callback_skips_placeholder_order_reference(bridge_class):
 
 
 @pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
+def test_order_callback_reconciles_order_id_from_request_metadata(bridge_class):
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge_kwargs = {"show": False, "schedule_timer": False}
+    if bridge_class is NormalQmtBridge:
+        bridge_kwargs["order_meta_enabled"] = False
+    bridge = bridge_class(None, **bridge_kwargs)
+    tx = RecordingTx()
+    bridge.tx = tx
+    bridge._remember_order_request(
+        "A123",
+        "000001.SZ",
+        "user-014",
+        "fast-strategy",
+        order_id=700014,
+    )
+
+    try:
+        bridge.publish_callback_event("trader:on_stock_order", {
+            "m_strAccountID": "A123",
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "user-014",
+            "m_nRef": 700015,
+            "m_nOrderID": 700015,
+            "m_strOrderSysID": "SYS-15",
+            "m_nOrderType": 23,
+            "m_nVolumeTotalOriginal": 100,
+            "m_dLimitPrice": 10.25,
+        })
+    finally:
+        bridge.close()
+
+    data = json.loads(tx.pushes[0][1])["data"]
+    assert data["order_id"] == 700014
+    assert data["cfquant_callback_order_id"] == 700015
+    assert data["cfquant_order_id_reconciled"] is True
+    assert data["m_nRef"] == 700015
+    assert XtOrder.from_any(data).order_id == 700014
+
+
+@pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
 def test_order_error_callback_restores_strategy_and_order_id_from_request_metadata(bridge_class):
     class RecordingTx(object):
         def __init__(self):

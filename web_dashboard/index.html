@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20260913_02">
+  <link rel="stylesheet" href="/styles.css?v=web_20260916_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -940,6 +940,10 @@
                   <strong>通信模式</strong>
                   <span>桥接模式</span>
                 </button>
+                <button class="settings-menu-item" type="button" data-settings-tab="system-info">
+                  <strong>系统信息</strong>
+                  <span>版本和安装位置</span>
+                </button>
                 <button class="settings-menu-item" type="button" data-settings-tab="update">
                   <strong>系统更新</strong>
               <span>版本检查与更新</span>
@@ -1159,6 +1163,72 @@
                 <div id="pipeHubStatusBox" class="guide-callout">
                   <strong>PipeHub 状态</strong>
                   <span>--</span>
+                </div>
+              </section>
+              <section class="settings-section" data-settings-tab="system-info">
+                <div class="settings-section-head">
+                  <div>
+                    <h3>系统信息</h3>
+                    <p class="settings-note">查看当前 Web 服务加载的版本、安装目录和启动脚本位置。</p>
+                  </div>
+                  <button id="refreshSystemInfoBtn" type="button">刷新</button>
+                </div>
+                <div class="system-info-overview">
+                  <div class="system-info-primary">
+                    <span>当前版本</span>
+                    <strong id="systemInfoVersion">--</strong>
+                    <small id="systemInfoVersionMeta">正在读取版本信息</small>
+                  </div>
+                  <div class="system-info-primary">
+                    <span>版本更新日期</span>
+                    <strong id="systemInfoUpdatedAt">--</strong>
+                    <small id="systemInfoCheckedAt">--</small>
+                  </div>
+                </div>
+                <div class="system-info-grid">
+                  <section class="system-info-card important">
+                    <div>
+                      <span>项目安装目录</span>
+                      <strong id="systemInfoProjectDir">--</strong>
+                    </div>
+                    <button type="button" data-copy-system-info="project_dir">复制</button>
+                  </section>
+                  <section class="system-info-card important">
+                    <div>
+                      <span>启动脚本</span>
+                      <strong id="systemInfoStartScript">--</strong>
+                      <small id="systemInfoStartScriptState">--</small>
+                    </div>
+                    <button type="button" data-copy-system-info="start_script">复制</button>
+                  </section>
+                  <section class="system-info-card">
+                    <div>
+                      <span>Python 解释器</span>
+                      <strong id="systemInfoPython">--</strong>
+                    </div>
+                    <button type="button" data-copy-system-info="python_executable">复制</button>
+                  </section>
+                  <section class="system-info-card">
+                    <div>
+                      <span>运行数据目录</span>
+                      <strong id="systemInfoRuntimeDir">--</strong>
+                    </div>
+                    <button type="button" data-copy-system-info="runtime_dir">复制</button>
+                  </section>
+                  <section class="system-info-card">
+                    <div>
+                      <span>日志目录</span>
+                      <strong id="systemInfoLogDir">--</strong>
+                    </div>
+                    <button type="button" data-copy-system-info="log_dir">复制</button>
+                  </section>
+                  <section class="system-info-card">
+                    <div>
+                      <span>静态资源目录</span>
+                      <strong id="systemInfoStaticDir">--</strong>
+                    </div>
+                    <button type="button" data-copy-system-info="static_dir">复制</button>
+                  </section>
                 </div>
               </section>
               <section class="settings-section" data-settings-tab="update">
@@ -3098,8 +3168,8 @@ else:
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
   <script src="/python-api-data.js?v=20260909_01"></script>
   <script src="/cftrader-api-data.js?v=20260911_02"></script>
-  <script src="/api-tester.js?v=20260911_02"></script>
+  <script src="/api-tester.js?v=20260916_apikey_01"></script>
   <script src="/python-api.js?v=20260911_api_test_01"></script>
-  <script src="/app.js?v=web_20260913_02"></script>
+  <script src="/app.js?v=web_20260916_01"></script>
 </body>
 </html>

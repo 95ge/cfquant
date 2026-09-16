@@ -10,6 +10,52 @@ L2_GET_PERIODS = {
     "get_l2_transaction": "l2transaction",
 }
 L2_THOUSAND_SUBSCRIPTIONS = ("subscribe_l2thousand", "subscribe_l2thousand_queue")
+KLINE_PERIODS = (
+    "1m", "5m", "15m", "30m", "60m", "1h",
+    "1d", "1w", "1mon", "1q", "1hy", "1y",
+)
+
+
+def market_data_legacy_shape(result, period, field_list=None, stock_list=None):
+    """Restore xtdata.get_market_data's native result layout from get_market_data_ex."""
+    if result is None or not isinstance(result, dict):
+        return result
+
+    if period in KLINE_PERIODS:
+        import pandas as pd
+
+        actual_stocks = list(result)
+        stocks = [code for code in (stock_list or []) if code in result]
+        stocks.extend(code for code in actual_stocks if code not in stocks)
+
+        available_fields = []
+        for code in actual_stocks:
+            frame = result.get(code)
+            for field in getattr(frame, "columns", []):
+                if field not in available_fields:
+                    available_fields.append(field)
+        requested_fields = field_list or []
+        fields = [field for field in requested_fields if field in available_fields]
+        fields.extend(field for field in available_fields if field not in fields)
+
+        converted = {}
+        for field in fields:
+            series = {}
+            for code in stocks:
+                frame = result.get(code)
+                if frame is not None and field in getattr(frame, "columns", []):
+                    series[code] = frame[field]
+            converted[field] = pd.DataFrame(series).T.reindex(stocks)
+        return converted
+
+    import numpy as np
+
+    converted = {}
+    for code, value in result.items():
+        if hasattr(value, "to_records"):
+            value = np.asarray(value.to_records(index=False))
+        converted[code] = value
+    return converted
 
 
 def quote_plain(value):

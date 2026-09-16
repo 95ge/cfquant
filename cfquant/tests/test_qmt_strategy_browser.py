@@ -5,6 +5,33 @@ import pytest
 from cfquant.tests.test_tutorial_reader import browser, expect, frontend_url, open_app, page
 
 
+def assert_help_tooltip_in_viewport(page):
+    bounds = page.locator('#helpTooltipLayer').evaluate("""node => {
+        const rect = node.getBoundingClientRect();
+        const style = window.getComputedStyle(node);
+        return {
+            left: rect.left,
+            top: rect.top,
+            right: rect.right,
+            bottom: rect.bottom,
+            width: rect.width,
+            height: rect.height,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            visibility: style.visibility,
+            opacity: Number(style.opacity),
+        };
+    }""")
+    assert bounds['visibility'] == 'visible'
+    assert bounds['opacity'] > 0
+    assert bounds['width'] > 0
+    assert bounds['height'] > 0
+    assert bounds['left'] >= -1
+    assert bounds['top'] >= -1
+    assert bounds['right'] <= bounds['viewportWidth'] + 1
+    assert bounds['bottom'] <= bounds['viewportHeight'] + 1
+
+
 def test_project_update_notice_handles_editable_install(page, frontend_url):
     _, errors = open_app(page, frontend_url)
     result = page.evaluate("""() => {
@@ -218,8 +245,32 @@ def test_setup_help_tooltip_is_clickable_and_admin_is_optional(page, frontend_ur
     trigger.click()
     assert trigger.get_attribute('aria-expanded') == 'true'
     assert trigger.evaluate("(node) => node.classList.contains('is-open')")
+    expect(page.locator('#helpTooltipLayer')).to_contain_text('关闭后不创建网页登录管理员')
+    assert_help_tooltip_in_viewport(page)
     page.locator('#setupOverlay').click(position={'x': 10, 'y': 10})
     assert trigger.get_attribute('aria-expanded') == 'false'
+    expect(page.locator('#helpTooltipLayer')).not_to_be_visible()
+    assert errors == []
+
+
+def test_binding_dialog_help_tooltips_stay_in_viewport(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    page.evaluate("""() => {
+        hideOnboardingModal({force: true});
+        setView('bindings');
+        openBindingDialog();
+    }""")
+    header_trigger = page.locator('#bindingDialogOverlay .binding-dialog-head .help-tooltip-trigger')
+    header_trigger.click()
+    expect(page.locator('#helpTooltipLayer')).to_contain_text('保存绑定后系统自动同步项目代码')
+    assert_help_tooltip_in_viewport(page)
+
+    auto_start_trigger = page.locator('#bindingQmtAutoLoginSettings .help-tooltip-trigger')
+    auto_start_trigger.scroll_into_view_if_needed()
+    auto_start_trigger.click()
+    expect(page.locator('#helpTooltipLayer')).to_contain_text('QMT 登录前提仍需在客户端内完成')
+    assert_help_tooltip_in_viewport(page)
+    assert page.locator('#bindingDialogOverlay .binding-dialog').evaluate('(node) => node.scrollWidth <= node.clientWidth')
     assert errors == []
 
 

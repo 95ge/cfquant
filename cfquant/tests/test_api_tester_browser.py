@@ -1,10 +1,15 @@
 """Browser tester interactions; every API is intercepted and no orders leave the browser."""
 
 from pathlib import Path
+import sys
 
 import pytest
 
-from cfquant.tests.test_tutorial_reader import browser, page, frontend_url, open_app, expect, assert_reader_layout
+TEST_DIR = Path(__file__).resolve().parent
+if str(TEST_DIR) not in sys.path:
+    sys.path.insert(0, str(TEST_DIR))
+
+from test_tutorial_reader import browser, page, frontend_url, open_app, expect, assert_reader_layout
 
 
 def open_test(page, frontend_url, entry):
@@ -50,6 +55,30 @@ def test_tutorial_query_results_copy_reset_and_error(page, frontend_url):
     panel.locator('[type="submit"]').click()
     expect(panel.locator('[data-test-status]')).to_have_text('请求失败')
     expect(panel.locator('[data-test-output]')).to_contain_text('invalid credentials')
+    assert errors == []
+
+
+def test_inline_api_tester_prefers_api_key_when_web_auth_enabled(page, frontend_url):
+    panel, requests, errors = open_test(page, frontend_url, 'xtdata.get_full_tick')
+    page.evaluate("""() => {
+        state.serverAccess = {web_auth_enabled: true};
+        state.webAuthToken = 'web-token-test';
+        state.apiKey = 'api-key-test';
+    }""")
+    assert page.evaluate("() => apiDebugAuthHeaders()") == {'X-API-Key': 'api-key-test'}
+    sent_headers = []
+
+    def reply(route):
+        sent_headers.append(route.request.headers)
+        route.fulfill(json={'ok': True, 'data': {'result': {'000001.SZ': {'lastPrice': 11.7}}}})
+
+    page.route('**/api/data/full-tick', reply)
+    panel.locator('[name="code_list"]').fill('000001.SZ')
+    panel.locator('[type="submit"]').click()
+    expect(panel.locator('[data-test-output]')).to_contain_text('lastPrice')
+    assert sent_headers[0].get('x-api-key') == 'api-key-test'
+    assert 'x-cfquant-web-token' not in sent_headers[0]
+    assert all(method == 'GET' for method, path in requests)
     assert errors == []
 
 

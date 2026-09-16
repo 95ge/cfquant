@@ -9,7 +9,15 @@ from .config import get_config
 from .logging_i18n import get_log_language, set_log_language, translate_log
 from .protocol import loads_message, pack_event, pack_response
 from .batch_orders import CFTRADER_BATCH_CANCEL_ACTIONS, execute_qmt_cancel_batch
-from .level2 import L2_GET_PERIODS, L2_PERIODS, l2_query, quote_plain, require_l2_callable, thousand_price
+from .level2 import (
+    L2_GET_PERIODS,
+    L2_PERIODS,
+    l2_query,
+    market_data_legacy_shape,
+    quote_plain,
+    require_l2_callable,
+    thousand_price,
+)
 from .xttype import filter_cancelable_orders
 
 
@@ -275,7 +283,11 @@ class CfquantQmtBridge(object):
         if action == "xtdata.get_instrument_detail":
             return self._get_instrument_detail(params)
         if action == "xtdata.get_stock_list_in_sector":
-            return self.context.get_stock_list_in_sector(params.get("sector_name", ""))
+            sector_name = params.get("sector_name", "")
+            real_timetag = params.get("real_timetag", -1)
+            if real_timetag == -1:
+                return self.context.get_stock_list_in_sector(sector_name)
+            return self.context.get_stock_list_in_sector(sector_name, real_timetag)
         if action == "xttrader.subscribe":
             return 0
         if action == "xttrader.unsubscribe":
@@ -304,10 +316,22 @@ class CfquantQmtBridge(object):
 
     def _get_market_data(self, params):
         if params.get("period") in L2_PERIODS:
-            return self._get_market_data_ex(params)
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(
+                result,
+                params.get("period", "1d"),
+                params.get("field_list", []),
+                params.get("stock_list", []),
+            )
         func = getattr(self.context, "get_market_data", None)
         if not func:
-            return self._get_market_data_ex(params)
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(
+                result,
+                params.get("period", "1d"),
+                params.get("field_list", []),
+                params.get("stock_list", []),
+            )
         return func(
             params.get("field_list", []),
             params.get("stock_list", []),

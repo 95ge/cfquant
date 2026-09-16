@@ -152,3 +152,35 @@ def test_project_update_operation_blocks_new_trade_requests(project_updater):
                 pass
 
     assert updater.operation_status()["busy"] is False
+
+
+def test_project_system_info_reports_start_script_and_version_date(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "start_cfquant.bat").write_text("@echo off\n", encoding="utf-8")
+
+    monkeypatch.setattr(web, "BASE_DIR", str(project_root))
+    monkeypatch.setattr(web, "_SOURCE_ROOT", str(project_root))
+    monkeypatch.setattr(web, "STATIC_DIR", str(project_root / "web_dashboard"))
+    monkeypatch.setattr(web, "STATE_DIR", str(project_root))
+    monkeypatch.setattr(web, "RUNTIME_DIR", str(project_root / "runtime"))
+    monkeypatch.setattr(web, "LOG_DIR", str(project_root / "log"))
+
+    info = web.project_system_info({
+        "core_version": "core_20260911_02",
+        "web_version": "web_20260916_01",
+        "frontend_version": "web_20260916_01",
+        "local": {
+            "changelog": {"version": "core_20260911_02 / web_20260916_01"},
+            "changelog_path": str(project_root / "docs" / "version.md"),
+        },
+    })
+
+    assert info["project_dir"] == str(project_root)
+    assert info["start_script"] == str(project_root / "start_cfquant.bat")
+    assert info["start_script_exists"] is True
+    assert info["version_updated_at"] == "2026-09-16"
+    assert info["core_version_date"] == "2026-09-11"
+    assert info["web_version_date"] == "2026-09-16"

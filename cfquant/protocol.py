@@ -159,7 +159,10 @@ def encode_value(value):
     if isinstance(value, (list, tuple, set)):
         return [encode_value(v) for v in value]
     if type(value).__module__.split(".", 1)[0] == "numpy":
-        return encode_value(value.tolist())
+        if type(value).__name__ == "ndarray":
+            return _encode_ndarray(value)
+        item = getattr(value, "item", None)
+        return encode_value(item() if callable(item) else value.tolist())
     if _looks_like_dataframe(value):
         return _encode_dataframe(value)
     if _looks_like_series(value):
@@ -231,13 +234,37 @@ def _encode_dataframe(value):
     index_name = getattr(getattr(value, "index", None), "name", None)
     return {
         "__cf_type__": "dataframe",
-        "columns": [str(c) for c in getattr(value, "columns", [])],
-        "index": [str(i) for i in getattr(value, "index", [])],
+        "columns": [_encode_label(c) for c in getattr(value, "columns", [])],
+        "index": [_encode_label(i) for i in getattr(value, "index", [])],
         "data": rows,
-        "index_name": str(index_name) if index_name is not None else None,
-        "object_columns": [str(name) for name, dtype in getattr(value, "dtypes", {}).items()
+        "index_name": _encode_label(index_name) if index_name is not None else None,
+        "object_columns": [_encode_label(name) for name, dtype in getattr(value, "dtypes", {}).items()
                            if str(dtype) == "object" or str(dtype).startswith(("Int", "UInt"))],
     }
+
+
+def _encode_label(value):
+    if isinstance(value, tuple):
+        return {
+            "__cf_type__": "tuple",
+            "data": [_encode_label(item) for item in value],
+        }
+    return encode_value(value)
+
+
+def _encode_ndarray(value):
+    dtype = getattr(value, "dtype", None)
+    names = getattr(dtype, "names", None)
+    payload = {
+        "__cf_type__": "ndarray",
+        "shape": list(getattr(value, "shape", ())),
+        "data": encode_value(value.tolist()),
+    }
+    if names:
+        payload["dtype_descr"] = encode_value(dtype.descr)
+    elif dtype is not None:
+        payload["dtype"] = str(dtype)
+    return payload
 
 
 def _encode_series(value):
@@ -247,9 +274,9 @@ def _encode_series(value):
         raw_values = []
     return {
         "__cf_type__": "series",
-        "index": [str(i) for i in getattr(value, "index", [])],
+        "index": [_encode_label(i) for i in getattr(value, "index", [])],
         "data": [_clean_cell(v) for v in raw_values],
-        "name": str(value.name) if getattr(value, "name", None) is not None else None,
+        "name": _encode_label(value.name) if getattr(value, "name", None) is not None else None,
     }
 
 
@@ -262,11 +289,13 @@ def decode_value(value):
     value_type = value.get("__cf_type__")
     if value_type == "bytes":
         return base64.b64decode(value.get("data", ""))
+    if value_type == "tuple":
+        return tuple(decode_value(item) for item in value.get("data", []))
     if value_type == "dataframe":
         import pandas as pd
-        columns = value.get("columns", [])
+        columns = [decode_value(item) for item in value.get("columns", [])]
         rows = [[decode_value(cell) for cell in row] for row in value.get("data", [])]
-        object_columns = value.get("object_columns", [])
+        object_columns = [decode_value(item) for item in value.get("object_columns", [])]
         if object_columns and columns:
             # Construct columns independently, preserving duplicate field labels too.
             df = pd.concat([pd.Series([row[i] for row in rows], dtype=object if name in object_columns else None)
@@ -274,19 +303,44 @@ def decode_value(value):
             df.columns = columns
         else:
             df = pd.DataFrame(rows, columns=columns)
-        index = value.get("index", [])
+        index = [decode_value(item) for item in value.get("index", [])]
         if len(index) == len(df):
             df.index = index
-        if value.get("index_name"):
-            df.index.name = value.get("index_name")
+        if value.get("index_name") is not None:
+            df.index.name = decode_value(value.get("index_name"))
         return df
     if value_type == "series":
         import pandas as pd
         return pd.Series(
             [decode_value(v) for v in value.get("data", [])],
-            index=value.get("index", []),
-            name=value.get("name"),
+            index=[decode_value(item) for item in value.get("index", [])],
+            name=decode_value(value.get("name")),
         )
+    if value_type == "ndarray":
+        import numpy as np
+        data = decode_value(value.get("data"))
+        dtype = None
+        if value.get("dtype_descr"):
+            dtype_descr = []
+            for item in value.get("dtype_descr", []):
+                parts = list(item)
+                if len(parts) >= 3 and isinstance(parts[2], list):
+                    parts[2] = tuple(parts[2])
+                dtype_descr.append(tuple(parts))
+            dtype = np.dtype(dtype_descr)
+        elif value.get("dtype"):
+            try:
+                dtype = np.dtype(value.get("dtype"))
+            except Exception:
+                dtype = None
+        result = np.asarray(data, dtype=dtype)
+        shape = value.get("shape")
+        if shape is not None:
+            try:
+                result = result.reshape(tuple(shape))
+            except Exception:
+                pass
+        return result
     if value_type == "object":
         return SimpleObject(**decode_value(value.get("attrs", {})))
     return {k: decode_value(v) for k, v in value.items()}

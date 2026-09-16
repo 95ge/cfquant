@@ -23,6 +23,7 @@ STORE_REF_PREFIX = "r:"
 DEFAULT_BRIDGE_ID = "default"
 DEFAULT_ACCOUNT_TYPE = "STOCK"
 PENDING_MATCH_TTL_SECONDS = 10 * 60
+CANONICAL_ORDER_ID_FIELD = "canonical_order_id"
 ORDER_REF_FIELDS = (
     "order_ref",
     "m_strOrderRef",
@@ -121,6 +122,44 @@ def normalize_order_ref(value):
     if text in ("0", "-1"):
         return ""
     return text
+
+
+def positive_order_id(value):
+    ref = normalize_order_ref(value)
+    if not ref or not ref.isdigit():
+        return None
+    order_id = int(ref)
+    return order_id if order_id > 0 else None
+
+
+def canonical_order_id_from_record(record):
+    if not isinstance(record, dict):
+        return None
+    for name in (CANONICAL_ORDER_ID_FIELD, "order_id"):
+        order_id = positive_order_id(record.get(name))
+        if order_id is not None:
+            return order_id
+    # Older stores used order_ref for the order-list ID before callbacks added
+    # the other QMT references. Only use this migration fallback for bound
+    # records; callback-bound records may have a callback reference in order_ref.
+    if normalize_text(record.get("status")).lower() == "bound":
+        return positive_order_id(record.get("order_ref"))
+    return None
+
+
+def reconcile_order_id(data, order_id):
+    if not isinstance(data, dict):
+        return False
+    canonical = positive_order_id(order_id)
+    if canonical is None:
+        return False
+    current_ref = normalize_order_ref(data.get("order_id"))
+    mismatched = bool(current_ref and current_ref != str(canonical))
+    if mismatched:
+        data["cfquant_callback_order_id"] = data.get("order_id")
+        data["cfquant_order_id_reconciled"] = True
+    data["order_id"] = canonical
+    return mismatched
 
 
 def stock_code_base(value):
@@ -302,6 +341,15 @@ def normalize_record(record, bridge_id=None, account_type=None, account_id=None,
     if order_refs:
         data["order_refs"] = order_refs
 
+    status = normalize_text(data.get("status")).lower()
+    canonical_order_id = canonical_order_id_from_record(data)
+    if canonical_order_id is None and status == "bound":
+        canonical_order_id = positive_order_id(data.get("order_ref"))
+    if canonical_order_id is not None:
+        if positive_order_id(data.get("order_id")) is None:
+            data["order_id"] = canonical_order_id
+        data[CANONICAL_ORDER_ID_FIELD] = canonical_order_id
+
     stock_code = normalize_text(first_value(data, ("stock_code", "code", "m_strInstrumentID", "m_strStockCode")))
     if stock_code:
         data["stock_code"] = stock_code
@@ -356,11 +404,10 @@ def apply_record_to_callback(data, record, match_info=None):
     if not is_empty(record.get("client_order_id")) and is_empty(data.get("client_order_id")):
         data["client_order_id"] = normalize_text(record.get("client_order_id"))
 
-    order_id_ref = normalize_order_ref(record.get("order_id"))
-    if order_id_ref:
-        order_id = int(order_id_ref) if order_id_ref.isdigit() else record.get("order_id")
-        if not normalize_order_ref(data.get("order_id")):
-            data["order_id"] = order_id
+    order_id = canonical_order_id_from_record(record)
+    if order_id is not None:
+        reconcile_order_id(data, order_id)
+        order_id_ref = str(order_id)
         for name in ("m_nRef", "m_nOrderID"):
             if not normalize_order_ref(data.get(name)):
                 data[name] = order_id
@@ -573,7 +620,7 @@ class OrderMetaCache(object):
                 existing_set = set(existing_refs)
                 bound_order_refs = [ref for ref in order_refs if ref not in existing_set]
                 merged_refs = merge_order_ref_candidates(record, order_refs)
-                if confidence == "pending_fifo" or not normalize_order_ref(record.get("order_ref")):
+                if not normalize_order_ref(record.get("order_ref")):
                     record["order_ref"] = order_refs[0]
                     record["m_strOrderRef"] = order_refs[0]
                 elif is_empty(record.get("m_strOrderRef")):
