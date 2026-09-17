@@ -184,3 +184,27 @@ def test_project_system_info_reports_start_script_and_version_date(tmp_path, mon
     assert info["version_updated_at"] == "2026-09-16"
     assert info["core_version_date"] == "2026-09-11"
     assert info["web_version_date"] == "2026-09-16"
+
+
+def test_project_system_info_reports_installed_python_sdk_version(monkeypatch):
+    import cfquant_web_server as web
+
+    monkeypatch.setattr(
+        web,
+        "installed_python_sdk_info",
+        lambda fallback_date="": {
+            "version": "0.2.21",
+            "source": "importlib.metadata",
+            "error": "",
+            "release_date": "2026-09-16",
+            "release_date_source": "project_version",
+        },
+    )
+
+    info = web.project_system_info()
+
+    assert info["python_sdk_version"] == "0.2.21"
+    assert info["python_sdk_version_source"] == "importlib.metadata"
+    assert info["python_sdk_version_error"] == ""
+    assert info["python_sdk_release_date"] == "2026-09-16"
+    assert info["python_sdk_release_date_source"] == "project_version"

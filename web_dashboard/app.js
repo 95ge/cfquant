@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260916_01';
+const FRONTEND_VERSION = 'web_20260917_01';
 
 const state = {
   accountId: '',
@@ -134,6 +134,8 @@ const state = {
   bindingQmtProcessCheckInFlight: false,
   bindingQmtProcessCheckToken: 0,
   bindingQmtProcessResolver: null,
+  bindingQmtProcessPromptResults: [],
+  bindingQmtRestartTargets: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -2614,13 +2616,28 @@ function readBindingQmtAutoLoginSettings(form = $('bindingForm')) {
   };
 }
 
+function editableInstallDependencyWarning(install) {
+  const requirements = install && install.requirements_install ? install.requirements_install : {};
+  return !!(
+    install
+    && (
+      install.requirements_failed
+      || install.dependency_install_skipped
+      || (requirements.attempted && requirements.ok === false)
+    )
+  );
+}
+
 function editableInstallSummaryText(payload) {
   const install = payload && payload.editable_install ? payload.editable_install : {};
   if (!install.attempted) return '';
   if (!install.ok) return install.message ? `Python SDK 更新失败：${install.message}` : 'Python SDK 更新失败';
   const version = install.installed_version ? `安装后版本 ${install.installed_version}` : '安装后版本已刷新';
   const details = install.python_executable ? `已在 ${install.python_executable} 中安装当前 cfquant 版本，${version}` : version;
-  return `Python SDK 已更新（${details}）`;
+  const dependencyWarning = editableInstallDependencyWarning(install)
+    ? '；依赖更新失败已跳过，请在完全退出 QMT/Python 后补跑依赖更新'
+    : '';
+  return `Python SDK 已更新（${details}${dependencyWarning}）`;
 }
 
 function qmtCoreDeploySummaryText(deploy) {
@@ -2969,6 +2986,9 @@ function renderProjectVersionLegacyRuntime(info) {
   const runtimeEntryVersionText = runtimeEntryVersion || '--';
   const runtimeReportedText = runtimeReportedAt || '--';
   body.innerHTML = `
+    <div class="version-primary-action">
+      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>更新 Web</button>
+    </div>
     <section class="version-runtime-hero ${runtimeStateClass}">
       <div class="version-runtime-head">
         <div>
@@ -3022,7 +3042,6 @@ function renderProjectVersionLegacyRuntime(info) {
     </details>
     <div class="version-actions">
       <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
-      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>更新 Web</button>
       <button type="button" data-version-action="qmt-update"${actionBusy ? ' disabled' : ''}>更新 QMT</button>
       <button type="button" data-version-action="open-update">更新设置</button>
     </div>
@@ -3094,6 +3113,9 @@ function renderProjectVersion(info) {
   const heroClass = checking ? 'is-checking' : (remoteError ? 'is-wait' : (updateAvailable ? 'is-stale' : 'is-ok'));
   const changelog = remote.changelog || {};
   body.innerHTML = `
+    <div class="version-primary-action">
+      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新</button>
+    </div>
     <section class="version-runtime-hero ${heroClass}">
       <div class="version-runtime-head">
         <div>
@@ -3124,7 +3146,6 @@ function renderProjectVersion(info) {
     ${remote.version || remote.error ? `<div class="version-log-wrap">${renderVersionLog(changelog, '版本说明')}</div>` : ''}
     <div class="version-actions">
       <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
-      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新</button>
       <button type="button" data-version-action="open-update">更新设置</button>
     </div>
     <div class="version-action-status">${esc(projectUpdateBusy() ? '正在更新完整版本并同步已绑定 QMT 目录...' : '更新完成后，请完全退出并重启 QMT 加载新版本。')}</div>`;
@@ -3149,6 +3170,12 @@ function renderSystemInfo(info = null, versionInfo = null) {
   const versionText = coreVersion && webVersion && coreVersion !== webVersion
     ? `${coreVersion} / ${webVersion}`
     : (coreVersion || webVersion || '--');
+  const pythonSdkVersion = merged.python_sdk_version || '';
+  const pythonSdkVersionMeta = pythonSdkVersion
+    ? '当前 Web Python 环境中的已安装版本'
+    : (merged.python_sdk_version_error
+      ? `读取失败：${merged.python_sdk_version_error}`
+      : '未检测到 cfquant 安装元数据');
   const versionMeta = [
     coreVersion ? `核心 ${coreVersion}` : '',
     webVersion ? `Web ${webVersion}` : '',
@@ -3170,6 +3197,16 @@ function renderSystemInfo(info = null, versionInfo = null) {
   setSystemInfoText('systemInfoVersionMeta', versionMeta || '当前进程正在使用的版本信息');
   setSystemInfoText('systemInfoUpdatedAt', updatedAt || '--');
   setSystemInfoText('systemInfoCheckedAt', checkedAt);
+  setSystemInfoText('systemInfoPythonSdkVersion', pythonSdkVersion);
+  setSystemInfoText('systemInfoPythonSdkVersionMeta', pythonSdkVersionMeta);
+  const pythonSdkReleaseDate = merged.python_sdk_release_date || '';
+  const pythonSdkReleaseDateSource = merged.python_sdk_release_date_source || '';
+  const pythonSdkReleaseDateText = pythonSdkReleaseDate
+    ? (pythonSdkReleaseDateSource === 'package_metadata'
+      ? `\u53d1\u5e03\u65e5\u671f\uff1a${pythonSdkReleaseDate}`
+      : `\u9879\u76ee\u7248\u672c\u65e5\u671f\uff1a${pythonSdkReleaseDate}\uff08\u5b89\u88c5\u5305\u672a\u63d0\u4f9b\u53d1\u5e03\u65e5\u671f\uff09`)
+    : '\u672a\u63d0\u4f9b\u53d1\u5e03\u65e5\u671f';
+  setSystemInfoText('systemInfoPythonSdkReleaseDate', pythonSdkReleaseDateText);
   setSystemInfoText('systemInfoProjectDir', merged.project_dir || merged.base_dir || '');
   setSystemInfoText('systemInfoStartScript', merged.start_script || '');
   setSystemInfoText('systemInfoStartScriptState', startState);
@@ -3264,6 +3301,9 @@ function renderProjectVersionLegacy(info) {
       ? '正在连接远端版本源...'
       : (remote.error ? '当前远端不可达，可以稍后重新检查。' : '可在这里直接更新 Web 项目，或进入设置页处理 QMT 核心更新。');
   body.innerHTML = `
+    <div class="version-primary-action">
+      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新 Web</button>
+    </div>
     <div class="version-summary">
       <div class="version-info-row">
         <span>核心版本</span>
@@ -3292,7 +3332,6 @@ function renderProjectVersionLegacy(info) {
     </div>
     <div class="version-actions">
       <button type="button" data-version-action="recheck"${recheckDisabled}>重新检查</button>
-      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新 Web</button>
       <button type="button" data-version-action="qmt-update"${actionBusy ? ' disabled' : ''}>更新 QMT 核心</button>
       <button type="button" data-version-action="open-update">更新设置</button>
     </div>
@@ -5654,8 +5693,11 @@ function buildUpdateNoticeLines(payload, options = {}) {
     });
   }
   if (editableInstall.attempted) {
+    const dependencyWarning = editableInstallDependencyWarning(editableInstall);
     lines.push({
-      strong: editableInstall.ok ? 'Python SDK 已更新' : 'Python SDK 更新异常',
+      strong: editableInstall.ok
+        ? (dependencyWarning ? 'Python SDK 已更新，依赖待处理' : 'Python SDK 已更新')
+        : 'Python SDK 更新异常',
       text: editableInstallSummaryText(payload),
     });
   }
@@ -5735,7 +5777,9 @@ function renderUpdateNoticeCard(model, options = {}) {
     model.version ? `版本 ${model.version}` : '',
     model.bridgeId ? `桥接 ${model.bridgeId}` : '',
     model.editableInstall && model.editableInstall.attempted
-      ? (model.editableInstall.ok ? `源码安装 ${model.editableInstall.installed_version || '已刷新'}` : '源码安装失败')
+      ? (model.editableInstall.ok
+        ? `源码安装 ${model.editableInstall.installed_version || '已刷新'}${editableInstallDependencyWarning(model.editableInstall) ? '，依赖待处理' : ''}`
+        : '源码安装失败')
       : '',
   ].filter(Boolean);
   const entryText = model.entryFiles.length ? `入口：${model.entryFiles.join('、')}` : '';
@@ -9096,18 +9140,67 @@ function closeBindingQmtProcessPrompt(result) {
   document.body.classList.remove('binding-dialog-open');
   const resolver = state.bindingQmtProcessResolver;
   state.bindingQmtProcessResolver = null;
-  if (resolver) resolver(!!result);
+  state.bindingQmtProcessPromptResults = [];
+  if (resolver) resolver(result);
 }
 
 function showBindingQmtProcessPrompt(results) {
   const overlay = $('bindingQmtProcessOverlay');
   const status = $('bindingQmtProcessPromptStatus');
   if (!overlay) return Promise.resolve(false);
+  state.bindingQmtProcessPromptResults = results || [];
   if (status) status.textContent = results.filter((item) => item.running).map((item) => `${item.label || 'QMT'}：PID ${item.pids.join(', ')}`).join('；');
   overlay.classList.remove('hidden');
   overlay.setAttribute('aria-hidden', 'false');
   document.body.classList.add('binding-dialog-open');
   return new Promise((resolve) => { state.bindingQmtProcessResolver = resolve; });
+}
+
+async function stopBindingQmtProcessesAndContinue() {
+  const running = (state.bindingQmtProcessPromptResults || []).filter((item) => item.running && item.qmt_dir);
+  const status = $('bindingQmtProcessPromptStatus');
+  const button = $('bindingQmtProcessStopContinueBtn');
+  if (!running.length) {
+    closeBindingQmtProcessPrompt(true);
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) status.textContent = `正在关闭 QMT：PID ${running.flatMap((item) => item.pids || []).join(', ')}`;
+  try {
+    const data = await api('/api/qmt/processes/stop', {
+      method: 'POST',
+      body: JSON.stringify({ targets: running.map((item) => ({ qmt_dir: item.qmt_dir })) }),
+    });
+    const remaining = (data.targets || []).filter((item) => item.after && item.after.running);
+    if (remaining.length) {
+      if (status) status.textContent = remaining.map((item) => `${item.qmt_dir}：仍在运行，PID ${(item.after.pids || []).join(', ')}`).join('；');
+      return;
+    }
+    state.bindingQmtRestartTargets = running.map((item) => ({ label: item.label || 'QMT', qmt_dir: item.qmt_dir }));
+    closeBindingQmtProcessPrompt({ stopped: true });
+  } catch (error) {
+    if (status) status.textContent = `关闭 QMT 失败：${error.message}`;
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function restartBindingQmtProcessesAfterSave() {
+  const targets = state.bindingQmtRestartTargets || [];
+  state.bindingQmtRestartTargets = [];
+  if (!targets.length) return null;
+  try {
+    const data = await api('/api/qmt/processes/start', {
+      method: 'POST',
+      body: JSON.stringify({ targets }),
+    });
+    log('QMT 已自动重启', { targets: data.targets || [] });
+    return data;
+  } catch (error) {
+    setBindingNotice(`绑定已保存，但 QMT 自动重启失败：${error.message}`, 'warn', { autoHide: false });
+    log('QMT 自动重启失败', { error: error.message });
+    return null;
+  }
 }
 
 async function recheckBindingQmtProcesses() {
@@ -9253,6 +9346,7 @@ async function submitBindingForm(event) {
       log('绑定状态刷新失败', { error: error.message });
     }
     closeBindingDialog();
+    await restartBindingQmtProcessesAfterSave();
     const deployIssue = qmtCoreDeployHasIssues(data.qmt_core_deploy);
     const noticeLevel = refreshError || deployIssue || data.legacy_fallback || bindingMarketRouteHasMissingDir(marketRoutingEnabled, marketBridges) ? 'warn' : 'success';
     const noticeMessage = bindingSaveSummary({
@@ -13248,10 +13342,9 @@ async function boot() {
   if (closeBindingQmtGuideBottomBtn) closeBindingQmtGuideBottomBtn.addEventListener('click', finishBindingQmtGuide);
   const checkBindingQmtConnectionBtn = $('checkBindingQmtConnectionBtn');
   if (checkBindingQmtConnectionBtn) checkBindingQmtConnectionBtn.addEventListener('click', checkBindingQmtConnection);
-  const bindingQmtProcessCloseLaterBtn = $('bindingQmtProcessCloseLaterBtn');
-  if (bindingQmtProcessCloseLaterBtn) bindingQmtProcessCloseLaterBtn.addEventListener('click', () => {
-    closeBindingQmtProcessPrompt(false);
-    setBindingNotice('请先关闭 QMT，然后再次点击保存绑定。', 'warn', { autoHide: false });
+  const bindingQmtProcessStopContinueBtn = $('bindingQmtProcessStopContinueBtn');
+  if (bindingQmtProcessStopContinueBtn) bindingQmtProcessStopContinueBtn.addEventListener('click', () => {
+    stopBindingQmtProcessesAndContinue();
   });
   const bindingQmtProcessRecheckBtn = $('bindingQmtProcessRecheckBtn');
   if (bindingQmtProcessRecheckBtn) bindingQmtProcessRecheckBtn.addEventListener('click', () => recheckBindingQmtProcesses());

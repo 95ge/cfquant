@@ -301,16 +301,18 @@ def execute_qmt_batch(bridge, params, msg, asynchronous):
         if asynchronous:
             request["seq"] = params["seqs"][index]
         try:
-            native = bridge._order_stock(request, msg, resolve_order_id=False, capture_previous_id=False)
+            native = bridge._order_stock(
+                request,
+                msg,
+                resolve_order_id=False,
+                capture_previous_id=False,
+                trust_request_order_id=not asynchronous,
+            )
             if bridge._is_failed_order_result(native.get("request_result")):
                 row.update(status="failed", ok=False, error="QMT rejected the order request")
             elif asynchronous:
                 pending = bridge._async_order_record(request, msg, native)
-                order_id = bridge._normalize_order_id(native.get("order_id"))
-                if order_id is not None:
-                    bridge._send_async_order_response(pending, order_id)
-                else:
-                    bridge._register_pending_async_order(pending)
+                bridge._register_pending_async_order(pending)
                 row.update(status="submitted", ok=True)
             elif batch_positive_id(native.get("order_id")):
                 row.update(status="submitted", ok=True, order_id=native["order_id"])

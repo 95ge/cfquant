@@ -332,6 +332,69 @@ def test_qmt_bridge_async_zero_waits_for_matching_order_callback():
     }
 
 
+def test_qmt_bridge_async_positive_request_result_waits_for_real_order_callback():
+    events = []
+    bridge = CfquantQmtBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 635082606,
+            "get_last_order_id": lambda *args: "635082605",
+        },
+    )
+    bridge._send_trader_event = lambda client_id, name, data: events.append((client_id, name, data))
+
+    result = bridge._order_stock_async(
+        _base_order_params(strategy_name="hxy", order_remark="remark", seq=25),
+        {"id": "request-5", "client_id": "client-5"},
+    )
+
+    assert result == {"seq": 25, "accepted": True, "request_result": 635082606}
+    assert events == []
+    assert len(bridge.pending_async_orders) == 1
+    assert bridge._handle_async_order_callback({
+        "account_id": "A123",
+        "stock_code": "000001.SZ",
+        "m_nRef": 700025,
+        "m_strOrderSysID": "635082606",
+        "order_remark": "remark",
+    }) is True
+    assert events[0][2]["order_id"] == 700025
+
+
+def test_tx_trade_bridge_async_positive_request_result_waits_for_real_order_callback():
+    events = []
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 635082606,
+            "get_last_order_id": lambda *args: "635082605",
+        },
+    )
+    bridge._send_trader_event = lambda client_id, name, data: events.append((client_id, name, data))
+
+    result = bridge._order_stock_async(
+        _base_order_params(strategy_name="hxy", order_remark="remark", seq=26),
+        {"id": "request-6", "client_id": "client-6"},
+    )
+
+    record = bridge.order_meta_cache.by_user[("default", "STOCK", "A123", "remark")]
+    assert result == {"seq": 26, "accepted": True, "request_result": 635082606}
+    assert order_meta.canonical_order_id_from_record(record) is None
+    assert events == []
+    assert len(bridge.pending_async_orders) == 1
+    assert bridge._handle_async_order_callback({
+        "m_strAccountID": "A123",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700026,
+        "m_strOrderSysID": "635082606",
+        "m_strRemark": "remark",
+    }) is True
+    assert events[0][2]["order_id"] == 700026
+
+
 def test_tx_trade_bridge_async_explicit_failure_is_not_registered():
     bridge = TxTradeBridge(
         DummyContext(),

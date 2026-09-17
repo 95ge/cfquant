@@ -100,12 +100,54 @@ def connected(request, monkeypatch):
     trader.stop()
 
 
+def complete_async_order(env, order_id, order_remark="", stock_code="600000.SH"):
+    return env.bridge._handle_async_order_callback({
+        "account_id": "TEST_ONLY",
+        "stock_code": stock_code,
+        "order_remark": order_remark,
+        "order_id": order_id,
+    })
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("prefix", ["sz_", "sh_"])
+@pytest.mark.parametrize("native_ref", [None, 1082130604])
+def test_async_prefixed_sysid_does_not_suppress_real_order_id(connected, batch, prefix, native_ref):
+    env = connected
+    request = order(order_remark="async_id_regression")
+    if batch:
+        result = env.api.order_stock_batch_async(env.account, [request])
+        seq = result["results"][0]["seq"]
+    else:
+        seq = env.api.order_stock_async(env.account, **request)
+    notification = dict(account_id="TEST_ONLY", stock_code=request["stock_code"],
+                        order_remark=request["order_remark"], order_id=prefix + "899",
+                        order_sysid="899")
+    if native_ref is not None:
+        notification["m_nRef"] = native_ref
+    handler = env.client.handlers["trader:on_stock_order"]
+    handler(notification)
+    if native_ref is None:
+        assert env.responses == []
+        assert seq not in env.trader._completed_async_order_seqs
+        assert any(item["seq"] == seq for item in env.trader._pending_async_orders)
+    else:
+        assert [response.order_id for response in env.responses] == [native_ref]
+    assert complete_async_order(env, 1082130604, order_remark=request["order_remark"])
+    handler(notification)
+    assert [(response.seq, response.order_id) for response in env.responses] == [(seq, 1082130604)]
+    assert env.trader._pending_async_orders == []
+    assert env.orders[0].order_sysid == "899"
+
+
 def test_single_order_signatures_and_results_match_xttrader(connected):
     env = connected
     for name in ("order_stock", "order_stock_async"):
         assert inspect.signature(getattr(cftrader.CfQuantTrader, name)) == inspect.signature(getattr(XtQuantTrader, name))
     assert env.api.order_stock(env.account, **order()) == 1001
     seq = env.api.order_stock_async(env.account, **order())
+    assert env.responses == []
+    assert complete_async_order(env, 1002)
     assert env.responses[0].seq == seq
     assert env.responses[0].order_id == 1002
     assert not hasattr(env.api, "register_callback")
@@ -251,6 +293,15 @@ def test_async_batch_uses_original_seq_allocator_and_callback_deduplication(conn
     assert result["ok"] is True
     seqs = [row["seq"] for row in result["results"]]
     assert first_seq < seqs[0] < seqs[1]
+    assert env.responses == []
+    assert complete_async_order(env, 2000, order_remark="single")
+    for offset, row in enumerate(result["results"], 1):
+        assert complete_async_order(
+            env,
+            2000 + offset,
+            order_remark=row["order_remark"],
+            stock_code=row["stock_code"],
+        )
     assert [item.seq for item in env.responses] == [first_seq] + seqs
     assert all(isinstance(item, XtOrderResponse) for item in env.responses)
     assert len({row["order_remark"] for row in result["results"]}) == 2
@@ -337,6 +388,13 @@ def test_async_batch_rejections_and_stop_on_error(connected, stop_on_error, expe
     assert [row["status"] for row in result["results"]] == expected
     assert result["failed"] == 1
     assert len(env.native_calls) == (2 if stop_on_error else 3)
+    for offset, row in enumerate([row for row in result["results"] if row["status"] == "submitted"], 1):
+        assert complete_async_order(
+            env,
+            3000 + offset,
+            order_remark=row["order_remark"],
+            stock_code=row["stock_code"],
+        )
     assert env.trader._pending_async_orders == []
 
 

@@ -379,16 +379,18 @@ def execute_qmt_batch(bridge, params, msg, asynchronous):
         if asynchronous:
             request["seq"] = params["seqs"][index]
         try:
-            native = bridge._order_stock(request, msg, resolve_order_id=False, capture_previous_id=False)
+            native = bridge._order_stock(
+                request,
+                msg,
+                resolve_order_id=False,
+                capture_previous_id=False,
+                trust_request_order_id=not asynchronous,
+            )
             if bridge._is_failed_order_result(native.get("request_result")):
                 row.update(status="failed", ok=False, error="QMT rejected the order request")
             elif asynchronous:
                 pending = bridge._async_order_record(request, msg, native)
-                order_id = bridge._normalize_order_id(native.get("order_id"))
-                if order_id is not None:
-                    bridge._send_async_order_response(pending, order_id)
-                else:
-                    bridge._register_pending_async_order(pending)
+                bridge._register_pending_async_order(pending)
                 row.update(status="submitted", ok=True)
             elif batch_positive_id(native.get("order_id")):
                 row.update(status="submitted", ok=True, order_id=native["order_id"])
@@ -472,7 +474,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "core_20260911_02"
+CORE_VERSION = "core_20260916_01"
 LITE_ENTRY_VERSION = "lite_20260828_01"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -2475,7 +2477,7 @@ class TxTradeBridge(object):
             "stock_option_secu_lock": 58,
             "stock_option_secu_unlock": 59,
         }
-    def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True):
+    def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True, trust_request_order_id=True):
         passorder = self._get_callable("passorder")
         if not passorder:
             raise NotImplementedError("passorder not found")
@@ -2512,7 +2514,7 @@ class TxTradeBridge(object):
             order_remark,
             self.context,
         )
-        order_id = self._normalize_order_id(result)
+        order_id = self._normalize_order_id(result) if trust_request_order_id else None
         if not self._is_failed_order_result(result):
             self._remember_order_request(
                 account_id,
@@ -2631,18 +2633,14 @@ class TxTradeBridge(object):
 
     def _order_stock_async(self, params, msg):
         seq = params.get("seq")
-        result = self._order_stock(params, msg, resolve_order_id=False)
+        result = self._order_stock(params, msg, resolve_order_id=False, trust_request_order_id=False)
         request_result = result.get("request_result")
         accepted = not self._is_failed_order_result(request_result)
         if not accepted:
             return {"seq": -1, "accepted": False, "request_result": request_result}
 
         pending = self._async_order_record(params, msg, result)
-        order_id = self._normalize_order_id(result.get("order_id"))
-        if order_id is not None:
-            self._send_async_order_response(pending, order_id)
-        else:
-            self._register_pending_async_order(pending)
+        self._register_pending_async_order(pending)
         return {"seq": seq, "accepted": True, "request_result": request_result}
 
     def _async_order_record(self, params, msg, result):

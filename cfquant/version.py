@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
 """cfquant core version metadata."""
 
-__version__ = "core_20260916_01"
-WEB_VERSION = "web_20260916_01"
+__version__ = "core_20260917_01"
+WEB_VERSION = "web_20260917_01"

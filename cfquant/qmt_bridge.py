@@ -874,11 +874,7 @@ class CfquantQmtBridge(object):
                 return {"seq": -1, "accepted": False, "request_result": request_result}
 
             pending = self._async_order_record(params, msg, result)
-            order_id = self._normalize_order_id(result.get("order_id"))
-            if order_id is not None:
-                self._send_async_order_response(pending, order_id)
-            else:
-                self._register_pending_async_order(pending)
+            self._register_pending_async_order(pending)
             return {"seq": seq, "accepted": True, "request_result": request_result}
         except Exception:
             raise

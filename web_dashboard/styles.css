@@ -1460,7 +1460,7 @@ body.binding-dialog-open {
   z-index: 120;
   display: none;
   width: min(536px, calc(100vw - 28px));
-  max-height: min(700px, calc(100vh - 118px));
+  max-height: min(820px, calc(100vh - 118px));
   overflow: hidden;
   border: 1px solid rgba(116, 141, 170, 0.68);
   border-radius: 8px;
@@ -1533,7 +1533,7 @@ body.binding-dialog-open {
 
 .version-popover-body {
   display: grid;
-  max-height: min(620px, calc(100vh - 150px));
+  max-height: min(740px, calc(100vh - 150px));
   gap: 14px;
   overflow: auto;
   padding: 15px;
@@ -1904,6 +1904,18 @@ body.binding-dialog-open {
 
 .version-log li {
   overflow-wrap: anywhere;
+}
+
+.version-primary-action {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(125, 147, 170, 0.22);
+}
+
+.version-primary-action button {
+  width: 100%;
+  min-height: 38px;
 }
 
 .version-actions {
@@ -4882,7 +4894,7 @@ th.num .sort-header {
 
 .system-info-overview {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 

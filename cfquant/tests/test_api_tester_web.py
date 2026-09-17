@@ -54,10 +54,9 @@ def test_web_batch_sends_one_qmt_request_and_preserves_original_callbacks(bindin
         assert result['result']['execution'] == 'qmt'
         assert result['result']['qmt_submit_ms'] >= 0
         assert all(args[0] == 33 and args[2] == 'TEST_ONLY' for args in native)
-        assert len(callbacks) == (2 if asynchronous else 0)
+        assert callbacks == []
         if asynchronous:
-            assert all(event == 'on_order_stock_async_response' for event, data in callbacks)
-            assert [data['seq'] for event, data in callbacks] == calls[0][1]['seqs']
+            assert [row['seq'] for row in bridge.pending_async_orders] == calls[0][1]['seqs']
     finally:
         bridge.close()
 

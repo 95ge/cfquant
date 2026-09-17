@@ -46,7 +46,7 @@ def pip_index_args():
     return ["--index-url", index_url] if index_url else []
 
 
-def editable_install_args(project_root, python_exe=None):
+def editable_install_args(project_root, python_exe=None, no_deps=False):
     # The caller runs pip with cwd=project_root; "." stays a separate argv item
     # and avoids cmd/path quoting problems in Windows Chinese directories.
     command = [
@@ -58,12 +58,14 @@ def editable_install_args(project_root, python_exe=None):
         "--no-input",
     ]
     command.extend(pip_index_args())
+    if no_deps:
+        command.append("--no-deps")
     command.append("--editable")
     command.append(".")
     return command
 
 
-def source_install_args(project_root, python_exe=None):
+def source_install_args(project_root, python_exe=None, no_deps=False):
     # Regular source installs are the compatibility fallback for old pip builds
     # that cannot do editable installs from pyproject-only projects.
     command = [
@@ -75,6 +77,8 @@ def source_install_args(project_root, python_exe=None):
         "--no-input",
     ]
     command.extend(pip_index_args())
+    if no_deps:
+        command.append("--no-deps")
     command.append(".")
     return command
 
@@ -162,6 +166,25 @@ def _read_installed_version():
 def _combine_install_output(*parts):
     output = "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
     return output.strip()
+
+
+def _requirements_warning_message(requirements):
+    if not requirements or requirements.get("ok"):
+        return ""
+    return (
+        requirements.get("message")
+        or "project requirements install failed; dependency update skipped"
+    )
+
+
+def _requirements_warning_output(requirements):
+    message = _requirements_warning_message(requirements)
+    if not message:
+        return ""
+    return _combine_install_output(
+        "Project requirements install warning: %s" % message,
+        requirements.get("output") or "",
+    )
 
 
 def run_requirements_install(
@@ -252,6 +275,9 @@ def run_editable_install(
         "message": "",
         "requirements_install": None,
         "requirements_attempted": False,
+        "requirements_failed": False,
+        "requirements_warning": "",
+        "dependency_install_skipped": False,
         "editable_attempted": False,
         "source_install_attempted": False,
         "source_install_command": [],
@@ -275,18 +301,15 @@ def run_editable_install(
     )
     result["requirements_install"] = requirements
     result["requirements_attempted"] = bool(requirements.get("attempted"))
-    if not requirements.get("ok"):
+    requirements_warning = _requirements_warning_message(requirements)
+    if requirements_warning:
         result.update({
-            "attempted": bool(requirements.get("attempted")),
-            "ok": False,
-            "returncode": requirements.get("returncode"),
-            "timed_out": bool(requirements.get("timed_out")),
-            "output": requirements.get("output") or "",
-            "message": requirements.get("message") or "project requirements install failed",
+            "requirements_failed": True,
+            "requirements_warning": requirements_warning,
+            "dependency_install_skipped": True,
         })
-        return result
 
-    command = editable_install_args(project_root, python_exe=python_exe)
+    command = editable_install_args(project_root, python_exe=python_exe, no_deps=True)
     result.update({
         "attempted": True,
         "editable_attempted": True,
@@ -309,13 +332,18 @@ def run_editable_install(
         completed = subprocess.run(command, **kwargs)
         output = _output_tail(completed.stdout, output_limit)
         result["returncode"] = completed.returncode
-        result["output"] = output
+        result["output"] = _combine_install_output(
+            _requirements_warning_output(requirements),
+            output,
+        )
         result["ok"] = completed.returncode == 0
         if result["ok"]:
             result["installed_version"] = _read_installed_version()
             result["message"] = "cfquant 源码可编辑安装已完成"
+            if requirements_warning:
+                result["message"] += "；依赖安装失败，已跳过依赖更新"
         else:
-            source_command = source_install_args(project_root, python_exe=python_exe)
+            source_command = source_install_args(project_root, python_exe=python_exe, no_deps=True)
             source_command_text = subprocess.list2cmdline([str(item) for item in source_command])
             source_result = _run_pip_command(
                 [str(item) for item in source_command],
@@ -333,6 +361,7 @@ def run_editable_install(
                 "returncode": source_result.get("returncode"),
                 "timed_out": bool(source_result.get("timed_out")),
                 "output": _combine_install_output(
+                    _requirements_warning_output(requirements),
                     output,
                     "Fallback source install output:\n%s" % (source_result.get("output") or ""),
                 ),
@@ -343,6 +372,8 @@ def run_editable_install(
                 result["message"] = (
                     "cfquant 源码普通安装已完成；当前 pip 不支持可编辑安装时会自动使用该方式"
                 )
+                if requirements_warning:
+                    result["message"] += "；依赖安装失败，已跳过依赖更新"
             elif result["timed_out"]:
                 result["message"] = "cfquant 源码普通安装超时"
             else:
@@ -355,13 +386,19 @@ def run_editable_install(
         result.update({
             "ok": False,
             "timed_out": True,
-            "output": _output_tail(output, output_limit),
+            "output": _combine_install_output(
+                _requirements_warning_output(requirements),
+                _output_tail(output, output_limit),
+            ),
             "message": "cfquant 源码可编辑安装超时",
         })
     except Exception as error:
         result.update({
             "ok": False,
-            "output": _output_tail(error, output_limit),
+            "output": _combine_install_output(
+                _requirements_warning_output(requirements),
+                _output_tail(error, output_limit),
+            ),
             "message": "cfquant 源码可编辑安装异常：%s" % error,
         })
     return result

@@ -12,6 +12,7 @@ from .client import create_rpc_client
 from .config import get_config
 from .channels import channels_for_bridge, normalize_bridge_id
 from .protocol import new_id
+from .order_meta import positive_order_id
 from . import xtconstant
 from .xttype import (
     CreditAssure,
@@ -914,8 +915,14 @@ class XtQuantTrader(object):
         return True
 
     def _async_order_response_from_order(self, order):
-        order_id = getattr(order, "order_id", None)
-        if order_id in (None, "", -1, "-1", 0, "0"):
+        # Cross-QMT notifications can carry a market-prefixed broker sysid.
+        # It must not complete the seq and suppress the real async response.
+        order_id = None
+        for name in ("order_id", "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID"):
+            order_id = positive_order_id(getattr(order, name, None))
+            if order_id is not None:
+                break
+        if order_id is None:
             return None
         account_id = _event_account_id(order)
         stock_code = str(getattr(order, "stock_code", "") or "").strip().upper()

@@ -914,7 +914,7 @@ class TxTradeBridge(object):
             "stock_option_secu_unlock": 59,
         }
 
-    def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True):
+    def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True, trust_request_order_id=True):
         passorder = self._get_callable("passorder")
         if not passorder:
             raise NotImplementedError("passorder not found")
@@ -979,7 +979,7 @@ class TxTradeBridge(object):
             raise
 
         failed = self._is_failed_order_result(result)
-        order_id = self._normalize_order_id(result)
+        order_id = self._normalize_order_id(result) if trust_request_order_id else None
         if order_meta_record is not None:
             order_meta_record["request_result"] = self._plain_value(result)
             if order_id is not None:
@@ -1295,18 +1295,14 @@ class TxTradeBridge(object):
 
     def _order_stock_async(self, params, msg):
         seq = params.get("seq")
-        result = self._order_stock(params, msg, resolve_order_id=False)
+        result = self._order_stock(params, msg, resolve_order_id=False, trust_request_order_id=False)
         request_result = result.get("request_result")
         accepted = not self._is_failed_order_result(request_result)
         if not accepted:
             return {"seq": -1, "accepted": False, "request_result": request_result}
 
         pending = self._async_order_record(params, msg, result)
-        order_id = self._normalize_order_id(result.get("order_id"))
-        if order_id is not None:
-            self._send_async_order_response(pending, order_id)
-        else:
-            self._register_pending_async_order(pending)
+        self._register_pending_async_order(pending)
         return {"seq": seq, "accepted": True, "request_result": request_result}
 
     def _async_order_record(self, params, msg, result):

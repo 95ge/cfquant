@@ -48,8 +48,34 @@ def updated_source(source):
                         source, count=1, flags=re.M)
     source = source.replace('def _order_stock(self, params, msg, resolve_order_id=True):',
                             'def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True):', 1)
+    source = source.replace(
+        'def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True):',
+        'def _order_stock(self, params, msg, resolve_order_id=True, capture_previous_id=True, trust_request_order_id=True):',
+        1,
+    )
     source = source.replace('previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name)\n',
                             'previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name) if capture_previous_id else None\n', 1)
+    source = source.replace(
+        'order_id = self._normalize_order_id(result)\n',
+        'order_id = self._normalize_order_id(result) if trust_request_order_id else None\n',
+        1,
+    )
+    source = source.replace(
+        'result = self._order_stock(params, msg, resolve_order_id=False)\n',
+        'result = self._order_stock(params, msg, resolve_order_id=False, trust_request_order_id=False)\n',
+        1,
+    )
+    source = source.replace(
+        '        pending = self._async_order_record(params, msg, result)\n'
+        '        order_id = self._normalize_order_id(result.get("order_id"))\n'
+        '        if order_id is not None:\n'
+        '            self._send_async_order_response(pending, order_id)\n'
+        '        else:\n'
+        '            self._register_pending_async_order(pending)\n',
+        '        pending = self._async_order_record(params, msg, result)\n'
+        '        self._register_pending_async_order(pending)\n',
+        1,
+    )
     core = (ROOT / 'cfquant/tx_trade_bridge.py').read_text(encoding='utf-8')
     core_cls = next(node for node in ast.parse(core).body if isinstance(node, ast.ClassDef) and node.name == 'TxTradeBridge')
     core_lookup = next(node for node in core_cls.body if isinstance(node, ast.FunctionDef) and node.name == '_find_order_id')

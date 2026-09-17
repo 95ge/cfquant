@@ -12,10 +12,22 @@ def test_editable_install_uses_split_arguments(tmp_path):
 
     assert command[:4] == ["python", "-m", "pip", "install"]
     assert command[command.index("--index-url") + 1] == _editable_install.DEFAULT_PIP_INDEX_URL
+    assert "--no-deps" not in command
     assert "--editable" in command
     assert command[command.index("--editable") + 1] == "."
     assert "- e" not in subprocess.list2cmdline(command)
     assert "-e ." not in subprocess.list2cmdline(command)
+
+
+def test_editable_install_can_skip_dependencies(tmp_path):
+    command = _editable_install.editable_install_args(
+        tmp_path,
+        python_exe="python",
+        no_deps=True,
+    )
+
+    assert "--no-deps" in command
+    assert command.index("--no-deps") < command.index("--editable")
 
 
 def test_editable_install_allows_pip_index_override(monkeypatch, tmp_path):
@@ -40,6 +52,7 @@ def test_source_install_uses_regular_project_install(tmp_path):
     assert command[:4] == ["python", "-m", "pip", "install"]
     assert command[command.index("--index-url") + 1] == _editable_install.DEFAULT_PIP_INDEX_URL
     assert "--editable" not in command
+    assert "--no-deps" not in command
     assert command[-1] == "."
 
 
@@ -51,6 +64,8 @@ def test_requirements_uses_tsinghua_mirror():
     assert "--index-url https://pypi.tuna.tsinghua.edu.cn/simple" in requirements
     assert "pycryptodome>=3.20" in requirements
     assert "Crypto.Cipher" in requirements
+    assert "importlib-resources>=5" in requirements
+    assert "python_version" not in requirements
 
 
 def test_run_command_is_a_serve_alias(capsys):
@@ -112,6 +127,7 @@ def test_run_editable_install_reports_success(monkeypatch, tmp_path):
     assert result["requirements_install"]["skipped"] is True
     assert result["editable_attempted"] is True
     assert calls[0][0][:4] == ["python", "-m", "pip", "install"]
+    assert "--no-deps" in calls[0][0]
     assert calls[0][1]["cwd"] == str(tmp_path)
     assert calls[0][1]["timeout"] == 12.0
 
@@ -146,9 +162,10 @@ def test_run_editable_install_runs_requirements_before_editable(monkeypatch, tmp
     assert "-r" in calls[0][0]
     assert "--editable" not in calls[0][0]
     assert "--editable" in calls[1][0]
+    assert "--no-deps" in calls[1][0]
 
 
-def test_run_editable_install_stops_when_requirements_fail(monkeypatch, tmp_path):
+def test_run_editable_install_skips_dependency_failure(monkeypatch, tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\nname = 'cfquant'\n", encoding="utf-8")
     (tmp_path / "requirements.txt").write_text("pycryptodome>=3.20\n", encoding="utf-8")
     calls = []
@@ -157,19 +174,29 @@ def test_run_editable_install_stops_when_requirements_fail(monkeypatch, tmp_path
         calls.append((args, kwargs))
 
         class Result(object):
-            returncode = 7
-            stdout = "requirements failed\n"
+            pass
 
-        return Result()
+        result = Result()
+        if "-r" in args:
+            result.returncode = 7
+            result.stdout = "requirements failed\n"
+        else:
+            result.returncode = 0
+            result.stdout = "cfquant installed\n"
+
+        return result
 
     monkeypatch.setattr(_editable_install.subprocess, "run", fake_run)
     result = _editable_install.run_editable_install(tmp_path, python_exe="python")
 
-    assert result["ok"] is False
+    assert result["ok"] is True
     assert result["requirements_install"]["ok"] is False
-    assert result["editable_attempted"] is False
-    assert len(calls) == 1
+    assert result["requirements_failed"] is True
+    assert result["dependency_install_skipped"] is True
+    assert result["editable_attempted"] is True
+    assert len(calls) == 2
     assert "requirements failed" in result["output"]
+    assert "--no-deps" in calls[1][0]
 
 
 def test_run_editable_install_reports_failure(monkeypatch, tmp_path):
@@ -194,6 +221,8 @@ def test_run_editable_install_reports_failure(monkeypatch, tmp_path):
     assert result["source_install_attempted"] is True
     assert result["source_install_returncode"] == 7
     assert len(calls) == 2
+    assert "--no-deps" in calls[0][0]
+    assert "--no-deps" in calls[1][0]
     assert "pip failed" in result["output"]
 
 
@@ -223,6 +252,8 @@ def test_run_editable_install_falls_back_to_source_install(monkeypatch, tmp_path
     assert result["returncode"] == 0
     assert "--editable" in calls[0][0]
     assert "--editable" not in calls[1][0]
+    assert "--no-deps" in calls[0][0]
+    assert "--no-deps" in calls[1][0]
     assert calls[1][0][-1] == "."
     assert "legacy editable failure" in result["output"]
     assert "pip completed" in result["output"]

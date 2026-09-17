@@ -208,6 +208,64 @@ def current_core_version():
     return current_core_version_info().get("version") or CORE_VERSION
 
 
+def _normalize_sdk_release_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"(20\d{2})[-/](\d{1,2})[-/](\d{1,2})", text)
+    if match:
+        return "%04d-%02d-%02d" % (
+            int(match.group(1)),
+            int(match.group(2)),
+            int(match.group(3)),
+        )
+    match = re.search(r"(20\d{6})", text)
+    if match:
+        compact = match.group(1)
+        return "%s-%s-%s" % (compact[:4], compact[4:6], compact[6:8])
+    return text
+
+
+def installed_python_sdk_info(fallback_date=""):
+    try:
+        try:
+            from importlib import metadata as importlib_metadata
+        except ImportError:
+            import importlib_metadata
+        distribution = importlib_metadata.distribution("cfquant")
+        version = str(distribution.version or "").strip()
+        if not version:
+            raise RuntimeError("cfquant distribution version is empty")
+        release_date = ""
+        release_date_source = ""
+        for metadata_key in ("Release-Date", "Release-Date-Time"):
+            release_date = _normalize_sdk_release_date(
+                distribution.metadata.get(metadata_key)
+            )
+            if release_date:
+                release_date_source = "package_metadata"
+                break
+        if not release_date:
+            release_date = _normalize_sdk_release_date(fallback_date)
+            if release_date:
+                release_date_source = "project_version"
+        return {
+            "version": version,
+            "source": "importlib.metadata",
+            "error": "",
+            "release_date": release_date,
+            "release_date_source": release_date_source,
+        }
+    except Exception as error:
+        return {
+            "version": "",
+            "source": "",
+            "error": str(error),
+            "release_date": "",
+            "release_date_source": "",
+        }
+
+
 def _version_date_tuple(version):
     match = re.search(r"(20\d{6})", str(version or ""))
     if not match:
@@ -10307,6 +10365,71 @@ def qmt_process_preflight(body=None, row=None):
     return snapshots
 
 
+def stop_qmt_processes_for_request(body):
+    body = body or {}
+    targets = body.get("targets") or []
+    if not isinstance(targets, (list, tuple, dict, str, bytes)):
+        raise ValueError("targets must be a list of QMT directories")
+    if isinstance(targets, (str, bytes)):
+        targets = [{"qmt_dir": targets}]
+    if isinstance(targets, dict):
+        targets = [targets]
+    results = []
+    for target in targets:
+        qmt_dir = (target.get("qmt_dir") or target.get("path")) if isinstance(target, dict) else target
+        configured = normalize_optional_path(qmt_dir)
+        if not configured:
+            continue
+        paths = _qmt_auto_login_paths(configured)
+        before = qmt_process_snapshot(configured)
+        stop = _qmt_auto_login_stop_xtitclient({}, paths, session={})
+        after = qmt_process_snapshot(configured)
+        results.append({
+            "qmt_dir": configured,
+            "bin_dir": paths["bin_dir"],
+            "exe_path": paths["exe_path"],
+            "before": before,
+            "stop": stop,
+            "after": after,
+            "stopped": bool(before.get("running")) and not bool(after.get("running")),
+        })
+    return {"targets": results}
+
+
+def start_qmt_processes_for_request(body):
+    body = body or {}
+    targets = body.get("targets") or []
+    if not isinstance(targets, (list, tuple, dict, str, bytes)):
+        raise ValueError("targets must be a list of QMT directories")
+    if isinstance(targets, (str, bytes)):
+        targets = [{"qmt_dir": targets}]
+    if isinstance(targets, dict):
+        targets = [targets]
+    results = []
+    for target in targets:
+        qmt_dir = (target.get("qmt_dir") or target.get("path")) if isinstance(target, dict) else target
+        configured = normalize_optional_path(qmt_dir)
+        if not configured:
+            continue
+        paths = _qmt_auto_login_paths(configured)
+        before = qmt_process_snapshot(configured)
+        launch = {"started": False, "reason": "target QMT is already running"}
+        if not before.get("running"):
+            launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
+            time.sleep(0.5)
+        after = qmt_process_snapshot(configured)
+        results.append({
+            "qmt_dir": configured,
+            "bin_dir": paths["bin_dir"],
+            "exe_path": paths["exe_path"],
+            "before": before,
+            "launch": launch,
+            "after": after,
+            "started": bool((launch or {}).get("pid")) or bool(after.get("running")),
+        })
+    return {"targets": results}
+
+
 def _qmt_auto_login_pid_matches(pid, bin_dir):
     try:
         pid = int(pid)
@@ -14410,6 +14533,8 @@ def project_system_info(version_info=None):
     web_version = version_info.get("web_version") or WEB_VERSION
     frontend_version = version_info.get("frontend_version") or WEB_VERSION
     changelog_version = changelog.get("version") or local.get("changelog_version") or ""
+    version_updated_at = latest_version_date_text(core_version, web_version, changelog_version)
+    python_sdk = installed_python_sdk_info(fallback_date=version_updated_at)
     start_script = project_script_path("start_cfquant.bat")
     restart_script = project_script_path("restart_cfquant.bat")
     stop_script = project_script_path("stop_cfquant.bat")
@@ -14431,13 +14556,18 @@ def project_system_info(version_info=None):
         "stop_script": stop_script,
         "stop_script_exists": os.path.isfile(stop_script),
         "python_executable": sys.executable,
+        "python_sdk_version": python_sdk["version"],
+        "python_sdk_version_source": python_sdk["source"],
+        "python_sdk_version_error": python_sdk["error"],
+        "python_sdk_release_date": python_sdk["release_date"],
+        "python_sdk_release_date_source": python_sdk["release_date_source"],
         "running_from_source": bool(_RUNNING_FROM_SOURCE),
         "source_mode": "source" if _RUNNING_FROM_SOURCE else "installed",
         "core_version": core_version,
         "web_version": web_version,
         "frontend_version": frontend_version,
         "changelog_version": changelog_version,
-        "version_updated_at": latest_version_date_text(core_version, web_version, changelog_version),
+        "version_updated_at": version_updated_at,
         "core_version_date": version_date_text(core_version),
         "web_version_date": version_date_text(web_version),
         "changelog_path": local.get("changelog_path") or "",
@@ -15404,6 +15534,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(verify_account_pair(body)))
             elif parsed.path == "/api/account-config":
                 self._write_json(ok(save_account_runtime_config(body)))
+            elif parsed.path == "/api/qmt/processes/stop":
+                self._write_json(ok(stop_qmt_processes_for_request(body)))
+            elif parsed.path == "/api/qmt/processes/start":
+                self._write_json(ok(start_qmt_processes_for_request(body)))
             elif parsed.path == "/api/qmt-auto-login/complete":
                 self._write_json(ok(complete_qmt_auto_login(body)))
             elif parsed.path == "/api/account-config/update-core":
