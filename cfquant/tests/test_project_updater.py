@@ -36,7 +36,7 @@ def project_updater(tmp_path, monkeypatch):
     monkeypatch.setattr(
         updater,
         "_run_editable_install",
-        lambda reason: {"attempted": False, "ok": True, "reason": reason},
+        lambda reason: pytest.fail("Web updates must not run pip"),
     )
     monkeypatch.setattr(updater, "_require_editable_install", lambda result: None)
     return web, updater, project_root

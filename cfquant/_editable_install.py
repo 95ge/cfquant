@@ -451,6 +451,27 @@ def is_cfquant_installed(python_exe=None):
     return completed.returncode == 0
 
 
+def project_package_version(project_root):
+    try:
+        import tomllib
+    except ImportError:
+        from pip._vendor import tomli as tomllib
+    with (Path(project_root) / "pyproject.toml").open("rb") as stream:
+        return str(tomllib.load(stream)["project"]["version"])
+
+
+def installed_package_version(python_exe=None):
+    completed = subprocess.run(
+        [python_exe or sys.executable, "-c",
+         "from importlib.metadata import version; print(version('cfquant'))"],
+        cwd=str(neutral_check_cwd()),
+        env=python_environment(clear_pythonpath=True),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", timeout=30,
+    )
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
 def ensure_cfquant_installed(project_root, python_exe=None):
     project_root = Path(project_root).resolve()
     if not (project_root / "pyproject.toml").is_file():
@@ -458,9 +479,11 @@ def ensure_cfquant_installed(project_root, python_exe=None):
         return 2
 
     python_exe = python_exe or sys.executable
-    print("Checking whether %s is installed in this Python environment..." % PACKAGE_NAME)
-    if is_cfquant_installed(python_exe):
-        print("%s and its runtime dependencies are ready; skip editable source install." % PACKAGE_NAME)
+    expected = project_package_version(project_root)
+    installed = installed_package_version(python_exe)
+    print("cfquant installed=%s project=%s" % (installed or "missing", expected))
+    if installed == expected:
+        print("Package versions match; skip installation.")
         return 0
 
     command = editable_install_args(project_root, python_exe)
@@ -480,8 +503,8 @@ def ensure_cfquant_installed(project_root, python_exe=None):
             print("[ERROR] source install failed with exit code %s." % completed.returncode, file=sys.stderr)
             return completed.returncode
 
-    if not is_cfquant_installed(python_exe):
-        print("[ERROR] %s is still not visible after source install." % PACKAGE_NAME, file=sys.stderr)
+    if installed_package_version(python_exe) != expected:
+        print("[ERROR] Installed cfquant version does not match the project after installation.", file=sys.stderr)
         return 1
     print("%s package is installed." % PACKAGE_NAME)
     return 0

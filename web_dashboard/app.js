@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260917_02';
+const FRONTEND_VERSION = 'web_20260917_03';
 
 const state = {
   accountId: '',
@@ -5466,8 +5466,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'upload', label: '上传项目源码 zip', percent: 42 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
       { key: 'install', label: '替换 Web 项目文件', percent: 82 },
-      { key: 'editable-install', label: '更新 Python SDK', percent: 88 },
-      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'restart', label: '重启并检查 SDK 版本', percent: 94 },
       { key: 'done', label: '更新完成', percent: 100 },
     ];
   }
@@ -5476,8 +5475,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'prepare', label: '确认 Web 回滚目标', percent: 12 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 36 },
       { key: 'restore', label: '恢复选中备份', percent: 76 },
-      { key: 'editable-install', label: '更新 Python SDK', percent: 88 },
-      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'restart', label: '重启并检查 SDK 版本', percent: 94 },
       { key: 'done', label: '回滚完成', percent: 100 },
     ];
   }
@@ -5487,8 +5485,7 @@ function qmtUpdateProgressSteps(kind) {
       { key: 'download', label: '连接官网并下载发布包', percent: 38 },
       { key: 'backup', label: '备份当前 Web 项目', percent: 58 },
       { key: 'install', label: '替换 Web 项目文件', percent: 82 },
-      { key: 'editable-install', label: '更新 Python SDK', percent: 88 },
-      { key: 'restart', label: '重启 Web 服务', percent: 94 },
+      { key: 'restart', label: '重启并检查 SDK 版本', percent: 94 },
       { key: 'done', label: '更新完成', percent: 100 },
     ];
   }

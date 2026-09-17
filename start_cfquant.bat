@@ -45,7 +45,7 @@ if errorlevel 1 (
 
 call :ensure_cfquant_package
 if errorlevel 1 (
-    echo [ERROR] cfquant package is not installed and automatic installation failed.
+    echo [ERROR] cfquant package version check or installation failed.
     call :show_logs
     call :pause_on_error
     endlocal
@@ -133,7 +133,7 @@ if not "%WEB_EXIT_CODE%"=="0" (
 endlocal & exit /b %WEB_EXIT_CODE%
 
 :ensure_cfquant_package
-echo Checking the cfquant package in the selected Python environment...
+echo Comparing installed cfquant with the project package version...
 call :log "checking cfquant package python=%PYTHON_EXE%"
 set "CFQUANT_INSTALL_HELPER=%~dp0cfquant\_editable_install.py"
 if not exist "%CFQUANT_INSTALL_HELPER%" (

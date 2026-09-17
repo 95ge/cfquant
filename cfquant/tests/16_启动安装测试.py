@@ -292,8 +292,8 @@ def test_run_editable_install_falls_back_to_source_install(monkeypatch, tmp_path
 
 
 def test_ensure_cfquant_installed_falls_back_to_source_install(monkeypatch, tmp_path):
-    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'cfquant'\n", encoding="utf-8")
-    installed_checks = [False, True]
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'cfquant'\nversion = '0.2.23'\n", encoding="utf-8")
+    installed_checks = ["0.2.22", "0.2.23"]
     calls = []
 
     def fake_is_installed(python_exe=None):
@@ -309,13 +309,27 @@ def test_ensure_cfquant_installed_falls_back_to_source_install(monkeypatch, tmp_
         result.returncode = 7 if "--editable" in args else 0
         return result
 
-    monkeypatch.setattr(_editable_install, "is_cfquant_installed", fake_is_installed)
+    monkeypatch.setattr(_editable_install, "installed_package_version", fake_is_installed)
     monkeypatch.setattr(_editable_install, "run", fake_run)
 
     assert _editable_install.ensure_cfquant_installed(tmp_path, python_exe="python") == 0
     assert "--editable" in calls[0][0]
     assert "--editable" not in calls[1][0]
     assert calls[1][0][-1] == "."
+
+
+@pytest.mark.parametrize("installed", ["", "0.2.22", "0.2.24", "0.2.23"])
+def test_startup_installs_only_when_version_differs(monkeypatch, tmp_path, installed):
+    (tmp_path / "pyproject.toml").write_text("[project]\nversion='0.2.23'\n", encoding="utf-8")
+    versions = iter([installed, "0.2.23"])
+    monkeypatch.setattr(_editable_install, "installed_package_version", lambda exe: next(versions))
+    calls = []
+    def install(args, cwd):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0)
+    monkeypatch.setattr(_editable_install, "run", install)
+    assert _editable_install.ensure_cfquant_installed(tmp_path, "python") == 0
+    assert len(calls) == (0 if installed == "0.2.23" else 1)
 
 
 def test_start_script_passes_dot_not_trailing_dp0():

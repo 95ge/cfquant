@@ -9038,18 +9038,11 @@ class CfquantProjectUpdater(object):
             try:
                 self._set_operation_phase("restore", "正在恢复选中的项目版本")
                 self._restore_backup(selected)
-                self._set_operation_phase("install", "正在刷新当前 Python 环境中的源码安装")
-                editable_install = self._run_editable_install("project_rollback")
-                self._require_editable_install(editable_install)
+                editable_install = {"deferred": True, "attempted": False}
                 self._set_operation_phase("deploy", "正在同步回滚后的 cfquant 核心到 QMT 目录")
                 qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
             except Exception:
                 self._restore_backup(rollback_backup)
-                try:
-                    recovery_install = self._run_editable_install("project_rollback_recovery")
-                    self._require_editable_install(recovery_install)
-                except Exception as recovery_error:
-                    safe_print("project rollback editable install recovery failed: %s" % recovery_error)
                 raise
             self._write_rollback_meta(
                 selected,
@@ -9113,9 +9106,7 @@ class CfquantProjectUpdater(object):
                 shutil.copy2(src, dst)
                 copied.append(rel_path)
             entry_info = self._entry_update_info(changed)
-            self._set_operation_phase("install", "正在刷新当前 Python 环境中的源码安装")
-            editable_install = self._run_editable_install("project_update")
-            self._require_editable_install(editable_install)
+            editable_install = {"deferred": True, "attempted": False}
             self._set_operation_phase("deploy", "正在同步最新 cfquant 核心到 QMT 目录")
             qmt_core_deploy = auto_deploy_qmt_core_for_all_accounts(source_dir=BASE_DIR)
             qmt_deploy_summary = qmt_core_deploy.get("summary") or {}
@@ -9156,12 +9147,6 @@ class CfquantProjectUpdater(object):
             }
         except Exception:
             self._restore_backup(backup)
-            if editable_install and editable_install.get("attempted"):
-                try:
-                    recovery_install = self._run_editable_install("project_update_recovery")
-                    self._require_editable_install(recovery_install)
-                except Exception as recovery_error:
-                    safe_print("project update editable install recovery failed: %s" % recovery_error)
             raise
 
     def _run_editable_install(self, reason):
