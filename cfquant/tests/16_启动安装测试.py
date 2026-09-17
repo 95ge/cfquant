@@ -1,10 +1,42 @@
 # -*- coding: utf-8 -*-
 import json
 import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 from cfquant import _editable_install
 from cfquant import cli
+
+
+def test_pip_environment_preserves_parent_settings(monkeypatch):
+    monkeypatch.setenv("PYTHONUTF8", "1")
+    monkeypatch.setenv("PYTHONPATH", "inherited-source")
+    monkeypatch.setattr(sys, "platform", "win32")
+    env = _editable_install.pip_environment()
+    assert env["PYTHONUTF8"] == "0"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert "PYTHONPATH" not in env
+    assert _editable_install.os.environ["PYTHONUTF8"] == "1"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows legacy encoding")
+def test_pip_scans_legacy_egg_link_without_modifying_it(tmp_path):
+    target = tmp_path / "\u79c1\u4eba\u6587\u4ef6"
+    try:
+        contents = (str(target) + "\n").encode("mbcs")
+    except UnicodeEncodeError:
+        pytest.skip("System encoding cannot represent the fixture path")
+    target.mkdir()
+    link = tmp_path / "legacy.egg-link"
+    link.write_bytes(contents)
+    result = _editable_install._run_pip_command(
+        [sys.executable, "-m", "pip", "list", "--path", str(tmp_path),
+         "--format=json", "--disable-pip-version-check"],
+        tmp_path,
+    )
+    assert result["ok"], result["output"]
+    assert link.read_bytes() == contents
 
 
 def test_editable_install_uses_split_arguments(tmp_path):

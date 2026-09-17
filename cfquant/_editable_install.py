@@ -114,7 +114,7 @@ def _run_pip_command(
 ):
     kwargs = {
         "cwd": str(project_root),
-        "env": python_environment(clear_pythonpath=True),
+        "env": pip_environment(),
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
@@ -318,7 +318,7 @@ def run_editable_install(
     })
     kwargs = {
         "cwd": str(project_root),
-        "env": python_environment(clear_pythonpath=True),
+        "env": pip_environment(),
         "stdout": subprocess.PIPE,
         "stderr": subprocess.STDOUT,
         "text": True,
@@ -413,6 +413,15 @@ def python_environment(clear_pythonpath=False):
     return env
 
 
+def pip_environment():
+    env = python_environment(clear_pythonpath=True)
+    # Legacy Windows egg-link files use the system encoding, not UTF-8.
+    if sys.platform == "win32":
+        env["PYTHONUTF8"] = "0"
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 def neutral_check_cwd():
     return Path(tempfile.gettempdir()).resolve()
 
@@ -423,7 +432,8 @@ def run(args, cwd, quiet=False, clear_pythonpath=False):
     return subprocess.run(
         list(args),
         cwd=str(cwd),
-        env=python_environment(clear_pythonpath=clear_pythonpath),
+        env=(pip_environment() if list(args)[1:3] == ["-m", "pip"]
+             else python_environment(clear_pythonpath=clear_pythonpath)),
         stdout=stdout,
         stderr=stderr,
     )
