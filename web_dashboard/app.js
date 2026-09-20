@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260920_02';
+﻿const FRONTEND_VERSION = '0.2.27';
 
 const state = {
   accountId: '',
@@ -13620,3 +13620,4 @@ async function boot() {
 }
 
 boot().catch((error) => log('启动失败', { error: error.message }));
+
