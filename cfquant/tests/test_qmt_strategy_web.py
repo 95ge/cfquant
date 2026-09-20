@@ -105,7 +105,9 @@ def test_spawn_reloaded_web_server_preserves_host_port_and_wait_env(web_config, 
     assert command[0]
     if web.os.name == "nt" and os.path.isfile(os.path.join(web.BASE_DIR, "restart_cfquant.bat")):
         assert command[0].lower().endswith("cmd.exe")
-        assert "restart_cfquant.bat" in command[-1]
+        assert command[1:3] == ["/d", "/c"]
+        assert command[3] == "call"
+        assert command[4].endswith("restart_cfquant.bat")
     else:
         assert command[1].endswith("cfquant_web_server.py")
         assert command[command.index("--host") + 1] == "0.0.0.0"

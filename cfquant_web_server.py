@@ -16321,7 +16321,9 @@ def spawn_reloaded_web_server(reload_request):
     restart_script = os.path.join(BASE_DIR, "restart_cfquant.bat")
     use_restart_script = os.name == "nt" and os.path.isfile(restart_script)
     if use_restart_script:
-        command = ["cmd.exe", "/d", "/c", 'call "%s"' % restart_script]
+        # Keep `call` and the batch path as separate argv items. Passing a
+        # quoted command as one item makes cmd.exe reject the batch file.
+        command = ["cmd.exe", "/d", "/c", "call", restart_script]
     else:
         command = [runtime_python_executable(), os.path.abspath(__file__)]
     if host and not use_restart_script:
