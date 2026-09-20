@@ -101,6 +101,23 @@ def test_import_is_resumable_and_not_confused_with_queue_consumption(deployment)
     assert queued.is_file()
 
 
+def test_managed_name_conflict_is_replaced_from_stale_deployment(deployment):
+    manager, row, infos, running, root = deployment
+    manager.configure(row, infos)
+    manager.process_once()
+    job = next(iter(manager.jobs.values()))
+    role = job["roles"][0]
+    name = role["name"]
+    # Simulate a stale container copied from another QMT host while the
+    # current job is waiting for import.
+    role["queued"] = False
+    (root / "python" / (name + ".py")).write_bytes(b"stale-container")
+    manager.process_once()
+    assert job["state"] == "waiting_import"
+    assert not (root / "python" / (name + ".py")).exists()
+    assert (root / "formulas" / (name + ".rzrk")).is_file()
+
+
 def test_model_configuration_preserves_account_and_is_idempotent(deployment):
     manager, row, infos, running, root = deployment
     row["qmt_strategy"].update(live=True, autorun=True)

@@ -674,11 +674,23 @@ class QmtStrategyManager:
                 imported = name in catalog and (root / "python" / (name + ".py")).is_file()
                 if not imported:
                     if not role.get("queued"):
-                        if (root / "python" / (name + ".py")).exists() or name in catalog:
-                            raise ValueError("QMT 策略名称冲突: %s" % name)
+                        generated = root / "python" / (name + ".py")
+                        if generated.exists() or name in catalog:
+                            # CFQ_* is cfquant's reserved namespace.  A stale
+                            # container/catalog entry can be left behind by a
+                            # deployment on another machine; remove it while
+                            # QMT is stopped and enqueue the current package.
+                            # User strategies with other names still fail
+                            # loudly instead of being overwritten.
+                            if not _valid_managed_strategy_name(name):
+                                raise ValueError("QMT 策略名称冲突: %s" % name)
+                            changed = _remove_formula_catalog_entries(document, {name}) or changed
+                            if generated.exists():
+                                generated.unlink()
+                                changed = True
                         package = Path(role["package_path"]).read_bytes()
                         if queue.exists() and queue.read_bytes() != package:
-                            if role.get("reimport_required"):
+                            if _valid_managed_strategy_name(name) or role.get("reimport_required"):
                                 _atomic_write(queue, package)
                             else:
                                 raise ValueError("QMT 导入队列存在同名文件: %s" % name)
