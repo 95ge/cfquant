@@ -50,11 +50,30 @@ except Exception:
 
 _PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__import__("cfquant").__file__))
-_SOURCE_ROOT = os.path.abspath(os.path.join(_PACKAGE_DIR, os.pardir))
-_RUNNING_FROM_SOURCE = (
-    os.path.isfile(os.path.join(_SOURCE_ROOT, "pyproject.toml"))
-    and os.path.isfile(os.path.join(_SOURCE_ROOT, "web_dashboard", "index.html"))
-)
+
+
+def _is_project_root(path):
+    """Return whether *path* is a complete runnable cfquant project.
+
+    The web entry point can be launched with an old editable/site-packages
+    installation already present in the selected Python environment.  Using
+    that imported package's parent as the update root can therefore make an
+    update modify a different, stale installation than the one that launched
+    this process.  The script directory is the authoritative project root
+    whenever it contains the runnable project files.
+    """
+    path = os.path.abspath(path)
+    return (
+        os.path.isfile(os.path.join(path, "pyproject.toml"))
+        and os.path.isfile(os.path.join(path, "cfquant_web_server.py"))
+        and os.path.isfile(os.path.join(path, "web_dashboard", "index.html"))
+        and os.path.isfile(os.path.join(path, "cfquant", "__init__.py"))
+    )
+
+
+_IMPORTED_SOURCE_ROOT = os.path.abspath(os.path.join(_PACKAGE_DIR, os.pardir))
+_SOURCE_ROOT = _PROJECT_DIR if _is_project_root(_PROJECT_DIR) else _IMPORTED_SOURCE_ROOT
+_RUNNING_FROM_SOURCE = _is_project_root(_SOURCE_ROOT)
 _LTTX_TX_DIR = os.path.join(_SOURCE_ROOT, "LTtx", "tx")
 
 
