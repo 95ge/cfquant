@@ -136,6 +136,7 @@ const state = {
   bindingQmtProcessResolver: null,
   bindingQmtProcessPromptResults: [],
   bindingQmtRestartTargets: [],
+  updateQmtRestartTargets: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -6178,7 +6179,8 @@ async function handleProjectReload(reloadInfo, message, payload = null, options 
   setQmtUpdateProgressStep('restart', 'Web 服务正在重启，请保持当前页面打开；恢复后会自动刷新。', 94);
   const result = await waitForProjectReloadHealth(reloadInfo, options);
   if (result.ok) {
-    finishQmtUpdateProgress(payload || {}, 'Web 服务已恢复，正在刷新当前页面...');
+    await restartUpdatedQmtProcesses();
+    finishQmtUpdateProgress(payload || {}, 'Web 服务已恢复，已检查绑定 QMT，正在刷新当前页面...');
     log('Web 服务重启完成', { next_url: nextUrl, attempts: result.attempts });
     if (options.navigate !== false) {
       window.setTimeout(() => {
@@ -6306,8 +6308,33 @@ async function ensureUpdateQmtStopped() {
   const stopped = await showBindingQmtProcessPrompt(results, { purpose: 'update' });
   // Updating must leave QMT stopped so its files and imported strategies can
   // be replaced safely; do not carry binding's auto-restart state into update.
+  state.updateQmtRestartTargets = stopped
+    ? results.filter((item) => item.running && item.qmt_dir).map((item) => ({ label: item.label || 'QMT', qmt_dir: item.qmt_dir }))
+    : [];
   state.bindingQmtRestartTargets = [];
   return !!stopped;
+}
+
+async function restartUpdatedQmtProcesses() {
+  const targets = state.updateQmtRestartTargets || [];
+  state.updateQmtRestartTargets = [];
+  if (!targets.length) return null;
+  setQmtUpdateProgressStep('restart', 'Web 服务已恢复，正在检查并重新启动已绑定 QMT...', 97);
+  try {
+    const data = await api('/api/qmt/processes/start', {
+      method: 'POST',
+      body: JSON.stringify({ targets }),
+    });
+    const failed = (data.targets || []).filter((item) => !(item.after && item.after.running));
+    setQmtUpdateProgressStep('restart', failed.length
+      ? `QMT 自动启动未完成：${failed.map((item) => item.qmt_dir).join('、')}`
+      : `已确认 ${targets.length} 个绑定 QMT 启动`, 99);
+    return data;
+  } catch (error) {
+    setQmtUpdateProgressStep('restart', `QMT 自动启动失败：${error.message}`, 97);
+    log('更新后 QMT 自动启动失败', { error: error.message, targets });
+    return null;
+  }
 }
 
 async function runProjectGithubUpdateFromUi(options = {}) {
@@ -6606,6 +6633,7 @@ async function runGithubUpdateFromUi() {
       method: 'POST',
       body: JSON.stringify({ bridge_id: selectedBridge(), site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, auto_close_qmt: updateAutoCloseQmtEnabled() }),
     });
+    await restartUpdatedQmtProcesses();
     setQmtUpdateProgressStep('refresh', '核心包已替换，正在刷新更新状态...');
     renderUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: true });
@@ -6650,6 +6678,7 @@ async function uploadZipUpdateFromUi() {
       const mapped = 8 + Math.min(34, Math.round(uploadPercent * 0.34));
       setQmtUpdateProgressStep('upload', `正在上传源码 zip：${uploadPercent}%`, mapped);
     });
+    await restartUpdatedQmtProcesses();
     setQmtUpdateProgressStep('refresh', '核心包已替换，正在刷新更新状态...');
     renderUpdateResult(data);
     alertUpdateNotice(data, { forceQmtRestart: true });

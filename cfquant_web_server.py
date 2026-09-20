@@ -9646,6 +9646,22 @@ def configure_account_qmt_strategies(row, identity):
         QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
         return QMT_STRATEGIES.configure(row, identities)
     except Exception as error:
+        detail = str(error or "").strip()
+        if not detail or detail in ("策略部署失败", "error"):
+            detail = "QMT 策略注入异常"
+        try:
+            snapshots = qmt_process_snapshots_for_request(row=row)
+            running = [item for item in snapshots if item.get("running")]
+            if running:
+                detail += "；检测到 QMT 仍在运行: %s" % "; ".join(
+                    "%s (PID %s)" % (
+                        item.get("qmt_dir") or item.get("bin_dir"),
+                        ",".join(str(pid) for pid in item.get("pids") or []),
+                    ) for item in running
+                )
+        except Exception as diagnostic_error:
+            detail += "；进程诊断失败: %s" % diagnostic_error
+        error = RuntimeError(detail)
         return QMT_STRATEGIES.report_error(row["account_key"], error)
 
 
