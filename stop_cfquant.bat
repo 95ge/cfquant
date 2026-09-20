@@ -43,6 +43,7 @@ if "%WEB_STOP_CODE%"=="0" if "%WEB_PORT_STOP_CODE%"=="0" if "%PIPE_STOP_CODE%"==
     ) else (
         echo cfquant local services stopped.
     )
+    call :pause_on_success
     endlocal
     exit /b 0
 )
@@ -78,5 +79,14 @@ if "%CFQUANT_START_NO_PAUSE%"=="1" exit /b 0
 echo.
 echo This window stays open because stop failed.
 pause
+exit /b 0
+
+:pause_on_success
+if defined CFQUANT_STOP_NO_PAUSE exit /b 0
+if defined CFQUANT_START_NO_PAUSE exit /b 0
+if defined CFQUANT_RESTART_NO_PAUSE exit /b 0
+echo.
+echo cfquant services stopped. Press any key to close this window.
+pause >nul
 exit /b 0
 

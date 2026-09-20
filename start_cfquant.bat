@@ -80,6 +80,7 @@ if not errorlevel 1 (
         echo cfquant web dashboard already runs on %WEB_PORT%, reuse it.
         call :log "existing cfquant web reused port=%WEB_PORT%"
         call :open_browser
+        call :pause_on_success
         endlocal
         exit /b 0
     )
@@ -107,6 +108,7 @@ if errorlevel 1 (
 )
 
 call :open_browser
+call :pause_on_success
 endlocal
 exit /b 0
 
@@ -193,6 +195,14 @@ if "%CFQUANT_START_NO_PAUSE%"=="1" exit /b 0
 echo.
 echo This window stays open because startup failed.
 pause
+exit /b 0
+
+:pause_on_success
+if defined CFQUANT_START_NO_PAUSE exit /b 0
+if defined CFQUANT_RESTART_NO_PAUSE exit /b 0
+echo.
+echo cfquant is running in the background. Press any key to close this window.
+pause >nul
 exit /b 0
 
 :log
