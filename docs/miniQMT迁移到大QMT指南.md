@@ -338,4 +338,3 @@ trader.start()
 - 多 QMT 都显示 `default`，说明入口脚本没有读到对应 `cfquant_bridge_config.json`。
 - 把 miniQMT 的字段结构原样假设到 cfquant 返回，导致订单编号、合同编号或状态枚举映射错误。
 - 把批量历史数据和回测读取也放到桥接里，导致迁移后整体速度下降。
-
