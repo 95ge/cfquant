@@ -189,7 +189,10 @@ def read_python_dunder_version(path):
 
 def current_core_version_info():
     file_version = read_python_dunder_version(CORE_VERSION_PATH)
-    version = file_version or CORE_VERSION
+    # Project/web/core are released as one unified version.  The imported
+    # package can remain stale in an editable install after a file update, so
+    # it must never override the project's declared version in the UI.
+    version = WEB_VERSION or file_version or CORE_VERSION
     source = "cfquant/version.py" if file_version else "imported cfquant.version"
     checked_at = time.time()
     return {
@@ -198,6 +201,7 @@ def current_core_version_info():
         "path": CORE_VERSION_PATH if file_version else "",
         "file_version": file_version,
         "imported_version": CORE_VERSION,
+        "project_version": WEB_VERSION,
         "import_stale": bool(file_version and file_version != CORE_VERSION),
         "checked_at": checked_at,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(checked_at)),
