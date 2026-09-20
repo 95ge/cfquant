@@ -6268,6 +6268,11 @@ async function refreshProjectUpdateStatusQuietly() {
   }
 }
 
+function updateAutoCloseQmtEnabled() {
+  const checkbox = $('updateAutoCloseQmt');
+  return !!(checkbox && checkbox.checked);
+}
+
 async function runProjectGithubUpdateFromUi(options = {}) {
   const repoInput = $('projectUpdateRepoInput');
   const refInput = $('projectUpdateRefInput');
@@ -6305,7 +6310,7 @@ async function runProjectGithubUpdateFromUi(options = {}) {
     setQmtUpdateProgressStep('download', '正在连接官网并下载完整版本包...');
     const data = await api('/api/project-updates/official', {
       method: 'POST',
-      body: JSON.stringify({ site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, reload: true }),
+      body: JSON.stringify({ site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, reload: true, auto_close_qmt: updateAutoCloseQmtEnabled() }),
     });
     setQmtUpdateProgressStep('restart', data.reload ? '完整版本和 QMT 核心已处理，正在准备重启服务...' : '完整版本已处理，正在刷新页面状态...');
     renderProjectUpdateResult(data);
@@ -6343,6 +6348,7 @@ async function uploadProjectZipUpdateFromUi() {
   if (!confirmed) return;
   const formData = new FormData();
   formData.append('reload', '1');
+  formData.append('auto_close_qmt', updateAutoCloseQmtEnabled() ? '1' : '0');
   formData.append('file', file, file.name);
   openQmtUpdateProgress(
     'project-upload',
@@ -6413,7 +6419,7 @@ async function rollbackProjectUpdateFromUi() {
     setQmtUpdateProgressStep('restore', '正在备份当前版本并恢复选中备份...');
     const data = await api('/api/project-updates/rollback', {
       method: 'POST',
-      body: JSON.stringify({ backup, reload: true }),
+      body: JSON.stringify({ backup, reload: true, auto_close_qmt: updateAutoCloseQmtEnabled() }),
     });
     setQmtUpdateProgressStep('restart', data.reload ? '完整版本与 QMT 核心已回滚，正在准备重启服务...' : '完整版本已回滚，正在刷新页面状态...');
     renderProjectUpdateResult(data);
@@ -6557,7 +6563,7 @@ async function runGithubUpdateFromUi() {
     setQmtUpdateProgressStep('download', '正在连接官网并下载源码包...');
     const data = await api('/api/updates/official', {
       method: 'POST',
-      body: JSON.stringify({ bridge_id: selectedBridge(), site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref }),
+      body: JSON.stringify({ bridge_id: selectedBridge(), site_url: DEFAULT_OFFICIAL_SITE_URL, repo_url: repoUrl, ref, auto_close_qmt: updateAutoCloseQmtEnabled() }),
     });
     setQmtUpdateProgressStep('refresh', '核心包已替换，正在刷新更新状态...');
     renderUpdateResult(data);
@@ -6588,6 +6594,7 @@ async function uploadZipUpdateFromUi() {
   if (!confirmed) return;
   const formData = new FormData();
   formData.append('bridge_id', selectedBridge());
+  formData.append('auto_close_qmt', updateAutoCloseQmtEnabled() ? '1' : '0');
   formData.append('file', file, file.name);
   openQmtUpdateProgress(
     'upload',

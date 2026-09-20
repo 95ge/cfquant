@@ -10341,6 +10341,17 @@ def qmt_process_preflight(body=None, row=None):
         return []
     snapshots = qmt_process_snapshots_for_request(body=body, row=row)
     running = [item for item in snapshots if item.get("running")]
+    if running and parse_config_bool(body.get("auto_close_qmt"), False):
+        stop_result = stop_qmt_processes_for_request({
+            "targets": [{"qmt_dir": item.get("qmt_dir") or item.get("bin_dir")} for item in running]
+        })
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            snapshots = qmt_process_snapshots_for_request(body=body, row=row)
+            running = [item for item in snapshots if item.get("running")]
+            if not running:
+                return snapshots
+            time.sleep(0.25)
     if running:
         details = "; ".join(
             "%s (PID %s)" % (item.get("qmt_dir") or item.get("bin_dir"), ",".join(str(pid) for pid in item.get("pids") or []))
@@ -10348,6 +10359,28 @@ def qmt_process_preflight(body=None, row=None):
         )
         raise RuntimeError("QMT is running for configured directory; close it before strategy deployment: %s" % details)
     return snapshots
+
+
+def qmt_update_preflight(body=None, rows=None):
+    """Check all QMT roots touched by an update before any file replacement."""
+    body = dict(body or {})
+    rows = list(rows or [])
+    if rows:
+        targets = []
+        for row in rows:
+            targets.append({
+                "qmt_dir": row.get("qmt_dir") or row.get("python_dir"),
+                "qmt_trade_dir": row.get("qmt_trade_dir") or row.get("trade_qmt_dir") or row.get("advanced_qmt_dir"),
+                "market_bridges": row.get("market_bridges") or row.get("market_routes"),
+            })
+        body["targets"] = targets
+        # qmt_process_snapshots_for_request accepts the flattened directory
+        # fields; use one preflight per account so market routes are included.
+        snapshots = []
+        for row in rows:
+            snapshots.extend(qmt_process_preflight(body=body, row=row))
+        return snapshots
+    return qmt_process_preflight(body=body)
 
 
 def stop_qmt_processes_for_request(body):
@@ -14712,6 +14745,9 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
 def bridge_update_github(body):
     body = body or {}
     bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    bridge = bridge_config(bridge_id)
+    check = dict(body, qmt_dir=bridge.get("python_dir"), qmt_trade_dir=bridge.get("qmt_trade_dir"))
+    qmt_process_preflight(body=check)
     repo_url = body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL
     ref = body.get("ref") or body.get("branch") or body.get("tag") or DEFAULT_UPDATE_REF
     return UPDATER.update_from_github(
@@ -14724,6 +14760,9 @@ def bridge_update_github(body):
 def bridge_update_official(body):
     body = body or {}
     bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    bridge = bridge_config(bridge_id)
+    check = dict(body, qmt_dir=bridge.get("python_dir"), qmt_trade_dir=bridge.get("qmt_trade_dir"))
+    qmt_process_preflight(body=check)
     return UPDATER.update_from_official(
         bridge_id,
         site_url=body.get("site_url") or body.get("official_site_url") or DEFAULT_OFFICIAL_SITE_URL,
@@ -14735,6 +14774,9 @@ def bridge_update_official(body):
 def bridge_update_rollback(body):
     body = body or {}
     bridge_id = normalize_bridge_id(body.get("bridge_id") or DEFAULT_BRIDGE_ID)
+    bridge = bridge_config(bridge_id)
+    check = dict(body, qmt_dir=bridge.get("python_dir"), qmt_trade_dir=bridge.get("qmt_trade_dir"))
+    qmt_process_preflight(body=check)
     return UPDATER.rollback(bridge_id, body.get("backup") or body.get("backup_name"))
 
 
@@ -14744,6 +14786,7 @@ def project_update_status(repo_url=None, ref=None, include_remote=True):
 
 def project_update_github(body):
     body = body or {}
+    qmt_update_preflight(body=body, rows=WEB_CONFIG.account_configs().values())
     repo_url = body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL
     ref = body.get("ref") or body.get("branch") or body.get("tag") or DEFAULT_UPDATE_REF
     return PROJECT_UPDATER.update_from_github(repo_url, ref)
@@ -14751,6 +14794,7 @@ def project_update_github(body):
 
 def project_update_official(body):
     body = body or {}
+    qmt_update_preflight(body=body, rows=WEB_CONFIG.account_configs().values())
     return PROJECT_UPDATER.update_from_official(
         site_url=body.get("site_url") or body.get("official_site_url") or DEFAULT_OFFICIAL_SITE_URL,
         fallback_repo_url=body.get("repo_url") or body.get("url") or DEFAULT_UPDATE_REPO_URL,
@@ -14760,6 +14804,7 @@ def project_update_official(body):
 
 def project_update_rollback(body):
     body = body or {}
+    qmt_update_preflight(body=body, rows=WEB_CONFIG.account_configs().values())
     return PROJECT_UPDATER.rollback(body.get("backup") or body.get("backup_name"))
 
 
@@ -15678,10 +15723,20 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             fields, files = self._parse_multipart(content_type, raw)
             bridge_id = normalize_bridge_id(fields.get("bridge_id") or DEFAULT_BRIDGE_ID)
+            bridge = bridge_config(bridge_id)
+            qmt_process_preflight(body={
+                "qmt_dir": bridge.get("python_dir"),
+                "qmt_trade_dir": bridge.get("qmt_trade_dir"),
+                "auto_close_qmt": fields.get("auto_close_qmt"),
+            })
             file_item = files.get("file") or files.get("zip")
             if not file_item:
                 self._write_json(fail("file is required", 400), status=400)
                 return
+            qmt_update_preflight(
+                body={"auto_close_qmt": fields.get("auto_close_qmt")},
+                rows=WEB_CONFIG.account_configs().values(),
+            )
             result = UPDATER.update_from_zip(bridge_id, file_item.get("filename") or "upload.zip", file_item.get("content") or b"")
             self._write_json(ok(result))
         except Exception as e:
