@@ -6339,6 +6339,25 @@ async function restartUpdatedQmtProcesses() {
   }
 }
 
+function startProjectUpdateOperationMonitor() {
+  const timer = window.setInterval(async () => {
+    try {
+      const data = await refreshProjectUpdateStatus({ remote: false, log: false });
+      const operation = data && data.operation ? data.operation : {};
+      const phase = String(operation.phase || '').toLowerCase();
+      const steps = {
+        preparing: ['prepare', 8], download: ['download', 22], backup: ['backup', 42],
+        install: ['install', 70], deploy: ['deploy', 84], restart: ['restart', 94],
+      };
+      const step = steps[phase];
+      if (step) setQmtUpdateProgressStep(step[0], operation.message || '正在处理完整版本更新...', step[1]);
+    } catch (error) {
+      log('完整版本更新进度查询失败', { error: error.message });
+    }
+  }, 1200);
+  return () => window.clearInterval(timer);
+}
+
 async function runProjectGithubUpdateFromUi(options = {}) {
   const repoInput = $('projectUpdateRepoInput');
   const refInput = $('projectUpdateRefInput');
@@ -6373,7 +6392,9 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   state.versionUpdateBusy = true;
   setProjectUpdateControlsBusy(true);
   renderProjectVersion(state.versionInfo);
+  let stopOperationMonitor = null;
   try {
+    stopOperationMonitor = startProjectUpdateOperationMonitor();
     setQmtUpdateProgressStep('download', '正在连接官网并下载完整版本包...');
     const data = await api('/api/project-updates/official', {
       method: 'POST',
@@ -6388,12 +6409,14 @@ async function runProjectGithubUpdateFromUi(options = {}) {
       qmt_core_deploy: data.qmt_core_deploy || null,
       source: options.source || 'settings',
     });
+    stopOperationMonitor();
     if (data.reload) {
       await handleProjectReload(data.reload, '版本已更新，正在重启本地服务', data);
     } else {
       finishQmtUpdateProgress(data, projectReloadProgressText(data, '版本更新完成'));
     }
   } catch (error) {
+    if (typeof stopOperationMonitor === 'function') stopOperationMonitor();
     failQmtUpdateProgress(error);
     await refreshProjectUpdateStatusQuietly();
     throw error;
