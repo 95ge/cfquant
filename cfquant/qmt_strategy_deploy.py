@@ -329,8 +329,15 @@ class QmtStrategyManager:
         _write_json(self.path, {"version": 1, "jobs": self.jobs, "errors": self.errors})
 
     def report_error(self, account_key, error):
+        detail = str(error or "策略部署失败").strip() or "策略部署失败"
         with self.lock:
-            self.errors[account_key] = str(error)
+            self.errors[account_key] = detail
+            # Keep the concrete exception on each affected job as well. The
+            # status endpoint previously returned only the generic state
+            # label, which made the Web UI hide the deployment root cause.
+            for job in self.jobs.values():
+                if job.get("account_key") == account_key:
+                    job.update(state="error", error=detail, message="策略部署失败: " + detail, updated_at=time.time())
             self._save()
             return self.status(account_key)
 
@@ -423,7 +430,8 @@ class QmtStrategyManager:
                     "targets": [dict({k: job.get(k, "") for k in fields},
                                      strategies=[r["name"] for r in job.get("roles", [])]) for job in jobs]}
             if account_key in self.errors:
-                result.update(error=self.errors[account_key], message="账号已保存，策略部署失败: " + self.errors[account_key])
+                detail = str(self.errors[account_key] or "策略部署失败")
+                result.update(error=detail, message="账号已保存，策略部署失败: " + detail)
             if self.load_error:
                 result.update(error=self.load_error, message=self.load_error)
             return result
