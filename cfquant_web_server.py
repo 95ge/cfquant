@@ -7310,8 +7310,8 @@ def qmt_restart_required_info(reason="", entry_info=None):
         "required": True,
         "reason": reason or "QMT 核心包已更新",
         "message": (
-            "更新已写入文件系统，但 QMT 中正在运行的桥接脚本不会自动加载新代码；"
-            "请完全退出并重启对应的 QMT 客户端，然后重新运行 cfquant 入口脚本加载新版本。"
+            "更新已写入文件系统，系统已检查并启动对应 QMT；请登录 QMT，"
+            "如果已经登录可以忽略此提示。"
         ),
         "entry_manual_update": entry_info,
     }
@@ -16417,6 +16417,7 @@ def spawn_reloaded_web_server(reload_request):
     if use_restart_script:
         env["CFQUANT_RESTART_NO_PAUSE"] = "1"
         env["CFQUANT_START_NO_PAUSE"] = "1"
+        env["CFQUANT_RESTART_RESTART_LTTX"] = "1"
     creationflags = 0
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)

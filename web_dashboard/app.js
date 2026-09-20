@@ -77,6 +77,9 @@ const state = {
   qmtUpdateProgress: null,
   qmtUpdateProgressTimer: null,
   updateRestartNotice: null,
+  updateConfirmResolver: null,
+  updateRestartNoticeTimer: null,
+  updateRestartNoticeDeadline: 0,
   versionInfo: null,
   systemInfo: null,
   versionCheckInFlight: false,
@@ -5645,7 +5648,7 @@ function syncUpdateResultDetails(box, payload) {
 function renderUpdateResult(payload) {
   const box = $('updateResultBox');
   if (!box) return;
-  renderUpdateNotice('updateNoticeBox', payload, { forceQmtRestart: true });
+  renderUpdateNotice('updateNoticeBox', payload, { forceQmtRestart: true, autoQmtManaged: true });
   box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
   syncUpdateResultDetails(box, payload);
 }
@@ -5653,7 +5656,7 @@ function renderUpdateResult(payload) {
 function renderProjectUpdateResult(payload) {
   const box = $('projectUpdateResultBox');
   if (!box) return;
-  renderUpdateNotice('projectUpdateNoticeBox', payload, { forceQmtRestart: true });
+  renderUpdateNotice('projectUpdateNoticeBox', payload, { forceQmtRestart: true, autoQmtManaged: true });
   box.textContent = payload ? JSON.stringify(payload, null, 2) : '';
   syncUpdateResultDetails(box, payload);
 }
@@ -5668,7 +5671,7 @@ function buildUpdateNoticeLines(payload, options = {}) {
   const backup = payload.backup || null;
   const rollbackBackup = payload.rollback_backup || null;
   const restartRequired = !!restart.required || !!options.forceQmtRestart;
-  const entryRequired = !!entry.required;
+  const entryRequired = !!entry.required && !options.autoQmtManaged;
   if (!restartRequired && !entryRequired && !backup && !rollbackBackup) return [];
   const lines = [];
   if (backup) {
@@ -5704,8 +5707,8 @@ function buildUpdateNoticeLines(payload, options = {}) {
   }
   if (restartRequired) {
     lines.push({
-      strong: '请重启 QMT',
-      text: restart.message || '更新完成后，请完全退出并重启对应的 QMT 客户端，再运行入口脚本加载新版本。',
+      strong: '请登录 QMT',
+      text: '新程序已启动，请登录对应的 QMT；如果已经登录可以忽略此提示。',
     });
   }
   if (entryRequired) {
@@ -5735,7 +5738,7 @@ function buildUpdateNoticeModel(payload, options = {}) {
   const version = payload.current_version || payload.version || '';
   const targetDir = payload.python_dir || payload.target_dir || '';
   const restartRequired = !!restart.required || !!options.forceQmtRestart;
-  const entryRequired = !!entry.required;
+  const entryRequired = !!entry.required && !options.autoQmtManaged;
   const backupOnly = !restartRequired && !entryRequired;
   const modeFiles = entry.mode_files && typeof entry.mode_files === 'object' ? entry.mode_files : {};
   const steps = backupOnly
@@ -5748,17 +5751,17 @@ function buildUpdateNoticeModel(payload, options = {}) {
       '回到网页刷新状态，确认通道在线。',
     ]
     : [
-      '保存当前工作并完全退出对应的 QMT 客户端。',
-      '重新启动 QMT，再运行 cfquant 入口脚本加载最新核心包。',
+      '新程序启动后，请登录对应的 QMT。',
+      '如果 QMT 已经登录，可以忽略登录提示。',
       '回到网页刷新状态，确认通道在线。',
     ];
   return {
-    title: backupOnly ? '版本回退点已创建' : (entryRequired ? 'QMT 入口文件需要手动更新' : '更新完成，请重启 QMT'),
+    title: backupOnly ? '版本回退点已创建' : (entryRequired ? 'QMT 入口文件需要手动更新' : '更新完成，请登录 QMT'),
     subtitle: backupOnly
       ? '当前项目版本已经保存，可在更新管理中选择该回退点恢复。'
       : entryRequired
       ? '本次更新涉及 QMT 入口脚本。由于入口文件通常是加密文件，需要手动替换后再启动。'
-      : '完整版本和绑定目录中的核心文件已经更新；QMT 运行中的进程不会自动加载新代码。',
+      : '新程序和绑定目录中的核心文件已经更新，QMT 已完成启动检查；请登录 QMT，已登录可忽略。',
     lines,
     steps,
     version,
@@ -5829,6 +5832,10 @@ function renderUpdateRestartNoticeModal() {
   if (title) title.textContent = model.title;
   if (summary) summary.textContent = model.subtitle;
   if (body) body.innerHTML = renderUpdateNoticeCard(model);
+  const countdown = $('updateRestartNoticeCountdown');
+  if (countdown && state.updateRestartNoticeDeadline) {
+    countdown.textContent = `此提示将在 ${Math.max(0, Math.ceil((state.updateRestartNoticeDeadline - Date.now()) / 1000))} 秒后自动关闭`;
+  }
 }
 
 function openUpdateRestartNotice(payload, options = {}) {
@@ -5838,6 +5845,13 @@ function openUpdateRestartNotice(payload, options = {}) {
   if (state.updateRestartNotice && state.updateRestartNotice.key === key) return true;
   model.key = key;
   state.updateRestartNotice = model;
+  if (state.updateRestartNoticeTimer) window.clearInterval(state.updateRestartNoticeTimer);
+  state.updateRestartNoticeDeadline = Date.now() + 60000;
+  state.updateRestartNoticeTimer = window.setInterval(() => {
+    if (!state.updateRestartNotice) return;
+    renderUpdateRestartNoticeModal();
+    if (Date.now() >= state.updateRestartNoticeDeadline) closeUpdateRestartNotice();
+  }, 1000);
   renderUpdateRestartNoticeModal();
   const closeBtn = $('updateRestartNoticeCloseBottomBtn') || $('updateRestartNoticeCloseBtn');
   if (closeBtn) window.setTimeout(() => closeBtn.focus(), 0);
@@ -5845,6 +5859,9 @@ function openUpdateRestartNotice(payload, options = {}) {
 }
 
 function closeUpdateRestartNotice() {
+  if (state.updateRestartNoticeTimer) window.clearInterval(state.updateRestartNoticeTimer);
+  state.updateRestartNoticeTimer = null;
+  state.updateRestartNoticeDeadline = 0;
   state.updateRestartNotice = null;
   renderUpdateRestartNoticeModal();
 }
@@ -5873,7 +5890,16 @@ function wireUpdateRestartNotice() {
   });
 }
 
+function wireUpdateConfirm() {
+  const overlay = $('updateConfirmOverlay');
+  if (!overlay) return;
+  $('updateConfirmAcceptBtn').addEventListener('click', () => closeUpdateConfirm(true));
+  $('updateConfirmCancelBtn').addEventListener('click', () => closeUpdateConfirm(false));
+  overlay.addEventListener('click', (event) => { if (event.target === overlay) closeUpdateConfirm(false); });
+}
+
 function alertUpdateNotice(payload, options = {}) {
+  options = { ...options, autoQmtManaged: true };
   const lines = buildUpdateNoticeLines(payload, options);
   if (!lines.length) return;
   const key = [payload && (payload.current_version || payload.version || ''), options.forceQmtRestart ? 'restart' : '', payload && payload.python_dir || ''].join('::');
@@ -6275,6 +6301,27 @@ function updateAutoCloseQmtEnabled() {
   return !!(checkbox && checkbox.checked);
 }
 
+function showUpdateConfirm(message, title = '确认更新', accept = '确认更新') {
+  const overlay = $('updateConfirmOverlay');
+  if (!overlay) return Promise.resolve(window.confirm(message));
+  $('updateConfirmTitle').textContent = title;
+  $('updateConfirmMessage').textContent = message;
+  $('updateConfirmAcceptBtn').textContent = accept;
+  overlay.classList.remove('hidden');
+  overlay.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('binding-dialog-open');
+  return new Promise((resolve) => { state.updateConfirmResolver = resolve; });
+}
+
+function closeUpdateConfirm(result) {
+  const overlay = $('updateConfirmOverlay');
+  if (overlay) { overlay.classList.add('hidden'); overlay.setAttribute('aria-hidden', 'true'); }
+  document.body.classList.remove('binding-dialog-open');
+  const resolver = state.updateConfirmResolver;
+  state.updateConfirmResolver = null;
+  if (resolver) resolver(!!result);
+}
+
 function updateQmtProcessTargets() {
   const rows = state.accountConfigs && typeof state.accountConfigs === 'object'
     ? Object.values(state.accountConfigs) : [];
@@ -6381,7 +6428,7 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   } else if (remoteInfo.error) {
     confirmText = `当前版本探测失败：${remoteInfo.error}\n仍要尝试从官网优先源更新完整版本吗？更新前会先创建完整回退点，更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本。`;
   }
-  const confirmed = window.confirm(confirmText);
+  const confirmed = await showUpdateConfirm(confirmText, '确认完整版本更新', '开始更新');
   if (!confirmed) return;
   if (!await ensureUpdateQmtStopped()) return;
   openQmtUpdateProgress(
@@ -6434,7 +6481,7 @@ async function uploadProjectZipUpdateFromUi() {
     log('未选择完整版本 zip 文件，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认使用该 zip 更新完整版本？更新前会先创建完整回退点，更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本，并在非交易时段操作。完成后需要完全退出并重启 QMT。');
+  const confirmed = await showUpdateConfirm('确认使用该 zip 更新完整版本？更新前会先创建完整回退点，更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本，并在非交易时段操作。完成后会重启 Web 和 LTtx。', '确认完整版本更新', '上传并更新');
   if (!confirmed) return;
   if (!await ensureUpdateQmtStopped()) return;
   const formData = new FormData();
@@ -6496,7 +6543,7 @@ async function rollbackProjectUpdateFromUi() {
   const selectedWarning = selected && selected.complete === false
     ? '\n该备份为旧格式，可能只能恢复备份清单中的文件。'
     : '';
-  const confirmed = window.confirm(`确认回滚完整版本到 ${selectedVersion}${selectedTime}？回滚前会先备份当前版本，回滚期间网页新委托会暂时锁定；回滚后的 cfquant 核心也会同步到所有已绑定 QMT 目录，完成后需要重启 QMT。${selectedWarning}`);
+  const confirmed = await showUpdateConfirm(`确认回滚完整版本到 ${selectedVersion}${selectedTime}？回滚前会先备份当前版本，回滚期间网页新委托会暂时锁定，完成后会重启 Web 和 LTtx。${selectedWarning}`, '确认版本回滚', '开始回滚');
   if (!confirmed) return;
   if (!await ensureUpdateQmtStopped()) return;
   openQmtUpdateProgress(
@@ -6643,7 +6690,7 @@ async function runGithubUpdateFromUi() {
     log('官网和 GitHub 回退源均不可用，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认从官网优先源更新当前账号 QMT 目录中的核心代码？官网不可用时会回退 GitHub，更新完成后需要重启 QMT 桥接脚本。');
+  const confirmed = await showUpdateConfirm('确认从官网优先源更新当前账号 QMT 目录中的核心代码？官网不可用时会回退 GitHub，更新完成后会检查并启动 QMT。', '确认 QMT 核心更新', '开始更新');
   if (!confirmed) return;
   if (!await ensureUpdateQmtStopped()) return;
   openQmtUpdateProgress(
@@ -6684,7 +6731,7 @@ async function uploadZipUpdateFromUi() {
     log('未选择 zip 文件，无法更新');
     return;
   }
-  const confirmed = window.confirm('确认上传 zip 并更新当前账号 QMT 目录中的核心代码？更新完成后需要重启 QMT 桥接脚本。');
+  const confirmed = await showUpdateConfirm('确认上传 zip 并更新当前账号 QMT 目录中的核心代码？更新完成后会检查并启动 QMT。', '确认 QMT 核心更新', '上传并更新');
   if (!confirmed) return;
   if (!await ensureUpdateQmtStopped()) return;
   const formData = new FormData();
@@ -6729,7 +6776,7 @@ async function rollbackUpdateFromUi() {
     log('没有可回滚的备份');
     return;
   }
-  const confirmed = window.confirm(`确认回滚到备份 ${backup}？回滚完成后需要重启 QMT 桥接脚本。`);
+  const confirmed = await showUpdateConfirm(`确认回滚到备份 ${backup}？回滚完成后会检查并启动 QMT。`, '确认 QMT 核心回滚', '开始回滚');
   if (!confirmed) return;
   openQmtUpdateProgress(
     'rollback',
@@ -13358,6 +13405,7 @@ async function boot() {
   wireImageLightbox();
   wireVersionBadge();
   wireUpdateRestartNotice();
+  wireUpdateConfirm();
   renderCallbacks();
   renderProjectVersion(null);
   setDataTab(localStorage.getItem('cfquant.trade_tab') || 'positions', false);

@@ -17,7 +17,11 @@ if defined CFQUANT_START_WEB_PORT set "WEB_PORT=%CFQUANT_START_WEB_PORT%"
 
 echo Restarting cfquant local services, keeping LTtx running...
 set "CFQUANT_STOP_NO_PAUSE=1"
-call "%~dp0stop_cfquant.bat" --keep-lttx
+if defined CFQUANT_RESTART_RESTART_LTTX (
+    call "%~dp0stop_cfquant.bat"
+) else (
+    call "%~dp0stop_cfquant.bat" --keep-lttx
+)
 set "STOP_CODE=0"
 if errorlevel 1 set "STOP_CODE=1"
 if not "%STOP_CODE%"=="0" (
