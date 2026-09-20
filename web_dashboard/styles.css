@@ -6963,10 +6963,10 @@ tr.order-row-updated td {
   z-index: 2110;
   display: grid;
   gap: 12px;
-  width: min(960px, calc(100vw - 32px));
-  max-height: calc(100vh - 32px);
+  width: min(1180px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
   margin: 0;
-  padding: 16px;
+  padding: 22px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -7158,7 +7158,7 @@ tr.order-row-updated td {
 .onboarding-panel {
   display: none;
   gap: 12px;
-  padding: 14px;
+  padding: 18px;
   border: 1px solid #dce3ea;
   border-radius: 6px;
   background: #fff;
@@ -7783,7 +7783,7 @@ tr.order-row-updated td {
 .onboarding-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
 }
 
 .onboarding-grid .wide {
