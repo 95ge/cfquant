@@ -6316,7 +6316,9 @@ async function ensureUpdateQmtStopped() {
 }
 
 async function restartUpdatedQmtProcesses() {
-  const targets = state.updateQmtRestartTargets || [];
+  const targets = (state.updateQmtRestartTargets && state.updateQmtRestartTargets.length)
+    ? state.updateQmtRestartTargets
+    : updateQmtProcessTargets().map((item) => ({ label: item.label || 'QMT', qmt_dir: item.path }));
   state.updateQmtRestartTargets = [];
   if (!targets.length) return null;
   setQmtUpdateProgressStep('restart', 'Web 服务已恢复，正在检查并重新启动已绑定 QMT...', 97);
