@@ -92,7 +92,8 @@ if not errorlevel 1 (
     exit /b 1
 )
 
-start "cfquant Web" /min cmd /d /s /c ""%PYTHON_EXE%" "%~dp0cfquant_web_server.py" --port %WEB_PORT% 1>>"%WEB_STDOUT%" 2>>"%WEB_STDERR%""
+rem /b keeps the service detached without creating a visible console window.
+start "cfquant Web" /b cmd /d /s /c ""%PYTHON_EXE%" "%~dp0cfquant_web_server.py" --port %WEB_PORT% 1>>"%WEB_STDOUT%" 2>>"%WEB_STDERR%""
 
 call :wait_for_cfquant_web %WEB_PORT% %CFQUANT_START_WAIT_SECONDS%
 if errorlevel 1 (

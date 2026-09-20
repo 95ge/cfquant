@@ -16345,6 +16345,7 @@ def spawn_reloaded_web_server(reload_request):
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+        creationflags |= getattr(subprocess, "CREATE_NO_WINDOW", 0)
     popen_kwargs = {"close_fds": False if os.name == "nt" else True, "env": env}
     if os.name == "nt":
         popen_kwargs["creationflags"] = creationflags
