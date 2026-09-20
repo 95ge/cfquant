@@ -12332,7 +12332,10 @@ async function saveOnboardingConfig(event) {
       if (route.qmt_dir) processTargets.push({ label: `${market} QMT`, path: route.qmt_dir });
     }
   }
-  if (values.qmt_strategy && values.qmt_strategy.enabled && processTargets.length) {
+  // The backend also protects configuration writes when QMT is running even
+  // if managed strategy import is disabled, so always run the same interactive
+  // preflight whenever the user supplied a QMT target.
+  if (processTargets.length) {
     if (!await ensureBindingQmtStopped(processTargets)) return;
   }
   setOnboardingStatus('onboardingConfigStatus', '正在保存账号配置...', 'busy');
