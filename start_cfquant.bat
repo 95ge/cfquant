@@ -10,7 +10,7 @@ set "START_LOG=%LOG_DIR%\cfquant_startup.log"
 
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>nul
 set "WEB_LOG_RUN_ID="
-for /f "usebackq delims=" %%T in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyyMMdd_HHmmss_ffff'"`) do set "WEB_LOG_RUN_ID=%%T"
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyyMMdd_HHmmss_ffff'"`) do set "WEB_LOG_RUN_ID=%%T"
 if not defined WEB_LOG_RUN_ID set "WEB_LOG_RUN_ID=%RANDOM%"
 set "WEB_LOG_RUN_ID=%WEB_LOG_RUN_ID%_%RANDOM%"
 set "WEB_STDOUT=%LOG_DIR%\cfquant_web_server.%WEB_LOG_RUN_ID%.stdout.log"
@@ -20,7 +20,7 @@ call :log "start_cfquant.bat invoked"
 set "PYTHON_EXE=python"
 if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 set "CFQUANT_START_ROOT=%~dp0"
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$root=$env:CFQUANT_START_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.python_executable) { Write-Output ([string]$c.python_executable) }; break } catch {} } }"`) do set "CFQUANT_CONFIG_PYTHON=%%P"
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$root=$env:CFQUANT_START_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.python_executable) { Write-Output ([string]$c.python_executable) }; break } catch {} } }"`) do set "CFQUANT_CONFIG_PYTHON=%%P"
 if defined CFQUANT_CONFIG_PYTHON if exist "%CFQUANT_CONFIG_PYTHON%" set "PYTHON_EXE=%CFQUANT_CONFIG_PYTHON%"
 set "CFQUANT_CONFIG_PYTHON="
 if not exist "%~dp0cfquant_web_server.py" (
@@ -54,7 +54,7 @@ if errorlevel 1 (
 
 set "WEB_PORT=8765"
 set "CFQUANT_START_ROOT=%~dp0"
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$p=8765; $root=$env:CFQUANT_START_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.web_port) { $p=[int]$c.web_port } elseif ($c.web_server -and $c.web_server.port) { $p=[int]$c.web_server.port }; break } catch {} } }; Write-Output $p"`) do set "WEB_PORT=%%P"
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$p=8765; $root=$env:CFQUANT_START_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.web_port) { $p=[int]$c.web_port } elseif ($c.web_server -and $c.web_server.port) { $p=[int]$c.web_server.port }; break } catch {} } }; Write-Output $p"`) do set "WEB_PORT=%%P"
 set "CFQUANT_START_ROOT="
 if not defined WEB_PORT set "WEB_PORT=8765"
 if defined CFQUANT_WEB_PORT set "WEB_PORT=%CFQUANT_WEB_PORT%"
@@ -156,7 +156,7 @@ exit /b 0
 
 :is_port_open
 set "CFQUANT_START_PORT=%~1"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close(); exit 0 }; $client.Close(); exit 1 } catch { exit 1 }"
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close(); exit 0 }; $client.Close(); exit 1 } catch { exit 1 }"
 set "PORT_RESULT=0"
 if errorlevel 1 set "PORT_RESULT=1"
 set "CFQUANT_START_PORT="
@@ -165,7 +165,7 @@ exit /b %PORT_RESULT%
 :wait_for_cfquant_web
 set "CFQUANT_START_PORT=%~1"
 set "CFQUANT_START_WAIT=%~2"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; $wait=[int]$env:CFQUANT_START_WAIT; $deadline=(Get-Date).AddSeconds($wait); $url='http://127.0.0.1:' + $port + '/api/health'; while ((Get-Date) -lt $deadline) { try { $req=[Net.WebRequest]::Create($url); $req.Method='GET'; $req.Timeout=1000; $req.ReadWriteTimeout=1000; $req.UserAgent='cfquant-start'; $res=$req.GetResponse(); try { if ([int]$res.StatusCode -eq 200) { $reader=[IO.StreamReader]::new($res.GetResponseStream(), [Text.Encoding]::UTF8); $content=$reader.ReadToEnd(); $reader.Close(); $payload=$content | ConvertFrom-Json; if ($payload.ok -eq $true -and $payload.data.status -eq 'ok') { exit 0 } } } finally { $res.Close() } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; $wait=[int]$env:CFQUANT_START_WAIT; $deadline=(Get-Date).AddSeconds($wait); $url='http://127.0.0.1:' + $port + '/api/health'; while ((Get-Date) -lt $deadline) { try { $req=[Net.WebRequest]::Create($url); $req.Method='GET'; $req.Timeout=1000; $req.ReadWriteTimeout=1000; $req.UserAgent='cfquant-start'; $res=$req.GetResponse(); try { if ([int]$res.StatusCode -eq 200) { $reader=[IO.StreamReader]::new($res.GetResponseStream(), [Text.Encoding]::UTF8); $content=$reader.ReadToEnd(); $reader.Close(); $payload=$content | ConvertFrom-Json; if ($payload.ok -eq $true -and $payload.data.status -eq 'ok') { exit 0 } } } finally { $res.Close() } } catch {}; Start-Sleep -Milliseconds 500 }; exit 1"
 set "WAIT_RESULT=0"
 if errorlevel 1 set "WAIT_RESULT=1"
 set "CFQUANT_START_PORT="
@@ -174,17 +174,17 @@ exit /b %WAIT_RESULT%
 
 :show_port_owner
 set "CFQUANT_START_PORT=%WEB_PORT%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; try { $rows=Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; foreach ($row in $rows) { $pidValue=$row.OwningProcess; $name='unknown'; try { $name=(Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}; Write-Output ('Port owner PID={0} Process={1}' -f $pidValue,$name) } } catch {}"
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_START_PORT; try { $rows=Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue; foreach ($row in $rows) { $pidValue=$row.OwningProcess; $name='unknown'; try { $name=(Get-Process -Id $pidValue -ErrorAction Stop).ProcessName } catch {}; Write-Output ('Port owner PID={0} Process={1}' -f $pidValue,$name) } } catch {}"
 set "CFQUANT_START_PORT="
 exit /b 0
 
 :show_logs
 echo.
 echo ===== startup log =====
-if exist "%START_LOG%" powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath $env:START_LOG -Tail 40 -ErrorAction SilentlyContinue"
+if exist "%START_LOG%" powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath $env:START_LOG -Tail 40 -ErrorAction SilentlyContinue"
 echo.
 echo ===== stderr log =====
-if exist "%WEB_STDERR%" powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath $env:WEB_STDERR -Tail 80 -ErrorAction SilentlyContinue"
+if exist "%WEB_STDERR%" powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Get-Content -LiteralPath $env:WEB_STDERR -Tail 80 -ErrorAction SilentlyContinue"
 echo.
 exit /b 0
 
@@ -197,8 +197,9 @@ exit /b 0
 
 :log
 set "CFQUANT_LOG_TS="
-for /f "usebackq delims=" %%T in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'"`) do set "CFQUANT_LOG_TS=%%T"
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'"`) do set "CFQUANT_LOG_TS=%%T"
 if not defined CFQUANT_LOG_TS set "CFQUANT_LOG_TS=%time%"
 >>"%START_LOG%" echo [%CFQUANT_LOG_TS%] %~1
 set "CFQUANT_LOG_TS="
 exit /b 0
+

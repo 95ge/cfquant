@@ -11,6 +11,21 @@ from pathlib import Path
 
 
 PACKAGE_NAME = "cfquant"
+
+
+def _hidden_subprocess_kwargs():
+    """Prevent pip/version helper processes from flashing console windows on Windows."""
+    if os.name != "nt":
+        return {}
+    kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+    try:
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+        startupinfo.wShowWindow = getattr(subprocess, "SW_HIDE", 0)
+        kwargs["startupinfo"] = startupinfo
+    except Exception:
+        pass
+    return kwargs
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
 PIP_INDEX_URL_ENV = "CFQUANT_PIP_INDEX_URL"
 INSTALLED_CHECK_CODE = (
@@ -122,6 +137,7 @@ def _run_pip_command(
         "errors": "replace",
         "timeout": float(timeout),
     }
+    kwargs.update(_hidden_subprocess_kwargs())
     if subprocess_kwargs:
         kwargs.update(dict(subprocess_kwargs))
     try:
@@ -326,6 +342,7 @@ def run_editable_install(
         "errors": "replace",
         "timeout": float(timeout),
     }
+    kwargs.update(_hidden_subprocess_kwargs())
     if subprocess_kwargs:
         kwargs.update(dict(subprocess_kwargs))
     try:
@@ -436,6 +453,7 @@ def run(args, cwd, quiet=False, clear_pythonpath=False):
              else python_environment(clear_pythonpath=clear_pythonpath)),
         stdout=stdout,
         stderr=stderr,
+        **_hidden_subprocess_kwargs(),
     )
 
 
@@ -468,6 +486,7 @@ def installed_package_version(python_exe=None):
         env=python_environment(clear_pythonpath=True),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", timeout=30,
+        **_hidden_subprocess_kwargs(),
     )
     return completed.stdout.strip() if completed.returncode == 0 else ""
 
