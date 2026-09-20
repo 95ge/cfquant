@@ -6273,6 +6273,43 @@ function updateAutoCloseQmtEnabled() {
   return !!(checkbox && checkbox.checked);
 }
 
+function updateQmtProcessTargets() {
+  const rows = state.accountConfigs && typeof state.accountConfigs === 'object'
+    ? Object.values(state.accountConfigs) : [];
+  const targets = [];
+  const seen = new Set();
+  rows.forEach((row) => {
+    if (!row || row.enabled === false) return;
+    const values = [
+      ['QMT', row.qmt_dir || row.python_dir],
+      ['交易端 QMT', row.qmt_trade_dir || row.trade_qmt_dir || row.advanced_qmt_dir],
+    ];
+    const bridges = row.market_bridges && typeof row.market_bridges === 'object'
+      ? Object.entries(row.market_bridges) : [];
+    bridges.forEach(([market, route]) => {
+      if (route && route.enabled !== false) values.push([`${market} QMT`, route.qmt_dir || route.python_dir]);
+    });
+    values.forEach(([label, value]) => {
+      const path = qmtDeploymentPath(value || '');
+      const key = path.toLowerCase();
+      if (path && !seen.has(key)) { seen.add(key); targets.push({ label, path }); }
+    });
+  });
+  return targets;
+}
+
+async function ensureUpdateQmtStopped() {
+  const targets = updateQmtProcessTargets();
+  if (!targets.length) return true;
+  const results = await checkBindingQmtProcesses(targets);
+  if (!results.some((item) => item.running)) return true;
+  const stopped = await showBindingQmtProcessPrompt(results, { purpose: 'update' });
+  // Updating must leave QMT stopped so its files and imported strategies can
+  // be replaced safely; do not carry binding's auto-restart state into update.
+  state.bindingQmtRestartTargets = [];
+  return !!stopped;
+}
+
 async function runProjectGithubUpdateFromUi(options = {}) {
   const repoInput = $('projectUpdateRepoInput');
   const refInput = $('projectUpdateRefInput');
@@ -6298,6 +6335,7 @@ async function runProjectGithubUpdateFromUi(options = {}) {
   }
   const confirmed = window.confirm(confirmText);
   if (!confirmed) return;
+  if (!await ensureUpdateQmtStopped()) return;
   openQmtUpdateProgress(
     'project-official',
     '完整版本更新',
@@ -6346,6 +6384,7 @@ async function uploadProjectZipUpdateFromUi() {
   }
   const confirmed = window.confirm('确认使用该 zip 更新完整版本？更新前会先创建完整回退点，更新期间网页新委托会暂时锁定；请先停止 QMT 入口脚本，并在非交易时段操作。完成后需要完全退出并重启 QMT。');
   if (!confirmed) return;
+  if (!await ensureUpdateQmtStopped()) return;
   const formData = new FormData();
   formData.append('reload', '1');
   formData.append('auto_close_qmt', updateAutoCloseQmtEnabled() ? '1' : '0');
@@ -6407,6 +6446,7 @@ async function rollbackProjectUpdateFromUi() {
     : '';
   const confirmed = window.confirm(`确认回滚完整版本到 ${selectedVersion}${selectedTime}？回滚前会先备份当前版本，回滚期间网页新委托会暂时锁定；回滚后的 cfquant 核心也会同步到所有已绑定 QMT 目录，完成后需要重启 QMT。${selectedWarning}`);
   if (!confirmed) return;
+  if (!await ensureUpdateQmtStopped()) return;
   openQmtUpdateProgress(
     'project-rollback',
     '完整版本回滚',
@@ -6553,6 +6593,7 @@ async function runGithubUpdateFromUi() {
   }
   const confirmed = window.confirm('确认从官网优先源更新当前账号 QMT 目录中的核心代码？官网不可用时会回退 GitHub，更新完成后需要重启 QMT 桥接脚本。');
   if (!confirmed) return;
+  if (!await ensureUpdateQmtStopped()) return;
   openQmtUpdateProgress(
     'official',
     'QMT 核心更新',
@@ -6592,6 +6633,7 @@ async function uploadZipUpdateFromUi() {
   }
   const confirmed = window.confirm('确认上传 zip 并更新当前账号 QMT 目录中的核心代码？更新完成后需要重启 QMT 桥接脚本。');
   if (!confirmed) return;
+  if (!await ensureUpdateQmtStopped()) return;
   const formData = new FormData();
   formData.append('bridge_id', selectedBridge());
   formData.append('auto_close_qmt', updateAutoCloseQmtEnabled() ? '1' : '0');
@@ -9157,10 +9199,21 @@ function closeBindingQmtProcessPrompt(result) {
   if (resolver) resolver(result);
 }
 
-function showBindingQmtProcessPrompt(results) {
+function showBindingQmtProcessPrompt(results, options = {}) {
   const overlay = $('bindingQmtProcessOverlay');
+  const title = $('bindingQmtProcessTitle');
+  const subtitle = overlay && overlay.querySelector('.binding-dialog-head span');
+  const stopButton = $('bindingQmtProcessStopContinueBtn');
+  const cancelButton = $('bindingQmtProcessCancelBtn');
   const status = $('bindingQmtProcessPromptStatus');
   if (!overlay) return Promise.resolve(false);
+  const updating = options.purpose === 'update';
+  if (title) title.textContent = updating ? '更新前检测到 QMT 正在运行' : '检测到 QMT 正在运行';
+  if (subtitle) subtitle.textContent = updating
+    ? '完整版本更新会替换 QMT 核心和托管策略，请先关闭对应目录的 QMT。'
+    : '策略部署需要先关闭对应目录启动的 QMT。';
+  if (stopButton) stopButton.textContent = updating ? '关闭 QMT 并继续更新' : '关闭 QMT 并继续';
+  if (cancelButton) cancelButton.textContent = updating ? '取消更新' : '取消保存';
   state.bindingQmtProcessPromptResults = results || [];
   if (status) status.textContent = results.filter((item) => item.running).map((item) => `${item.label || 'QMT'}：PID ${item.pids.join(', ')}`).join('；');
   overlay.classList.remove('hidden');
