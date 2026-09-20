@@ -5697,6 +5697,27 @@ input[type="file"] {
   margin-bottom: 14px;
 }
 
+.update-progress-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 7px;
+  vertical-align: -1px;
+  border: 2px solid #d9e2ec;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: update-progress-spin .8s linear infinite;
+}
+
+.update-progress-overlay.is-done .update-progress-spinner,
+.update-progress-overlay.is-failed .update-progress-spinner {
+  display: none;
+}
+
+@keyframes update-progress-spin {
+  to { transform: rotate(360deg); }
+}
+
 .api-head > div {
   flex: 1 1 280px;
   min-width: 0;

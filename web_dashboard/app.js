@@ -5530,6 +5530,9 @@ function renderQmtUpdateProgress() {
   const overlay = $('qmtUpdateProgressOverlay');
   if (!overlay) return;
   overlay.classList.toggle('hidden', !progress);
+  overlay.classList.toggle('is-running', !!progress && progress.status === 'running');
+  overlay.classList.toggle('is-done', !!progress && progress.status === 'done');
+  overlay.classList.toggle('is-failed', !!progress && progress.status === 'error');
   overlay.setAttribute('aria-hidden', progress ? 'false' : 'true');
   if (!progress) return;
   const title = $('qmtUpdateProgressTitle');
@@ -5830,6 +5833,9 @@ function renderUpdateRestartNoticeModal() {
 function openUpdateRestartNotice(payload, options = {}) {
   const model = buildUpdateNoticeModel(payload, options);
   if (!model) return false;
+  const key = [model.version, model.title, model.targetDir, model.entryFiles.join('|')].join('::');
+  if (state.updateRestartNotice && state.updateRestartNotice.key === key) return true;
+  model.key = key;
   state.updateRestartNotice = model;
   renderUpdateRestartNoticeModal();
   const closeBtn = $('updateRestartNoticeCloseBottomBtn') || $('updateRestartNoticeCloseBtn');
@@ -5869,6 +5875,9 @@ function wireUpdateRestartNotice() {
 function alertUpdateNotice(payload, options = {}) {
   const lines = buildUpdateNoticeLines(payload, options);
   if (!lines.length) return;
+  const key = [payload && (payload.current_version || payload.version || ''), options.forceQmtRestart ? 'restart' : '', payload && payload.python_dir || ''].join('::');
+  if (state.lastUpdateNoticeKey === key) return;
+  state.lastUpdateNoticeKey = key;
   if (openUpdateRestartNotice(payload, options)) return;
   window.alert(lines.map((line) => `${line.strong}\n${line.text}`).join('\n\n'));
 }
@@ -12307,6 +12316,24 @@ async function saveOnboardingConfig(event) {
   if (!values.account_id) {
     setOnboardingStatus('onboardingConfigStatus', '请先填写资金账号。', 'error');
     return;
+  }
+  // Keep initialization consistent with the existing binding flow: QMT must be
+  // stopped before the backend writes/imports managed strategy files. The
+  // binding page already shows the process prompt; initialization previously
+  // skipped this check and submitted directly, which made deployment appear to
+  // fail without any interactive explanation.
+  const processTargets = [
+    { label: 'QMT', path: values.qmt_dir },
+    { label: '交易端 QMT', path: values.qmt_trade_dir },
+  ].filter((item) => item.path);
+  if (values.market_routing_enabled && values.market_bridges) {
+    for (const market of ['SH', 'SZ']) {
+      const route = values.market_bridges[market] || {};
+      if (route.qmt_dir) processTargets.push({ label: `${market} QMT`, path: route.qmt_dir });
+    }
+  }
+  if (values.qmt_strategy && values.qmt_strategy.enabled && processTargets.length) {
+    if (!await ensureBindingQmtStopped(processTargets)) return;
   }
   setOnboardingStatus('onboardingConfigStatus', '正在保存账号配置...', 'busy');
   try {
