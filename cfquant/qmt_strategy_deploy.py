@@ -19,6 +19,12 @@ from .qmt_strategy_package import build_package
 
 SCRIPTS = {"ctypes": "CFQUANT_CTYPE_ALL_LOWLAT.py", "lite": "CFQUANT_LITE.py",
            "lttx": "CFQUANT.py"}
+MODE_ALIASES = {
+    "ctypes": "ctypes", "pipe": "ctypes", "named_pipe": "ctypes",
+    "lite": "lite", "extreme": "lite", "extreme_lite": "lite",
+    "lite_extreme": "lite", "ultimate": "lite",
+    "lttx": "lttx", "socket": "lttx", "normal": "lttx",
+}
 LEGACY_NAMES = {Path(name).stem for name in SCRIPTS.values()} | {"CFQUANT_TRADE_LOWLAT"}
 LEGACY_NAMES |= {name + "_" + market for name in tuple(LEGACY_NAMES) for market in ("SH", "SZ")}
 STATES = {
@@ -54,6 +60,14 @@ def normalize_strategy_settings(value):
     result["account_keys"] = {role: str(keys.get(role) or "").strip()
                               for role in ("normal", "trade", "SH", "SZ")}
     return result
+
+
+def normalize_strategy_mode(value):
+    mode = str(value or "ctypes").strip().lower()
+    try:
+        return MODE_ALIASES[mode]
+    except KeyError:
+        raise ValueError("unknown QMT strategy mode: %s" % mode)
 
 
 def qmt_root(directory, validate=False):
@@ -449,6 +463,7 @@ class QmtStrategyManager:
         if self.load_error:
             raise ValueError(self.load_error)
         settings = normalize_strategy_settings(row.get("qmt_strategy"))
+        mode = normalize_strategy_mode(row.get("mode"))
         enabled = row.get("enabled", True) and settings["enabled"]
         with self.lock:
             wanted = set()
@@ -467,8 +482,8 @@ class QmtStrategyManager:
                                         "account_key": row["account_key"]}])
                     market = info.get("market") or identity.get("market") or ""
                     role = market or info.get("qmt_role") or "normal"
-                    filename = SCRIPTS[row["mode"]]
-                    if row["mode"] == "lttx" and role != "normal":
+                    filename = SCRIPTS[mode]
+                    if mode == "lttx" and role != "normal":
                         filename = "CFQUANT_TRADE_LOWLAT.py"
                     source_path = self.scripts_dir / filename
                     if market:
@@ -490,7 +505,7 @@ class QmtStrategyManager:
                 source_group = copy.deepcopy(group)
                 for role in source_group["roles"]:
                     role.pop("account_key", None)
-                fingerprint = _digest([source_group, row["mode"], [
+                fingerprint = _digest([source_group, mode, [
                     hashlib.sha256(Path(__file__).with_name(filename).read_bytes()).hexdigest()
                     for filename in ("qmt_strategy_runtime.py", "qmt_strategy_package.py", "qmt_strategy_deploy.py")]])
                 if previous.get("fingerprint") == fingerprint and previous.get("enabled"):
@@ -532,7 +547,7 @@ class QmtStrategyManager:
                 )
                 retired.difference_update(current_names)
                 job = dict(group, account_key=row["account_key"], account_id=row["account_id"],
-                           account_type=row["account_type"], mode=row["mode"], settings=settings,
+                           account_type=row["account_type"], mode=mode, settings=settings,
                            enabled=True, generation=generation, fingerprint=fingerprint,
                            control_path=str(directory / "desired.json"),
                            retired=sorted(retired))

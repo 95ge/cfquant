@@ -213,7 +213,7 @@ def current_core_version_info():
     # Project/web/core are released as one unified version.  The imported
     # package can remain stale in an editable install after a file update, so
     # it must never override the project's declared version in the UI.
-    version = WEB_VERSION or file_version or CORE_VERSION
+    version = file_version or CORE_VERSION
     source = "cfquant/version.py" if file_version else "imported cfquant.version"
     checked_at = time.time()
     return {
@@ -14623,6 +14623,17 @@ def _compare_project_versions(current_version, remote_version):
             return "newer"
         if remote_key < current_key:
             return "older"
+    semantic = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
+    current_match = semantic.match(current)
+    remote_match = semantic.match(remote)
+    if current_match and remote_match:
+        current_key = tuple(int(item) for item in current_match.groups())
+        remote_key = tuple(int(item) for item in remote_match.groups())
+        if remote_key > current_key:
+            return "newer"
+        if remote_key < current_key:
+            return "older"
+        return "same"
     return "different"
 
 

@@ -13,6 +13,7 @@ import pytest
 from cfquant.qmt_strategy_deploy import (
     QmtStrategyManager, _account_binding, _atomic_write, _read_document,
     _write_json, _resolve_account_binding, account_qmt_roots, managed_source, normalize_strategy_settings,
+    normalize_strategy_mode,
 )
 from cfquant.qmt_strategy_package import _cipher, build_package
 from cfquant.qmt_strategy_runtime import _CqStrategyLease
@@ -21,6 +22,11 @@ from cfquant.qmt_strategy_runtime import _CqStrategyLease
 SCRIPTS = Path(__file__).resolve().parents[2] / "qmt_scripts"
 ACCOUNT = "1000000001"
 ACCOUNT_KEY = "3____101____201____49____%s____" % ACCOUNT
+
+
+@pytest.mark.parametrize("value, expected", [("extreme", "lite"), ("ultimate", "lite"), ("pipe", "ctypes"), ("socket", "lttx")])
+def test_strategy_mode_aliases_are_canonical(value, expected):
+    assert normalize_strategy_mode(value) == expected
 
 
 @pytest.fixture
