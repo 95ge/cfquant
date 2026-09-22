@@ -88,6 +88,8 @@ class NormalQmtBridge(TxTradeBridge):
         self.callback_asset_dedupe_lock = threading.RLock()
         self.callback_asset_fingerprints = {}
         self.callback_asset_dedupe_max = 4096
+        self.order_terminal_statuses = {}
+        self.order_terminal_statuses_lock = threading.RLock()
 
     def start(self):
         if self.running:
@@ -773,6 +775,8 @@ class NormalQmtBridge(TxTradeBridge):
             return
         if event_name == "trader:on_stock_order":
             data = self._format_trade_detail(obj, "order")
+            if not self._accept_order_callback(data):
+                return
         elif event_name == "trader:on_stock_trade":
             data = self._format_trade_detail(obj, "deal")
         else:
@@ -835,6 +839,36 @@ class NormalQmtBridge(TxTradeBridge):
             "normal bridge callback event sent event=%s account=%s channel_sent=%s clients=%s duplicate=%s"
             % (event_name, account_id or "-", not channel_duplicate, sent_clients, channel_duplicate and sent_clients == 0)
         )
+
+    def _accept_order_callback(self, data):
+        """Filter a stale partial-fill update emitted after a filled update."""
+        try:
+            status = int(data.get("order_status"))
+        except (TypeError, ValueError):
+            return True
+        partial = 55
+        succeeded = 56
+        if status not in (partial, succeeded):
+            return True
+        order_id = ""
+        for name in ("order_sysid", "order_id", "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID"):
+            value = data.get(name)
+            if value not in (None, ""):
+                order_id = str(value).strip()
+                if order_id:
+                    break
+        if not order_id:
+            return True
+        key = (str(data.get("account_id") or ""), order_id)
+        with self.order_terminal_statuses_lock:
+            if status == partial and self.order_terminal_statuses.get(key) == succeeded:
+                self._log("drop stale partial order callback account=%s order=%s" % key)
+                return False
+            if status == succeeded:
+                self.order_terminal_statuses[key] = succeeded
+                if len(self.order_terminal_statuses) > 4096:
+                    self.order_terminal_statuses.pop(next(iter(self.order_terminal_statuses)))
+        return True
 
     def _duplicate_asset_callback(self, scope, event_name, account_id, account_type, data):
         if event_name != "trader:on_stock_asset" or not account_id:

@@ -3101,6 +3101,8 @@ class TxTradeBridge(object):
                 "status_msg": self._first_value(obj, ("m_strStatusMsg", "m_strErrorMsg", "m_strCancelInfo", "m_strStatus", "m_strOrderStatus")),
                 "strategy_name": self._get_value(obj, "m_strStrategyName"),
                 "order_remark": self._first_value(obj, ("m_strRemark", "m_strOrderRemark")),
+                "contract_no": self._first_value(obj, ("contract_no", "m_strCompactNo", "m_strContractNo", "m_strCompactID")),
+                "stock_code1": self._first_value(obj, ("stock_code1", "m_stockCode", "m_strStockCode1", "m_strUnderCode")),
                 "m_strAccountID": self._get_value(obj, "m_strAccountID"),
                 "m_strInstrumentID": self._get_value(obj, "m_strInstrumentID"),
                 "m_strExchangeID": self._get_value(obj, "m_strExchangeID"),
@@ -3158,6 +3160,8 @@ class TxTradeBridge(object):
                 "traded_id": self._first_value(obj, ("m_strTradeID", "m_strDealID", "m_nTradeID", "m_nDealID")),
                 "strategy_name": self._get_value(obj, "m_strStrategyName"),
                 "order_remark": self._first_value(obj, ("m_strRemark", "m_strOrderRemark")),
+                "contract_no": self._first_value(obj, ("contract_no", "m_strCompactNo", "m_strContractNo", "m_strCompactID")),
+                "stock_code1": self._first_value(obj, ("stock_code1", "m_stockCode", "m_strStockCode1", "m_strUnderCode")),
                 "trade_time": self._first_value(obj, (
                     "trade_time",
                     "deal_time",

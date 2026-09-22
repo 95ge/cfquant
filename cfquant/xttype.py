@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import re
+
 from . import xtconstant
 
 
@@ -144,6 +146,81 @@ def _normalize_order_id_field(data):
         text = value.strip()
         if text.isdigit():
             data["order_id"] = int(text)
+
+
+def _coerce_int(value, default=0):
+    """Normalize canonical xtquant integer fields without touching raw QMT fields."""
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else default
+    text = str(value).strip()
+    if not text:
+        return default
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return default
+    return int(number) if number.is_integer() else default
+
+
+def _coerce_float(value, default=0.0):
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_text(value, default=""):
+    if value is None:
+        return default
+    return str(value)
+
+
+def _coerce_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on", "ok", "success", "accepted"):
+        return True
+    if text in ("0", "false", "no", "off", "", "none", "null"):
+        return False
+    return default
+
+
+def _coerce_time_int(value, default=0):
+    """Convert QMT's string trade/order time to xtquant's integer form."""
+    if value is None or isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else default
+    text = str(value).strip()
+    if not text:
+        return default
+    if re.fullmatch(r"[+-]?\d+", text):
+        try:
+            return int(text)
+        except ValueError:
+            return default
+    digits = re.sub(r"\D", "", text)
+    if not digits:
+        return default
+    try:
+        return int(digits)
+    except ValueError:
+        return default
 
 
 def normalize_order_price_type(value, market=""):
@@ -423,6 +500,8 @@ class XtAsset(DictObject):
             "m_dAvailable",
             "cash",
         ), default=0.0)
+        for name in ("cash", "frozen_cash", "market_value", "total_asset", "fetch_balance"):
+            data[name] = _coerce_float(data.get(name))
         return cls(**data)
 
 
@@ -517,7 +596,79 @@ class XtOrder(DictObject):
             "m_strInstrumentName",
             "name",
         ), default="")
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["stock_code"] = _coerce_text(data.get("stock_code"))
+        data["order_id"] = _coerce_int(data.get("order_id"), -1)
+        data["order_sysid"] = _coerce_text(data.get("order_sysid"))
+        data["order_time"] = _coerce_time_int(data.get("order_time"))
+        for name in ("order_type", "order_volume", "price_type", "traded_volume", "order_status", "direction", "offset_flag"):
+            data[name] = _coerce_int(data.get(name))
+        for name in ("price", "traded_price"):
+            data[name] = _coerce_float(data.get(name))
+        for name in ("status_msg", "strategy_name", "order_remark", "secu_account", "instrument_name"):
+            data[name] = _coerce_text(data.get(name))
         return cls(**data)
+
+
+class XtCreditOrder(XtOrder):
+    """MiniQMT credit-account order structure."""
+
+    @classmethod
+    def from_any(cls, value):
+        base = XtOrder.from_any(value)
+        if not hasattr(base, "__dict__"):
+            return base
+        data = vars(base)
+        contract_no = _first_value(data, (
+            "contract_no",
+            "m_strCompactNo",
+            "m_strContractNo",
+            "m_strCompactID",
+            "compact_id",
+        ), default="")
+        stock_code1 = _first_value(data, (
+            "stock_code1",
+            "m_stockCode",
+            "m_strStockCode1",
+            "m_strUnderCode",
+        ), default=data.get("stock_code", ""))
+        return cls(
+            account_id=_coerce_text(data.get("account_id")),
+            stock_code=_coerce_text(data.get("stock_code")),
+            order_id=_coerce_int(data.get("order_id"), -1),
+            order_time=_coerce_time_int(data.get("order_time")),
+            order_type=_coerce_int(data.get("order_type")),
+            order_volume=_coerce_int(data.get("order_volume")),
+            price_type=_coerce_int(data.get("price_type")),
+            price=_coerce_float(data.get("price")),
+            traded_volume=_coerce_int(data.get("traded_volume")),
+            traded_price=_coerce_float(data.get("traded_price")),
+            order_status=_coerce_int(data.get("order_status")),
+            status_msg=_coerce_text(data.get("status_msg")),
+            order_remark=_coerce_text(data.get("order_remark")),
+            contract_no=_coerce_text(contract_no),
+            stock_code1=_coerce_text(stock_code1),
+        )
+
+    def __init__(self, account_id, stock_code, order_id, order_time, order_type,
+                 order_volume, price_type, price, traded_volume, traded_price,
+                 order_status, status_msg, order_remark, contract_no, stock_code1):
+        self.account_type = xtconstant.CREDIT_ACCOUNT
+        self.account_id = account_id
+        self.stock_code = stock_code
+        self.order_id = order_id
+        self.order_time = order_time
+        self.order_type = order_type
+        self.order_volume = order_volume
+        self.price_type = price_type
+        self.price = price
+        self.traded_volume = traded_volume
+        self.traded_price = traded_price
+        self.order_status = order_status
+        self.status_msg = status_msg
+        self.order_remark = order_remark
+        self.contract_no = contract_no
+        self.stock_code1 = stock_code1
 
 
 class XtTrade(DictObject):
@@ -608,7 +759,70 @@ class XtTrade(DictObject):
             "m_strInstrumentName",
             "name",
         ), default="")
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["stock_code"] = _coerce_text(data.get("stock_code"))
+        data["order_type"] = _coerce_int(data.get("order_type"))
+        data["traded_id"] = _coerce_text(data.get("traded_id"))
+        data["traded_time"] = _coerce_time_int(data.get("traded_time"))
+        for name in ("traded_volume",):
+            data[name] = _coerce_int(data.get(name))
+        for name in ("traded_price", "traded_amount", "commission"):
+            data[name] = _coerce_float(data.get(name))
+        data["order_id"] = _coerce_int(data.get("order_id"), -1)
+        data["order_sysid"] = _coerce_text(data.get("order_sysid"))
+        for name in ("direction", "offset_flag"):
+            data[name] = _coerce_int(data.get(name))
+        for name in ("strategy_name", "order_remark", "secu_account", "instrument_name"):
+            data[name] = _coerce_text(data.get(name))
         return cls(**data)
+
+
+class XtCreditDeal(DictObject):
+    """MiniQMT credit-account trade structure."""
+
+    @classmethod
+    def from_any(cls, value):
+        base = XtTrade.from_any(value)
+        if not hasattr(base, "__dict__"):
+            return base
+        data = vars(base)
+        contract_no = _first_value(data, (
+            "contract_no",
+            "m_strCompactNo",
+            "m_strContractNo",
+            "m_strCompactID",
+            "compact_id",
+        ), default="")
+        stock_code1 = _first_value(data, (
+            "stock_code1",
+            "m_stockCode",
+            "m_strStockCode1",
+            "m_strUnderCode",
+        ), default=data.get("stock_code", ""))
+        return cls(
+            account_id=_coerce_text(data.get("account_id")),
+            stock_code=_coerce_text(data.get("stock_code")),
+            traded_id=_coerce_text(data.get("traded_id")),
+            traded_time=_coerce_time_int(data.get("traded_time")),
+            traded_price=_coerce_float(data.get("traded_price")),
+            traded_volume=_coerce_int(data.get("traded_volume")),
+            order_id=_coerce_int(data.get("order_id"), -1),
+            contract_no=_coerce_text(contract_no),
+            stock_code1=_coerce_text(stock_code1),
+        )
+
+    def __init__(self, account_id, stock_code, traded_id, traded_time,
+                 traded_price, traded_volume, order_id, contract_no, stock_code1):
+        self.account_type = xtconstant.CREDIT_ACCOUNT
+        self.account_id = account_id
+        self.stock_code = stock_code
+        self.traded_id = traded_id
+        self.traded_time = traded_time
+        self.traded_price = traded_price
+        self.traded_volume = traded_volume
+        self.order_id = order_id
+        self.contract_no = contract_no
+        self.stock_code1 = stock_code1
 
 
 class XtPosition(DictObject):
@@ -686,6 +900,14 @@ class XtPosition(DictObject):
             "m_strInstrumentName",
             "name",
         ), default="")
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["stock_code"] = _coerce_text(data.get("stock_code"))
+        for name in ("volume", "can_use_volume", "frozen_volume", "on_road_volume", "yesterday_volume", "direction"):
+            data[name] = _coerce_int(data.get(name))
+        for name in ("open_price", "market_value", "avg_price", "last_price", "profit_rate"):
+            data[name] = _coerce_float(data.get(name))
+        for name in ("secu_account", "stock_holder", "branch_id", "branch_name", "instrument_name"):
+            data[name] = _coerce_text(data.get(name))
         return cls(**data)
 
 
@@ -908,6 +1130,11 @@ class XtOrderError(DictObject):
         _normalize_order_id_field(data)
         if data.get("order_id") in (0, "0", -1, "-1"):
             data["order_id"] = -1
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["order_id"] = _coerce_int(data.get("order_id"), -1)
+        data["error_id"] = _coerce_int(data.get("error_id"), None)
+        for name in ("error_msg", "strategy_name", "order_remark"):
+            data[name] = _coerce_text(data.get(name))
         return cls(**data)
 
 
@@ -934,6 +1161,17 @@ class XtCancelError(DictObject):
         _normalize_order_id_field(data)
         if data.get("order_id") in (0, "0", -1, "-1"):
             data["order_id"] = -1
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["stock_code"] = _coerce_text(data.get("stock_code"))
+        data["order_id"] = _coerce_int(data.get("order_id"), -1)
+        market = data.get("market")
+        if isinstance(market, str) and not market.strip().lstrip("+-").isdigit():
+            market = xtconstant.MARKET_STR_TO_ENUM_MAPPING.get(_exchange_suffix(market), market)
+        data["market"] = _coerce_int(market, 0)
+        data["order_sysid"] = _coerce_text(data.get("order_sysid"))
+        data["error_id"] = _coerce_int(data.get("error_id"), None)
+        for name in ("error_msg", "strategy_name", "order_remark"):
+            data[name] = _coerce_text(data.get(name))
         return cls(**data)
 
 
@@ -955,6 +1193,11 @@ class XtOrderResponse(DictObject):
         _set_first(data, "order_remark", ("m_strRemark", "m_strOrderRemark"), default="")
         _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")
         _set_first(data, "seq", ("m_nSeq", "request_id"), default=None)
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["order_id"] = _coerce_int(data.get("order_id"), -1)
+        data["seq"] = _coerce_int(data.get("seq"), None)
+        for name in ("strategy_name", "order_remark", "error_msg"):
+            data[name] = _coerce_text(data.get(name))
         return cls(**data)
 
 
@@ -975,6 +1218,12 @@ class XtCancelOrderResponse(DictObject):
         _set_first(data, "order_sysid", ("m_strOrderSysID", "sysid", "m_strOrderID"), default="")
         _set_first(data, "seq", ("m_nSeq", "request_id"), default=None)
         _set_first(data, "error_msg", ("m_strErrorMsg", "message", "msg"), default="")
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["cancel_result"] = _coerce_int(data.get("cancel_result"), -1)
+        data["order_id"] = _coerce_int(data.get("order_id"), -1)
+        data["order_sysid"] = _coerce_text(data.get("order_sysid"))
+        data["seq"] = _coerce_int(data.get("seq"), None)
+        data["error_msg"] = _coerce_text(data.get("error_msg"))
         return cls(**data)
 
 
@@ -990,6 +1239,8 @@ class XtAccountStatus(DictObject):
             "m_nLoginStatus",
             "login_status",
         ), default=None)
+        data["account_id"] = _coerce_text(data.get("account_id"))
+        data["status"] = _coerce_int(data.get("status"), None)
         return cls(**data)
 
 
@@ -1009,13 +1260,16 @@ class XtBankTransferResponse(DictObject):
         if value is None:
             return None
         if isinstance(value, (list, tuple)) and len(value) >= 2:
-            return cls(seq=None, success=value[0], msg=value[1])
+            return cls(seq=None, success=_coerce_bool(value[0], False), msg=_coerce_text(value[1]))
         data = _dict_from_any(value)
         if data is None:
             return value
         _set_first(data, "seq", ("m_nSeq", "request_id"), default=None)
         _set_first(data, "success", ("m_bSuccess", "ok", "accepted"), default=None)
         _set_first(data, "msg", ("m_strMsg", "m_strError", "message", "error", "error_msg"), default="")
+        data["seq"] = _coerce_int(data.get("seq"), None)
+        data["success"] = _coerce_bool(data.get("success"), False)
+        data["msg"] = _coerce_text(data.get("msg"))
         return cls(**data)
 
 
@@ -1040,6 +1294,10 @@ class XtSmtAppointmentResponse(DictObject):
             return value
         for target, sources in aliases.items():
             _set_first(data, target, sources)
+        data["seq"] = _coerce_int(data.get("seq"), None)
+        data["success"] = _coerce_bool(data.get("success"), False)
+        data["msg"] = _coerce_text(data.get("msg"))
+        data["apply_id"] = _coerce_text(data.get("apply_id"))
         return cls(**data)
 
 

@@ -66,6 +66,7 @@ Financial download caveat: public docs say big-QMT official script side does not
 | --- | --- | --- | --- |
 | `GET /api/account` | Implemented | Query account sections. | `account_id`, `account_type`, `sections=asset|positions|orders|trades`, optional `force`, `subscribe`, `timeout`, routing fields. |
 | `POST /api/order` | Implemented | Submit one order for ordinary, credit, futures, futures-option, or stock-option accounts. | `account_id`, `account_type`, `side=buy|sell`, `stock_code`, `price_type`, `price`, `volume`, `confirm_text`, optional `credit_action`, `order_action`, `strategy_name`, `order_remark`, `timeout`. |
+| `POST /api/order_async` | Implemented | Submit one order asynchronously; returns `result.seq`, while the real order ID arrives through order callbacks. | Same fields as `/api/order`; `seq` is only a request correlation number and cannot be used to cancel. |
 | `POST /api/orders/batch` | Implemented | Submit batch orders for ordinary, credit, futures, futures-option, or stock-option accounts. | `account_id`, `account_type`, `orders` array, `confirm_text`, optional `credit_action`, `order_action`, `price_type`, `stop_on_error`, `timeout`. |
 | `POST /api/cancel` | Implemented | Cancel an order. | `account_id`, `account_type`, `order_id`, `confirm_text`, `timeout`. |
 | `GET /api/callbacks` | Implemented | Pull cached trade callback events. | `account_id`, `account_type`, `since`, `limit`, optional `event`, `event_prefix`, `job_id`, routing fields. |

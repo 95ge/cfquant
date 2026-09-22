@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import tokenize
+import traceback
 import uuid
 from xml.dom import minidom
 
@@ -202,8 +203,13 @@ def _remove_formula_catalog_entries(document, names):
     for catalog_group in document.getElementsByTagName("FormulaCatalog"):
         for entry in list(catalog_group.getElementsByTagName("catalog")):
             if entry.getAttribute("name") in names:
-                catalog_group.removeChild(entry)
-                changed = True
+                # QMT versions differ in whether catalog entries are direct
+                # children of FormulaCatalog or nested inside a sub-group.
+                # Always remove from the node that actually owns the entry.
+                parent = entry.parentNode
+                if parent is not None:
+                    parent.removeChild(entry)
+                    changed = True
     return changed
 
 
@@ -345,6 +351,9 @@ class QmtStrategyManager:
         if job.get("state") == state and job.get("error", "") == error:
             return
         job.update(state=state, message=error or STATES[state], error=error, updated_at=time.time())
+        if state != "error":
+            job.pop("deploy_retry_count", None)
+            job.pop("deploy_retry_after", None)
 
     def _clear_generation_transition(self, job):
         changed = False
@@ -613,10 +622,26 @@ class QmtStrategyManager:
                     if not job.get("control_generation") and not _generation_values(
                             job.get("accepted_generations")):
                         continue
+                    retry_count = int(job.get("deploy_retry_count") or 0)
+                    if retry_count >= 5 or time.time() < float(job.get("deploy_retry_after") or 0):
+                        continue
                 try:
                     self._advance(job)
                 except Exception as error:
-                    self._state(job, "error", str(error))
+                    retry_count = int(job.get("deploy_retry_count") or 0) + 1
+                    job["deploy_retry_count"] = retry_count
+                    job["deploy_retry_after"] = time.time() + min(10.0, 2.0 * retry_count)
+                    detail = str(error).strip()
+                    if not detail:
+                        trace = traceback.format_exc().strip().splitlines()
+                        frames = [line.strip() for line in trace if line.strip().startswith("File ")]
+                        location = frames[-1] if frames else ""
+                        detail = "%s (%s)" % (type(error).__name__, location or repr(error))
+                    if retry_count < 5:
+                        detail = "部署写入暂时失败（第 %d/5 次），系统将自动重试：%s" % (retry_count, detail)
+                    else:
+                        detail = "部署连续失败 5 次，请关闭 QMT 并检查目录权限后重新保存：%s" % detail
+                    self._state(job, "error", detail)
                 changed = changed or before != job
             if changed:
                 self._save()

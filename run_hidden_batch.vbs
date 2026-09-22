@@ -13,5 +13,4 @@ For i = 1 To WScript.Arguments.Count - 1
   command = command & " """ & Replace(WScript.Arguments(i), """""", """""""""") & """"
 Next
 shell.CurrentDirectory = fso.GetParentFolderName(scriptPath)
-shell.Run command, 0, False
-WScript.Quit 0
+WScript.Quit shell.Run(command & " --no-pause", 0, True)

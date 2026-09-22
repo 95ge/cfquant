@@ -1,4 +1,4 @@
-﻿const FRONTEND_VERSION = '0.2.27';
+const FRONTEND_VERSION = 'web_20260922_01';
 
 const state = {
   accountId: '',
@@ -87,7 +87,7 @@ const state = {
   versionUpdateBusy: false,
   projectUpdateStatus: null,
   projectUpdateBusy: false,
-  apiOpenGroups: new Set(['data', 'trade', 'system', 'transport']),
+  apiOpenGroups: new Set(),
   quoteRows: new Map(),
   quoteSeq: 0,
   quoteEventCount: 0,
@@ -149,7 +149,7 @@ const TUTORIAL_TOPIC_KEY = 'cfquant.tutorial_topic';
 const DEPLOY_MODE_TAB_KEY = 'cfquant.deploy_mode_tab';
 const ONBOARDING_AUTO_SHOWN_KEY = 'cfquant.onboarding_auto_shown.v3';
 const SETTINGS_TAB_KEY = 'cfquant.settings_tab';
-const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups';
+const API_OPEN_GROUPS_KEY = 'cfquant.api_open_groups.v2';
 const ACCOUNT_CONFIG_CACHE_KEY = 'cfquant.account_config_cache.v1';
 const WEB_AUTH_TOKEN_KEY = 'cfquant.web_auth_token';
 const TEST_SOURCE_SELECTION_KEY = 'cfquant.test_source';
@@ -375,7 +375,15 @@ function strategyDeployTargetDetail(target = {}) {
   const reasons = [target.error, target.detail, target.reason, target.message]
     .map((value) => String(value || '').trim())
     .filter(Boolean);
-  let reason = reasons.find((value) => !['error', '策略部署失败'].includes(value))
+  const stateMessages = {
+    waiting_exit: 'QMT 仍在运行，部署文件暂未写入；请完全退出对应 QMT，保持 cfquant 运行，等待绑定列表显示模型配置完成，系统会自动重试',
+    waiting_import: '策略包已放入 QMT 导入队列；请启动并登录 QMT，在模型交易中确认导入',
+    waiting_import_save: '策略已导入但模型配置尚未保存；请退出 QMT，等待配置完成后再启动',
+    waiting_start: '策略配置已写入；请启动并登录 QMT，等待托管策略上线',
+    waiting_manual_start: '策略已导入；请在 QMT 的模型交易中手动运行托管策略',
+    waiting_account: '未找到该资金账号的 QMT 绑定键；请在绑定页补充模型账号 Key',
+  };
+  let reason = stateMessages[target.state] || reasons.find((value) => !['error', '策略部署失败'].includes(value))
     || reasons[0] || target.state || '';
   if (target.state === 'error' && (!reason || reason === 'error' || reason === '策略部署失败')) {
     reason = '策略部署失败，后端未返回具体原因，请查看 QMT 目录、权限和日志';
@@ -409,6 +417,14 @@ function qmtStartupInstruction(values = {}) {
   const strategy = values.qmt_strategy || {};
   const autoLogin = values.qmt_auto_login || {};
   if (values.enabled === false) return '账号绑定已停用；需要使用时，请启用绑定并保存。';
+  const actionableWaiting = targets.some((target) => ['waiting_exit', 'waiting_import', 'waiting_import_save', 'waiting_start', 'waiting_manual_start', 'waiting_account'].includes(target.state));
+  if (actionableWaiting) {
+    const detail = targets
+      .filter((target) => ['waiting_exit', 'waiting_import', 'waiting_import_save', 'waiting_start', 'waiting_manual_start', 'waiting_account'].includes(target.state))
+      .map((target) => strategyDeployTargetDetail(target))
+      .join('；');
+    return detail || '部署正在等待 QMT 完成下一步操作，请查看绑定状态中的处理建议。';
+  }
   if (deploy.error || targets.some((target) => target.error || target.state === 'error')) {
     const detail = strategyDeployErrorDetail(deploy);
     return `策略部署失败${detail ? `：${detail}` : ''}。请根据下方错误检查 QMT 目录、权限和账号配置，然后返回上一步重新保存绑定。`;
@@ -1797,6 +1813,31 @@ const API_ENDPOINTS = [
     fields: ['account_id', 'account_type', 'side', 'credit_order_action', 'order_action', 'stock_code', 'price_type', 'price', 'volume', 'confirm_text', 'timeout'],
   },
   {
+    id: 'async_order',
+    group: 'trade',
+    title: '提交异步委托',
+    method: 'POST',
+    path: '/api/order_async',
+    desc: '提交异步委托后立即返回请求序号 seq；真实委托编号通过委托回调或回调记录获取。',
+    defaults: { timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['account_id', 'account_type', 'side', 'credit_order_action', 'order_action', 'stock_code', 'price_type', 'price', 'volume', 'confirm_text', 'timeout'],
+  },
+  {
+    id: 'async_order_example',
+    group: 'trade',
+    title: '异步委托调用示例',
+    method: 'POST',
+    path: '/api/cftrader/order_stock_async',
+    desc: '使用 cftrader 单笔异步下单接口提交委托。接口立即返回请求序号 seq；真实 order_id 通过交易回调或回调记录获取，seq 不能用于撤单。',
+    defaults: {
+      account_type: 'STOCK',
+      strategy_name: 'cfquant_web_async_test',
+      timeout: '30',
+    },
+    fields: ['account_id', 'account_type', 'stock_code', 'sdk_order_type', 'order_volume', 'price_type', 'price', 'strategy_name', 'order_remark', 'sdk_confirm_text', 'timeout'],
+    sdkEntry: (window.CFQUANT_CFTRADER_API || []).find(item => item.name === 'order_stock_async'),
+  },
+  {
     id: 'credit_order',
     group: 'trade',
     title: '信用委托',
@@ -2224,6 +2265,13 @@ const API_RETURN_DOCS = {
     ['order_action', '期货或期权账户业务动作；普通和信用账户为空'],
     ['order_remark', '委托备注'],
     ['latency_ms', '请求耗时'],
+  ],
+  async_order_example: [
+    ['result.seq', '异步请求序号；仅用于关联后续回调，不能用于撤单'],
+    ['result.accepted', 'QMT 是否接受了异步下单请求'],
+    ['result.request_result', 'QMT 原始下单调用结果'],
+    ['latency_ms', '网页请求耗时'],
+    ['trader:on_order_stock_async_response', '异步响应回调，包含 seq 和真实 order_id'],
   ],
   credit_order: [
     ['order_id', '委托编号'],
@@ -3797,10 +3845,10 @@ function loadApiOpenGroups() {
       const validGroups = new Set(API_GROUPS.map((group) => group.id));
       state.apiOpenGroups = new Set(saved.filter((id) => validGroups.has(id)));
     } else {
-      state.apiOpenGroups = new Set(API_GROUPS.map((group) => group.id));
+      state.apiOpenGroups = new Set();
     }
   } catch (error) {
-    state.apiOpenGroups = new Set(API_GROUPS.map((group) => group.id));
+    state.apiOpenGroups = new Set();
   }
 }
 
@@ -3817,6 +3865,25 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   }
   saveApiOpenGroups();
   list.innerHTML = '';
+  const groupsToggle = $('apiGroupsToggleBtn');
+  if (groupsToggle) {
+    const groups = API_GROUPS.filter(group => API_ENDPOINTS.some(item => (item.group || 'trade') === group.id));
+    const allOpen = groups.length > 0 && groups.every(group => state.apiOpenGroups.has(group.id));
+    groupsToggle.textContent = allOpen ? '全部收起' : '全部展开';
+    groupsToggle.onclick = () => {
+      const expand = !groups.every(group => state.apiOpenGroups.has(group.id));
+      state.apiOpenGroups = expand ? new Set(groups.map(group => group.id)) : new Set();
+      saveApiOpenGroups();
+      list.querySelectorAll('.api-group').forEach(wrap => {
+        wrap.classList.toggle('open', expand);
+        wrap.querySelector('.api-group-body').hidden = !expand;
+        const header = wrap.querySelector('.api-group-head');
+        header.setAttribute('aria-expanded', String(expand));
+        header.lastElementChild.textContent = expand ? '▾' : '▸';
+      });
+      groupsToggle.textContent = expand ? '全部收起' : '全部展开';
+    };
+  }
   API_GROUPS.forEach((group) => {
     const groupEndpoints = API_ENDPOINTS.filter((item) => (item.group || 'trade') === group.id);
     if (!groupEndpoints.length) return;
@@ -3846,7 +3913,9 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   });
   $('apiTitle').textContent = endpoint.title;
   $('apiDesc').textContent = endpoint.desc;
-  $('apiRoute').textContent = endpoint.sdkEntry ? `Python SDK cfquant.cftrader.CfQuantTrader.${endpoint.sdkEntry.name}` : `${endpoint.method} ${endpoint.path}`;
+  $('apiRoute').textContent = endpoint.sdkEntry && endpoint.id !== 'async_order_example'
+    ? `Python SDK cfquant.cftrader.CfQuantTrader.${endpoint.sdkEntry.name}`
+    : `${endpoint.method} ${endpoint.path}`;
   $('apiHttpPreview').classList.toggle('hidden', endpoint.method === 'DOC');
   document.querySelector('.api-settings-tip').classList.remove('hidden');
   form.innerHTML = endpoint.fields.map((fieldName) => apiFieldHtml(fieldName)).join('');
@@ -5361,6 +5430,7 @@ function renderLogCleanup(info) {
   const status = $('logCleanupStatus');
   if (!status) return;
   const retentionDays = state.logCleanup.retention_days || 30;
+  if ($('logRetentionDays')) $('logRetentionDays').value = retentionDays;
   const parts = [
     `本地保留 ${retentionDays} 天`,
     enabled ? 'QMT 清理已启用' : 'QMT 清理未启用',
@@ -5404,7 +5474,7 @@ async function saveLogCleanupFromUi() {
   const toggle = $('cleanupQmtUserdataLogs');
   const data = await api('/api/log-cleanup', {
     method: 'POST',
-    body: JSON.stringify({ qmt_userdata_log_cleanup_enabled: !!(toggle && toggle.checked) }),
+    body: JSON.stringify({ qmt_userdata_log_cleanup_enabled: !!(toggle && toggle.checked), retention_days: Number($('logRetentionDays').value) }),
   });
   renderLogCleanup(data);
   log('日志清理设置已保存', { qmt_userdata_log_cleanup_enabled: !!data.qmt_userdata_log_cleanup_enabled });
@@ -6812,6 +6882,9 @@ function apiFieldHtml(fieldName) {
   const meta = API_FIELD_META[fieldName] || { label: fieldName, type: 'text' };
   const name = meta.param || fieldName;
   const wide = meta.wide ? ' wide' : '';
+  const accountField = ['side', 'credit_order_action', 'order_action'].includes(fieldName)
+    ? ` data-api-account-field="${esc(fieldName)}"`
+    : '';
   if (meta.type === 'checkbox') {
     return `<label class="field${wide} api-checkbox"><input type="checkbox" name="${esc(name)}" data-field="${esc(fieldName)}"><span>${esc(meta.label)}</span></label>`;
   }
@@ -6845,15 +6918,13 @@ function apiFieldHtml(fieldName) {
   }
   if (meta.type === 'credit_order_action') {
     const options = CREDIT_ORDER_ACTIONS.map((item) => `<option value="${esc(item.value)}">${esc(item.label)}</option>`).join('');
-    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}">${options}</select></label>`;
+    return `<label class="field${wide}"${accountField}><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}">${options}</select></label>`;
   }
   if (meta.type === 'order_action') {
-    const options = Object.entries(DERIVATIVE_ORDER_ACTIONS_BY_ACCOUNT_TYPE)
-      .flatMap(([accountType, actions]) => actions.map((item) => (
-        `<option value="${esc(item.value)}">${esc(accountTypeLabel(accountType))} - ${esc(item.label)}</option>`
-      )))
+    const options = derivativeActionsForAccountType('FUTURE')
+      .map((item) => `<option value="${esc(item.value)}">${esc(item.label)}</option>`)
       .join('');
-    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}">${options}</select></label>`;
+    return `<label class="field${wide}"${accountField}><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}">${options}</select></label>`;
   }
   if (meta.type === 'price_type') {
     const options = PRICE_TYPE_OPTIONS
@@ -6865,7 +6936,7 @@ function apiFieldHtml(fieldName) {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="announce_time">公告日期</option><option value="report_time">报告期</option></select></label>`;
   }
   if (meta.type === 'side') {
-    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="buy">买入</option><option value="sell">卖出</option></select></label>`;
+    return `<label class="field${wide}"${accountField}><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="buy">买入</option><option value="sell">卖出</option></select></label>`;
   }
   if (meta.type === 'textarea') {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><textarea name="${esc(name)}" data-field="${esc(fieldName)}" class="code-textarea" placeholder="${esc(meta.placeholder || '')}"></textarea></label>`;
@@ -6873,6 +6944,110 @@ function apiFieldHtml(fieldName) {
   const inputType = meta.type === 'number' ? 'number' : 'text';
   const step = meta.step ? ` step="${esc(meta.step)}"` : '';
   return `<label class="field${wide}"><span>${esc(meta.label)}</span><input name="${esc(name)}" data-field="${esc(fieldName)}" type="${inputType}"${step} placeholder="${esc(meta.placeholder || '')}" autocomplete="off"></label>`;
+}
+
+function apiFieldElement(form, fieldName) {
+  if (!form) return null;
+  return form.querySelector(`[data-field="${fieldName}"]`) || form.elements[fieldName] || null;
+}
+
+function apiAccountTypeFromForm(endpoint, form) {
+  const field = apiFieldElement(form, 'account_type');
+  return normalizeAccountType(
+    (field && field.value)
+    || (endpoint && endpoint.defaults && endpoint.defaults.account_type)
+    || selectedAccountType()
+    || 'STOCK'
+  );
+}
+
+function fillApiDerivativeOrderSelect(select, accountType) {
+  if (!select) return;
+  const actions = derivativeActionsForAccountType(accountType);
+  const current = String(select.value || '').trim();
+  select.innerHTML = actions
+    .map((item) => `<option value="${esc(item.value)}">${esc(item.label)}</option>`)
+    .join('');
+  const valid = actions.some((item) => item.value === current);
+  select.value = valid ? current : (actions[0] ? actions[0].value : '');
+  select.dataset.accountType = normalizeAccountType(accountType);
+}
+
+function syncApiAccountFields(endpoint, form = $('apiForm')) {
+  if (!form || !endpoint || endpoint.method === 'DOC') return;
+  const accountType = apiAccountTypeFromForm(endpoint, form);
+  const isCredit = accountType === 'CREDIT';
+  const isDerivative = isDerivativeAccountType(accountType);
+  const visibility = {
+    side: accountType === 'STOCK',
+    credit_order_action: isCredit,
+    order_action: isDerivative,
+  };
+  Object.entries(visibility).forEach(([fieldName, visible]) => {
+    const wrapper = form.querySelector(`[data-api-account-field="${fieldName}"]`);
+    if (!wrapper) return;
+    wrapper.classList.toggle('hidden', !visible);
+    const field = apiFieldElement(form, fieldName);
+    if (!field) return;
+    if (fieldName === 'credit_order_action' && visible) {
+      fillCreditOrderSelect(field);
+      if (!field.value) field.value = 'credit_buy';
+    }
+    if (fieldName === 'order_action' && visible) {
+      fillApiDerivativeOrderSelect(field, accountType);
+    }
+  });
+}
+
+function isApiSingleOrderEndpoint(endpoint) {
+  return !!(endpoint && [
+    'order',
+    'async_order',
+    'credit_order',
+    'future_order',
+    'future_option_order',
+    'stock_option_order',
+  ].includes(endpoint.id));
+}
+
+function apiOrderConfirmationFromBody(endpoint, body = {}) {
+  if (!isApiSingleOrderEndpoint(endpoint)) return '';
+  const accountType = normalizeAccountType(body.account_type || 'STOCK');
+  let action = body.side;
+  if (accountType === 'CREDIT') {
+    action = body.credit_action || body.credit_business || body.action;
+    if (!action) action = 'credit_buy';
+  } else if (isDerivativeAccountType(accountType)) {
+    action = body.order_action || body.future_action || body.future_business
+      || body.stock_option_action || body.future_option_action || body.option_action;
+    if (!action) action = derivativeDefaultOrderAction(accountType, body.side);
+  }
+  const code = normalizeStockCode(body.stock_code);
+  const volume = Number(body.volume);
+  const price = Number(body.price);
+  const priceType = Number(body.price_type || FIX_PRICE);
+  if (!action || !code || !Number.isFinite(volume) || volume <= 0
+      || !Number.isFinite(price) || (priceType === FIX_PRICE && price <= 0)) return '';
+  return `${String(action).trim().toUpperCase()} ${code} ${Math.trunc(volume)} @ ${price.toFixed(3)}`;
+}
+
+function updateApiOrderConfirmation(endpoint, form, request) {
+  if (!isApiSingleOrderEndpoint(endpoint) || !form) return;
+  const field = apiFieldElement(form, 'confirm_text');
+  if (!field) return;
+  const expected = apiOrderConfirmationFromBody(endpoint, request && request.body);
+  field.readOnly = true;
+  field.placeholder = expected || '填写代码、价格和数量后自动生成';
+  field.value = expected;
+  field.dataset.generatedConfirmation = expected;
+  let hint = field.parentElement && field.parentElement.querySelector('small');
+  if (!hint) {
+    hint = document.createElement('small');
+    field.after(hint);
+  }
+  hint.textContent = expected
+    ? `确认文本将自动生成：${expected}`
+    : '填写代码、价格和数量后自动生成确认文本';
 }
 
 function setApiDefaults(endpoint, form = $('apiForm')) {
@@ -6910,6 +7085,7 @@ function setApiDefaults(endpoint, form = $('apiForm')) {
       element.title = locked ? '该接口按后端路由规则固定通道' : '';
     }
   });
+  syncApiAccountFields(endpoint, form);
 }
 
 function currentApiRequest(endpoint = apiEndpointById(state.apiEndpointId), form = $('apiForm')) {
@@ -6921,9 +7097,11 @@ function currentApiRequest(endpoint = apiEndpointById(state.apiEndpointId), form
       body: null,
     };
   }
+  syncApiAccountFields(endpoint, form);
   const params = { ...(endpoint.defaults || {}) };
   Array.from(form.elements).forEach((element) => {
     if (!element.name || element.tagName === 'BUTTON') return;
+    if (element.closest('.field')?.classList.contains('hidden')) return;
     params[element.name] = element.type === 'checkbox' ? element.checked : element.value;
   });
   if (params.account_id && params.account_type && !params.account_key) {
@@ -6984,6 +7162,12 @@ function currentApiRequest(endpoint = apiEndpointById(state.apiEndpointId), form
   ['fill_data', 'iscomplete'].forEach((name) => {
     if (params[name] !== undefined && params[name] !== '') params[name] = ['1', 'true', 'yes', 'on'].includes(String(params[name]).toLowerCase());
   });
+  if (isApiSingleOrderEndpoint(endpoint)) {
+    const generatedConfirmation = apiOrderConfirmationFromBody(endpoint, params);
+    const confirmationField = apiFieldElement(form, 'confirm_text');
+    if (confirmationField && confirmationField.readOnly) confirmationField.value = generatedConfirmation;
+    if (confirmationField && confirmationField.readOnly) params.confirm_text = generatedConfirmation;
+  }
   if (params.incrementally === '') delete params.incrementally;
   if (endpoint.method === 'WS') {
     const query = new URLSearchParams();
@@ -7043,9 +7227,12 @@ function maskApiKey(value) {
 }
 
 function updateApiRequestPreview() {
-  const request = currentApiRequest();
+  const endpoint = apiEndpointById(state.apiEndpointId);
+  let request = currentApiRequest(endpoint);
+  updateApiOrderConfirmation(endpoint, $('apiForm'), request);
+  request = currentApiRequest(endpoint);
   $('apiRequestPreview').textContent = JSON.stringify(request, null, 2);
-  updateSdkConfirmation(apiEndpointById(state.apiEndpointId), $('apiForm'), request);
+  updateSdkConfirmation(endpoint, $('apiForm'), request);
 }
 
 function sdkConfirmation(request) {
@@ -7067,6 +7254,8 @@ function apiTestValidation(endpoint, request) {
   if (request.body?.orders_json_error || request.body?.cancels_json_error || request.body?.user_param_json_error) {
     return request.body.orders_json_error || request.body.cancels_json_error || request.body.user_param_json_error;
   }
+  const orderConfirmation = apiOrderConfirmationFromBody(endpoint, request.body);
+  if (orderConfirmation && request.body?.confirm_text?.trim() !== orderConfirmation) return `操作确认不匹配，请输入：${orderConfirmation}`;
   if (endpoint.sdkEntry && request.body?.confirm_text?.trim() !== sdkConfirmation(request)) return `操作确认不匹配，请输入：${sdkConfirmation(request)}`;
   return '';
 }
@@ -10523,8 +10712,31 @@ function handleAccountChange() {
   syncTopStatusDisplay();
   syncTransportChannelControls();
   syncCreditOrderControls();
+  syncApiFormAccountSelection();
   refreshTestsIfVisible();
   refreshCurrentSelection('账号');
+}
+
+function syncApiFormAccountSelection() {
+  const form = $('apiForm');
+  const endpoint = apiEndpointById(state.apiEndpointId);
+  if (!form || !endpoint || endpoint.method === 'DOC') return;
+  const accountId = selectedAccount();
+  const accountType = selectedAccountType();
+  const fields = {
+    account_id: accountId,
+    account_type: accountType,
+    bridge_id: selectedBridge(),
+    account_key: selectedAccountKey(),
+    channel: apiEndpointChannel(endpoint) || selectedChannel(),
+    trade_channel: apiEndpointChannel(endpoint) || selectedTradeChannel(),
+  };
+  Object.entries(fields).forEach(([fieldName, value]) => {
+    const field = apiFieldElement(form, fieldName);
+    if (field && value !== undefined && value !== null) field.value = value;
+  });
+  syncApiAccountFields(endpoint, form);
+  updateApiRequestPreview();
 }
 
 function switchAccountFromToolbar() {
@@ -13683,6 +13895,39 @@ async function boot() {
   $('logCleanupForm').addEventListener('submit', (event) => {
     event.preventDefault();
     saveLogCleanupFromUi().catch((error) => log('日志清理设置保存失败', { error: error.message }));
+  });
+  const logDate = $('logFilesDate');
+  const today = new Date();
+  logDate.value = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  let logRequest = 0;
+  $('logFilesForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const request = ++logRequest;
+    $('logFileContent').textContent = '';
+    $('logFileSelect').replaceChildren(new Option('请选择日志文件', ''));
+    $('logFileStatus').textContent = '正在查询…';
+    try {
+      const data = await api(`/api/log-files?date=${encodeURIComponent(logDate.value)}`);
+      if (request !== logRequest) return;
+      (data.files || []).forEach(row => $('logFileSelect').add(new Option(`${row.name} (${Math.ceil(row.size / 1024)} KB)`, row.name)));
+      $('logFileStatus').textContent = `找到 ${(data.files || []).length} 个文件（最多列出 1000 个）`;
+    } catch (error) {
+      if (request === logRequest) $('logFileStatus').textContent = error.message;
+    }
+  });
+  $('readLogFileBtn').addEventListener('click', async () => {
+    const name = $('logFileSelect').value;
+    if (!name) return;
+    const request = ++logRequest;
+    $('logFileStatus').textContent = '正在读取…';
+    try {
+      const data = await api(`/api/log-file?name=${encodeURIComponent(name)}`);
+      if (request !== logRequest) return;
+      $('logFileContent').textContent = data.text;
+      $('logFileStatus').textContent = data.truncated ? '仅显示文件末尾 256 KB，较早内容未加载。' : '已显示完整文件。';
+    } catch (error) {
+      if (request === logRequest) $('logFileStatus').textContent = error.message;
+    }
   });
   const qmtLogLanguageForm = $('qmtLogLanguageForm');
   if (qmtLogLanguageForm) {

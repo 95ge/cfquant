@@ -1,6 +1,10 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions DisableDelayedExpansion
 cd /d "%~dp0"
+
+rem Hidden automation callers can explicitly skip the final display delay.
+for %%A in (%*) do if /i "%%~A"=="--no-pause" set "CFQUANT_RESTART_NO_PAUSE=1"
+echo [STEP] Restart operation started. Please wait...
 
 set "LOG_DIR=%~dp0log"
 set "START_LOG=%LOG_DIR%\cfquant_startup.log"
@@ -9,7 +13,7 @@ call :log "restart_cfquant.bat invoked"
 
 set "WEB_PORT=8765"
 set "CFQUANT_RESTART_ROOT=%~dp0"
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$p=8765; $root=$env:CFQUANT_RESTART_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.web_port) { $p=[int]$c.web_port } elseif ($c.web_server -and $c.web_server.port) { $p=[int]$c.web_server.port }; break } catch {} } }; Write-Output $p"`) do set "WEB_PORT=%%P"
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$p=8765; $root=$env:CFQUANT_RESTART_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.web_port) { $p=[int]$c.web_port } elseif ($c.web_server -and $c.web_server.port) { $p=[int]$c.web_server.port }; break } catch {} } }; Write-Output $p"`) do set "WEB_PORT=%%P"
 set "CFQUANT_RESTART_ROOT="
 if not defined WEB_PORT set "WEB_PORT=8765"
 if defined CFQUANT_WEB_PORT set "WEB_PORT=%CFQUANT_WEB_PORT%"
@@ -43,7 +47,7 @@ if not "%WAIT_CODE%"=="0" (
     exit /b 1
 )
 
-timeout /t 1 /nobreak >nul
+powershell -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1"
 set "CFQUANT_RESTART_PREV_START_NO_PAUSE=%CFQUANT_START_NO_PAUSE%"
 set "CFQUANT_START_NO_PAUSE=1"
 call "%~dp0start_cfquant.bat" %*
@@ -58,6 +62,7 @@ set "CFQUANT_RESTART_PREV_START_NO_PAUSE="
 if "%START_CODE%"=="0" (
     echo cfquant restart completed.
     call :log "restart completed port=%WEB_PORT%"
+    call :pause_on_success
 ) else (
     echo cfquant restart failed with code %START_CODE%.
     call :log "restart failed code=%START_CODE%"
@@ -68,7 +73,7 @@ endlocal & exit /b %START_CODE%
 :wait_for_port_release
 set "CFQUANT_RESTART_PORT=%~1"
 set "CFQUANT_RESTART_WAIT=%~2"
-powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_RESTART_PORT; $wait=[int]$env:CFQUANT_RESTART_WAIT; $deadline=(Get-Date).AddSeconds($wait); while ((Get-Date) -lt $deadline) { try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close() } else { $client.Close(); exit 0 } } catch { exit 0 }; Start-Sleep -Milliseconds 500 }; exit 1"
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$port=[int]$env:CFQUANT_RESTART_PORT; $wait=[int]$env:CFQUANT_RESTART_WAIT; $deadline=(Get-Date).AddSeconds($wait); while ((Get-Date) -lt $deadline) { try { $client=[Net.Sockets.TcpClient]::new(); $iar=$client.BeginConnect('127.0.0.1',$port,$null,$null); if ($iar.AsyncWaitHandle.WaitOne(500,$false)) { $client.EndConnect($iar); $client.Close() } else { $client.Close(); exit 0 } } catch { exit 0 }; Start-Sleep -Milliseconds 500 }; exit 1"
 set "WAIT_RESULT=0"
 if errorlevel 1 set "WAIT_RESULT=1"
 set "CFQUANT_RESTART_PORT="
@@ -79,15 +84,21 @@ exit /b %WAIT_RESULT%
 if "%CFQUANT_RESTART_NO_PAUSE%"=="1" exit /b 0
 if "%CFQUANT_START_NO_PAUSE%"=="1" exit /b 0
 echo.
-echo This window stays open because restart failed.
-pause
+echo Restart failed. Closing in 5 seconds...
+powershell -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 5"
+exit /b 0
+
+:pause_on_success
+if "%CFQUANT_RESTART_NO_PAUSE%"=="1" exit /b 0
+if "%CFQUANT_START_NO_PAUSE%"=="1" exit /b 0
+echo Restart completed. Closing in 5 seconds...
+powershell -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 5"
 exit /b 0
 
 :log
 set "CFQUANT_LOG_TS="
-for /f "usebackq delims=" %%T in (`powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'"`) do set "CFQUANT_LOG_TS=%%T"
+for /f "usebackq delims=" %%T in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-Date -Format 'yyyy-MM-ddTHH:mm:ss'"`) do set "CFQUANT_LOG_TS=%%T"
 if not defined CFQUANT_LOG_TS set "CFQUANT_LOG_TS=%time%"
 >>"%START_LOG%" echo [%CFQUANT_LOG_TS%] %~1
 set "CFQUANT_LOG_TS="
 exit /b 0
-

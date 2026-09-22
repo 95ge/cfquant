@@ -2265,6 +2265,20 @@ body[data-view="overview"] .orders-panel {
   background: #fbfcfd;
 }
 
+.api-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.api-title-actions button {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .home-intro-panel {
   background: #fff;
 }

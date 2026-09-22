@@ -1,11 +1,11 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=0.2.33">
+  <link rel="stylesheet" href="/styles.css?v=web_20260922_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -781,7 +781,10 @@
 
           <div class="panel span-12 view-panel view-api api-panel">
             <div class="panel-head">
-              <h2>接口文档</h2>
+              <div class="api-title-actions">
+                <h2>接口文档</h2>
+                <button id="apiGroupsToggleBtn" type="button" aria-controls="apiEndpointList">全部展开</button>
+              </div>
               <span class="metric-note">HTTP / WebSocket / Python SDK</span>
             </div>
             <div class="api-layout">
@@ -1101,6 +1104,7 @@
                 <h3>日志清理</h3>
                 <p class="settings-note">本地服务日志统一写入项目 <code>log/</code> 目录，默认自动保留最近 30 天；根目录旧日志也会纳入过期清理。</p>
                 <form id="logCleanupForm" class="api-serverbar">
+                  <label>保留天数 <input id="logRetentionDays" type="number" min="1" max="3650" step="1" value="30" required></label>
                   <label class="toggle api-remote-toggle">
                     <input id="cleanupQmtUserdataLogs" type="checkbox">
                     <span>清理 QMT userdata/log 过期日志</span>
@@ -1109,6 +1113,16 @@
                   <button id="runLogCleanupBtn" type="button">立即清理</button>
                   <span id="logCleanupStatus" class="metric-note"></span>
                 </form>
+                <h4>按日期查看日志</h4>
+                <p class="settings-note">按文件日期或最后写入日期筛选。旧版连续日志可能跨天；每次显示文件末尾最多 256 KB，不加载整个文件。</p>
+                <form id="logFilesForm" class="api-serverbar">
+                  <label>日期 <input id="logFilesDate" type="date" required></label>
+                  <button type="submit">查询日志</button>
+                  <label>日志文件 <select id="logFileSelect"><option value="">请选择日志文件</option></select></label>
+                  <button id="readLogFileBtn" type="button">查看 / 刷新</button>
+                </form>
+                <p id="logFileStatus" role="status"></p>
+                <pre id="logFileContent" style="max-height:420px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere"></pre>
               </section>
               <section class="settings-section" data-settings-tab="qmt-log">
                 <h3>QMT 日志</h3>
@@ -3188,7 +3202,7 @@ else:
   <script src="/cftrader-api-data.js?v=20260911_02"></script>
   <script src="/api-tester.js?v=20260916_apikey_01"></script>
   <script src="/python-api.js?v=20260911_api_test_01"></script>
-  <script src="/app.js?v=0.2.33"></script>
+  <script src="/app.js?v=web_20260922_01"></script>
 </body>
 </html>
 

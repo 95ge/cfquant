@@ -63,7 +63,8 @@ class txl:
         self.sys_print_on = show
         self.clean_day = None
         self.id = time.strftime("%Y%m%d%H%M%S")+'_'+self.create_channel(5)
-        self.log_que = queue.Queue()
+        self.log_que = queue.Queue(maxsize=2000)
+        self.dropped_log_count = 0
         self.log_dir = self._default_log_dir()
         self.mkdir(self.log_dir)
         msg = '包引入成功'
@@ -206,7 +207,11 @@ class txl:
     
 
     def save_log(self,msg,):
-        self.log_que.put((self.id,msg))
+        try:
+            self.log_que.put_nowait((self.id, str(msg)[:8192]))
+        except queue.Full:
+            # Only diagnostic logs may be dropped; never block the trading path.
+            self.dropped_log_count += 1
 
     def __main_log(self):
         self.clean_log()
@@ -216,7 +221,10 @@ class txl:
                 if self.log_que.qsize() > 100:         
                     self.clean_log()
                     for i in range(100):
-                        data = data + self.log_que.get() +'\n'
+                        try:
+                            data += str(self.log_que.get_nowait()) + '\n'
+                        except queue.Empty:
+                            break
                 with open(os.path.join(self.log_dir, '%s.log'%(self.get_nowdate())),'a+',encoding='utf-8') as f:
                     f.write(data)
             except:#过滤掉日志记录出错

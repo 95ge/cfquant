@@ -27,6 +27,8 @@ from .xttype import (
     XtBankTransferResponse,
     XtCancelOrderResponse,
     XtCancelError,
+    XtCreditDeal,
+    XtCreditOrder,
     XtOrder,
     XtOrderError,
     XtOrderResponse,
@@ -371,6 +373,11 @@ class XtQuantTrader(object):
         self._queries_stopped = False
         self._query_generation = 0
         self._query_context = threading.local()
+        # QMT may deliver a delayed partial-fill notification after the
+        # terminal filled notification. Keep this local guard so consumers
+        # never observe a state regression for the same order.
+        self._order_terminal_statuses = {}
+        self._order_terminal_statuses_lock = threading.RLock()
 
     def start(self):
         with self._query_lock:
@@ -597,7 +604,8 @@ class XtQuantTrader(object):
             "account": _account_payload(account),
             "cancelable_only": cancelable_only,
         })
-        orders = to_objects(result, XtOrder)
+        order_type = XtCreditOrder if _account_type_value(_account_payload(account).get("account_type")) == xtconstant.CREDIT_ACCOUNT else XtOrder
+        orders = to_objects(result, order_type)
         if cancelable_only:
             orders = filter_cancelable_orders(orders)
         return _attach_account_fields(orders, account)
@@ -621,7 +629,8 @@ class XtQuantTrader(object):
         result = self._trade_request("xttrader.query_stock_trades", {
             "account": _account_payload(account),
         })
-        return _attach_account_fields(to_objects(result, XtTrade), account)
+        trade_type = XtCreditDeal if _account_type_value(_account_payload(account).get("account_type")) == xtconstant.CREDIT_ACCOUNT else XtTrade
+        return _attach_account_fields(to_objects(result, trade_type), account)
 
     def query_stock_trades_async(self, account, callback):
         return self._submit_query(self.query_stock_trades, (_account_payload(account),), callback)
@@ -846,8 +855,21 @@ class XtQuantTrader(object):
             if self.account_id and data_account_id and data_account_id != self.account_id:
                 return
             cls = self._event_types.get(name)
+            raw_account_type = (
+                data.get("account_type") if isinstance(data, dict)
+                else getattr(data, "account_type", None)
+            )
+            if raw_account_type in (None, ""):
+                raw_account_type = getattr(self.account, "account_type", xtconstant.SECURITY_ACCOUNT)
+            account_type = _account_type_value(raw_account_type)
+            if name == "on_stock_order" and account_type == xtconstant.CREDIT_ACCOUNT:
+                cls = XtCreditOrder
+            elif name == "on_stock_trade" and account_type == xtconstant.CREDIT_ACCOUNT:
+                cls = XtCreditDeal
             if cls is not None:
                 data = cls.from_any(data)
+            if name == "on_stock_order" and not self._accept_order_update(data):
+                return
             if name == "on_order_stock_async_response" and not self._accept_async_order_response(data):
                 return
             if name == "on_cancel_order_stock_async_response" and not self._accept_async_cancel_response(data):
@@ -867,6 +889,39 @@ class XtQuantTrader(object):
                     response_func(async_response)
 
         return handler
+
+    def _accept_order_update(self, order):
+        """Drop a late QMT PART_SUCC event after the order was SUCCEEDED."""
+        status = getattr(order, "order_status", None)
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            return True
+        if status not in (
+            getattr(xtconstant, "ORDER_PART_SUCC", 55),
+            getattr(xtconstant, "ORDER_SUCCEEDED", 56),
+        ):
+            return True
+        order_id = None
+        for name in ("order_sysid", "order_id", "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID"):
+            value = getattr(order, name, None)
+            if value not in (None, ""):
+                order_id = str(value).strip()
+                if order_id:
+                    break
+        if not order_id:
+            return True
+        key = (_event_account_id(order), order_id)
+        partial = getattr(xtconstant, "ORDER_PART_SUCC", 55)
+        succeeded = getattr(xtconstant, "ORDER_SUCCEEDED", 56)
+        with self._order_terminal_statuses_lock:
+            if status == partial and self._order_terminal_statuses.get(key) == succeeded:
+                return False
+            if status == succeeded:
+                self._order_terminal_statuses[key] = succeeded
+                if len(self._order_terminal_statuses) > 4096:
+                    self._order_terminal_statuses.pop(next(iter(self._order_terminal_statuses)))
+        return True
 
     def _register_pending_async_order(self, request):
         account = request.get("account") or {}

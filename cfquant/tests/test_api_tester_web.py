@@ -90,6 +90,25 @@ def test_web_single_uses_original_xttrader_action(binding, monkeypatch, asynchro
     assert result['api_method'] == 'cftrader.' + method
 
 
+def test_generic_async_order_uses_async_action_and_returns_seq(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(web, 'resolve_bridge_id', lambda **kwargs: 'test_bridge')
+    monkeypatch.setattr(web, 'bridge_config', lambda bridge_id: {})
+    monkeypatch.setattr(web, 'account_request', lambda *args, **kwargs: calls.append((args, kwargs)) or {
+        'bridge_id': 'test_bridge', 'channel': 'trade', 'mode': 'lttx', 'fallback': False,
+        'fallback_reason': '', 'result': {'seq': 12345, 'accepted': True},
+    })
+    result = web.submit_async_order({
+        'account_id': 'TEST_ONLY', 'account_type': 'STOCK', 'stock_code': '000001.SZ',
+        'side': 'buy', 'price_type': 11, 'price': 10.0, 'volume': 100,
+        'confirm_text': 'BUY 000001.SZ 100 @ 10.000',
+    })
+    assert calls[0][0][3] == 'xttrader.order_stock_async'
+    assert result['asynchronous'] is True
+    assert result['result']['seq'] == 12345
+
+
 @pytest.mark.parametrize('changes', [
     {'confirm_text': ''}, {'confirm_text': 'CFTRADER TEST_ONLY 1'},
     {'account_id': 'OTHER'}, {'account_type': 'STOCK'}, {'account_key': 'OTHER'}, {'bridge_id': 'OTHER'},

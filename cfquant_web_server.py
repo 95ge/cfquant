@@ -31,6 +31,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from cfquant.log_management import RollingLogWriter, retention_days as validate_log_retention_days, log_files as list_log_files, read_log as read_managed_log
 from http import cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from functools import wraps
@@ -190,6 +191,7 @@ except Exception:
         LOG_DIR = tempfile.gettempdir()
 LOG_FILE = os.path.join(LOG_DIR, "cfquant_web_server.runtime.log")
 LOG_RETENTION_DAYS = int(os.environ.get("CFQUANT_LOG_RETENTION_DAYS", "30"))
+LOG_RETENTION_DAYS = max(1, min(3650, LOG_RETENTION_DAYS))
 LOG_CLEANUP_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_LOG_CLEANUP_INTERVAL_SECONDS", "21600"))
 
 
@@ -444,7 +446,7 @@ LTTX_DISCOVERY_KEY = os.environ.get("CFQUANT_DISCOVERY_KEY", "cfquant.runtime")
 LTTX_WEB_REQUEST_CHANNEL = os.environ.get("CFQUANT_WEB_REQUEST_CHANNEL", "cfquant.web.request")
 LTTX_REGISTRY_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_LTTX_REGISTRY_INTERVAL_SECONDS", "5"))
 try:
-    _LOG_FP = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+    _LOG_FP = RollingLogWriter(LOG_FILE)
     _WINDOWLESS = os.path.basename(sys.executable).lower() == "pythonw.exe"
     if _WINDOWLESS or sys.stdout is None:
         sys.stdout = _LOG_FP
@@ -2336,6 +2338,7 @@ class WebRuntimeConfig(object):
             "web_auth_hash": "",
             "user_profile": normalize_user_profile({}),
             "cleanup_qmt_userdata_logs": False,
+            "log_retention_days": LOG_RETENTION_DAYS,
             "qmt_log_language": os.environ.get("CFQUANT_QMT_LOG_LANGUAGE", "zh"),
             "qmt_log_enabled": normalize_log_enabled(os.environ.get("CFQUANT_QMT_LOG_ENABLED", "1")),
             "transport_mode": os.environ.get("CFQUANT_WEB_TRANSPORT_MODE", os.environ.get("CFQUANT_TRANSPORT", "ctypes")),
@@ -2378,6 +2381,10 @@ class WebRuntimeConfig(object):
                             account_type=self._data["data_provider_account_type"],
                         )
                         self._data["user_profile"] = normalize_user_profile(raw.get("user_profile") or {})
+                        try:
+                            self._data["log_retention_days"] = validate_log_retention_days(raw.get("log_retention_days", LOG_RETENTION_DAYS))
+                        except (TypeError, ValueError):
+                            self._data["log_retention_days"] = LOG_RETENTION_DAYS
                         web_server = raw.get("web_server") if isinstance(raw.get("web_server"), dict) else {}
                         web_port = raw.get("web_port")
                         if web_port in (None, ""):
@@ -3188,18 +3195,27 @@ class WebRuntimeConfig(object):
             return bool(self._data.get("cleanup_qmt_userdata_logs"))
 
     def log_cleanup_info(self):
+        with self._lock:
+            configured_days = self._data.get("log_retention_days", LOG_RETENTION_DAYS)
+        try:
+            configured_days = validate_log_retention_days(configured_days)
+        except (TypeError, ValueError):
+            configured_days = LOG_RETENTION_DAYS
         return {
-            "retention_days": LOG_RETENTION_DAYS,
+            "retention_days": configured_days,
             "local_cfquant_logs_enabled": True,
             "qmt_userdata_log_cleanup_enabled": self.qmt_userdata_log_cleanup_enabled(),
         }
 
-    def set_log_cleanup_settings(self, cleanup_qmt_userdata_logs=None):
+    def set_log_cleanup_settings(self, cleanup_qmt_userdata_logs=None, retention_days=None):
         with self._lock:
             if cleanup_qmt_userdata_logs is not None:
                 self._data["cleanup_qmt_userdata_logs"] = bool(cleanup_qmt_userdata_logs)
+            if retention_days is not None:
+                self._data["log_retention_days"] = validate_log_retention_days(retention_days)
             self._save_settings_locked({
                 "cleanup_qmt_userdata_logs": "1" if self._data.get("cleanup_qmt_userdata_logs") else "0",
+                "log_retention_days": self._data.get("log_retention_days", LOG_RETENTION_DAYS),
             })
         return self.log_cleanup_info()
 
@@ -3445,6 +3461,11 @@ class WebRuntimeConfig(object):
             self._data["web_auth_hash"] = settings.get("web_auth_hash") or ""
         if "cleanup_qmt_userdata_logs" in settings:
             self._data["cleanup_qmt_userdata_logs"] = self._settings_bool(settings.get("cleanup_qmt_userdata_logs"))
+        if "log_retention_days" in settings:
+            try:
+                self._data["log_retention_days"] = validate_log_retention_days(settings["log_retention_days"])
+            except (TypeError, ValueError):
+                self._data["log_retention_days"] = LOG_RETENTION_DAYS
         if "qmt_log_language" in settings:
             self._data["qmt_log_language"] = normalize_log_language(settings.get("qmt_log_language"))
         if "qmt_log_enabled" in settings:
@@ -3482,6 +3503,7 @@ class WebRuntimeConfig(object):
                 "data_provider_account_key": self._data.get("data_provider_account_key") or "",
                 "web_port": normalize_web_port(self._data.get("web_port"), default=8765),
                 "python_executable": str(self._data.get("python_executable") or ""),
+                "log_retention_days": self._data.get("log_retention_days", LOG_RETENTION_DAYS),
             }, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(temp_path, self.path)
 
@@ -7151,8 +7173,8 @@ def safe_print(message):
     if printed_to_log:
         return
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        if _LOG_FP is not None:
+            _LOG_FP.write(line + "\n")
     except Exception:
         pass
 
@@ -7194,7 +7216,8 @@ def cleanup_files_by_age(root_dir, patterns=None, retention_days=LOG_RETENTION_D
                 result["deleted_bytes"] += size
             except Exception as e:
                 result["failed_files"] += 1
-                result["errors"].append("%s: %s" % (path, e))
+                if len(result["errors"]) < 100:
+                    result["errors"].append("%s: %s" % (path, e))
     return result
 
 
@@ -10786,7 +10809,7 @@ def _qmt_auto_login_first_pid(processes, launch=None):
     return 0
 
 
-def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="save"):
+def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="save", strategy_deploy=None):
     row = row or {}
     settings = normalize_qmt_auto_login_settings(request, existing=row.get("qmt_auto_login"))
     qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
@@ -10810,6 +10833,25 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
         _qmt_auto_login_update_session(row, {
             "enabled": False,
             "state": "disabled",
+            "qmt_dir": qmt_dir,
+            "restart_times": list(settings["restart_times"]),
+            "message": result["message"],
+            "error": "",
+        })
+        return result
+    deploy_targets = (strategy_deploy or {}).get("targets") if isinstance(strategy_deploy, dict) else None
+    if isinstance(deploy_targets, list) and any(
+        isinstance(target, dict) and target.get("state") == "waiting_exit"
+        for target in deploy_targets
+    ):
+        result.update({
+            "configured": False,
+            "deferred": True,
+            "message": "策略部署正在等待 QMT 完全退出，暂不自动启动；部署完成后再启动 QMT",
+        })
+        _qmt_auto_login_update_session(row, {
+            "enabled": True,
+            "state": "waiting_deploy",
             "qmt_dir": qmt_dir,
             "restart_times": list(settings["restart_times"]),
             "message": result["message"],
@@ -11962,9 +12004,10 @@ class LogCleanupManager(object):
         return info
 
     def run_once(self, reason="manual"):
+        configured_days = WEB_CONFIG.log_cleanup_info()["retention_days"]
         result = {
             "reason": reason,
-            "retention_days": LOG_RETENTION_DAYS,
+            "retention_days": configured_days,
             "started_at": time.time(),
             "started_at_text": time.strftime("%Y-%m-%d %H:%M:%S"),
             "local": None,
@@ -11974,13 +12017,13 @@ class LogCleanupManager(object):
             },
         }
         try:
-            result["local"] = cleanup_cfquant_local_logs(LOG_RETENTION_DAYS)
+            result["local"] = cleanup_cfquant_local_logs(configured_days)
         except Exception as e:
             result["local"] = {"error": str(e)}
             safe_print("cfquant local log cleanup failed: %s" % e)
 
         if WEB_CONFIG.qmt_userdata_log_cleanup_enabled():
-            result["qmt"] = self._cleanup_qmt_userdata_logs()
+            result["qmt"] = self._cleanup_qmt_userdata_logs(configured_days)
 
         result["finished_at"] = time.time()
         result["finished_at_text"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(result["finished_at"]))
@@ -12001,10 +12044,11 @@ class LogCleanupManager(object):
             self._wake_event.wait(delay)
             self._wake_event.clear()
 
-    def _cleanup_qmt_userdata_logs(self):
+    def _cleanup_qmt_userdata_logs(self, configured_days=None):
+        configured_days = configured_days or WEB_CONFIG.log_cleanup_info()["retention_days"]
         result = {
             "enabled": True,
-            "retention_days": LOG_RETENTION_DAYS,
+            "retention_days": configured_days,
             "bridges": [],
         }
         for bridge_id in current_bridges():
@@ -12018,7 +12062,7 @@ class LogCleanupManager(object):
                         bridge_id,
                         channel,
                         "cfquant.cleanup_qmt_logs",
-                        {"retention_days": LOG_RETENTION_DAYS},
+                        {"retention_days": configured_days},
                         timeout=8.0,
                     )
                     bridge_result["channels"][channel] = cleanup_result
@@ -12954,6 +12998,13 @@ class AccountDataCache(object):
             for subscriptions_by_key in (self._prewarm_subscriptions, self._subscriptions):
                 for key, sections in subscriptions_by_key.items():
                     combined.setdefault(key, set()).update(sections)
+            # Reclaim inactive snapshots continuously, including before market open.
+            # In-flight RPCs retain their version counters until completion.
+            for mapping in (self._entries, self._versions, self._dirty, self._last_attempt):
+                for section_key in list(mapping):
+                    key = section_key[:-1]
+                    if key not in self._refreshing and section_key[-1] not in combined.get(key, set()):
+                        mapping.pop(section_key, None)
             subscriptions = [
                 (bridge_id, channel, account_key, account_id, account_type, sorted(sections))
                 for (bridge_id, channel, account_key, account_id, account_type), sections in combined.items()
@@ -13061,7 +13112,7 @@ def submit_cftrader_order(body, method):
                 latency_ms=round((time.perf_counter() - started) * 1000, 3))
 
 
-def submit_order(body, credit_only=False):
+def submit_order(body, credit_only=False, asynchronous=False):
     account_id = str(body.get("account_id") or "").strip()
     account_type = normalize_account_type(body.get("account_type") or ("CREDIT" if credit_only else "STOCK"))
     if credit_only and account_type != "CREDIT":
@@ -13154,7 +13205,7 @@ def submit_order(body, credit_only=False):
         account_id,
         bridge_id,
         body.get("channel"),
-        "xttrader.order_stock",
+        "xttrader.order_stock_async" if asynchronous else "xttrader.order_stock",
         params,
         default_channel="trade",
         timeout=timeout,
@@ -13181,7 +13232,17 @@ def submit_order(body, credit_only=False):
         "result": route["result"],
         "latency_ms": round((time.perf_counter() - started) * 1000, 2),
         "order_remark": remark,
+        "asynchronous": bool(asynchronous),
     }
+
+
+def submit_async_order(body, credit_only=False):
+    """Submit one web order without waiting for a QMT order id.
+
+    The returned ``result.seq`` is a request correlation number.  The actual
+    order id is delivered later through the order callback stream.
+    """
+    return submit_order(body, credit_only=credit_only, asynchronous=True)
 
 
 def submit_credit_order(body):
@@ -13190,13 +13251,19 @@ def submit_credit_order(body):
     return submit_order(body, credit_only=True)
 
 
-def submit_typed_order(body, account_type):
+def submit_credit_async_order(body):
+    body = dict(body or {})
+    body.setdefault("account_type", "CREDIT")
+    return submit_async_order(body, credit_only=True)
+
+
+def submit_typed_order(body, account_type, asynchronous=False):
     body = dict(body or {})
     expected = normalize_account_type(account_type)
     if body.get("account_type") not in (None, "") and normalize_account_type(body.get("account_type")) != expected:
         raise ValueError("%s order requires account_type=%s" % (expected.lower(), expected))
     body["account_type"] = expected
-    return submit_order(body)
+    return submit_order(body, asynchronous=asynchronous)
 
 
 def submit_future_order(body):
@@ -13209,6 +13276,10 @@ def submit_future_option_order(body):
 
 def submit_stock_option_order(body):
     return submit_typed_order(body, "STOCK_OPTION")
+
+
+def submit_typed_async_order(body, account_type):
+    return submit_typed_order(body, account_type, asynchronous=True)
 
 
 def submit_batch_orders(body, credit_only=False):
@@ -13523,6 +13594,7 @@ def save_account_runtime_config(body):
         qmt_auto_login_apply_for_account(
             row,
             qmt_auto_login_request,
+            strategy_deploy=qmt_strategy_deploy,
         )
         if row_enabled else
         {"enabled": False, "message": "账号绑定已禁用，未配置 QMT 自动启动"}
@@ -13722,6 +13794,7 @@ def initialize_web_setup(body):
     qmt_auto_login = qmt_auto_login_apply_for_account(
         row,
         body.get("qmt_auto_login") if "qmt_auto_login" in body else None,
+        strategy_deploy=qmt_strategy_deploy,
     )
     runtime = ensure_account_runtime(row["mode"])
     web_auth = None
@@ -14231,7 +14304,8 @@ def log_cleanup_info():
 def save_log_cleanup_settings(body):
     body = body or {}
     WEB_CONFIG.set_log_cleanup_settings(
-        cleanup_qmt_userdata_logs=parse_bool(body.get("qmt_userdata_log_cleanup_enabled")),
+        cleanup_qmt_userdata_logs=parse_bool(body["qmt_userdata_log_cleanup_enabled"]) if "qmt_userdata_log_cleanup_enabled" in body else None,
+        retention_days=body.get("retention_days"),
     )
     LOG_CLEANUP.wake()
     return LOG_CLEANUP.status()
@@ -15481,14 +15555,24 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(submit_cftrader_order(body, parsed.path.rsplit("/", 1)[-1])))
             elif parsed.path == "/api/order":
                 self._write_json(ok(submit_order(body)))
+            elif parsed.path == "/api/order_async":
+                self._write_json(ok(submit_async_order(body)))
             elif parsed.path == "/api/credit/order":
                 self._write_json(ok(submit_credit_order(body)))
+            elif parsed.path == "/api/credit/order_async":
+                self._write_json(ok(submit_credit_async_order(body)))
             elif parsed.path == "/api/future/order":
                 self._write_json(ok(submit_future_order(body)))
+            elif parsed.path == "/api/future/order_async":
+                self._write_json(ok(submit_typed_async_order(body, "FUTURE")))
             elif parsed.path == "/api/future-option/order":
                 self._write_json(ok(submit_future_option_order(body)))
+            elif parsed.path == "/api/future-option/order_async":
+                self._write_json(ok(submit_typed_async_order(body, "FUTURE_OPTION")))
             elif parsed.path == "/api/stock-option/order":
                 self._write_json(ok(submit_stock_option_order(body)))
+            elif parsed.path == "/api/stock-option/order_async":
+                self._write_json(ok(submit_typed_async_order(body, "STOCK_OPTION")))
             elif parsed.path == "/api/orders/batch":
                 self._write_json(ok(submit_batch_orders(body)))
             elif parsed.path == "/api/credit/orders/batch":
@@ -15944,6 +16028,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(web_auth_status(self._provided_web_token(parsed))))
             elif parsed.path == "/api/log-cleanup":
                 self._write_json(ok(log_cleanup_info()))
+            elif parsed.path == "/api/log-files":
+                self._write_json(ok({"files": list_log_files(LOG_DIR, (query.get("date") or [time.strftime("%Y-%m-%d")])[0])}))
+            elif parsed.path == "/api/log-file":
+                self._write_json(ok(read_managed_log(LOG_DIR, (query.get("name") or [""])[0])))
             elif parsed.path == "/api/qmt-log-language":
                 self._write_json(ok(qmt_log_language_info()))
             elif parsed.path == "/api/qmt-scripts/source":
@@ -16422,7 +16510,7 @@ def spawn_reloaded_web_server(reload_request):
         if os.path.isfile(hidden_batch_runner):
             command = ["wscript.exe", hidden_batch_runner, restart_script]
         else:
-            command = ["cmd.exe", "/d", "/c", "call", restart_script]
+            command = ["cmd.exe", "/d", "/c", "call", restart_script, "--no-pause"]
     else:
         command = [runtime_python_executable(), os.path.abspath(__file__)]
     if host and not use_restart_script:

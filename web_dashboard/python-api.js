@@ -11,7 +11,9 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const inline = value => esc(value).replace(/`([^`]+)`/g, '<code>$1</code>');
   let root, nav, doc, legacy, article, current = 'guide', query = '', filter = '', codeIndex = 0;
-  let groupsExpanded = true;
+  // Keep the API directory compact when the documentation view is opened.
+  // Users can still expand every group with the toggle beside the search box.
+  let groupsExpanded = false;
   const codeValues = new Map();
   const codeBlock = (value, title) => {
     const id = String(++codeIndex);
