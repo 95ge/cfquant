@@ -14,6 +14,7 @@ from cfquant.qmt_strategy_deploy import (
     QmtStrategyManager, _account_binding, _atomic_write, _read_document,
     _write_json, _resolve_account_binding, account_qmt_roots, managed_source, normalize_strategy_settings,
     normalize_strategy_mode,
+    _strategy_slot_name,
 )
 from cfquant.qmt_strategy_package import _cipher, build_package
 from cfquant.qmt_strategy_runtime import _CqStrategyLease
@@ -27,6 +28,11 @@ ACCOUNT_KEY = "3____101____201____49____%s____" % ACCOUNT
 @pytest.mark.parametrize("value, expected", [("extreme", "lite"), ("ultimate", "lite"), ("pipe", "ctypes"), ("socket", "lttx")])
 def test_strategy_mode_aliases_are_canonical(value, expected):
     assert normalize_strategy_mode(value) == expected
+
+
+def test_strategy_name_contains_mode_and_shortens_long_account():
+    name = _strategy_slot_name("ACCOUNT-12345678901234567890", "lite")
+    assert name == "CFQ_67890_LITE"
 
 
 @pytest.fixture
@@ -261,7 +267,9 @@ def test_switch_and_delete_revoke_old_generation_and_disable_its_model(deploymen
     manager.configure(row, infos)
     new = next(iter(manager.jobs.values()))
     assert old["generation"] != new["generation"]
-    assert old["roles"][0]["name"] == new["roles"][0]["name"]
+    assert old["roles"][0]["name"] != new["roles"][0]["name"]
+    assert old["roles"][0]["name"].endswith("_CTYPES")
+    assert new["roles"][0]["name"].endswith("_LITE")
     assert json.loads(Path(old["control_path"]).read_text())["mode"] == "lite"
     running[0] = False
     manager.process_once()
@@ -289,7 +297,7 @@ def test_historical_generated_name_is_disabled_for_the_same_account(deployment):
     manager.configure(row, infos)
     manager.process_once()
     assert models(root)["CFQ_CTYPES_DEADBEEF_NORMAL"].getAttribute("startupAutorun") == "0"
-    assert next(iter(manager.jobs.values()))["roles"][0]["name"] == "CFQ_%s" % ACCOUNT
+    assert next(iter(manager.jobs.values()))["roles"][0]["name"] == "CFQ_%s_CTYPES" % ACCOUNT
 
 
 def test_independent_identity_for_two_accounts_in_one_qmt(deployment):
@@ -501,7 +509,7 @@ def test_market_routes_only_import_market_entries_and_use_their_own_stock(deploy
     for role in job["roles"]:
         model = models(root)[role["name"]]
         assert model.getAttribute("stock") == {"SH": "SH000300", "SZ": "SZ399001"}[role["role"]]
-    assert {role["name"] for role in job["roles"]} == {"CFQ_%s_SH" % ACCOUNT, "CFQ_%s_SZ" % ACCOUNT}
+    assert {role["name"] for role in job["roles"]} == {"CFQ_%s_CTYPES_SH" % ACCOUNT, "CFQ_%s_CTYPES_SZ" % ACCOUNT}
 
 
 def descriptor(tmp_path, generation, role="normal"):

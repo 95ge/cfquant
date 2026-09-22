@@ -188,17 +188,15 @@ def _model_items(document):
     return section, list(section.getElementsByTagName("item"))
 
 
-def _strategy_slot_name(account_id, role="normal"):
-    """Return a deterministic name shared by all modes for one account.
-
-    A mode switch must replace the existing model instead of creating a
-    second autorun model. Independent SH/SZ routes are the one case where a
-    single account receives distinct names.
-    """
+def _strategy_slot_name(account_id, mode="ctypes", role="normal"):
+    """Return a deterministic, mode-specific name in cfquant's namespace."""
     account = re.sub(r"[^A-Z0-9]+", "_", str(account_id or "").upper()).strip("_") or "ACCOUNT"
+    if len(account) > 20:
+        account = account[-5:]
+    mode = normalize_strategy_mode(mode).upper()
     market = str(role or "normal").upper()
     suffix = "_%s" % market if market in ("SH", "SZ") else ""
-    return ("CFQ_%s%s" % (account, suffix))[:64]
+    return ("CFQ_%s_%s%s" % (account, mode, suffix))[:64]
 
 
 def _is_managed_strategy_name(name):
@@ -533,7 +531,7 @@ class QmtStrategyManager:
                 for role in group["roles"]:
                     old_role = previous_roles.get(role["role"])
                     old_name = old_role.get("name") if isinstance(old_role, dict) else ""
-                    expected_name = _strategy_slot_name(row["account_id"], role["role"])
+                    expected_name = _strategy_slot_name(row["account_id"], mode, role["role"])
                     if old_name == expected_name:
                         role_names[role["role"]] = old_name
                     else:
