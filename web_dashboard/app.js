@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260922_04';
+const FRONTEND_VERSION = 'web_20260923_02';
 
 const state = {
   accountId: '',
@@ -2500,9 +2500,42 @@ function normalizeApiBaseUrl(value) {
   }
 }
 
+function isPrivateApiHost(host) {
+  host = String(host || '').trim().toLowerCase();
+  if (!host || host === 'localhost' || host === '::1' || host === '[::1]') return true;
+  if (/^127\./.test(host)) return true;
+  const parts = host.split('.').map((item) => Number(item));
+  if (parts.length !== 4 || parts.some((item) => !Number.isInteger(item) || item < 0 || item > 255)) return false;
+  return parts[0] === 10
+    || parts[0] === 192 && parts[1] === 168
+    || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31
+    || parts[0] === 169 && parts[1] === 254;
+}
+
+function apiBaseUrlForPage(value) {
+  const configured = normalizeApiBaseUrl(value);
+  const page = normalizeApiBaseUrl(window.location.origin);
+  try {
+    const configuredUrl = new URL(configured);
+    const pageUrl = new URL(page);
+    // A saved LAN address belongs to the machine that last ran Web. When the
+    // page is opened from another private/loopback address, follow the current
+    // page so changing the host IP does not leave the tester pointing at the
+    // old machine. Public/explicit remote URLs remain user-configurable.
+    if (isPrivateApiHost(configuredUrl.hostname)
+        && isPrivateApiHost(pageUrl.hostname)
+        && configuredUrl.hostname !== pageUrl.hostname) {
+      return page;
+    }
+  } catch (error) {
+    return page;
+  }
+  return configured;
+}
+
 function currentApiBaseUrl() {
   const input = $('apiBaseUrlInput');
-  if (input && input.value.trim()) return normalizeApiBaseUrl(input.value);
+  if (input && input.value.trim()) return apiBaseUrlForPage(input.value);
   return normalizeApiBaseUrl(window.location.origin);
 }
 
@@ -4616,7 +4649,10 @@ function renderServerAccessLegacy(info) {
 
   const baseInput = $('apiBaseUrlInput');
   if (baseInput && !baseInput.value.trim()) {
-    baseInput.value = normalizeApiBaseUrl(state.serverAccess.api_base_url || window.location.origin);
+    baseInput.value = apiBaseUrlForPage(state.serverAccess.api_base_url || window.location.origin);
+  } else if (baseInput && baseInput.value.trim()) {
+    const effectiveBaseUrl = apiBaseUrlForPage(baseInput.value);
+    if (effectiveBaseUrl !== normalizeApiBaseUrl(baseInput.value)) baseInput.value = effectiveBaseUrl;
   }
   updateApiRequestPreview();
 }
@@ -4732,7 +4768,10 @@ function renderServerAccess(info) {
   const baseInput = $('apiBaseUrlInput');
   if (baseInput && !baseInput.value.trim()) {
     const currentUrl = state.serverAccess.api_base_url || state.serverAccess.local_url || window.location.origin;
-    baseInput.value = normalizeApiBaseUrl(currentUrl);
+    baseInput.value = apiBaseUrlForPage(currentUrl);
+  } else if (baseInput && baseInput.value.trim()) {
+    const effectiveBaseUrl = apiBaseUrlForPage(baseInput.value);
+    if (effectiveBaseUrl !== normalizeApiBaseUrl(baseInput.value)) baseInput.value = effectiveBaseUrl;
   }
   if (!authEnabled) {
     clearWebAuthToken();
@@ -10369,7 +10408,7 @@ async function loadConfigLegacy() {
     const savedBaseUrl = data.server_access && data.server_access.api_base_url
       ? data.server_access.api_base_url
       : window.location.origin;
-    apiBaseInput.value = normalizeApiBaseUrl(savedBaseUrl);
+    apiBaseInput.value = apiBaseUrlForPage(savedBaseUrl);
   }
   renderServerAccess(data.server_access);
   renderUserProfile(data.user_profile);
@@ -10430,7 +10469,7 @@ async function loadConfig() {
     const savedBaseUrl = data.server_access && data.server_access.api_base_url
       ? data.server_access.api_base_url
       : window.location.origin;
-    apiBaseInput.value = normalizeApiBaseUrl(savedBaseUrl);
+    apiBaseInput.value = apiBaseUrlForPage(savedBaseUrl);
   }
   renderServerAccess(data.server_access);
   renderUserProfile(data.user_profile);
@@ -14027,4 +14066,3 @@ async function boot() {
 }
 
 boot().catch((error) => log('启动失败', { error: error.message }));
-
