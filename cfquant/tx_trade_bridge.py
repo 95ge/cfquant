@@ -3067,6 +3067,7 @@ class TxTradeBridge(object):
                 "order_sysid": self._get_value(obj, "m_strOrderSysID"),
                 "order_type": self._stock_order_type(obj),
                 "order_time": self._first_value(obj, (
+                    "time",
                     "order_time",
                     "entrust_time",
                     "insert_time",
@@ -3163,6 +3164,7 @@ class TxTradeBridge(object):
                 "contract_no": self._first_value(obj, ("contract_no", "m_strCompactNo", "m_strContractNo", "m_strCompactID")),
                 "stock_code1": self._first_value(obj, ("stock_code1", "m_stockCode", "m_strStockCode1", "m_strUnderCode")),
                 "trade_time": self._first_value(obj, (
+                    "time",
                     "trade_time",
                     "deal_time",
                     "m_strTradeTime",

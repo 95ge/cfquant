@@ -1109,6 +1109,7 @@ class CfquantQmtBridge(object):
                 "order_sysid": self._get_value(obj, "m_strOrderSysID"),
                 "order_type": self._stock_order_type(obj),
                 "order_time": self._first_value(obj, (
+                    "time",
                     "order_time",
                     "entrust_time",
                     "insert_time",
@@ -1197,6 +1198,7 @@ class CfquantQmtBridge(object):
                 "order_sysid": self._get_value(obj, "m_strOrderSysID"),
                 "traded_id": self._first_value(obj, ("m_strTradeID", "m_strDealID", "m_nTradeID", "m_nDealID")),
                 "trade_time": self._first_value(obj, (
+                    "time",
                     "trade_time",
                     "deal_time",
                     "m_strTradeTime",

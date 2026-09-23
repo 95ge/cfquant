@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import datetime
 import re
 
 from . import xtconstant
@@ -198,29 +199,60 @@ def _coerce_bool(value, default=False):
     return default
 
 
-def _coerce_time_int(value, default=0):
-    """Convert QMT's string trade/order time to xtquant's integer form."""
+def _coerce_timestamp(value, date_value=None, default=0):
+    """Convert QMT's display time to MiniQMT's Unix timestamp in seconds."""
     if value is None or isinstance(value, bool):
         return default
     if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value) if value.is_integer() else default
-    text = str(value).strip()
+        if value >= 100000000000:
+            return value // 1000
+        if value >= 100000000:
+            return value
+        text = str(value)
+    elif isinstance(value, float):
+        if value >= 100000000000:
+            return int(value / 1000)
+        if value >= 100000000:
+            return int(value)
+        text = str(int(value)) if value.is_integer() else str(value)
+    else:
+        text = str(value).strip()
     if not text:
         return default
-    if re.fullmatch(r"[+-]?\d+", text):
+    if re.fullmatch(r"[+-]?\d{9,}", text):
         try:
-            return int(text)
+            number = int(text)
+            return number // 1000 if number >= 100000000000 else number
         except ValueError:
             return default
     digits = re.sub(r"\D", "", text)
     if not digits:
         return default
-    try:
-        return int(digits)
-    except ValueError:
+    # HHMMSS / HHMMSSmmm values need the trading date before they can
+    # represent the same Unix timestamp exposed by native xtquant.
+    if len(digits) not in (5, 6, 8, 9):
         return default
+    if len(digits) == 5:
+        digits = "0" + digits
+    hour, minute, second = int(digits[:2]), int(digits[2:4]), int(digits[4:6])
+    microsecond = int((digits[6:] + "000000")[:6]) if len(digits) > 6 else 0
+    date_text = re.sub(r"\D", "", str(date_value or ""))
+    if len(date_text) != 8:
+        return default
+    try:
+        dt = datetime.datetime.strptime(date_text, "%Y%m%d").replace(
+            hour=hour, minute=minute, second=second, microsecond=microsecond,
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8)),
+        )
+        return int(dt.timestamp())
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _time_field_timestamp(data, time_names, date_names):
+    value = _first_value(data, time_names, default=None)
+    date_value = _first_value(data, date_names, default=None)
+    return _coerce_timestamp(value, date_value)
 
 
 def normalize_order_price_type(value, market=""):
@@ -526,6 +558,7 @@ class XtOrder(DictObject):
             "m_strOrderID",
         ), default="")
         _set_first(data, "order_time", (
+            "time",
             "entrust_time",
             "insert_time",
             "m_strOrderTime",
@@ -600,7 +633,11 @@ class XtOrder(DictObject):
         data["stock_code"] = _coerce_text(data.get("stock_code"))
         data["order_id"] = _coerce_int(data.get("order_id"), -1)
         data["order_sysid"] = _coerce_text(data.get("order_sysid"))
-        data["order_time"] = _coerce_time_int(data.get("order_time"))
+        data["order_time"] = _time_field_timestamp(
+            data,
+            ("order_time", "time", "entrust_time", "insert_time", "m_strOrderTime", "m_strEntrustTime", "m_strInsertTime", "m_nOrderTime", "m_nEntrustTime", "m_nInsertTime"),
+            ("order_date", "entrust_date", "m_strOrderDate", "m_strEntrustDate", "m_strTradingDay", "m_nOrderDate", "m_nEntrustDate"),
+        )
         for name in ("order_type", "order_volume", "price_type", "traded_volume", "order_status", "direction", "offset_flag"):
             data[name] = _coerce_int(data.get(name))
         for name in ("price", "traded_price"):
@@ -636,7 +673,7 @@ class XtCreditOrder(XtOrder):
             account_id=_coerce_text(data.get("account_id")),
             stock_code=_coerce_text(data.get("stock_code")),
             order_id=_coerce_int(data.get("order_id"), -1),
-            order_time=_coerce_time_int(data.get("order_time")),
+            order_time=data.get("order_time", 0),
             order_type=_coerce_int(data.get("order_type")),
             order_volume=_coerce_int(data.get("order_volume")),
             price_type=_coerce_int(data.get("price_type")),
@@ -699,6 +736,7 @@ class XtTrade(DictObject):
             "m_nDealID",
         ), default="")
         _set_first(data, "traded_time", (
+            "time",
             "trade_time",
             "deal_time",
             "m_strTradeTime",
@@ -763,7 +801,11 @@ class XtTrade(DictObject):
         data["stock_code"] = _coerce_text(data.get("stock_code"))
         data["order_type"] = _coerce_int(data.get("order_type"))
         data["traded_id"] = _coerce_text(data.get("traded_id"))
-        data["traded_time"] = _coerce_time_int(data.get("traded_time"))
+        data["traded_time"] = _time_field_timestamp(
+            data,
+            ("traded_time", "time", "trade_time", "deal_time", "m_strTradeTime", "m_strDealTime", "m_nTradeTime", "m_nDealTime"),
+            ("trade_date", "deal_date", "m_strTradeDate", "m_strDealDate", "m_strTradingDay", "m_nTradeDate", "m_nDealDate"),
+        )
         for name in ("traded_volume",):
             data[name] = _coerce_int(data.get(name))
         for name in ("traded_price", "traded_amount", "commission"):
@@ -803,7 +845,7 @@ class XtCreditDeal(DictObject):
             account_id=_coerce_text(data.get("account_id")),
             stock_code=_coerce_text(data.get("stock_code")),
             traded_id=_coerce_text(data.get("traded_id")),
-            traded_time=_coerce_time_int(data.get("traded_time")),
+            traded_time=data.get("traded_time", 0),
             traded_price=_coerce_float(data.get("traded_price")),
             traded_volume=_coerce_int(data.get("traded_volume")),
             order_id=_coerce_int(data.get("order_id"), -1),
