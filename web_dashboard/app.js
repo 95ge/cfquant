@@ -3266,6 +3266,8 @@ function renderSystemInfo(info = null, versionInfo = null) {
     webVersion ? `Web ${webVersion}` : '',
     frontendVersion ? `静态资源 ${frontendVersion}` : '',
     FRONTEND_VERSION ? `浏览器 ${FRONTEND_VERSION}` : '',
+    (merged.short_commit || merged.git_commit) ? `Git ${merged.short_commit || String(merged.git_commit).slice(0, 7)}` : '',
+    merged.build_version ? `Build ${merged.build_version}` : '',
   ].filter(Boolean).join(' / ');
   const updatedAt = merged.version_updated_at
     || merged.web_version_date

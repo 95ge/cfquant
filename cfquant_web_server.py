@@ -111,6 +111,7 @@ from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pa
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
 from cfquant.runtime_report import module_source_state
 from cfquant.version import WEB_VERSION, __version__ as CORE_VERSION
+from cfquant.build_info import build_identity
 from tx import txl
 
 
@@ -216,6 +217,7 @@ def current_core_version_info():
     version = file_version or CORE_VERSION
     source = "cfquant/version.py" if file_version else "imported cfquant.version"
     checked_at = time.time()
+    identity = build_identity(version, _SOURCE_ROOT)
     return {
         "version": version,
         "source": source,
@@ -226,6 +228,7 @@ def current_core_version_info():
         "import_stale": bool(file_version and file_version != CORE_VERSION),
         "checked_at": checked_at,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(checked_at)),
+        **identity,
     }
 
 
@@ -14656,6 +14659,9 @@ def _local_project_version_info():
         "import_stale": core_info["import_stale"],
         "checked_at": core_info["checked_at"],
         "checked_at_text": core_info["checked_at_text"],
+        "git_commit": core_info.get("git_commit", ""),
+        "short_commit": core_info.get("short_commit", ""),
+        "build_version": core_info.get("build_version", version),
         "changelog_path": changelog_path,
         "matches_changelog": (changelog.get("version") or "") == version if changelog.get("version") else None,
         "changelog": changelog,
@@ -14682,6 +14688,7 @@ def project_system_info(version_info=None):
     stop_script = project_script_path("stop_cfquant.bat")
     project_dir = os.path.dirname(start_script) if os.path.isfile(start_script) else BASE_DIR
     checked_at = time.time()
+    identity = build_identity(core_version, _SOURCE_ROOT)
     return {
         "project_dir": os.path.abspath(project_dir),
         "base_dir": BASE_DIR,
@@ -14708,6 +14715,9 @@ def project_system_info(version_info=None):
         "core_version": core_version,
         "web_version": web_version,
         "frontend_version": frontend_version,
+        "git_commit": local.get("git_commit", ""),
+        "short_commit": local.get("short_commit", ""),
+        "build_version": local.get("build_version", core_version),
         "changelog_version": changelog_version,
         "version_updated_at": version_updated_at,
         "core_version_date": version_date_text(core_version),
@@ -14715,6 +14725,7 @@ def project_system_info(version_info=None):
         "changelog_path": local.get("changelog_path") or "",
         "checked_at": checked_at,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(checked_at)),
+        **identity,
     }
 
 
@@ -14831,6 +14842,9 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
         "core_version_import_stale": bool(local.get("import_stale")),
         "web_version": WEB_VERSION,
         "frontend_version": WEB_VERSION,
+        "git_commit": local.get("git_commit", ""),
+        "short_commit": local.get("short_commit", ""),
+        "build_version": local.get("build_version", core_version),
         "qmt_runtime": qmt_runtime,
         "qmt_runtime_version": qmt_runtime_version,
         "qmt_runtime_reported": bool(qmt_runtime.get("reported")),
