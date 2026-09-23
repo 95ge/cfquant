@@ -14862,11 +14862,13 @@ def project_version_info(include_remote=False, force=False, repo_url=None, ref=N
     }
     if include_remote:
         remote = _remote_project_version_info(repo_url=repo_url, ref=ref, force=force)
-        comparison = _compare_project_versions(core_version, remote.get("core_version") or remote.get("version"))
+        core_comparison = _compare_project_versions(core_version, remote.get("core_version") or remote.get("version"))
+        comparison = core_comparison
         web_comparison = _compare_project_versions(WEB_VERSION, remote.get("web_version")) if remote.get("web_version") else "unknown"
         if web_comparison in ("newer", "different") and comparison in ("same", "unknown"):
             comparison = web_comparison
         data["remote"] = remote
+        data["core_comparison"] = core_comparison
         data["comparison"] = comparison
         data["web_comparison"] = web_comparison
         data["update_available"] = comparison in ("newer", "different") or web_comparison in ("newer", "different")

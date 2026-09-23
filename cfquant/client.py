@@ -6,6 +6,7 @@ import threading
 import time
 
 from .config import get_config
+from .callback_dispatcher import CallbackDispatcher, dispatch_callbacks
 from .protocol import decode_value, dumps_message, loads_message, new_id, pack_request
 
 
@@ -114,9 +115,11 @@ class LTtxRpcClient(object):
         self._pending_lock = threading.RLock()
         self._started = False
         self._recv_thread = None
+        self._event_dispatcher = CallbackDispatcher(self._dispatch_event)
 
     def start(self):
         with self._lock:
+            self._event_dispatcher.check_request()
             if self._started:
                 return
             txl = self._load_txl()
@@ -124,12 +127,14 @@ class LTtxRpcClient(object):
             self._tx.start_tx()
             self._tx.start_txg(self.client_id)
             self._started = True
-            self._recv_thread = threading.Thread(target=self._recv_loop)
+            generation = self._event_dispatcher.start()
+            self._recv_thread = threading.Thread(target=self._recv_loop, args=(self._tx, generation))
             self._recv_thread.daemon = True
             self._recv_thread.start()
 
     def close(self):
         with self._lock:
+            self._event_dispatcher.stop()
             self._started = False
             tx = self._tx
             self._tx = None
@@ -161,12 +166,13 @@ class LTtxRpcClient(object):
             request_id=request_id,
             timeout=effective_timeout,
         )
-        self.start()
         q = queue.Queue(maxsize=1)
-        with self._pending_lock:
-            self._pending[request_id] = q
         try:
-            self._push("request", raw, request_channel or self.request_channel)
+            with self._lock:
+                self.start()
+                with self._pending_lock:
+                    self._pending[request_id] = q
+                self._push("request", raw, request_channel or self.request_channel)
             try:
                 msg = q.get(timeout=effective_timeout)
             except queue.Empty:
@@ -194,11 +200,11 @@ class LTtxRpcClient(object):
         if callback in callbacks:
             callbacks.remove(callback)
 
-    def _recv_loop(self):
+    def _recv_loop(self, expected_tx, generation):
         while self._started:
             try:
-                tx = self._tx
-                if tx is None:
+                tx = expected_tx
+                if tx is None or tx is not self._tx:
                     break
                 raw = tx.Q.get()
                 if raw is None:
@@ -206,44 +212,27 @@ class LTtxRpcClient(object):
                 msg = loads_message(raw)
                 if not msg:
                     continue
-                msg_type = msg.get("type")
-                if msg_type == "response":
-                    with self._pending_lock:
-                        q = self._pending.pop(msg.get("id"), None)
-                    if q:
-                        q.put(msg)
-                elif msg_type == "event":
-                    self._dispatch_event(msg)
+                with self._lock:
+                    if not self._started or tx is not self._tx:
+                        return
+                    msg_type = msg.get("type")
+                    if msg_type == "response":
+                        with self._pending_lock:
+                            q = self._pending.pop(msg.get("id"), None)
+                        if q:
+                            q.put(msg)
+                    elif msg_type == "event":
+                        self._event_dispatcher.submit(generation, msg)
             except Exception:
                 time.sleep(0.05)
                 if not self._started:
                     break
+        with self._lock:
+            if self._tx is expected_tx:
+                self.close()
 
     def _dispatch_event(self, msg):
-        event = msg.get("event")
-        data = decode_value(msg.get("data"))
-        full_msg = dict(msg)
-        full_msg["data"] = data
-        for callback in list(self._callbacks.get("__event__", [])):
-            try:
-                callback(full_msg)
-            except Exception:
-                pass
-        for callback in list(self._callbacks.get(event, [])):
-            try:
-                callback(data)
-            except Exception:
-                pass
-        if event and event.startswith("quote:"):
-            quote_msg = dict(msg)
-            quote_msg["data"] = data
-            if quote_msg.get("subscription_id") is not None and quote_msg.get("subscribe_id") is None:
-                quote_msg["subscribe_id"] = quote_msg.get("subscription_id")
-            for callback in list(self._callbacks.get("quote", [])):
-                try:
-                    callback(quote_msg)
-                except Exception:
-                    pass
+        dispatch_callbacks(self._callbacks, msg, self._event_dispatcher.is_current_callback)
 
     def _push(self, key, payload, channel):
         tx = self._tx

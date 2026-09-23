@@ -1296,10 +1296,10 @@ body.binding-dialog-open {
 .version-badge {
   width: 100%;
   max-width: 100%;
-  min-height: 98px;
+  min-height: 0;
   display: grid;
-  gap: 7px;
-  padding: 10px 11px 11px;
+  gap: 6px;
+  padding: 11px 11px 10px;
   border: 1px solid rgba(139, 158, 180, 0.32);
   border-radius: 7px;
   background: #13202c;
@@ -1356,17 +1356,30 @@ body.binding-dialog-open {
 }
 
 .version-badge-value {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.version-badge-latest {
+  padding-top: 7px;
+  border-top: 1px solid rgba(139, 158, 180, 0.18);
 }
 
 .version-badge-value > span {
+  flex: 0 0 46px;
   color: #8da0b4;
   font-size: 11px;
   line-height: 1.15;
 }
 
 .version-badge-value strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #f4f7fa;
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 15px;
@@ -1376,12 +1389,15 @@ body.binding-dialog-open {
 }
 
 .version-badge-entry {
+  margin-top: 2px;
   color: #c2ccd6;
   font-size: 11px;
   line-height: 1.3;
 }
 
 .version-badge small {
+  padding-top: 2px;
+  border-top: 1px solid rgba(139, 158, 180, 0.12);
   color: #899aab;
   font-size: 10px;
   line-height: 1.25;
@@ -3120,6 +3136,40 @@ th.num .sort-header {
   width: auto;
 }
 
+.callback-event-filters {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+#callbackEventFilters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+
+#callbackEventFilters label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+#callbackEventFilters input {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.callback-event-filters small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
 .callback-table td {
   height: auto;
   min-height: 38px;
@@ -3130,17 +3180,23 @@ th.num .sort-header {
 
 .callback-table td strong,
 .callback-table td small,
-.order-callback-cell small {
+.order-callback-cell small,
+.order-status-cell small {
   display: block;
 }
 
 .callback-table td small,
 .callback-raw-event,
-.order-callback-cell small {
+.order-callback-cell small,
+.order-status-reason {
   margin-top: 3px;
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
+}
+
+.order-status-reason {
+  color: #d89595;
 }
 
 .callback-event-pill,

@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260923_02';
+const FRONTEND_VERSION = 'web_20260923_03';
 
 const state = {
   accountId: '',
@@ -36,6 +36,7 @@ const state = {
   cfquantOrderIds: new Set(),
   cfquantOrderRemarks: new Set(),
   callbackEvents: [],
+  callbackEventFilters: null,
   callbackLastEventAt: '',
   callbackLastEventName: '',
   lttxStatus: null,
@@ -2969,6 +2970,7 @@ function renderProjectVersionLegacyRuntime(info) {
   const widget = $('versionWidget');
   const badge = $('versionBadge');
   const label = $('versionBadgeLabel');
+  const latestLabel = $('versionBadgeLatestLabel');
   const badgeState = $('versionBadgeState');
   const badgeEntry = $('versionBadgeEntry');
   const badgeMeta = $('versionBadgeMeta');
@@ -3024,6 +3026,7 @@ function renderProjectVersionLegacyRuntime(info) {
   const remoteVersionText = remote.web_version
     ? `${remote.version || remote.core_version || '--'} / ${remote.web_version}`
     : (remote.version || remote.core_version || '--');
+  if (latestLabel) latestLabel.textContent = remoteVersionText;
   const compareText = versionCompareText(qmtComparison, remote.error);
   if (checkState) {
     checkState.textContent = state.versionCheckInFlight
@@ -3140,19 +3143,25 @@ function renderProjectVersion(info) {
   const currentVersion = data.core_version || data.current_version || (data.local && data.local.version) || '--';
   const remote = data.remote || {};
   const latestVersion = remote.core_version || remote.version || '--';
-  const comparison = data.comparison || 'unknown';
+  const comparison = data.core_comparison || (currentVersion !== '--' && currentVersion === latestVersion ? 'same' : data.comparison) || 'unknown';
+  const webComparison = data.web_comparison || 'unknown';
   const checking = state.versionCheckInFlight;
-  const updateAvailable = Boolean(data.update_available || comparison === 'newer' || comparison === 'different');
+  const coreUpdateAvailable = comparison === 'newer' || comparison === 'different';
+  const webUpdateAvailable = webComparison === 'newer' || webComparison === 'different';
+  const updateAvailable = coreUpdateAvailable || webUpdateAvailable;
   const remoteError = remote.error || '';
   const statusText = checking
     ? '正在检查版本'
-    : (remoteError ? '版本检查失败' : (updateAvailable ? '发现新版本' : (comparison === 'same' ? '已是最新版本' : '版本信息')));
+    : (remoteError ? '版本检查失败'
+      : (coreUpdateAvailable ? '发现新版本'
+        : (webUpdateAvailable ? 'Web 版本有更新' : (comparison === 'same' ? '已是最新版本' : '版本信息'))));
   const statusClass = checking
     ? 'status-checking'
-    : (remoteError ? 'status-error' : projectVersionClass(data));
+    : (remoteError ? 'status-error' : projectVersionClass({ ...data, comparison: webUpdateAvailable ? webComparison : comparison }));
   const widget = $('versionWidget');
   const badge = $('versionBadge');
   const label = $('versionBadgeLabel');
+  const latestLabel = $('versionBadgeLatestLabel');
   const badgeState = $('versionBadgeState');
   const badgeEntry = $('versionBadgeEntry');
   const badgeMeta = $('versionBadgeMeta');
@@ -3161,14 +3170,17 @@ function renderProjectVersion(info) {
   const alert = $('versionAlert');
 
   if (label) label.textContent = currentVersion;
+  if (latestLabel) latestLabel.textContent = latestVersion;
   if (badgeState) badgeState.textContent = statusText;
-  if (badgeEntry) badgeEntry.textContent = updateAvailable ? '点击更新' : '点击查看版本';
+  if (badgeEntry) badgeEntry.textContent = coreUpdateAvailable || webUpdateAvailable ? '点击查看更新' : '点击查看版本';
   if (badgeMeta) {
     badgeMeta.textContent = checking
       ? '正在连接官网版本源'
-      : (remoteError ? '稍后可重新检查' : (latestVersion !== '--' ? `最新版本 ${latestVersion}` : '点击检查最新版本'));
+      : (remoteError ? '稍后可重新检查'
+        : (webUpdateAvailable && !coreUpdateAvailable ? '查看详情中的 Web 版本差异'
+          : (latestVersion !== '--' ? `版本来源：${remoteUpdateSourceLabel(remote)}` : '点击检查最新版本')));
   }
-  if (badge) badge.setAttribute('aria-label', `当前版本 ${currentVersion}，${statusText}`);
+  if (badge) badge.setAttribute('aria-label', `当前版本 ${currentVersion}，最新版本 ${latestVersion}，${statusText}`);
   if (checkState) checkState.textContent = statusText;
   if (widget) {
     widget.classList.remove(
@@ -3192,14 +3204,14 @@ function renderProjectVersion(info) {
   const remoteDetail = remoteError
     ? `检查失败：${remoteError}`
     : (latestVersion !== '--' ? remoteUpdateDetail(remote, data.repo_url || DEFAULT_UPDATE_REPO_URL) : '尚未检查官网版本');
-  const compareText = projectUpdateCompareText(comparison, remoteError);
-  const updateDisabled = projectUpdateBusy() ? ' disabled' : '';
+  const compareText = webUpdateAvailable && !coreUpdateAvailable ? 'Web 版本有更新' : projectUpdateCompareText(comparison, remoteError);
+  const updateDisabled = projectUpdateBusy() || checking || remoteError || !updateAvailable ? ' disabled' : '';
   const recheckDisabled = checking ? ' disabled' : '';
   const heroClass = checking ? 'is-checking' : (remoteError ? 'is-wait' : (updateAvailable ? 'is-stale' : 'is-ok'));
   const changelog = remote.changelog || {};
   body.innerHTML = `
     <div class="version-primary-action">
-      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>立即更新</button>
+      <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>${updateAvailable ? '立即更新' : '暂无可用更新'}</button>
     </div>
     <section class="version-runtime-hero ${heroClass}">
       <div class="version-runtime-head">
@@ -3226,6 +3238,14 @@ function renderProjectVersion(info) {
           <strong>${esc(compareText)}</strong>
         </div>
         <small>${esc(remoteDetail)}</small>
+      </div>
+      <div class="version-compare-row">
+        <div><span>当前 Web 版本</span><strong>${esc(data.web_version || '--')}</strong></div>
+        <small>当前服务加载的 Web 构建</small>
+      </div>
+      <div class="version-compare-row">
+        <div><span>最新 Web 版本</span><strong>${esc(remote.web_version || '--')}</strong></div>
+        <small>发布包中的 Web 构建</small>
       </div>
     </section>
     ${remote.version || remote.error ? `<div class="version-log-wrap">${renderVersionLog(changelog, '版本说明')}</div>` : ''}
@@ -10976,6 +10996,24 @@ function orderStatus(row) {
   return row.m_strStatusMsg || '';
 }
 
+function orderStatusReason(row) {
+  return firstField(row, [
+    'status_msg',
+    'm_strStatusMsg',
+    'error_msg',
+    'm_strErrorMsg',
+    'm_strCancelInfo',
+    'cancel_info',
+    'message',
+    'msg',
+  ]);
+}
+
+function isJunkOrder(row) {
+  const value = rawOrderStatus(row);
+  return Number(value) === 57 || String(value || '').trim().toUpperCase() === 'ORDER_JUNK';
+}
+
 const ORDER_TIME_FIELDS = [
   'order_time',
   'entrust_time',
@@ -11320,13 +11358,75 @@ function callbackEventName(event) {
   return callbackEventRawName(event).toLowerCase();
 }
 
+const CALLBACK_FILTER_OPTIONS = [
+  ['on_stock_order', '委托'],
+  ['on_stock_trade', '成交'],
+  ['on_order_error', '下单错误'],
+  ['on_cancel_error', '撤单错误'],
+  ['on_order_stock_async_response', '异步下单响应'],
+  ['on_cancel_order_stock_async_response', '异步撤单响应'],
+  ['on_stock_position', '持仓'],
+  ['on_stock_asset', '资金'],
+  ['on_account_status', '账号状态'],
+  ['other', '其他事件'],
+];
+const CALLBACK_FILTER_STORAGE_KEY = 'cfquant.callbackEventFilters.v1';
+
+function callbackFilterKey(eventName) {
+  const name = String(eventName || '').toLowerCase().replace(/^trader:/, '');
+  return CALLBACK_FILTER_OPTIONS.some(([key]) => key === name) ? name : 'other';
+}
+
+function callbackEventFilters() {
+  if (!state.callbackEventFilters) {
+    let saved = {};
+    try {
+      saved = JSON.parse(localStorage.getItem(CALLBACK_FILTER_STORAGE_KEY) || '{}') || {};
+    } catch (_) { /* Use defaults when browser storage is unavailable. */ }
+    state.callbackEventFilters = Object.fromEntries(CALLBACK_FILTER_OPTIONS.map(([key]) => [
+      key, typeof saved[key] === 'boolean' ? saved[key] : key !== 'on_stock_asset',
+    ]));
+  }
+  return state.callbackEventFilters;
+}
+
+function callbackEventVisible(row) {
+  return callbackEventFilters()[callbackFilterKey(row.type)];
+}
+
+function visibleCallbackEvents() {
+  return state.callbackEvents.filter(callbackEventVisible).slice(0, 200);
+}
+
+function updateCallbackCount() {
+  const count = $('callbackCount');
+  if (count) count.textContent = `显示 ${visibleCallbackEvents().length} 条回调`;
+}
+
+function wireCallbackFilters() {
+  const container = $('callbackEventFilters');
+  if (!container) return;
+  const filters = callbackEventFilters();
+  container.innerHTML = CALLBACK_FILTER_OPTIONS.map(([key, label]) =>
+    `<label><input type="checkbox" data-callback-filter="${key}"${filters[key] ? ' checked' : ''}>${esc(label)}</label>`
+  ).join('');
+  container.addEventListener('change', (event) => {
+    const key = event.target.dataset.callbackFilter;
+    if (!CALLBACK_FILTER_OPTIONS.some(([name]) => name === key)) return;
+    filters[key] = event.target.checked;
+    try { localStorage.setItem(CALLBACK_FILTER_STORAGE_KEY, JSON.stringify(filters)); } catch (_) { /* Keep the session preference. */ }
+    renderCallbacks();
+  });
+}
+
 function callbackEventLabel(eventName) {
   const name = String(eventName || '').toLowerCase();
   if (name.includes('on_order_error')) return '下单错误';
   if (name.includes('on_cancel_error')) return '撤单错误';
   if (name.includes('on_stock_trade') || name.includes('deal')) return '成交回调';
   if (name.includes('on_stock_order')) return '委托回调';
-  if (name.includes('on_stock_asset') || name.includes('account')) return '资金回调';
+  if (name.includes('on_account_status')) return '账号状态';
+  if (name.includes('on_stock_asset')) return '资金回调';
   if (name.includes('on_stock_position') || name.includes('position')) return '持仓回调';
   if (name.includes('async_response')) return '异步响应';
   return eventName || '回调事件';
@@ -11444,6 +11544,8 @@ function normalizeCallbackEvent(event) {
     code: callbackStockCode(data),
     name: firstField(data, ['instrument_name', 'm_strInstrumentName', 'stock_name', 'name']),
     order_id: callbackOrderId(data),
+    order_status: rawOrderStatus(data),
+    status_msg: firstField(data, ['status_msg', 'm_strStatusMsg', 'error_msg', 'm_strErrorMsg', 'm_strCancelInfo', 'cancel_info']),
     traded_id: tradeId,
     trade_time: tradeTime,
     trade_date: tradeDate,
@@ -11527,13 +11629,18 @@ function appendServerCallbackEvent(event, options = {}) {
   if (seq) state.callbackSeq = Math.max(state.callbackSeq, seq);
   const row = normalizeCallbackEvent(event);
   state.callbackEvents.unshift(row);
-  state.callbackEvents = state.callbackEvents.slice(0, 200);
+  // Bound each event category separately so frequent assets cannot evict orders.
+  const counts = {};
+  state.callbackEvents = state.callbackEvents.filter((item) => {
+    const key = callbackFilterKey(item.type);
+    counts[key] = (counts[key] || 0) + 1;
+    return counts[key] <= 200;
+  });
   state.callbackLastEventAt = row.time;
   state.callbackLastEventName = row.label;
-  const count = $('callbackCount');
-  if (count) count.textContent = `${state.callbackEvents.length} 条真实回调`;
+  updateCallbackCount();
   updateCallbackStatusUi();
-  if (options.render !== false && state.currentView === 'callbacks') {
+  if (options.render !== false && state.currentView === 'callbacks' && callbackEventVisible(row)) {
     renderCallbacks();
   }
   return row;
@@ -11646,7 +11753,7 @@ function handleOrderCallbackEvent(event, options = {}) {
   } else if (!merged && callbackEventIsTradeRelated(event)) {
     scheduleOrderCallbackRefresh('orders');
   }
-  if (options.render !== false && state.currentView === 'callbacks') {
+  if (options.render !== false && state.currentView === 'callbacks' && callbackEventVisible(row)) {
     renderCallbacks();
   }
 }
@@ -11785,12 +11892,11 @@ async function refreshCallbacks() {
 }
 
 function renderCallbacks() {
-  const count = $('callbackCount');
-  if (count) count.textContent = `${state.callbackEvents.length} 条真实回调`;
+  updateCallbackCount();
   updateCallbackStatusUi();
   const body = $('callbacksBody');
   if (!body) return;
-  const html = state.callbackEvents.map((row) => `<tr>
+  const html = visibleCallbackEvents().map((row) => `<tr>
     <td>${esc(row.time)}</td>
     <td>
       <span class="callback-event-pill ${esc(row.className || '')}">${esc(row.label)}</span>
@@ -11826,7 +11932,7 @@ function renderCallbacks() {
       </details>
     </td>
   </tr>`).join('');
-  body.innerHTML = html || '<tr><td colspan="11">暂无真实回调事件。请确认 QMT 端已启用交易主推并加载 cfquant 回调桥。</td></tr>';
+  body.innerHTML = html || `<tr><td colspan="11">${state.callbackEvents.length ? '当前筛选下暂无回调，请勾选其他事件类型。' : '暂无真实回调事件。请确认 QMT 端已启用交易主推并加载 cfquant 回调桥。'}</td></tr>`;
 }
 
 function renderOrders(section) {
@@ -11862,6 +11968,11 @@ function orderRowsHtml(rows, options = {}) {
     const cancelable = isCancelableOrder(row);
     const highlightType = orderHighlightType(row);
     const highlightClass = highlightType ? ` order-row-highlight order-row-${highlightType}` : '';
+    const junk = isJunkOrder(row);
+    const statusReason = orderStatusReason(row);
+    const reasonText = junk
+      ? (statusReason || 'QMT未返回废单原因')
+      : '';
     return `<tr class="clickable${highlightClass}" data-order-id="${esc(orderId)}" data-code="${esc(code)}" data-cancelable="${cancelable ? '1' : '0'}">
       <td><input class="order-select" type="checkbox" data-order-id="${esc(orderId)}"${cancelable ? '' : ' disabled'}></td>
       <td class="num">${index + 1}</td>
@@ -11871,7 +11982,10 @@ function orderRowsHtml(rows, options = {}) {
       <td>${esc(orderName(row))}</td>
       <td class="num">${esc(orderVolume(row))}</td>
       <td class="num">${esc(tradedVolume(row))}</td>
-      <td>${esc(orderStatus(row))}</td>
+      <td class="order-status-cell"${reasonText ? ` title="${esc(reasonText)}"` : ''}>
+        <strong>${esc(orderStatus(row))}</strong>
+        ${reasonText ? `<small class="order-status-reason">废单原因：${esc(reasonText)}</small>` : ''}
+      </td>
       <td class="order-callback-cell">${orderCallbackCellHtml(row)}</td>
       <td>${esc(orderId)}</td>
     </tr>`;
@@ -14036,6 +14150,7 @@ async function boot() {
     });
   }
   const callbackRefreshBtn = $('callbackRefreshBtn');
+  wireCallbackFilters();
   if (callbackRefreshBtn) {
     callbackRefreshBtn.addEventListener('click', () => refreshCallbacks().catch((error) => log('回调刷新失败', { error: error.message })));
   }

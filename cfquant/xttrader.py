@@ -366,7 +366,7 @@ class XtQuantTrader(object):
         self._completed_async_cancel_seqs = {}
         self._pending_async_cancels_lock = threading.RLock()
         self.timeout = 0
-        self.relaxed_response_order_enabled = False
+        self.relaxed_response_order_enabled = True
         self._query_lock = threading.RLock()
         self._query_executor = None
         self._query_callback_executor = None
@@ -464,7 +464,16 @@ class XtQuantTrader(object):
                 client.timeout = float(timeout)
 
     def set_relaxed_response_order_enabled(self, enabled):
-        self.relaxed_response_order_enabled = bool(enabled)
+        """RPC responses always bypass user callbacks to allow nested requests.
+
+        False is accepted for source compatibility, but strict response ordering
+        is not supported. It must not restore the receive-thread deadlock.
+        """
+        if not enabled:
+            logging.getLogger(__name__).warning(
+                "cfquant always enables relaxed response ordering; False is ignored"
+            )
+        self.relaxed_response_order_enabled = True
 
     def sleep(self, time):
         import time as _time

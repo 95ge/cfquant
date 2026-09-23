@@ -3,6 +3,7 @@ import queue
 import threading
 
 from .config import get_config
+from .callback_dispatcher import CallbackDispatcher, dispatch_callbacks
 from .pipe_transport import (
     DEFAULT_PIPE_NAME,
     connect_pipe,
@@ -34,9 +35,11 @@ class PipeRpcClient(object):
         self._pending_lock = threading.RLock()
         self._started = False
         self._recv_thread = None
+        self._event_dispatcher = CallbackDispatcher(self._dispatch_event)
 
     def start(self):
         with self._lock:
+            self._event_dispatcher.check_request()
             if self._started and self._recv_thread is not None and self._recv_thread.is_alive():
                 return
             if self._started:
@@ -55,15 +58,17 @@ class PipeRpcClient(object):
                 "client_id": self.client_id,
             }))
             self._started = True
-            self._recv_thread = threading.Thread(target=self._recv_loop, args=(self._rx_conn,))
+            generation = self._event_dispatcher.start()
+            self._recv_thread = threading.Thread(target=self._recv_loop, args=(self._rx_conn, generation))
             self._recv_thread.daemon = True
             self._recv_thread.start()
 
     def close(self):
         with self._lock:
+            self._event_dispatcher.stop()
             self._started = False
             self._close_conns_locked()
-        self._fail_pending("cfquant pipe client closed")
+            self._fail_pending("cfquant pipe client closed")
 
     def request(self, action, params=None, timeout=None, request_channel=None):
         effective_timeout = float(timeout or self.timeout)
@@ -76,16 +81,17 @@ class PipeRpcClient(object):
             request_id=request_id,
             timeout=effective_timeout,
         )
-        self.start()
         q = queue.Queue(maxsize=1)
-        with self._pending_lock:
-            self._pending[request_id] = q
         try:
-            try:
-                self._send_request(raw, request_channel or self.request_channel)
-            except Exception:
-                self.close()
-                raise
+            with self._lock:
+                self.start()
+                with self._pending_lock:
+                    self._pending[request_id] = q
+                try:
+                    self._send_request(raw, request_channel or self.request_channel)
+                except Exception:
+                    self.close()
+                    raise
             try:
                 msg = q.get(timeout=effective_timeout)
             except queue.Empty:
@@ -131,7 +137,7 @@ class PipeRpcClient(object):
             "payload": payload,
         }))
 
-    def _recv_loop(self, expected_conn):
+    def _recv_loop(self, expected_conn, generation):
         disconnect_message = "cfquant pipe connection closed"
         while True:
             try:
@@ -151,14 +157,17 @@ class PipeRpcClient(object):
                 msg = loads_message(payload)
                 if not msg:
                     continue
-                msg_type = msg.get("type")
-                if msg_type == "response":
-                    with self._pending_lock:
-                        q = self._pending.pop(msg.get("id"), None)
-                    if q:
-                        q.put(msg)
-                elif msg_type == "event":
-                    self._dispatch_event(msg)
+                with self._lock:
+                    if not self._started or self._rx_conn is not expected_conn:
+                        return
+                    msg_type = msg.get("type")
+                    if msg_type == "response":
+                        with self._pending_lock:
+                            q = self._pending.pop(msg.get("id"), None)
+                        if q:
+                            q.put(msg)
+                    elif msg_type == "event":
+                        self._event_dispatcher.submit(generation, msg)
             except Exception as e:
                 disconnect_message = "cfquant pipe receive failed: %s" % e
                 break
@@ -171,8 +180,9 @@ class PipeRpcClient(object):
             if not self._started and self._rx_conn is None and self._tx_conn is None:
                 return
             self._started = False
+            self._event_dispatcher.stop()
             self._close_conns_locked()
-        self._fail_pending(message)
+            self._fail_pending(message)
 
     def _close_conns_locked(self):
         conns = [self._rx_conn, self._tx_conn]
@@ -197,27 +207,4 @@ class PipeRpcClient(object):
                 pass
 
     def _dispatch_event(self, msg):
-        event = msg.get("event")
-        data = decode_value(msg.get("data"))
-        full_msg = dict(msg)
-        full_msg["data"] = data
-        for callback in list(self._callbacks.get("__event__", [])):
-            try:
-                callback(full_msg)
-            except Exception:
-                pass
-        for callback in list(self._callbacks.get(event, [])):
-            try:
-                callback(data)
-            except Exception:
-                pass
-        if event and event.startswith("quote:"):
-            quote_msg = dict(msg)
-            quote_msg["data"] = data
-            if quote_msg.get("subscription_id") is not None and quote_msg.get("subscribe_id") is None:
-                quote_msg["subscribe_id"] = quote_msg.get("subscription_id")
-            for callback in list(self._callbacks.get("quote", [])):
-                try:
-                    callback(quote_msg)
-                except Exception:
-                    pass
+        dispatch_callbacks(self._callbacks, msg, self._event_dispatcher.is_current_callback)

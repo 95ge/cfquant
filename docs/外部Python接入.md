@@ -226,6 +226,18 @@ CFQUANT_LTTX_TOKEN=LTtx
 
 ## 排查要点
 
+### 回调内查询与下单
+
+cfquant 默认支持在 `on_stock_order`、`on_stock_trade`、`on_order_stock_async_response` 等普通 `def` 回调中同步查询资金、持仓、委托和成交，也支持再次异步下单或撤单。无需自己新建线程，也无需调用 `set_relaxed_response_order_enabled(True)`。
+
+LTtx、Web LTtx 路由和管道客户端将收包与用户回调分开：RPC 应答直接唤醒接口调用，推送事件交给每个客户端独立的串行回调线程。回调之间保持事件接收顺序，多个客户端之间不保证全局顺序。同步查询结果可能已包含尚在回调队列中的成交，这是默认的宽松响应时序。
+
+`set_relaxed_response_order_enabled(False)` 保留调用兼容，但会记录警告并保持启用；当前不提供严格响应时序模式。`order_stock_async()` 仍在桥接端确认请求后返回序号，返回序号不代表成交。请求超时也不代表委托未提交，应核对订单状态，避免直接重试造成重复委托。
+
+回调中可以等待同步接口的返回，但不要阻塞等待同一客户端的下一次成交或委托回调，否则会阻塞串行回调队列。耗时计算也会延迟后续回调并造成队列积压。此功能不自动调度 `async def` 协程回调。
+
+停止客户端会清除待执行回调并唤醒等待中的 RPC 请求；已经进入的用户回调不能被强制中止，旧连接的回调不能在该客户端重连后继续发起请求。回调异常记录完整堆栈，不再静默忽略。升级后需重启使用 SDK 的 Python 进程。离线验证见 [回调内请求测试](../cfquant/tests/test_callback_requests.py)。
+
 ### 下单参数与 JSON 类型
 
 从 DataFrame 用 `df.at[...]`、`df.iat[...]` 取出的单个数字可能是 `numpy.int64`、`numpy.float32` 等类型。cfquant 在请求进入 LTtx 或 PipeHub 之前统一转换为 Python `int`、`float`、`bool`、`str`，也会递归处理字典、列表和元组中的数值。整数不会先转浮点数，避免丢失大编号精度；不修改原始参数对象。
