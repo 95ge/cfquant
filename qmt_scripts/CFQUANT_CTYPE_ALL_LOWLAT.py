@@ -811,6 +811,12 @@ def _publish_callback(event_name, obj):
         _print_log("cfquant ctypes raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
         if _normal_bridge:
             _normal_bridge.publish_callback_event(event_name, obj)
+        # Orders are dispatched through the low-latency trade bridge while
+        # QMT delivers callbacks to this shared entry point. Wake a pending
+        # synchronous order lookup on that bridge as well.
+        if event_name == "trader:on_stock_order" and _trade_bridge:
+            data = _normal_bridge._format_trade_detail(obj, "order") if _normal_bridge else obj
+            _trade_bridge._resolve_pending_sync_order_callback(data)
     except Exception as e:
         _print_log("cfquant ctypes lowlat callback publish failed event=%s error=%s" % (event_name, e))
 

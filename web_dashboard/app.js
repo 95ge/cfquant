@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260924_01';
+const FRONTEND_VERSION = 'web_20260924_02';
 
 const state = {
   accountId: '',

@@ -11,7 +11,10 @@ import json
 
 _cf_bridge = None
 _cf_timer_key = None
-_TIMER_INTERVAL_MS = 500
+# The general bridge uses the QMT timer as its request/callback pump. 500ms
+# adds a visible scheduling tail to synchronous orders, so keep the low
+# latency default while allowing deployments to tune it without editing code.
+_TIMER_INTERVAL_MS = max(1, int(os.environ.get("CFQUANT_NORMAL_TIMER_INTERVAL_MS", "20")))
 _PUMP_MAX_COUNT = 20
 _PUMP_MAX_MS = 0
 DEFAULT_ACCOUNT_ID = str(os.environ.get("CFQUANT_ACCOUNT_ID") or "").strip()

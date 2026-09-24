@@ -2,6 +2,7 @@
 import datetime as dt
 import hashlib
 import json
+import os
 import queue
 import threading
 import time
@@ -9,7 +10,7 @@ import time
 from . import order_meta
 from .level2 import L2_THOUSAND_SUBSCRIPTIONS, quote_callback_data, quote_plain, require_l2_callable, thousand_price
 from .protocol import loads_message, pack_event, pack_response
-from .tx_trade_bridge import TxTradeBridge
+from .tx_trade_bridge import TxTradeBridge, relay_sync_order_callback
 
 
 COALESCED_QUERY_ACTIONS = set([
@@ -655,6 +656,7 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_requests(self, source):
         with self.dispatch_lock:
+            self._poll_sync_order_responses()
             start = time.perf_counter()
             count = 0
             while self.running and count < self.pump_max_count:
@@ -683,6 +685,9 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_single_request(self, source, msg, received_at):
         try:
+            if self.dispatch_on_qmt_thread and msg.get("action") == "xttrader.order_stock":
+                self._defer_sync_order_response(msg)
+                return
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
             self._send_response(msg, result)
             self._log(
@@ -695,6 +700,72 @@ class NormalQmtBridge(TxTradeBridge):
                 % (source, msg.get("action"), msg.get("id"), e)
             )
             self._send_error(msg, e)
+
+    def _defer_sync_order_response(self, msg):
+        # Keep the RPC open, but return control to QMT so it can process the
+        # submitted order and deliver callbacks on this same thread.
+        params = dict(msg.get("params") or {})
+        account = params.get("account") or {}
+        account_id = account.get("account_id") or params.get("account_id") or self.account_id
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        remark = self._first_param(params, ("order_remark", "remark", "strategy_name"), msg.get("id", "tx_order"))
+        strategy = params.get("strategy_name", "")
+        try:
+            wait = max(0.0, float(params.get("find_order_wait", os.environ.get("CFQUANT_ORDER_ID_WAIT_SECONDS", 2.0)) or 0))
+        except (TypeError, ValueError):
+            wait = 2.0
+        record = self._register_pending_sync_order(
+            account_id, account_type, params.get("stock_code", params.get("code", "")), remark, strategy, None,
+        )
+        try:
+            result = self._order_stock(params, msg, resolve_order_id=False, trust_request_order_id=False)
+            if self._is_failed_order_result(result.get("request_result")):
+                self._discard_pending_sync_order(record)
+                self._send_response(msg, result)
+                return
+            record.update({
+                "previous_order_id": result.get("previous_order_id"),
+                "response_msg": msg,
+                "response_result": result,
+                "lookup_params": dict(params, find_order_wait=0),
+                "deadline": time.monotonic() + wait,
+            })
+            self._log("sync order awaiting confirmation id=%s; QMT thread released" % msg.get("id"))
+        except Exception:
+            self._discard_pending_sync_order(record)
+            raise
+
+    def _poll_sync_order_responses(self):
+        with self.pending_sync_orders_lock:
+            pending = [item for item in self.pending_sync_orders if "response_msg" in item]
+        for record in pending:
+            try:
+                if (
+                    not record.get("callback_seen_at")
+                    and time.monotonic() < record["deadline"]
+                ):
+                    # Do not query the complete QMT order history until the
+                    # matching callback has indicated that the new row exists.
+                    continue
+                order_id = self._find_order_id(
+                    record["account_id"], record["account_type"], record["order_remark"],
+                    record["strategy_name"], record.get("previous_order_id"), record["lookup_params"], record,
+                )
+                if order_id is None and time.monotonic() < record["deadline"]:
+                    continue
+                result = dict(record["response_result"], order_id=order_id if order_id is not None else -1)
+                if order_id is not None:
+                    self._remember_order_request(record["account_id"], record["stock_code"],
+                                                 record["order_remark"], record["strategy_name"], order_id=order_id)
+                else:
+                    self._log("sync order confirmation timeout id=%s callback_sysid=%s lookup_error=%s; submission not retried"
+                              % (record["response_msg"].get("id"), record.get("callback_order_sysid", ""),
+                                 record.get("lookup_error", "")))
+                self._discard_pending_sync_order(record)
+                self._send_response(record["response_msg"], result)
+            except Exception as error:
+                self._discard_pending_sync_order(record)
+                self._send_error(record["response_msg"], error)
 
     def _drain_coalesced_request(self, source, msg, received_at, coalesce_key):
         try:
@@ -800,6 +871,11 @@ class NormalQmtBridge(TxTradeBridge):
             self._enrich_order_request_fields(data)
         self._enrich_callback_order_meta(event_name, data, account_id, account_type)
         if event_name == "trader:on_stock_order":
+            # A synchronous passorder has no reliable return value.  Wake its
+            # resolver as soon as the matching QMT callback arrives; the
+            # resolver then reads the canonical id from the ORDER query.
+            self._resolve_pending_sync_order_callback(data)
+            relay_sync_order_callback(self.context, data)
             self._handle_async_order_callback(data)
         payload = {
             "type": "event",

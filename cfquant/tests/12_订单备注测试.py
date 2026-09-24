@@ -1,5 +1,7 @@
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -973,6 +975,185 @@ def test_tx_trade_bridge_ignores_system_order_id_when_resolving_sync_order():
 
     assert result["order_id"] == 700003
     assert isinstance(result["order_id"], int)
+
+
+def test_sync_lookup_uses_raw_reference_when_metadata_contains_previous_id():
+    rows = [
+        {
+            "m_nRef": 700001,
+            "m_strOrderSysID": "900001",
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "remark",
+        },
+        {
+            # The metadata reconciler can leave a previous canonical id in
+            # order_id. It must not hide this row's raw QMT reference.
+            "order_id": 700001,
+            "m_nRef": 700002,
+            "m_strOrderSysID": "900002",
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "remark",
+        },
+    ]
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: "700001",
+            "get_trade_detail_data": lambda *args: rows,
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="remark", find_order_wait=0),
+        {"id": "request-raw-reference"},
+    )
+
+    assert result["order_id"] == 700002
+
+
+def test_qmt_sync_lookup_uses_raw_reference_when_metadata_contains_previous_id():
+    rows = [{
+        "order_id": 800001,
+        "m_nRef": 800002,
+        "m_strOrderSysID": "900002",
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_strRemark": "remark",
+    }]
+    bridge = CfquantQmtBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: "800001",
+            "get_trade_detail_data": lambda *args: rows,
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="remark", find_order_wait=0),
+    )
+
+    assert result["order_id"] == 800002
+
+
+def test_sync_order_does_not_trust_stale_passorder_result():
+    bridge = TxTradeBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: "900001",
+            "get_last_order_id": lambda *args: "900001",
+            "get_trade_detail_data": lambda *args: [{
+                "m_nRef": 700002,
+                "m_strOrderSysID": "900002",
+                "m_strInstrumentID": "000001",
+                "m_strExchangeID": "SZ",
+                "m_strRemark": "remark",
+            }],
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="remark", find_order_wait=0),
+        {"id": "request-stale-result"},
+    )
+
+    assert result["request_result"] == "900001"
+    assert result["order_id"] == 700002
+
+
+def test_qmt_order_does_not_trust_stale_passorder_result():
+    bridge = CfquantQmtBridge(
+        DummyContext(),
+        show=False,
+        globals_dict={
+            "passorder": lambda *args: "900001",
+            "get_last_order_id": lambda *args: "900001",
+            "get_trade_detail_data": lambda *args: [{
+                "m_nRef": 800002,
+                "m_strOrderSysID": "900002",
+                "m_strInstrumentID": "000001",
+                "m_strExchangeID": "SZ",
+                "m_strRemark": "remark",
+            }],
+        },
+    )
+
+    result = bridge._order_stock(
+        _base_order_params(order_remark="remark", find_order_wait=0),
+    )
+
+    assert result["request_result"] == "900001"
+    assert result["order_id"] == 800002
+
+
+def test_normal_bridge_callback_wakes_pending_sync_order_lookup():
+    state = {"callback_seen": False}
+
+    def get_trade_detail_data(*args):
+        if not state["callback_seen"]:
+            return []
+        return [{
+            "m_nRef": 700002,
+            "m_strOrderSysID": "900002",
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "remark",
+        }, {
+            "m_nRef": 700000,
+            "m_strOrderSysID": "900000",
+            "m_strInstrumentID": "000001",
+            "m_strExchangeID": "SZ",
+            "m_strRemark": "remark",
+        }]
+
+    bridge = NormalQmtBridge(
+        DummyContext(),
+        show=False,
+        schedule_timer=False,
+        order_meta_enabled=False,
+        globals_dict={
+            "passorder": lambda *args: 0,
+            "get_last_order_id": lambda *args: "900001",
+            "get_trade_detail_data": get_trade_detail_data,
+        },
+    )
+    bridge.tx = RecordingTx()
+    result_box = []
+
+    def submit():
+        result_box.append(bridge._order_stock(
+            _base_order_params(order_remark="remark", find_order_wait=1),
+            {"id": "request-callback-wakeup"},
+        ))
+
+    worker = threading.Thread(target=submit)
+    worker.start()
+    deadline = time.time() + 1
+    while time.time() < deadline and not bridge.pending_sync_orders:
+        time.sleep(0.01)
+    assert bridge.pending_sync_orders
+
+    state["callback_seen"] = True
+    bridge.publish_callback_event("trader:on_stock_order", {
+        "m_strAccountID": "A123",
+        "m_nAccountType": 2,
+        "m_strInstrumentID": "000001",
+        "m_strExchangeID": "SZ",
+        "m_nRef": 700002,
+        "m_strOrderSysID": "900002",
+        "m_strRemark": "remark",
+    })
+    worker.join(2)
+
+    assert not worker.is_alive()
+    assert result_box and result_box[0]["order_id"] == 700002
+    assert bridge.pending_sync_orders == []
 
 
 def test_query_order_restores_strategy_name_from_submitted_remark():

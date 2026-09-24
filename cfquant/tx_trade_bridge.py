@@ -18,6 +18,7 @@ from .level2 import (
     L2_PERIODS,
     l2_query,
     market_data_legacy_shape,
+    market_data_result_needs_fallback,
     quote_plain,
     require_l2_callable,
     thousand_price,
@@ -43,6 +44,51 @@ _LOADED_SOURCE_SHA256 = source_sha256(__file__)
 # registration state shared across bridge instances.
 _AUTO_TRADE_CALLBACK_LOCK = threading.RLock()
 _AUTO_TRADE_CALLBACK_REGISTRY = {}
+
+# A normal bridge and a trade bridge can be created for the same QMT context.
+# Keep a small relay registry so a stock-order callback received by either
+# entry point can wake the synchronous order resolver immediately.
+_SYNC_ORDER_CALLBACK_RELAY_LOCK = threading.RLock()
+_SYNC_ORDER_CALLBACK_RELAYS = {}
+
+
+def _register_sync_order_callback_relay(bridge):
+    context = getattr(bridge, "context", None)
+    if context is None:
+        return
+    key = id(context)
+    with _SYNC_ORDER_CALLBACK_RELAY_LOCK:
+        bucket = _SYNC_ORDER_CALLBACK_RELAYS.setdefault(key, [])
+        if bridge not in bucket:
+            bucket.append(bridge)
+
+
+def _unregister_sync_order_callback_relay(bridge):
+    context = getattr(bridge, "context", None)
+    if context is None:
+        return
+    key = id(context)
+    with _SYNC_ORDER_CALLBACK_RELAY_LOCK:
+        bucket = _SYNC_ORDER_CALLBACK_RELAYS.get(key, [])
+        bucket[:] = [item for item in bucket if item is not bridge]
+        if not bucket:
+            _SYNC_ORDER_CALLBACK_RELAYS.pop(key, None)
+
+
+def relay_sync_order_callback(context, order):
+    """Forward a formatted order callback to trade bridges sharing context."""
+    if context is None:
+        return 0
+    with _SYNC_ORDER_CALLBACK_RELAY_LOCK:
+        bridges = list(_SYNC_ORDER_CALLBACK_RELAYS.get(id(context), ()))
+    matched = 0
+    for bridge in bridges:
+        try:
+            if bridge._resolve_pending_sync_order_callback(order):
+                matched += 1
+        except Exception:
+            continue
+    return matched
 
 
 XTTRADER_COMPAT_CANDIDATES = {
@@ -189,6 +235,8 @@ class TxTradeBridge(object):
         self.auto_trade_callback_enabled = False
         self.pending_async_orders = []
         self.pending_async_orders_lock = threading.RLock()
+        self.pending_sync_orders = []
+        self.pending_sync_orders_lock = threading.RLock()
         self.order_request_metadata = {}
         self.order_request_metadata_lock = threading.RLock()
         self.order_meta_enabled = bool(order_meta_enabled)
@@ -199,10 +247,12 @@ class TxTradeBridge(object):
     def set_context(self, context):
         if self.context is not None and self.context is not context:
             self._release_auto_trade_callback(self.context)
+            _unregister_sync_order_callback_relay(self)
         self.context = context
         if self.account_id:
             self._set_context_account(self.account_id, self.account_type)
         self._enable_auto_trade_callback()
+        _register_sync_order_callback_relay(self)
         self._log("tx trade bridge context ready")
         self._publish_runtime_report("context_ready")
 
@@ -226,6 +276,7 @@ class TxTradeBridge(object):
     def close(self):
         self.running = False
         self._release_auto_trade_callback()
+        _unregister_sync_order_callback_relay(self)
         tx = self.tx
         self.tx = None
         if tx is not None:
@@ -945,6 +996,16 @@ class TxTradeBridge(object):
             )
             self._publish_order_meta_record(order_meta_record, push=True, persist=True)
         previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name) if capture_previous_id else None
+        pending_sync_order = None
+        if resolve_order_id:
+            pending_sync_order = self._register_pending_sync_order(
+                account_id,
+                account_type,
+                params.get("stock_code", params.get("code", "")),
+                order_remark,
+                strategy_name,
+                previous_order_id,
+            )
         if order_meta_record is not None:
             order_meta_record["previous_order_id"] = previous_order_id
         if not self.order_meta_enabled:
@@ -970,6 +1031,8 @@ class TxTradeBridge(object):
                 self.context,
             )
         except Exception as e:
+            if pending_sync_order is not None:
+                self._discard_pending_sync_order(pending_sync_order)
             if order_meta_record is not None:
                 order_meta_record.update({
                     "status": "failed",
@@ -980,6 +1043,15 @@ class TxTradeBridge(object):
 
         failed = self._is_failed_order_result(result)
         order_id = self._normalize_order_id(result) if trust_request_order_id else None
+        if (
+            order_id is not None
+            and previous_order_id is not None
+            and self._order_reference_key(order_id) == self._order_reference_key(previous_order_id)
+        ):
+            # Some QMT builds expose the previous get_last_order_id value as
+            # passorder's result. Treat it as unresolved and match the new
+            # order from the post-submit detail/callback path instead.
+            order_id = None
         if order_meta_record is not None:
             order_meta_record["request_result"] = self._plain_value(result)
             if order_id is not None:
@@ -987,6 +1059,8 @@ class TxTradeBridge(object):
                 order_meta_record["canonical_order_id"] = order_id
                 order_meta_record["order_ref"] = str(order_id)
         if failed:
+            if pending_sync_order is not None:
+                self._discard_pending_sync_order(pending_sync_order)
             if order_meta_record is not None:
                 order_meta_record["status"] = "failed"
                 self._publish_order_meta_record(order_meta_record, push=True, persist=True)
@@ -1009,6 +1083,7 @@ class TxTradeBridge(object):
                 strategy_name,
                 previous_order_id,
                 params,
+                pending_sync_order,
             )
             if order_meta_record is not None and order_id is not None:
                 order_meta_record["order_id"] = order_id
@@ -1024,6 +1099,8 @@ class TxTradeBridge(object):
                 strategy_name,
                 order_id=order_id,
             )
+        if pending_sync_order is not None:
+            self._discard_pending_sync_order(pending_sync_order)
         return {
             "request_result": result,
             "order_id": order_id if order_id is not None else -1,
@@ -1032,6 +1109,91 @@ class TxTradeBridge(object):
             "account_type": str(account_type or "").upper(),
             "previous_order_id": previous_order_id,
         }
+
+    def _register_pending_sync_order(
+        self,
+        account_id,
+        account_type,
+        stock_code,
+        order_remark,
+        strategy_name,
+        previous_order_id,
+    ):
+        record = {
+            "account_id": str(account_id or "").strip(),
+            "account_type": str(account_type or "").upper(),
+            "stock_code": str(stock_code or "").strip().upper(),
+            "order_remark": str(order_remark or ""),
+            "strategy_name": str(strategy_name or ""),
+            "previous_order_id": previous_order_id,
+            "created_at": time.time(),
+            "event": threading.Event(),
+        }
+        with self.pending_sync_orders_lock:
+            self.pending_sync_orders.append(record)
+        _register_sync_order_callback_relay(self)
+        return record
+
+    def _discard_pending_sync_order(self, record):
+        if record is None:
+            return
+        with self.pending_sync_orders_lock:
+            self.pending_sync_orders[:] = [
+                item for item in self.pending_sync_orders if item is not record
+            ]
+
+    def _resolve_pending_sync_order_callback(self, order):
+        """Wake a synchronous resolver when QMT publishes the matching order.
+
+        The callback is only a wake-up signal here.  The canonical order id is
+        still read from the following ORDER query, because callback m_nRef and
+        the order-list id can differ between QMT terminals.
+        """
+        if not isinstance(order, dict):
+            return False
+        account_id = str(self._first_value(order, ("account_id", "m_strAccountID")) or "").strip()
+        order_remark = str(self._first_value(order, ("order_remark", "m_strRemark", "m_strOrderRemark")) or "")
+        strategy_name = str(self._first_value(order, ("strategy_name", "m_strStrategyName")) or "")
+        stock_code = str(self._first_value(order, ("stock_code", "m_strInstrumentID")) or "").upper()
+        stock_base = stock_code.split(".", 1)[0]
+        order_sysid = self._first_value(order, ("order_sysid", "m_strOrderSysID"))
+        with self.pending_sync_orders_lock:
+            for record in list(self.pending_sync_orders):
+                if account_id and record.get("account_id") and account_id != record.get("account_id"):
+                    continue
+                expected_code = str(record.get("stock_code") or "").upper()
+                if (
+                    expected_code
+                    and stock_code
+                    and expected_code != stock_code
+                    and expected_code.split(".", 1)[0] != stock_base
+                ):
+                    continue
+                expected_remark = str(record.get("order_remark") or "")
+                if not order_remark or order_remark != expected_remark:
+                    continue
+                expected_strategy = str(record.get("strategy_name") or "")
+                if not order_remark and strategy_name and expected_strategy and strategy_name != expected_strategy:
+                    continue
+                if self._is_previous_order_detail(order, record.get("previous_order_id")):
+                    continue
+                # Some QMT builds include the internal reference directly in
+                # the callback.  Keep it so the synchronous path can return
+                # without a full ORDER-history query.
+                callback_order_id = None
+                for name in ("m_nRef", "m_nOrderID", "order_id"):
+                    callback_order_id = self._normalize_order_id(self._get_value(order, name))
+                    if callback_order_id is not None:
+                        break
+                previous_key = self._order_reference_key(record.get("previous_order_id"))
+                if callback_order_id is not None and self._order_reference_key(callback_order_id) != previous_key:
+                    record["callback_order_id"] = callback_order_id
+                if order_sysid not in (None, ""):
+                    record["callback_order_sysid"] = str(order_sysid)
+                record["callback_seen_at"] = time.time()
+                record["event"].set()
+                return True
+        return False
 
     def _get_last_order_id(self, account_id, account_type, strategy_name=""):
         func = self._get_callable("get_last_order_id")
@@ -1050,7 +1212,7 @@ class TxTradeBridge(object):
         except Exception:
             return None
 
-    def _find_order_id(self, account_id, account_type, order_remark, strategy_name, previous_order_id, params):
+    def _find_order_id(self, account_id, account_type, order_remark, strategy_name, previous_order_id, params, pending_sync_order=None):
         wait_seconds = params.get("find_order_wait", os.environ.get("CFQUANT_ORDER_ID_WAIT_SECONDS", 2.0))
         try:
             wait_seconds = max(0.0, float(wait_seconds or 0))
@@ -1058,11 +1220,35 @@ class TxTradeBridge(object):
             wait_seconds = 2.0
         deadline = time.time() + wait_seconds
         while True:
+            if pending_sync_order is not None:
+                callback_order_id = pending_sync_order.get("callback_order_id")
+                if callback_order_id is not None:
+                    return callback_order_id
+            # A callback is the cheap readiness signal.  Waiting for it before
+            # querying the complete ORDER list avoids repeatedly transferring
+            # multi-megabyte histories through QMT while the new order is still
+            # being committed.  A zero wait keeps the one-shot lookup behavior
+            # used by callers that explicitly disable waiting.
+            if (
+                pending_sync_order is not None
+                and wait_seconds > 0
+                and not pending_sync_order.get("callback_seen_at")
+                and time.time() < deadline
+            ):
+                pending_sync_order["event"].wait(min(0.05, max(0.0, deadline - time.time())))
+                pending_sync_order["event"].clear()
+                continue
             try:
                 orders = self._query_trade_detail({
                     "account": {"account_id": account_id, "account_type": account_type},
                 }, "order")
-                for order in reversed(orders or []):
+                candidates = []
+                callback_candidates = []
+                callback_sysid = self._order_reference_key(
+                    pending_sync_order.get("callback_order_sysid")
+                    if pending_sync_order is not None else None
+                )
+                for order in orders or []:
                     if str(self._first_value(order, ("order_remark", "m_strRemark", "m_strOrderRemark")) or "") != str(order_remark or ""):
                         continue
                     stock_code = str(params.get("stock_code", params.get("code", "")) or "").upper()
@@ -1074,23 +1260,97 @@ class TxTradeBridge(object):
                         and stock_code.split(".", 1)[0] != candidate_code.split(".", 1)[0]
                     ):
                         continue
+                    if self._is_previous_order_detail(order, previous_order_id):
+                        continue
                     order_id = self._order_id_from_detail(order)
-                    if order_id is not None and order_id != previous_order_id:
-                        return order_id
-            except Exception:
-                pass
+                    if order_id is not None:
+                        candidates.append(order_id)
+                        if callback_sysid:
+                            detail_sysids = []
+                            for name in ("m_strOrderSysID", "order_sysid"):
+                                detail_sysid = self._order_reference_key(self._get_value(order, name))
+                                if detail_sysid and detail_sysid not in detail_sysids:
+                                    detail_sysids.append(detail_sysid)
+                            if callback_sysid in detail_sysids:
+                                callback_candidates.append(order_id)
+                if callback_sysid:
+                    candidates = callback_candidates
+                unique_candidates = []
+                seen_candidates = set()
+                for order_id in candidates:
+                    key = self._order_reference_key(order_id)
+                    if key in seen_candidates:
+                        continue
+                    seen_candidates.add(key)
+                    unique_candidates.append(order_id)
+                # A repeated remark can match several orders.  QMT does not
+                # guarantee the order of get_trade_detail_data(), so never
+                # select one by list position.
+                if len(unique_candidates) == 1:
+                    return unique_candidates[0]
+            except Exception as error:
+                if pending_sync_order is not None:
+                    pending_sync_order["lookup_error"] = str(error)
             # QMT's latest order number is a broker sysid, not the internal ID
             # returned by order queries/callbacks. Wait for the matching detail.
             if time.time() >= deadline:
                 return None
-            time.sleep(0.05)
+            if pending_sync_order is not None:
+                pending_sync_order["event"].wait(min(0.05, max(0.0, deadline - time.time())))
+                pending_sync_order["event"].clear()
+            else:
+                time.sleep(0.05)
 
     def _order_id_from_detail(self, order):
-        for name in ("order_id", "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID"):
+        # Prefer raw QMT references.  order_id may have been filled by the
+        # metadata reconciler from another callback and must not overwrite the
+        # reference belonging to this query row.
+        for name in ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID", "order_id"):
             order_id = self._normalize_order_id(self._get_value(order, name))
             if order_id is not None:
                 return order_id
         return None
+
+    def _order_reference_key(self, value):
+        if value is None or isinstance(value, bool):
+            return ""
+        text = str(value).strip()
+        if not text or text in ("0", "-1"):
+            return ""
+        try:
+            number = int(text)
+            return str(number) if number > 0 else ""
+        except Exception:
+            return text
+
+    def _order_reference_values(self, order):
+        primary_values = []
+        for name in (
+            "m_nRef",
+            "m_nOrderID",
+        ):
+            key = self._order_reference_key(self._get_value(order, name))
+            if key and key not in primary_values:
+                primary_values.append(key)
+        if primary_values:
+            for name in ("m_strOrderSysID", "order_sysid"):
+                key = self._order_reference_key(self._get_value(order, name))
+                if key and key not in primary_values:
+                    primary_values.append(key)
+            return primary_values
+        raw_values = []
+        for name in ("m_strOrderRef", "m_strOrderID", "m_strOrderSysID", "order_sysid"):
+            key = self._order_reference_key(self._get_value(order, name))
+            if key and key not in raw_values:
+                raw_values.append(key)
+        if raw_values:
+            return raw_values
+        canonical = self._order_reference_key(self._get_value(order, "order_id"))
+        return [canonical] if canonical else []
+
+    def _is_previous_order_detail(self, order, previous_order_id):
+        previous_key = self._order_reference_key(previous_order_id)
+        return bool(previous_key and previous_key in self._order_reference_values(order))
 
     def _normalize_order_id(self, value):
         if value is None or isinstance(value, bool):
@@ -2129,7 +2389,7 @@ class TxTradeBridge(object):
                 params.get("field_list", []),
                 params.get("stock_list", []),
             )
-        return func(
+        result = func(
             params.get("field_list", []),
             params.get("stock_list", []),
             params.get("start_time", ""),
@@ -2139,6 +2399,11 @@ class TxTradeBridge(object):
             params.get("dividend_type", "none"),
             params.get("count", -1),
         )
+        if market_data_result_needs_fallback(result):
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(result, params.get("period", "1d"),
+                                             params.get("field_list", []), params.get("stock_list", []))
+        return result
 
     def _get_market_data_ex(self, params):
         func = self._get_callable("get_market_data_ex")

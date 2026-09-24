@@ -10998,6 +10998,51 @@ class QmtAutoLoginRestartScheduler:
 QMT_AUTO_LOGIN_RESTART_SCHEDULER = QmtAutoLoginRestartScheduler()
 
 
+def start_configured_qmt_on_web_startup():
+    """Start saved bindings whose automatic QMT startup setting is enabled."""
+    configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
+    results = []
+    seen_dirs = set()
+    for row in configs.values():
+        if not isinstance(row, dict) or not account_config_is_enabled(row):
+            continue
+        settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+        if not settings["enabled"]:
+            continue
+        qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
+        key = os.path.normcase(os.path.abspath(qmt_dir)) if qmt_dir else ""
+        if key and key in seen_dirs:
+            continue
+        if key:
+            seen_dirs.add(key)
+        try:
+            result = qmt_auto_login_apply_for_account(
+                row, settings, restart=False, reason="web_startup"
+            )
+        except Exception as error:
+            result = {
+                "enabled": True,
+                "configured": False,
+                "started": False,
+                "account_id": str(row.get("account_id") or ""),
+                "qmt_dir": qmt_dir,
+                "error": str(error),
+                "message": "Web 启动时自动启动 QMT 失败: %s" % error,
+            }
+        results.append(result)
+        if result.get("error"):
+            safe_print(
+                "cfquant Web 启动 QMT 失败 account=%s qmt_dir=%s error=%s"
+                % (result.get("account_id") or "-", qmt_dir or "-", result.get("error"))
+            )
+        else:
+            safe_print(
+                "cfquant Web 启动 QMT account=%s qmt_dir=%s started=%s"
+                % (result.get("account_id") or "-", qmt_dir or "-", bool(result.get("started")))
+            )
+    return results
+
+
 def auto_deploy_qmt_core_for_all_accounts(source_dir=None):
     """Copy the current core into every distinct QMT directory in saved bindings."""
     configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
@@ -16649,6 +16694,7 @@ def main(argv=None):
             % args.port
         )
     ensure_lttx_started("Web 启动预启动")
+    start_configured_qmt_on_web_startup()
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
         internal_api_key()

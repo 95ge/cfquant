@@ -22,11 +22,19 @@ set "WEB_STDERR=%LOG_DIR%\cfquant_web_server.%WEB_LOG_RUN_ID%.stderr.log"
 call :log "start_cfquant.bat invoked"
 
 set "PYTHON_EXE=python"
+if defined CFQUANT_PYTHON_EXE if exist "%CFQUANT_PYTHON_EXE%" set "PYTHON_EXE=%CFQUANT_PYTHON_EXE%"
 if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
 set "CFQUANT_START_ROOT=%~dp0"
 for /f "usebackq delims=" %%P in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$root=$env:CFQUANT_START_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.python_executable) { Write-Output ([string]$c.python_executable) }; break } catch {} } }"`) do set "CFQUANT_CONFIG_PYTHON=%%P"
 if defined CFQUANT_CONFIG_PYTHON if exist "%CFQUANT_CONFIG_PYTHON%" set "PYTHON_EXE=%CFQUANT_CONFIG_PYTHON%"
 set "CFQUANT_CONFIG_PYTHON="
+rem If PATH does not contain Python (common with Anaconda/Miniconda), probe
+rem standard Conda installations before reporting that Python is unavailable.
+set "CFQUANT_START_ROOT=%~dp0"
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$root=$env:CFQUANT_START_ROOT; $candidates=@(); if ($env:CONDA_PREFIX) {$candidates += (Join-Path $env:CONDA_PREFIX 'python.exe')}; $bases=@($env:USERPROFILE,$env:LOCALAPPDATA,$env:PROGRAMDATA); $names=@('anaconda3','miniconda3','mambaforge','miniforge3','Anaconda3','Miniconda3'); foreach ($base in $bases) { if ($base) { foreach ($name in $names) {$candidates += (Join-Path (Join-Path $base $name) 'python.exe')}}}; $envFiles=@((Join-Path $env:USERPROFILE '.conda\environments.txt'),(Join-Path $env:USERPROFILE 'anaconda3\conda-meta\history')); foreach ($file in $envFiles) {if (Test-Path -LiteralPath $file) {foreach ($line in (Get-Content -LiteralPath $file -ErrorAction SilentlyContinue)) {if ($line -and (Test-Path -LiteralPath $line -PathType Container)) {$candidates += (Join-Path $line 'python.exe')}}}}; $candidates += (Join-Path $root '.venv\Scripts\python.exe'); foreach ($candidate in ($candidates | Select-Object -Unique)) {if (Test-Path -LiteralPath $candidate -PathType Leaf) {Write-Output $candidate; break}}"`) do if exist "%%P" set "PYTHON_EXE=%%P"
+set "CFQUANT_START_ROOT="
+if defined CFQUANT_PYTHON_EXE if exist "%CFQUANT_PYTHON_EXE%" set "PYTHON_EXE=%CFQUANT_PYTHON_EXE%"
+call :log "selected python executable=%PYTHON_EXE%"
 if not exist "%~dp0cfquant_web_server.py" (
     echo [ERROR] cfquant_web_server.py not found in "%~dp0".
     call :log "cfquant_web_server.py not found"
@@ -38,7 +46,7 @@ if not exist "%~dp0cfquant_web_server.py" (
 
 "%PYTHON_EXE%" --version >>"%START_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python is not available. Please install Python or create .venv first.
+    echo [ERROR] Python is not available. Set python_executable in the Web setup or install Python/Conda.
     echo [ERROR] Tried: "%PYTHON_EXE%"
     call :log "python unavailable"
     call :show_logs

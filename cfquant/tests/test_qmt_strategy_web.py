@@ -41,6 +41,34 @@ def test_initialize_web_setup_can_skip_optional_admin_registration(web_config, m
     assert data["setup"]["setup_required"] is False
 
 
+def test_web_startup_starts_saved_qmt_bindings_once(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    qmt_dir = tmp_path / "qmt" / "bin.x64"
+    config._data["account_configs"] = {
+        "one": {
+            "account_id": "1001",
+            "account_type": "STOCK",
+            "enabled": True,
+            "qmt_dir": str(qmt_dir),
+            "qmt_auto_login": {"enabled": True},
+        },
+        "two": {
+            "account_id": "1002",
+            "account_type": "STOCK",
+            "enabled": True,
+            "qmt_dir": str(qmt_dir),
+            "qmt_auto_login": {"enabled": True},
+        },
+    }
+    calls = []
+    monkeypatch.setattr(web, "qmt_auto_login_apply_for_account", lambda row, request=None, **kwargs: calls.append((row["account_id"], kwargs)) or {"started": True})
+
+    result = web.start_configured_qmt_on_web_startup()
+
+    assert len(result) == 1
+    assert calls == [("1001", {"restart": False, "reason": "web_startup"})]
+
+
 def test_initialize_web_setup_persists_custom_python_environment(web_config, monkeypatch, tmp_path):
     web, config = web_config
     python_exe = tmp_path / "python.exe"

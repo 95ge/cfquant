@@ -58,6 +58,25 @@ def market_data_legacy_shape(result, period, field_list=None, stock_list=None):
     return converted
 
 
+def market_data_result_needs_fallback(result):
+    """Whether a native get_market_data result is unusable for xtdata callers.
+
+    Some QMT builds expose get_market_data but return an empty frame (or a
+    scalar latest value) for the xtdata signature.  In that case the extended
+    API still contains the requested history and can be converted safely.
+    """
+    if result is None:
+        return True
+    if isinstance(result, dict):
+        return not result or all(getattr(value, "empty", False) for value in result.values())
+    if getattr(result, "empty", False):
+        return True
+    # xtdata.get_market_data is expected to return a frame/dict, never a
+    # scalar.  A scalar indicates the QMT context interpreted the arguments
+    # using a different signature.
+    return not hasattr(result, "columns") and not hasattr(result, "to_records")
+
+
 def quote_plain(value):
     if type(value).__module__.startswith("pandas.") and type(value).__name__ in ("NAType", "NaTType"):
         return None

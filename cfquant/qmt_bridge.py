@@ -14,6 +14,7 @@ from .level2 import (
     L2_PERIODS,
     l2_query,
     market_data_legacy_shape,
+    market_data_result_needs_fallback,
     quote_plain,
     require_l2_callable,
     thousand_price,
@@ -332,7 +333,7 @@ class CfquantQmtBridge(object):
                 params.get("field_list", []),
                 params.get("stock_list", []),
             )
-        return func(
+        result = func(
             params.get("field_list", []),
             params.get("stock_list", []),
             params.get("start_time", ""),
@@ -342,6 +343,11 @@ class CfquantQmtBridge(object):
             params.get("dividend_type", "none"),
             params.get("count", -1),
         )
+        if market_data_result_needs_fallback(result):
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(result, params.get("period", "1d"),
+                                             params.get("field_list", []), params.get("stock_list", []))
+        return result
 
     def _get_market_data_ex(self, params):
         return self.context.get_market_data_ex(
@@ -846,6 +852,12 @@ class CfquantQmtBridge(object):
                 strategy_name,
             )
         order_id = self._normalize_order_id(result)
+        if (
+            order_id is not None
+            and previous_order_id is not None
+            and self._order_reference_key(order_id) == self._order_reference_key(previous_order_id)
+        ):
+            order_id = None
         if resolve_order_id and order_id is None and not self._is_failed_order_result(result):
             order_id = self._find_order_id(
                 account_id,
@@ -1426,7 +1438,8 @@ class CfquantQmtBridge(object):
                     {"account": {"account_id": account_id, "account_type": account_type}},
                     "ORDER",
                 )
-                for order in reversed(orders or []):
+                candidates = []
+                for order in orders or []:
                     remark = self._first_value(order, ("order_remark", "m_strRemark", "m_strOrderRemark"))
                     if str(remark or "") != str(user_order_id or ""):
                         continue
@@ -1439,9 +1452,24 @@ class CfquantQmtBridge(object):
                         and stock_code.split(".", 1)[0] != candidate_code.split(".", 1)[0]
                     ):
                         continue
+                    if self._is_previous_order_detail(order, previous_order_id):
+                        continue
                     order_id = self._order_id_from_detail(order)
-                    if order_id is not None and order_id != previous_order_id:
-                        return order_id
+                    if order_id is not None:
+                        candidates.append(order_id)
+                unique_candidates = []
+                seen_candidates = set()
+                for order_id in candidates:
+                    key = self._order_reference_key(order_id)
+                    if key in seen_candidates:
+                        continue
+                    seen_candidates.add(key)
+                    unique_candidates.append(order_id)
+                # QMT does not guarantee the order of the returned list.  A
+                # repeated userOrderId is therefore ambiguous unless the old
+                # order can be identified explicitly.
+                if len(unique_candidates) == 1:
+                    return unique_candidates[0]
             except Exception:
                 pass
             # QMT's latest order number is a broker sysid, not the internal ID
@@ -1451,11 +1479,54 @@ class CfquantQmtBridge(object):
             time.sleep(0.05)
 
     def _order_id_from_detail(self, order):
-        for name in ("order_id", "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID"):
+        # Prefer raw QMT references.  Metadata reconciliation can populate
+        # order_id from a different callback and must not hide this row's ID.
+        for name in ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID", "order_id"):
             order_id = self._normalize_order_id(self._get_value(order, name))
             if order_id is not None:
                 return order_id
         return None
+
+    def _order_reference_key(self, value):
+        if value is None or isinstance(value, bool):
+            return ""
+        text = str(value).strip()
+        if not text or text in ("0", "-1"):
+            return ""
+        try:
+            number = int(text)
+            return str(number) if number > 0 else ""
+        except Exception:
+            return text
+
+    def _order_reference_values(self, order):
+        primary_values = []
+        for name in (
+            "m_nRef",
+            "m_nOrderID",
+        ):
+            key = self._order_reference_key(self._get_value(order, name))
+            if key and key not in primary_values:
+                primary_values.append(key)
+        if primary_values:
+            for name in ("m_strOrderSysID", "order_sysid"):
+                key = self._order_reference_key(self._get_value(order, name))
+                if key and key not in primary_values:
+                    primary_values.append(key)
+            return primary_values
+        raw_values = []
+        for name in ("m_strOrderRef", "m_strOrderID", "m_strOrderSysID", "order_sysid"):
+            key = self._order_reference_key(self._get_value(order, name))
+            if key and key not in raw_values:
+                raw_values.append(key)
+        if raw_values:
+            return raw_values
+        canonical = self._order_reference_key(self._get_value(order, "order_id"))
+        return [canonical] if canonical else []
+
+    def _is_previous_order_detail(self, order, previous_order_id):
+        previous_key = self._order_reference_key(previous_order_id)
+        return bool(previous_key and previous_key in self._order_reference_values(order))
 
     def _stock_order_type(self, obj):
         order_type = self._first_value(obj, ("m_nOrderType", "m_nBusinessType"))

@@ -11,6 +11,28 @@ START = "# BEGIN GENERATED CFTRADER BATCH\n"
 END = "# END GENERATED CFTRADER BATCH\n"
 
 
+def _class_method(source, class_name, method_name):
+    tree = ast.parse(source)
+    cls = next(node for node in tree.body
+               if isinstance(node, ast.ClassDef) and node.name == class_name)
+    method = next(node for node in cls.body
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.name == method_name)
+    return "".join(source.splitlines(keepends=True)[method.lineno - 1:method.end_lineno])
+
+
+def _replace_class_method(source, class_name, method_name, replacement):
+    tree = ast.parse(source)
+    cls = next(node for node in tree.body
+               if isinstance(node, ast.ClassDef) and node.name == class_name)
+    method = next(node for node in cls.body
+                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                  and node.name == method_name)
+    lines = source.splitlines(keepends=True)
+    lines[method.lineno - 1:method.end_lineno] = replacement.splitlines(keepends=True)
+    return "".join(lines)
+
+
 def updated_source(source):
     source = source.replace("\r\n", "\n")
     shared = (ROOT / "cfquant/batch_orders.py").read_text(encoding="ascii")
@@ -60,6 +82,20 @@ def updated_source(source):
         'order_id = self._normalize_order_id(result) if trust_request_order_id else None\n',
         1,
     )
+    if 'self._order_reference_key(order_id) == self._order_reference_key(previous_order_id)' not in source:
+        source = source.replace(
+            '        order_id = self._normalize_order_id(result) if trust_request_order_id else None\n',
+            '        order_id = self._normalize_order_id(result) if trust_request_order_id else None\n'
+            '        if (\n'
+            '            order_id is not None\n'
+            '            and previous_order_id is not None\n'
+            '            and self._order_reference_key(order_id) == self._order_reference_key(previous_order_id)\n'
+            '        ):\n'
+            '            # Some QMT builds expose the previous get_last_order_id value as\n'
+            '            # passorder\'s result. Resolve it from detail/callback instead.\n'
+            '            order_id = None\n',
+            1,
+        )
     source = source.replace(
         'result = self._order_stock(params, msg, resolve_order_id=False)\n',
         'result = self._order_stock(params, msg, resolve_order_id=False, trust_request_order_id=False)\n',
@@ -77,13 +113,122 @@ def updated_source(source):
         1,
     )
     core = (ROOT / 'cfquant/tx_trade_bridge.py').read_text(encoding='utf-8')
-    core_cls = next(node for node in ast.parse(core).body if isinstance(node, ast.ClassDef) and node.name == 'TxTradeBridge')
-    core_lookup = next(node for node in core_cls.body if isinstance(node, ast.FunctionDef) and node.name == '_find_order_id')
-    cls = next(node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == 'TxTradeBridge')
-    lookup = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '_find_order_id')
-    lines = source.splitlines(keepends=True)
-    lines[lookup.lineno - 1:lookup.end_lineno] = core.splitlines(keepends=True)[core_lookup.lineno - 1:core_lookup.end_lineno]
-    source = ''.join(lines)
+
+    # The standalone Lite bridge has its own copy of the order path. Keep the
+    # same callback wake-up and raw-reference safeguards as the shared bridge.
+    if 'self.pending_sync_orders = []' not in source:
+        source = source.replace(
+            '        self.pending_async_orders_lock = threading.RLock()\n',
+            '        self.pending_async_orders_lock = threading.RLock()\n'
+            '        self.pending_sync_orders = []\n'
+            '        self.pending_sync_orders_lock = threading.RLock()\n',
+            1,
+        )
+
+    order_stock = _class_method(source, 'TxTradeBridge', '_order_stock')
+    previous_line = (
+        '        previous_order_id = self._get_last_order_id(account_id, account_type, strategy_name) '
+        'if capture_previous_id else None\n'
+    )
+    if 'pending_sync_order = self._register_pending_sync_order' not in order_stock:
+        registration = (
+            '        pending_sync_order = None\n'
+            '        if resolve_order_id:\n'
+            '            pending_sync_order = self._register_pending_sync_order(\n'
+            '                account_id,\n'
+            '                account_type,\n'
+            '                params.get("stock_code", params.get("code", "")),\n'
+            '                order_remark,\n'
+            '                strategy_name,\n'
+            '                previous_order_id,\n'
+            '            )\n'
+        )
+        order_stock = order_stock.replace(previous_line, previous_line + registration, 1)
+    if 'pending_sync_order,\n' not in order_stock:
+        order_stock = order_stock.replace(
+            '                params,\n'
+            '            )\n'
+            '        if not self._is_failed_order_result(result):\n',
+            '                params,\n'
+            '                pending_sync_order,\n'
+            '            )\n'
+            '        if not self._is_failed_order_result(result):\n',
+            1,
+        )
+    if '        self._discard_pending_sync_order(pending_sync_order)\n' not in order_stock:
+        order_stock = order_stock.replace(
+            '        return {\n',
+            '        if pending_sync_order is not None:\n'
+            '            self._discard_pending_sync_order(pending_sync_order)\n'
+            '        return {\n',
+            1,
+        )
+    if '        try:\n            result = passorder(' not in order_stock:
+        pass_start = order_stock.index('        result = passorder(\n')
+        pass_end = order_stock.index('        )\n', pass_start) + len('        )\n')
+        pass_block = order_stock[pass_start:pass_end]
+        wrapped = (
+            '        try:\n'
+            + ''.join('    ' + line for line in pass_block.splitlines(keepends=True))
+            + '        except Exception:\n'
+            + '            if pending_sync_order is not None:\n'
+            + '                self._discard_pending_sync_order(pending_sync_order)\n'
+            + '            raise\n'
+        )
+        order_stock = order_stock[:pass_start] + wrapped + order_stock[pass_end:]
+    source = _replace_class_method(source, 'TxTradeBridge', '_order_stock', order_stock)
+
+    sync_methods = (
+        '_register_pending_sync_order',
+        '_discard_pending_sync_order',
+        '_resolve_pending_sync_order_callback',
+        '_order_reference_key',
+        '_order_reference_values',
+        '_is_previous_order_detail',
+    )
+    additions = []
+    for name in sync_methods:
+        replacement = _class_method(core, 'TxTradeBridge', name)
+        # Standalone entries forward callbacks explicitly to both bridges.
+        replacement = replacement.replace('        _register_sync_order_callback_relay(self)\n', '')
+        if 'def %s(' % name in source:
+            source = _replace_class_method(source, 'TxTradeBridge', name, replacement)
+        else:
+            additions.append(replacement)
+    if additions:
+        anchor = '    def _get_last_order_id(self, account_id, account_type, strategy_name=""):\n'
+        source = source.replace(anchor, '\n\n'.join(additions) + '\n\n' + anchor, 1)
+
+    source = _replace_class_method(
+        source, 'TxTradeBridge', '_find_order_id',
+        _class_method(core, 'TxTradeBridge', '_find_order_id'),
+    )
+    source = _replace_class_method(
+        source, 'TxTradeBridge', '_order_id_from_detail',
+        _class_method(core, 'TxTradeBridge', '_order_id_from_detail'),
+    )
+    callback = (
+        '            self._resolve_pending_sync_order_callback(data)\n'
+        '            self._handle_async_order_callback(data)\n'
+    )
+    source = source.replace(
+        '            self._handle_async_order_callback(data)\n',
+        callback,
+        1,
+    ) if 'self._resolve_pending_sync_order_callback(data)' not in source else source
+    normal = (ROOT / 'cfquant/normal_bridge.py').read_text(encoding='utf-8')
+    for name in ('_drain_requests', '_drain_single_request'):
+        source = _replace_class_method(source, 'NormalQmtBridge', name,
+                                       _class_method(normal, 'NormalQmtBridge', name))
+    for name in ('_defer_sync_order_response', '_poll_sync_order_responses'):
+        replacement = _class_method(normal, 'NormalQmtBridge', name)
+        if 'def %s(' % name in source:
+            source = _replace_class_method(source, 'NormalQmtBridge', name, replacement)
+        else:
+            anchor = '    def _drain_single_request(self, source, msg, received_at):\n'
+            source = source.replace(anchor, replacement + '\n' + anchor, 1)
+    source = source.replace('if self.dispatch_on_qmt_thread and msg.get(',
+                            'if getattr(self, "dispatch_on_qmt_thread", False) and msg.get(')
     ast.parse(source, feature_version=(3, 6))
     return source
 

@@ -47,6 +47,46 @@
 - 版本更新日志：[docs/版本日志.md](docs/版本日志.md)
 - 完整部署、模式选择和接口说明见下方“文档”目录
 
+## 新用户先看这里
+
+如果你第一次使用 cfquant，只需要先完成下面这条路径：
+
+1. 安装 Python 3.8–3.12，生产环境建议 Python 3.10 或 3.12；使用 Anaconda/Miniconda 时，先确定实际运行策略的环境名称。
+2. 按下方“安装方式”选择源码包或 PyPI。第一次部署、需要 Web 更新和 QMT 脚本管理时，优先选择源码包。
+3. 启动 `start_cfquant.bat`，或在已安装包的环境中执行 `cfquant run`。
+4. 打开 <http://127.0.0.1:8765/>，按初始化向导填写 QMT 目录、账号和运行模式。
+5. 在绑定页导入并运行 QMT 入口策略，等待页面显示通道在线。
+6. 先用“接口测试”验证行情、资金和持仓，再接入自己的策略。
+
+### 我应该选择哪种方式？
+
+| 你的情况 | 推荐做法 |
+|---|---|
+| 第一次部署，希望系统自动管理 Web、QMT 脚本和更新 | 源码包 + 通用模式 |
+| 已有 Python 项目，只需要调用 `xtdata` / `xttrader` | PyPI 安装 |
+| 使用 Anaconda/Miniconda | 激活目标环境后执行 `python -m pip` 安装 |
+| QMT 无法导入 `cfquant` 或受 Python 包白名单限制 | 极致模式 |
+| 需要拆分行情与低延迟交易链路 | 高级模式，准备两个 QMT 环境 |
+
+### 这几个 Python 环境分别做什么？
+
+外部 Python 用来运行 Web 控制台、`cfquant` SDK 和你的外部策略；QMT 内部 Python 用来运行导入 QMT 的入口策略。两者可以不是同一个解释器，但 Web 配置中的 Python 路径、外部策略使用的 Python、以及你执行 `python -m pip install` 的 Python 必须对应清楚。遇到 `ModuleNotFoundError` 时，优先用同一个解释器执行：
+
+```powershell
+python -c "import sys; print(sys.executable)"
+python -m pip show cfquant
+```
+
+### 怎样判断部署完成？
+
+以下条件同时满足，才算完成基础部署：
+
+- 浏览器可以打开 `http://127.0.0.1:8765/`。
+- Web 页面状态中的 Web、LTtx 和需要的 PipeHub 通道在线。
+- QMT 已登录，绑定页显示入口策略运行中。
+- 接口测试可以返回至少一只证券的行情，以及资金或持仓查询结果。
+- 外部 Python 能够导入 `cfquant`，并且使用的解释器路径与安装包的解释器一致。
+
 ## 快速开始
 
 ### 环境要求
@@ -82,15 +122,61 @@
 1. 将项目解压到固定目录，例如 `D:\cfquant`。
 2. 直接双击项目目录中的 `start_cfquant.bat`。启动脚本会使用项目 `.venv`（如果存在）或当前 Python，先检查当前环境是否已经安装 `cfquant`；已通过 PyPI 或其他方式安装时直接跳过，缺失时会用等价于 `python -m pip install --editable .` 的参数列表自动安装当前源码版本，不需要用户手动执行安装命令。若 Web 端口上已经运行 cfquant，会直接复用已有实例并打开页面；若端口被其他程序占用，会提示换端口或停止占用进程。
 
+首次启动时，Web 配置中可能还没有保存 Python 解释器。此时不需要先手工填写配置：`start_cfquant.bat` 会先寻找项目 `.venv`、`CFQUANT_PYTHON_EXE`、当前或常见 Conda 安装目录，以及 `%USERPROFILE%\.conda\environments.txt` 中登记的环境，找到后用该解释器启动 Web 控制台。
+
+如果 Anaconda/Miniconda 没有加入系统 PATH，首次启动仍可以自动识别常见安装位置。自动识别不到时，可以在启动前指定实际环境的 Python：
+
+```bat
+set CFQUANT_PYTHON_EXE=C:\Users\用户名\anaconda3\envs\quant\python.exe
+start_cfquant.bat
+```
+
+Web 控制台启动后，请在初始化配置中确认或修改 Python 解释器路径。后续启动会优先使用已保存的路径；启动选择结果和失败原因记录在 `log\cfquant_startup.log`。
+
 自动安装失败时，启动窗口会保持打开，并把安装日志写入 `log\cfquant_startup.log`，修复 Python、网络或权限问题后重新启动即可。
 
 项目默认使用清华 PyPI 镜像安装依赖，适合中国大陆网络环境。启动脚本、网页源码更新、`requirements.txt` 安装以及 LTtx 缺失依赖自动安装都会遵循这个设置。需要切换到企业私有源或其他镜像时，可在启动前设置 `CFQUANT_PIP_INDEX_URL` 环境变量。
 
-通过 PyPI 安装后，可以使用下面任一命令启动本地 Web 控制台；`run` 和 `serve` 等价：
+#### 方式二：PyPI 安装（适合外部 Python 或不需要源码更新的环境）
+
+PyPI 安装只负责安装 `cfquant` Python 包及其依赖，不会自动把 QMT 入口策略导入 QMT，也不会创建源码包中的 `start_cfquant.bat`。建议在目标 Python 环境中使用 `python -m pip`，避免把包装到另一个解释器：
+
+```powershell
+python -m pip install --upgrade cfquant
+# 需要 ZMQ 能力时：
+python -m pip install --upgrade "cfquant[zmq]"
+```
+
+安装完成后，可以直接启动 Web 控制台：
 
 ```powershell
 cfquant run
 ```
+
+也可以使用 `cfquant serve` 或 `cfquant-web`；三者启动的是同一个本地 Web 服务。首次启动后访问 <http://127.0.0.1:8765/>，在初始化向导中配置 QMT 目录、账号和运行模式。需要 QMT 入口脚本时，使用已安装包导出到 QMT 策略目录：
+
+```powershell
+cfquant qmt-scripts --output D:\QMT\cfquant
+```
+
+#### 方式三：Conda / Anaconda 环境
+
+Conda 环境可以直接安装 PyPI 包。请先激活实际运行策略的环境，再执行安装和启动命令：
+
+```powershell
+conda activate quant
+python -m pip install --upgrade cfquant
+cfquant run
+```
+
+如果使用源码包，直接运行项目目录中的 `start_cfquant.bat`。即使 Conda 没有加入系统 PATH，启动脚本也会探测常见 Conda 目录；无法探测时可设置 `CFQUANT_PYTHON_EXE` 指向该环境的 `python.exe`。Web 初始化后请保存同一个解释器路径，避免 Web、外部策略和 QMT 使用不同环境。
+
+#### 选择建议
+
+- 需要 Web 控制台、QMT 入口脚本、网页更新和回滚：使用**源码包部署**。
+- 只需要在已有 Python 项目中调用 `cfquant.xtdata` 或 `cfquant.xttrader`：使用 **PyPI 安装**。
+- 使用 Anaconda/Miniconda：优先在目标 Conda 环境中执行 `python -m pip install`，不要使用未激活环境的裸 `pip`。
+- 源码包和 PyPI 包不要在同一个解释器中反复混用；源码开发时使用 `python -m pip install --editable .`，正式使用时使用 PyPI 版本。
 
 启动后打开 <http://127.0.0.1:8765/>，按网页中的“新手初始化向导”完成账号、模式和 QMT 目录配置。开启“自动导入并管理 QMT 策略”可配置账号、模拟/实盘及 QMT 启动自运行；按绑定页进度完成 QMT 导入和重启，再验证资金、持仓、委托和行情。流程及模式互斥规则见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
 
@@ -113,6 +199,8 @@ cfquant run
 
 “自动启动 QMT”负责启动客户端；“QMT 启动后自动运行”负责运行托管策略。未勾选策略自动运行时，登录后需在“模型交易”运行已导入的托管策略。编辑已有绑定会保留这些选项，不会自动开启。
 
+cfquant Web 每次启动时都会读取已保存的绑定：只要账号处于启用状态并勾选了“自动启动 QMT”，就会检查对应 QMT 是否已经运行；未运行时自动拉起对应的 `XtItClient.exe`，已经运行的实例不会重复启动。首次登录、密码输入和 QMT 内的策略运行仍按页面提示完成。
+
 | 模式 | 自动部署目标 | 在线检测要求 |
 |---|---|---|
 | 通用模式 | 单个 QMT 中的通用托管策略 | 查询通道和交易通道都在线 |
@@ -121,6 +209,80 @@ cfquant run
 | 同账号独立市场 | 对应上海和深圳市场的 QMT | 沪市和深市交易通道都在线 |
 
 多 QMT 部署需分别完成各终端登录，自动启动选项仅启动绑定的主 QMT 目录。同一资金账号在同一个 QMT 中只允许一种模式。完整配置及状态说明见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
+
+## 常见问题先查哪里
+
+| 现象 | 优先检查 |
+|---|---|
+| 双击启动窗口后立即退出 | 查看 `log\cfquant_startup.log`；确认 Python 路径存在，或设置 `CFQUANT_PYTHON_EXE`。 |
+| 页面打不开 | 查看最新的 `log\cfquant_web_server.*.stderr.log`；确认 8765 端口没有被其他程序占用。 |
+| 页面在线但 QMT 不在线 | 确认 QMT 已登录、QMT 目录正确，并按绑定页提示重新导入或启动入口策略。 |
+| `ModuleNotFoundError: cfquant` | 在运行策略的同一个解释器中执行 `python -m pip install --upgrade cfquant`，再用 `python -c "import cfquant; print(cfquant.__file__)"` 验证。 |
+| 行情为空 | 先用页面接口测试确认证券代码、周期和行情权限；标准行情异常时可对照 `xtdata.get_market_data_ex`。 |
+| 不确定应该使用哪种模式 | 先选通用模式；极致模式用于 QMT 导入受限的情况，高级模式需要额外准备两个 QMT 环境。 |
+
+完整日志位于项目的 `log` 目录。提交问题时，请附上启动日志、页面状态和使用的 Python 版本，删除账号、密码、Token、订单和持仓等敏感信息后再提交。
+
+## 从 `xtquant` 迁移到 `cfquant`
+
+安装和初始化完成后，通常不需要重写原有策略。先把外部策略中指向 `xtquant` 的导入改成 `cfquant` 对应模块，再按下面的顺序验证。cfquant 负责外部 Python 与 QMT 之间的桥接，QMT 仍然需要登录并运行 Web 绑定页部署的入口策略。
+
+### 最小改动
+
+```python
+# 原来的写法
+from xtquant import xtdata, xtconstant
+from xtquant.xttrader import XtQuantTrader
+from xtquant.xttype import StockAccount
+
+# 替换为 cfquant
+from cfquant import xtdata, xtconstant
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+```
+
+默认路由是 `auto`，外部策略通常不需要手工选择 Pipe、LTtx 或高级模式。需要固定传输方式时，再使用 `cfquant.configure(...)`；具体路由说明见 [外部 Python 接入](docs/外部Python接入.md)。
+
+### 先验证行情
+
+```python
+from cfquant import xtdata
+
+data = xtdata.get_market_data_ex(
+    field_list=["open", "close", "volume"],
+    stock_list=["000001.SZ"],
+    period="1d",
+    count=5,
+)
+print(data)
+```
+
+`get_market_data_ex` 返回按证券代码组织的结果，适合先确认本地行情、证券代码和 QMT 行情权限。原有代码使用 `get_market_data` 时可以继续使用；如果某个 QMT 版本对标准接口返回空结果，cfquant 会尝试用扩展接口读取并转换结果。
+
+### 再验证交易连接
+
+```python
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+trader = XtQuantTrader("", account=account)
+
+if trader.connect() != 0:
+    raise RuntimeError(trader.last_connect_error or "cfquant connect failed")
+
+print(trader.query_stock_asset(account))
+print(trader.query_stock_positions(account))
+trader.disconnect()
+```
+
+先完成行情、资金和持仓查询，再在模拟账号中验证委托和撤单。不要把第一次验证直接放在实盘账号上。
+
+### 回调和接口差异
+
+`XtQuantTrader`、`StockAccount`、常用行情查询和交易方法保持接近 `xtquant` 的调用方式，原有回调类通常可以继续使用。仍有部分 QMT 专有接口、字段和返回结构存在兼容边界，使用前请查看 [xtquant 原版接口适配清单](docs/xtquant原版接口适配清单.md) 和 [QMT 函数封装能力清单](docs/QMT函数封装能力清单.md)。
+
+推荐迁移顺序：**行情查询 → 资金/持仓 → 回调 → 模拟委托 → 模拟撤单 → 正式策略**。每一步都先在 Web 控制台接口测试和日志中确认，再进入下一步。
 
 ## Web 控制台
 
@@ -134,7 +296,11 @@ stop_cfquant.bat        停止
 restart_cfquant.bat     重启
 ```
 
-## cftrader 100 单本地基准
+## 性能参考（进阶）
+
+下面的测试用于帮助有性能需求的用户理解批量接口和不同链路的开销，不是安装或迁移成功的判断标准。
+
+### cftrader 100 单本地基准
 
 2026-09-11 使用本地假 QMT 交易桥复测 100 单，5 次预热、30 次采样；该基准不连接 Web、LTtx、PipeHub 或真实 QMT，不产生真实委托，只衡量 SDK 到桥接分发和本地 `passorder` 循环的协议开销。
 
