@@ -249,10 +249,49 @@ def _coerce_timestamp(value, date_value=None, default=0):
         return default
 
 
+def _is_zero_time_value(value):
+    """Return whether a time field contains the provider's empty value."""
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return value == 0
+    text = str(value).strip()
+    if not text:
+        return True
+    # QMT uses both numeric zero and display forms such as 00:00:00 for an
+    # unavailable order/trade time.  Do not discard values such as 000001.
+    if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
+        try:
+            return float(text) == 0
+        except (TypeError, ValueError):
+            return False
+    digits = re.sub(r"\D", "", text)
+    return bool(digits) and not set(digits) - {"0"}
+
+
 def _time_field_timestamp(data, time_names, date_names):
-    value = _first_value(data, time_names, default=None)
-    date_value = _first_value(data, date_names, default=None)
-    return _coerce_timestamp(value, date_value)
+    date_value = None
+    for name in _with_qmt_compact_aliases(*date_names):
+        if name not in data:
+            continue
+        candidate = data.get(name)
+        if _is_empty(candidate) or _is_zero_time_value(candidate):
+            continue
+        date_value = candidate
+        break
+    # A callback can expose a generic ``time``/canonical field as 0 while a
+    # later QMT field (for example m_strOrderTime) contains the real value.
+    # Try every candidate instead of letting the zero placeholder win.
+    for name in _with_qmt_compact_aliases(*time_names):
+        if name not in data:
+            continue
+        value = data.get(name)
+        if _is_empty(value) or _is_zero_time_value(value):
+            continue
+        timestamp = _coerce_timestamp(value, date_value)
+        if timestamp:
+            return timestamp
+    return 0
 
 
 def normalize_order_price_type(value, market=""):
@@ -636,7 +675,7 @@ class XtOrder(DictObject):
         data["order_time"] = _time_field_timestamp(
             data,
             ("order_time", "time", "entrust_time", "insert_time", "m_strOrderTime", "m_strEntrustTime", "m_strInsertTime", "m_nOrderTime", "m_nEntrustTime", "m_nInsertTime"),
-            ("order_date", "entrust_date", "m_strOrderDate", "m_strEntrustDate", "m_strTradingDay", "m_nOrderDate", "m_nEntrustDate"),
+            ("order_date", "entrust_date", "insert_date", "m_strOrderDate", "m_strEntrustDate", "m_strInsertDate", "m_strTradingDay", "m_nOrderDate", "m_nEntrustDate", "m_nInsertDate"),
         )
         for name in ("order_type", "order_volume", "price_type", "traded_volume", "order_status", "direction", "offset_flag"):
             data[name] = _coerce_int(data.get(name))

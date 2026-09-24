@@ -30,7 +30,7 @@ from .runtime_report import build_qmt_runtime_report, module_source_state, sourc
 from .xttype import (
     CreditAssure, CreditSloCode, CreditSubjects, StkCompacts, XtCreditDetail, XtPositionStatistics,
     XtAccountInfo, XtAccountStatus, XtSmtAppointmentResponse,
-    filter_cancelable_orders, normalize_order_price_type, _with_qmt_compact_aliases,
+    filter_cancelable_orders, normalize_order_price_type, _is_zero_time_value, _with_qmt_compact_aliases,
 )
 
 
@@ -3077,15 +3077,18 @@ class TxTradeBridge(object):
                     "m_nOrderTime",
                     "m_nEntrustTime",
                     "m_nInsertTime",
-                )),
+                ), skip_zero=True),
                 "order_date": self._first_value(obj, (
                     "order_date",
                     "entrust_date",
+                    "insert_date",
                     "m_strOrderDate",
                     "m_strEntrustDate",
+                    "m_strInsertDate",
                     "m_strTradingDay",
                     "m_nOrderDate",
                     "m_nEntrustDate",
+                    "m_nInsertDate",
                 )),
                 "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
@@ -3171,7 +3174,7 @@ class TxTradeBridge(object):
                     "m_strDealTime",
                     "m_nTradeTime",
                     "m_nDealTime",
-                )),
+                ), skip_zero=True),
                 "trade_date": self._first_value(obj, (
                     "trade_date",
                     "deal_date",
@@ -3286,10 +3289,12 @@ class TxTradeBridge(object):
             return value
         return None
 
-    def _first_value(self, obj, names):
+    def _first_value(self, obj, names, skip_zero=False):
         for name in names:
             value = self._get_value(obj, name)
             if value is not None and value != "":
+                if skip_zero and _is_zero_time_value(value):
+                    continue
                 return value
         return None
 

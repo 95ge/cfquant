@@ -1583,6 +1583,23 @@ def l2_query(func, period, params):
     return {"columns": columns, "records": rows}
 
 
+def _is_zero_time_value(value):
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return value == 0
+    text = str(value).strip()
+    if not text:
+        return True
+    if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
+        try:
+            return float(text) == 0
+        except (TypeError, ValueError):
+            return False
+    digits = re.sub(r"\D", "", text)
+    return bool(digits) and not set(digits) - {"0"}
+
+
 class TxTradeBridge(object):
     def __init__(
         self,
@@ -3709,6 +3726,7 @@ class TxTradeBridge(object):
                 "order_sysid": self._get_value(obj, "m_strOrderSysID"),
                 "order_type": self._stock_order_type(obj),
                 "order_time": self._first_value(obj, (
+                    "time",
                     "order_time",
                     "entrust_time",
                     "insert_time",
@@ -3718,15 +3736,18 @@ class TxTradeBridge(object):
                     "m_nOrderTime",
                     "m_nEntrustTime",
                     "m_nInsertTime",
-                )),
+                ), skip_zero=True),
                 "order_date": self._first_value(obj, (
                     "order_date",
                     "entrust_date",
+                    "insert_date",
                     "m_strOrderDate",
                     "m_strEntrustDate",
+                    "m_strInsertDate",
                     "m_strTradingDay",
                     "m_nOrderDate",
                     "m_nEntrustDate",
+                    "m_nInsertDate",
                 )),
                 "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
@@ -3799,13 +3820,14 @@ class TxTradeBridge(object):
                 "strategy_name": self._get_value(obj, "m_strStrategyName"),
                 "order_remark": self._first_value(obj, ("m_strRemark", "m_strOrderRemark")),
                 "trade_time": self._first_value(obj, (
+                    "time",
                     "trade_time",
                     "deal_time",
                     "m_strTradeTime",
                     "m_strDealTime",
                     "m_nTradeTime",
                     "m_nDealTime",
-                )),
+                ), skip_zero=True),
                 "trade_date": self._first_value(obj, (
                     "trade_date",
                     "deal_date",
@@ -3942,10 +3964,12 @@ class TxTradeBridge(object):
                 continue
             return value
         return None
-    def _first_value(self, obj, names):
+    def _first_value(self, obj, names, skip_zero=False):
         for name in names:
             value = self._get_value(obj, name)
             if value is not None and value != "":
+                if skip_zero and _is_zero_time_value(value):
+                    continue
                 return value
         return None
 

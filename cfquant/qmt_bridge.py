@@ -18,7 +18,7 @@ from .level2 import (
     require_l2_callable,
     thousand_price,
 )
-from .xttype import filter_cancelable_orders
+from .xttype import _is_zero_time_value, filter_cancelable_orders
 
 
 class CfquantQmtBridge(object):
@@ -1119,15 +1119,18 @@ class CfquantQmtBridge(object):
                     "m_nOrderTime",
                     "m_nEntrustTime",
                     "m_nInsertTime",
-                )),
+                ), skip_zero=True),
                 "order_date": self._first_value(obj, (
                     "order_date",
                     "entrust_date",
+                    "insert_date",
                     "m_strOrderDate",
                     "m_strEntrustDate",
+                    "m_strInsertDate",
                     "m_strTradingDay",
                     "m_nOrderDate",
                     "m_nEntrustDate",
+                    "m_nInsertDate",
                 )),
                 "direction": self._get_value(obj, "m_nDirection"),
                 "offset_flag": self._get_value(obj, "m_nOffsetFlag"),
@@ -1205,7 +1208,7 @@ class CfquantQmtBridge(object):
                     "m_strDealTime",
                     "m_nTradeTime",
                     "m_nDealTime",
-                )),
+                ), skip_zero=True),
                 "trade_date": self._first_value(obj, (
                     "trade_date",
                     "deal_date",
@@ -1377,10 +1380,12 @@ class CfquantQmtBridge(object):
         text = " ".join(str(value or "") for value in values).strip().lower()
         return "cfquant" if "cfquant" in text else "other"
 
-    def _first_value(self, obj, names):
+    def _first_value(self, obj, names, skip_zero=False):
         for name in names:
             value = self._get_value(obj, name)
             if value is not None and value != "":
+                if skip_zero and _is_zero_time_value(value):
+                    continue
                 return value
         return None
 

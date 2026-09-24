@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260923_03';
+const FRONTEND_VERSION = 'web_20260924_01';
 
 const state = {
   accountId: '',
@@ -11029,11 +11029,14 @@ const ORDER_TIME_FIELDS = [
 const ORDER_DATE_FIELDS = [
   'order_date',
   'entrust_date',
+  'insert_date',
   'm_strOrderDate',
   'm_strEntrustDate',
+  'm_strInsertDate',
   'm_strTradingDay',
   'm_nOrderDate',
   'm_nEntrustDate',
+  'm_nInsertDate',
 ];
 
 const TRADE_TIME_FIELDS = [
