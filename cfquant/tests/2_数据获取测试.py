@@ -354,13 +354,12 @@ def main():
             "查询交易日历",
             f"获取 {stock_code} 对应市场最近的交易日期。",
             lambda: xtdata.get_trading_dates(
-                stock_code,
-                start_date=config.start_time,
-                end_date=config.end_time,
+                market=stock_code.rsplit(".", 1)[-1],
+                start_time=config.start_time,
+                end_time=config.end_time,
                 count=config.count,
-                period=config.period,
             ),
-            example="xtdata.get_trading_dates(stock_code, start_date, end_date, count, period)",
+            example="xtdata.get_trading_dates(market, start_time, end_time, count)",
         )
         reporter.call(
             "is_stock",

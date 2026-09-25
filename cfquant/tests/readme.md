@@ -93,7 +93,7 @@ xtdata.get_market_data_ex(field_list, [stock_code], period, start_time, end_time
 xtdata.get_local_data(field_list, [stock_code], period, start_time, end_time, count)
 xtdata.get_instrument_detail(stock_code, False)
 xtdata.get_stock_list_in_sector(sector_name)
-xtdata.get_trading_dates(stock_code, start_date, end_date, count, period)
+xtdata.get_trading_dates(market, start_time, end_time, count)
 xtdata.get_stock_name(stock_code)
 xtdata.get_financial_data(financial_fields, [stock_code], start_time, end_time)
 ```

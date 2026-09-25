@@ -34,7 +34,8 @@ LITE_PATHS = sorted((ROOT / 'qmt_scripts').rglob('CFQUANT_LITE*.py'))
 def lite_bridge(path):
     source = path.read_text(encoding='gbk')
     shared = source.split('# BEGIN GENERATED CFTRADER BATCH\n', 1)[1].split('# END GENERATED CFTRADER BATCH', 1)[0]
-    assert shared.strip() == (ROOT / 'cfquant/batch_orders.py').read_text(encoding='ascii').strip()
+    from tools.sync_qmt_batch import shared_source
+    assert shared.strip() == shared_source().strip()
     ast.parse(source, feature_version=(3, 6))
     cls = next(node for node in ast.parse(source).body if isinstance(node, ast.ClassDef) and node.name == 'TxTradeBridge')
     cls.bases = [ast.Name(id='BaseTradeBridge', ctx=ast.Load())]

@@ -14,6 +14,7 @@ from .channels import channels_for_bridge, normalize_bridge_id
 from .protocol import new_id
 from .order_meta import positive_order_id
 from . import xtconstant
+from .stock_connect import connect_account_type, validate_connect_order
 from .xttype import (
     CreditAssure,
     CreditSloCode,
@@ -195,7 +196,7 @@ def _account_type_value(account_type):
     if account_type is None or account_type == "":
         return xtconstant.SECURITY_ACCOUNT
     if isinstance(account_type, str):
-        text = account_type.strip().upper()
+        text = connect_account_type(account_type)
         if not text:
             return xtconstant.SECURITY_ACCOUNT
         if text.isdigit():
@@ -504,7 +505,7 @@ class XtQuantTrader(object):
     ):
         result = self._trade_request("xttrader.order_stock", {
             "account": _account_payload(account),
-            "stock_code": stock_code,
+            "stock_code": validate_connect_order({"stock_code": stock_code}, _account_payload(account).get("account_type")),
             "order_type": order_type,
             "order_volume": order_volume,
             "price_type": price_type,
@@ -520,7 +521,7 @@ class XtQuantTrader(object):
         seq = next(self._seq)
         request = {
             "account": _account_payload(account),
-            "stock_code": stock_code,
+            "stock_code": validate_connect_order({"stock_code": stock_code}, _account_payload(account).get("account_type")),
             "order_type": order_type,
             "order_volume": order_volume,
             "price_type": price_type,
@@ -683,6 +684,13 @@ class XtQuantTrader(object):
 
     def query_com_position(self, account):
         return self._compat_account_request("query_com_position", account)
+
+    def get_hkt_exchange_rate(self, account):
+        """Return QMT's Stock Connect reference rates without synthesizing FX values."""
+        payload = _account_payload(account)
+        if connect_account_type(payload.get("account_type")) not in ("HUGANGTONG", "SHENGANGTONG"):
+            raise ValueError("get_hkt_exchange_rate requires a Stock Connect account")
+        return self._trade_request("xttrader.get_hkt_exchange_rate", {"account": payload})
 
     def query_position_statistics(self, account):
         return self._compat_account_request("query_position_statistics", account)
@@ -1370,7 +1378,7 @@ def _account_id(account):
 def _account_type_name(account_type):
     mapping = dict((value, name) for value, name in xtconstant.ACCOUNT_TYPE_DICT.items())
     if isinstance(account_type, str):
-        text = account_type.strip().upper()
+        text = connect_account_type(account_type)
         aliases = {
             "1": "FUTURE",
             "FUTURE_ACCOUNT": "FUTURE",

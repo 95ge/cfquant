@@ -85,7 +85,7 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 取消行情订阅 | `xtdata.unsubscribe_quote` / `/api/quotes/unsubscribe` | 普通桥订阅状态 | 已实现。 |
 | 证券合约详情 | `xtdata.get_instrument_detail` / `/api/data/instrument` | `get_instrument_detail`；缺失时用基础属性 callable 合成 | 已实现（含降级）；高级模式默认交易桥优先、普通桥回退。降级结果带 `cfquant_detail_fallback=True` 和 `cfquant_detail_partial=True`，价格涨跌停等深度字段不能保证。 |
 | 板块成分 | `xtdata.get_stock_list_in_sector` / `/api/data/sector` | `ContextInfo.get_stock_list_in_sector` | 已实现，但参数集仍较简化。 |
-| 交易日期 | `xtdata.get_trading_dates` | `ContextInfo.get_trading_dates(...)` | 已实现。 |
+| 交易日期 | `xtdata.get_trading_dates` | `get_trading_calendar(market, start_time, end_time)` | 对齐 xtquant 参数；桥接层筛选日期、截取 count 并转换为毫秒时间戳，依赖终端日历能力。 |
 | 证券类型/基础属性 | `xtdata.is_stock`、`is_fund`、`is_future`、`get_stock_type`、`get_stock_name`、`get_open_date` | 同名大 QMT callable | 已实现；如果券商 QMT 不暴露对应 callable，会返回明确的 `not found`。 |
 | 合约到期日/乘数 | `xtdata.get_contract_expire_date`、`get_contract_multiplier` | 同名大 QMT callable | 已实现；真实可用性取决于当前 QMT callable。 |
 | 指数成分权重/换手率 | `xtdata.get_weight_in_index`、`get_turnover_rate` | 同名大 QMT callable | 已实现；真实可用性取决于当前 QMT callable。 |

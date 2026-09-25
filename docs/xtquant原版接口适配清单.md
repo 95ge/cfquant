@@ -52,7 +52,7 @@
 | `get_market_data` | 按字段、证券和时间范围读取 K 线或分笔数据 | ✅ 部分适配 | 已映射大 QMT 行情查询；直接返回底层结构，缺少该函数时还会回退到扩展查询，未统一保证官网的按字段组织结构。 |
 | `get_local_data` | 批量读取本地已有历史行情 | ✅ 部分适配 | 优先使用大 QMT `get_market_data_ex(..., subscribe=False)` 读取本地数据；已知不支持该签名的旧接口走本地读取，保留空结果，不用自动订阅掩盖缺失数据。`data_dir` 不实现 MiniQMT 本地目录切换语义。 |
 | `get_full_tick` | 查询证券或市场当前的最新分笔快照 | ✅ 已适配 | 已接入实时 tick 查询；高级模式优先交易桥，失败后尝试普通桥。 |
-| `get_divid_factors` | 查询分红、配股等除权数据及因子 | ✅ 部分适配 | 已将大 QMT 的时间戳字典转换成七列 DataFrame，按毫秒时间戳排序，以北京时间筛选日期区间；索引固定为整数毫秒，尚未与原版真实返回逐项比对。 |
+| `get_divid_factors` | ??????????????? | ? ???? | ??? QMT ?????????? xtquant ????? DataFrame??? time ??? YYYYMMDD ???????????????? YYYYMMDD ???????????????? |
 | `download_history_data` | 补充单只证券指定周期的历史行情 | ✅ 已适配 | 已接入历史行情补充流程。 |
 | `download_history_data2` | 批量补充历史行情，并通过回调报告进度 | ✅ 部分适配 | 已有批量任务和事件回调；进度及生命周期事件还包含 cfquant 扩展语义。 |
 | `download_history_contracts` | 补充已到期或退市合约的基础资料 | ❌ 条件待验证 | 仅尝试终端对应下载函数。 |
@@ -91,7 +91,7 @@
 | --- | --- | --- | --- |
 | `get_instrument_detail` | 查询合约的市场、名称、上市日期等基础字段 | ✅ 部分适配 | 依次尝试新版名称、旧版 `get_instrumentdetail`、基础字段合成。旧版结果标记 `cfquant_detail_partial` 和来源；合成结果还标记 `cfquant_detail_fallback`。真实业务错误不会触发旧名称回退。 |
 | `get_instrument_type` | 判断合约所属证券类型 | ❌ 未适配 | `is_stock`、`is_fund` 等扩展入口不等于官网接口及其返回结构。 |
-| `get_trading_dates` | 查询某市场在日期区间内的交易日列表 | ✅ 部分适配 | 官网参数是 `market/start_time/end_time`；cfquant 使用大 QMT 的 `stockcode/start_date/end_date/period`，参数和市场语义需要转换。 |
+| `get_trading_dates` | 查询某市场在日期区间内的交易日列表 | ✅ 部分适配 | 参数对齐 market/start_time/end_time/count；通过大 QMT get_trading_calendar 转换为市场交易日毫秒时间戳，按 count 截取，排除未来日期。依赖终端日历能力和数据，实机待验证。 |
 | `get_sector_list` | 列出可查询的板块名称 | ✅ 部分适配 | 已按大 QMT 节点名称遍历板块树，输出去重后的扁平板块列表，防止循环目录；同名目录及终端分类覆盖仍待实测。 |
 | `get_stock_list_in_sector` | 查询某个板块包含的证券代码 | ✅ 已适配 | 已增加 `real_timetag=-1` 参数；指定历史毫秒时间戳时传给大 QMT 的 `realtime`，旧终端不接受该参数时直接报错，不退回当前成分。 |
 | `download_sector_data` | 更新板块分类和成分信息 | ❌ 条件待验证 | 仅尝试终端对应下载函数。 |

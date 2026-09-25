@@ -11,6 +11,14 @@ START = "# BEGIN GENERATED CFTRADER BATCH\n"
 END = "# END GENERATED CFTRADER BATCH\n"
 
 
+def shared_source():
+    connect = (ROOT / "cfquant/stock_connect.py").read_text(encoding="ascii")
+    batch = (ROOT / "cfquant/batch_orders.py").read_text(encoding="ascii")
+    batch = '\n'.join(line for line in batch.split('\n')
+                      if not line.startswith('from .stock_connect import '))
+    return connect.rstrip() + '\n\n' + batch
+
+
 def _class_method(source, class_name, method_name):
     tree = ast.parse(source)
     cls = next(node for node in tree.body
@@ -35,7 +43,7 @@ def _replace_class_method(source, class_name, method_name, replacement):
 
 def updated_source(source):
     source = source.replace("\r\n", "\n")
-    shared = (ROOT / "cfquant/batch_orders.py").read_text(encoding="ascii")
+    shared = shared_source()
     block = START + shared.rstrip() + "\n" + END
     if START in source:
         start = source.index(START)
@@ -50,13 +58,17 @@ def updated_source(source):
     dispatch = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
     lines = source.splitlines(keepends=True)
     branch = [
+        '        if action == "xttrader.get_hkt_exchange_rate":\n',
+        '            return query_connect_exchange_rate(self, params)\n',
         '        if action in CFTRADER_BATCH_ORDER_ACTIONS:\n',
         '            return execute_qmt_batch(self, params, msg, action.endswith("_async"))\n',
         '        if action in CFTRADER_BATCH_CANCEL_ACTIONS:\n',
         '            return execute_qmt_cancel_batch(self, params, msg, action.endswith("_async"))\n',
     ]
     if lines[dispatch.lineno:dispatch.lineno + len(branch)] != branch:
-        if (lines[dispatch.lineno:dispatch.lineno + 2]
+        if lines[dispatch.lineno:dispatch.lineno + 4] == branch[2:]:
+            lines[dispatch.lineno:dispatch.lineno] = branch[:2]
+        elif (lines[dispatch.lineno:dispatch.lineno + 2]
                 == ['        if action in CFTRADER_BATCH_ACTIONS:\n',
                     '            return execute_qmt_batch(self, params, msg, action.endswith("_async"))\n']):
             lines[dispatch.lineno:dispatch.lineno + 2] = branch
@@ -113,6 +125,15 @@ def updated_source(source):
         1,
     )
     core = (ROOT / 'cfquant/tx_trade_bridge.py').read_text(encoding='utf-8')
+    for name in ('_passorder_optype', '_account_type_name', '_stock_order_type', '_cancel_order_stock'):
+        source = _replace_class_method(source, 'TxTradeBridge', name,
+                                       _class_method(core, 'TxTradeBridge', name))
+    if 'params["stock_code"] = validate_connect_order(params, account_type)' not in source:
+        source = source.replace(
+            '        order_type = self._passorder_optype(params, account_type)\n',
+            '        params = dict(params)\n'
+            '        params["stock_code"] = validate_connect_order(params, account_type)\n'
+            '        order_type = self._passorder_optype(params, account_type)\n')
 
     # The standalone Lite bridge has its own copy of the order path. Keep the
     # same callback wake-up and raw-reference safeguards as the shared bridge.
@@ -179,6 +200,7 @@ def updated_source(source):
     source = _replace_class_method(source, 'TxTradeBridge', '_order_stock', order_stock)
 
     sync_methods = (
+        '_get_trading_dates',
         '_register_pending_sync_order',
         '_discard_pending_sync_order',
         '_resolve_pending_sync_order_callback',
@@ -217,6 +239,8 @@ def updated_source(source):
         1,
     ) if 'self._resolve_pending_sync_order_callback(data)' not in source else source
     normal = (ROOT / 'cfquant/normal_bridge.py').read_text(encoding='utf-8')
+    source = _replace_class_method(source, 'NormalQmtBridge', '_callback_account_type',
+                                   _class_method(normal, 'NormalQmtBridge', '_callback_account_type'))
     for name in ('_drain_requests', '_drain_single_request'):
         source = _replace_class_method(source, 'NormalQmtBridge', name,
                                        _class_method(normal, 'NormalQmtBridge', name))

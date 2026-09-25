@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+from .stock_connect import connect_account_type
 import queue
 import re
 import threading
@@ -1372,14 +1373,16 @@ class NormalQmtBridge(TxTradeBridge):
             data.get("account_type") if isinstance(data, dict) else None,
             data.get("m_nAccountType") if isinstance(data, dict) else None,
             data.get("m_strAccountType") if isinstance(data, dict) else None,
+            data.get("m_nBrokerType") if isinstance(data, dict) else None,
             self._get_value(obj, "account_type"),
             self._get_value(obj, "m_nAccountType"),
             self._get_value(obj, "m_strAccountType"),
+            self._get_value(obj, "m_nBrokerType"),
         ]
         for value in candidates:
             if value in (None, ""):
                 continue
-            text = str(value).strip().upper()
+            text = connect_account_type(value)
             if text in ("2", "SECURITY", "SECURITY_ACCOUNT", "STOCK_ACCOUNT"):
                 return "STOCK"
             if text in ("3", "CREDIT_ACCOUNT", "MARGIN"):

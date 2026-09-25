@@ -8,6 +8,7 @@ import time
 import uuid
 
 from .protocol import loads_message, pack_event, pack_response
+from .stock_connect import connect_account_type, validate_connect_order, validate_connect_market, query_connect_exchange_rate
 from .batch_orders import (
     CFTRADER_BATCH_CANCEL_ACTIONS,
     CFTRADER_BATCH_ORDER_ACTIONS,
@@ -331,6 +332,8 @@ class TxTradeBridge(object):
             )
 
     def _dispatch(self, action, params, msg):
+        if action == "xttrader.get_hkt_exchange_rate":
+            return query_connect_exchange_rate(self, params)
         if action in CFTRADER_BATCH_ORDER_ACTIONS:
             return execute_qmt_batch(self, params, msg, action.endswith("_async"))
         if action in CFTRADER_BATCH_CANCEL_ACTIONS:
@@ -713,6 +716,7 @@ class TxTradeBridge(object):
         raise RuntimeError("no available trade detail call variant")
 
     def _passorder_optype(self, params, account_type):
+        validate_connect_order(params, account_type)
         qmt_optype = self._first_param(params, ("qmt_optype", "passorder_optype"))
         if qmt_optype is not None:
             return self._coerce_optype(qmt_optype)
@@ -975,6 +979,8 @@ class TxTradeBridge(object):
         account = params.get("account") or {}
         account_id = account.get("account_id") or params.get("account_id") or self.account_id
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        params = dict(params)
+        params["stock_code"] = validate_connect_order(params, account_type)
         order_type = self._passorder_optype(params, account_type)
         if not account_id:
             raise ValueError("account_id is required")
@@ -1923,6 +1929,7 @@ class TxTradeBridge(object):
         if not order_id:
             raise ValueError("order_id is required")
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        validate_connect_market(account_type, params.get("stock_code"), self._market_suffix(params.get("market")))
         result = cancel_func(order_id, account_id, account_type, self.context)
         return {"cancel_result": 0 if result else -1, "request_result": result, "order_id": order_id}
 
@@ -3204,6 +3211,57 @@ class TxTradeBridge(object):
         return result
 
     def _get_trading_dates(self, params):
+        if "market" in params:
+            import datetime
+
+            market = params["market"]
+            if not isinstance(market, str) or not market.strip() or "." in market:
+                raise ValueError("market must be an exchange code, e.g. SH or SZ")
+            market = market.strip().upper()
+            count = params.get("count", -1)
+            if isinstance(count, bool) or not isinstance(count, int) or count < -1:
+                raise ValueError("count must be -1 or a non-negative integer")
+            zone = datetime.timezone(datetime.timedelta(hours=8))
+
+            def parse_date(value):
+                if not isinstance(value, str) or len(value) not in (8, 14) or not value.isdigit():
+                    raise ValueError("trading date must be YYYYMMDD or YYYYMMDDhhmmss")
+                return datetime.datetime.strptime(
+                    value, "%Y%m%d" if len(value) == 8 else "%Y%m%d%H%M%S"
+                ).replace(tzinfo=zone)
+
+            start = params.get("start_time", "")
+            end = params.get("end_time", "")
+            lower = parse_date(start) if start else None
+            today = datetime.datetime.now(zone).strftime("%Y%m%d")
+            upper = parse_date(end or today)
+            # Trading dates are historical; future calendars belong to get_trading_calendar.
+            end_day = min(upper.strftime("%Y%m%d"), today)
+            start_day = lower.strftime("%Y%m%d") if lower else ""
+            if count == 0 or (start_day and start_day > end_day):
+                return []
+            func = self._get_callable("get_trading_calendar")
+            if not func:
+                raise NotImplementedError(
+                    "xtdata.get_trading_dates requires QMT get_trading_calendar; "
+                    "ContextInfo.get_trading_dates queries security bars, not market dates"
+                )
+            # QMT calendar takes three arguments, has no count, and returns YYYYMMDD.
+            raw = func(market, start_day, end_day)
+            if raw is None:
+                raise ValueError("QMT get_trading_calendar returned None")
+            dates = set()
+            for value in raw:
+                day = parse_date(value)
+                if day.strftime("%Y%m%d") > end_day or day > upper:
+                    continue
+                if lower is not None and day < lower:
+                    continue
+                dates.add(int(day.timestamp() * 1000))
+            dates = sorted(dates)
+            return dates[-count:] if count > 0 else dates
+
+        # Retain support for requests from older SDKs using the QMT bar signature.
         func = self._get_callable("get_trading_dates")
         if not func:
             raise NotImplementedError("get_trading_dates not found")
@@ -3616,7 +3674,7 @@ class TxTradeBridge(object):
         if order_type not in (None, "", 0, "0"):
             return order_type
         market = self._market_suffix(self._get_value(obj, "m_strExchangeID"))
-        if market not in ("SH", "SZ", "BJ"):
+        if market not in ("SH", "SZ", "BJ", "HK", "HGT", "SGT"):
             return order_type
         try:
             offset_flag = int(self._get_value(obj, "m_nOffsetFlag"))
@@ -3772,12 +3830,13 @@ class TxTradeBridge(object):
             3: "credit",
             5: "future_option",
             6: "stock_option",
-            7: "hugangtong",
+            7: "HUGANGTONG",
             10: "new3board",
-            11: "shengangtong",
+            11: "SHENGANGTONG",
         }
         if isinstance(account_type, str):
-            return account_type
+            value = connect_account_type(account_type)
+            return mapping.get(int(value), value) if value.isdigit() else value
         return mapping.get(account_type, "stock")
 
     def _set_context_account(self, account_id, account_type=None):

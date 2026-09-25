@@ -312,7 +312,7 @@ def readonly_checks(run, trader, account):
     run.call("get_instrument_detail", lambda: xtdata.get_instrument_detail("000001.SZ"), lambda value: ("PARTIAL" if value and value.get("cfquant_detail_partial") else "PASS", "合约字段及降级标记见原始结果") if value else ("UNVERIFIED", "无详情"))
     run.call("get_instrument_detail_complete", lambda: xtdata.get_instrument_detail("000001.SZ", True), nonempty)
     run.call("get_cb_info", lambda: xtdata.get_cb_info("123219.SZ"), lambda value: ("PARTIAL", "只校验正股代码和转股价；不声称完整转债资料") if isinstance(value, dict) and "stockCode" in value and "bondConvPrice" in value else ("UNVERIFIED", "转债无有效两字段资料"))
-    run.call("get_divid_factors", lambda: xtdata.get_divid_factors("600000.SH"), lambda value: ("PASS", "七列DataFrame且时间戳升序") if hasattr(value, "columns") and len(value.columns) == 7 and value.index.is_monotonic_increasing and len(value) else ("UNVERIFIED", "无有效除权记录或结构不匹配"))
+    run.call("get_divid_factors", lambda: xtdata.get_divid_factors("600000.SH"), lambda value: ("PASS", "八列DataFrame且日期索引升序") if hasattr(value, "columns") and len(value.columns) == 8 and value.index.is_monotonic_increasing and len(value) else ("UNVERIFIED", "无有效除权记录或结构不匹配"))
     run.call("get_divid_factors_range", lambda: xtdata.get_divid_factors("600000.SH", "20230101", "20260909"), nonempty)
     run.call("get_sector_list", xtdata.get_sector_list, lambda value: ("PASS", "非空、无重复的扁平板块名称列表，共%s项" % len(value)) if isinstance(value, list) and value and all(isinstance(item, str) for item in value) and len(value) == len(set(value)) else ("FAIL", "板块列表结构不符合预期"))
     run.call("get_stock_list_in_sector", lambda: xtdata.get_stock_list_in_sector("沪深300"), nonempty)

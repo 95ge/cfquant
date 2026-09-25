@@ -5,6 +5,7 @@ import os
 import time
 from collections.abc import Mapping
 from numbers import Integral, Real
+from .stock_connect import normalize_connect_code, validate_connect_market
 
 
 CFTRADER_BATCH_ORDER_ACTIONS = frozenset(("cftrader.order_stock_batch", "cftrader.order_stock_batch_async"))
@@ -50,7 +51,7 @@ def prepare_batch_orders(orders, batch_id, strategy_name="", order_remark="", st
         row = dict(order)
         if not isinstance(row["stock_code"], str) or not row["stock_code"].strip():
             raise ValueError("%s.stock_code is required" % label)
-        row["stock_code"] = row["stock_code"].strip()
+        row["stock_code"] = normalize_connect_code(row["stock_code"].strip())
         for name in ("order_type", "order_volume", "price_type"):
             value = row[name]
             if isinstance(value, bool) or not isinstance(value, Integral):
@@ -85,7 +86,7 @@ def _infer_stock_market(stock_code):
     text = str(stock_code or "").strip().upper()
     if "." in text:
         suffix = text.rsplit(".", 1)[1]
-        if suffix in ("SH", "SZ", "BJ"):
+        if suffix in ("SH", "SZ", "BJ", "HGT", "SGT"):
             return suffix
     code = text.split(".", 1)[0]
     if len(code) >= 2:
@@ -123,8 +124,8 @@ def prepare_batch_cancels(cancels, batch_id, stop_on_error=False):
         row["order_id"] = str(order_id).strip()
         stock_code = str(row.get("stock_code") or "").strip().upper()
         market = str(row.get("market") or "").strip().upper()
-        if market and market not in ("SH", "SZ", "BJ"):
-            raise ValueError("%s.market must be SH, SZ or BJ" % label)
+        if market and market not in ("SH", "SZ", "BJ", "HGT", "SGT"):
+            raise ValueError("%s.market must be SH, SZ, BJ, HGT or SGT" % label)
         if not market:
             market = _infer_stock_market(stock_code)
         row["stock_code"] = stock_code
@@ -341,6 +342,8 @@ def execute_qmt_cancel_batch(bridge, params, msg, asynchronous):
     cancels = prepare_batch_cancel_request(params, asynchronous)
     account = params["account"]
     results = batch_cancel_result_rows(cancels, params.get("seqs") if asynchronous else None)
+    for cancel in cancels:
+        validate_connect_market(account.get("account_type"), cancel.get("stock_code"), cancel.get("market"))
     started = time.perf_counter()
     for index, (cancel, row) in enumerate(zip(cancels, results)):
         request = dict(cancel, account=account)

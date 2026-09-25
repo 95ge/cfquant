@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20260925_01';
+const FRONTEND_VERSION = 'web_20260925_02';
 
 const state = {
   accountId: '',
@@ -191,6 +191,8 @@ const ACCOUNT_TYPE_OPTIONS = [
   { value: 'FUTURE', label: '期货账户' },
   { value: 'FUTURE_OPTION', label: '期货期权账户' },
   { value: 'STOCK_OPTION', label: '股票期权账户' },
+  { value: 'HUGANGTONG', label: '沪港通账户' },
+  { value: 'SHENGANGTONG', label: '深港通账户' },
 ];
 const ACCOUNT_TYPE_LABELS = {
   STOCK: '普通',
@@ -198,6 +200,8 @@ const ACCOUNT_TYPE_LABELS = {
   FUTURE: '期货',
   FUTURE_OPTION: '期货期权',
   STOCK_OPTION: '股票期权',
+  HUGANGTONG: '沪港通',
+  SHENGANGTONG: '深港通',
 };
 const PRICE_TYPE_OPTIONS = [
   { value: '11', label: 'FIX_PRICE 11' },
@@ -1612,6 +1616,18 @@ const API_ENDPOINTS = [
     fields: ['bridge_id', 'channel', 'sector_name', 'timeout'],
   },
   {
+    id: 'divid_factors', group: 'data', title: '除权除息因子', method: 'POST', path: '/api/data/divid-factors',
+    desc: '查询证券除权除息因子，返回与 cfquant Python 接口一致的 DataFrame 数据。',
+    defaults: { channel: 'trade', stock_code: '600000.SH', start_time: '20230101', end_time: '', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'stock_code', 'start_time', 'end_time', 'timeout'],
+  },
+  {
+    id: 'trading_dates', group: 'data', title: '交易日列表', method: 'POST', path: '/api/data/trading-dates',
+    desc: '按市场查询交易日列表，使用 cfquant 对 xtquant 参数的适配结果。',
+    defaults: { channel: 'normal', market: 'SH', start_time: '20230101', end_time: '', count: '-1', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'channel', 'market', 'start_time', 'end_time', 'count', 'timeout'],
+  },
+  {
     id: 'history_download',
     group: 'data',
     title: '下载历史数据',
@@ -2034,7 +2050,7 @@ const API_FIELD_META = {
 const API_PARAM_DOCS = {
   bridge_id: '内部通道 ID。账号接口通常不用填，会按账号配置自动决定。',
   account_id: '资金账号。',
-  account_type: '账户类型。普通证券账户填 STOCK，信用账户填 CREDIT，期货填 FUTURE，期货期权填 FUTURE_OPTION，股票期权填 STOCK_OPTION。',
+  account_type: '账户类型。普通证券账户填 STOCK，信用账户填 CREDIT，期货填 FUTURE，期货期权填 FUTURE_OPTION，股票期权填 STOCK_OPTION，沪港通填 HUGANGTONG（如 00700.HGT），深港通填 SHENGANGTONG（如 00700.SGT）。',
   action: '信用查询动作，detail/subjects/slo_code/assure/compacts。',
   credit_action: '信用委托动作，例如 credit_buy、credit_fin_buy、credit_slo_sell、credit_direct_cash_repay。',
   order_action: '期货、期货期权或股票期权委托动作，例如 future_open_long、future_open_short、stock_option_buy_open。',
@@ -2046,7 +2062,7 @@ const API_PARAM_DOCS = {
   since: '回调起始序号。',
   limit: '返回条数上限。',
   side: '普通账户委托方向，buy 或 sell；信用账户未指定信用业务时用于默认担保品买卖。',
-  stock_code: '证券代码，格式如 000001.SZ。',
+  stock_code: '证券代码，如 000001.SZ；沪港通 00700.HGT、深港通 00700.SGT，须选择匹配的账户类型。',
   price_type: '报价类型，保持 MiniQMT order_stock 的 price_type 数值，默认 FIX_PRICE=11。',
   price: '委托价格。price_type=11 固定价时必须大于 0，市价或最新价类报价可为 0。',
   volume: '委托数量。',
@@ -7160,6 +7176,7 @@ function currentApiRequest(endpoint = apiEndpointById(state.apiEndpointId), form
   }
   syncApiAccountFields(endpoint, form);
   const params = { ...(endpoint.defaults || {}) };
+  if (endpoint.python_method) params.python_method = endpoint.python_method;
   Array.from(form.elements).forEach((element) => {
     if (!element.name || element.tagName === 'BUTTON') return;
     if (element.closest('.field')?.classList.contains('hidden')) return;
@@ -7845,6 +7862,7 @@ function setView(view) {
     callbacks: '回调',
     api: '接口',
     tests: '测试',
+    docs: '文档',
     settings: '设置',
     tutorial: '教程',
   };
@@ -7888,7 +7906,7 @@ function setView(view) {
 function syncHomeToolbar() {
   const home = state.currentView === 'overview';
   const toolbar = document.querySelector('.toolbar');
-  const toolbarHidden = state.currentView === 'bindings' || state.currentView === 'tests';
+  const toolbarHidden = state.currentView === 'bindings' || state.currentView === 'tests' || state.currentView === 'docs';
   if (toolbar) toolbar.style.display = toolbarHidden ? 'none' : '';
   const bridgeField = $('bridgeField');
   if (bridgeField) bridgeField.style.display = 'none';
@@ -7927,6 +7945,8 @@ function normalizeAccountType(value = 'STOCK') {
   if (['1', 'FUTURE', 'FUTURE_ACCOUNT'].includes(text)) return 'FUTURE';
   if (['3', 'CREDIT', 'CREDIT_ACCOUNT', 'MARGIN', 'MARGIN_TRADING'].includes(text)) return 'CREDIT';
   if (['5', 'FUTURE_OPTION', 'FUTURE_OPTION_ACCOUNT', 'FUTUREOPTION'].includes(text)) return 'FUTURE_OPTION';
+  if (['7', 'HGT', 'HUGANGTONG', 'HUGANGTONG_ACCOUNT'].includes(text)) return 'HUGANGTONG';
+  if (['11', 'SGT', 'SHENGANGTONG', 'SHENGANGTONG_ACCOUNT'].includes(text)) return 'SHENGANGTONG';
   if (['6', 'STOCK_OPTION', 'STOCK_OPTION_ACCOUNT', 'STOCKOPTION', 'OPTION'].includes(text)) return 'STOCK_OPTION';
   return 'STOCK';
 }
@@ -12059,6 +12079,10 @@ function normalizeStockCode(value) {
   if (!/^\d+$/.test(code)) return raw;
   const number = Number(code);
   if (!Number.isInteger(number) || number < 0 || number > 999999) return raw;
+  if (['HK', 'HGT', 'SGT'].includes(market)) {
+    if (code.length > 5 || number <= 0) return raw;
+    return `${String(number).padStart(5, '0')}.${market}`;
+  }
   code = String(number).padStart(6, '0');
   if (!market) market = code.startsWith('6') ? 'SH' : 'SZ';
   if (market !== 'SH' && market !== 'SZ') return raw;

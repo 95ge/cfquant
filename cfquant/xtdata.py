@@ -265,25 +265,37 @@ def get_divid_factors(stock_code, start_time="", end_time=""):
     if start is not None and end is not None and start > end:
         raise ValueError("start_time must not be after end_time")
     data = get_client().request("xtdata.get_divid_factors", {"args": [stock_code], "stock_code": stock_code})
-    columns = ["interest", "stockBonus", "stockGift", "allotNum", "allotPrice", "gugai", "dr"]
+    factor_columns = ["interest", "stockBonus", "stockGift", "allotNum", "allotPrice", "gugai", "dr"]
+    columns = ["time"] + factor_columns
     if not isinstance(data, dict):
         raise ValueError("QMT get_divid_factors must return a timestamp dictionary")
     records = []
     for timestamp, values in data.items():
-        timestamp = int(timestamp)
+        # QMT builds have returned this key as milliseconds, Unix seconds, or
+        # an eight-digit exchange date. Normalize all forms to milliseconds.
+        raw_timestamp = timestamp
+        if isinstance(values, dict) and values.get("time") is not None:
+            raw_timestamp = values["time"]
+        timestamp = _normalize_divid_timestamp(raw_timestamp)
         if (start is not None and timestamp < start) or (end is not None and timestamp > end):
             continue
         if isinstance(values, dict):
-            if any(column not in values for column in columns):
+            if any(column not in values for column in factor_columns):
                 raise ValueError("QMT dividend record is missing required fields")
-            values = [values[column] for column in columns]
-        if not isinstance(values, (list, tuple)) or len(values) != len(columns):
+            values = [values[column] for column in factor_columns]
+        if not isinstance(values, (list, tuple)) or len(values) != len(factor_columns):
             raise ValueError("QMT dividend record must contain seven factor values")
-        records.append((timestamp, list(values)))
+        records.append((timestamp, [float(timestamp)] + list(values)))
     records.sort(key=lambda item: item[0])
     return pd.DataFrame(
         [item[1] for item in records],
-        index=pd.Index([item[0] for item in records], dtype="int64"),
+        # xtquant uses the exchange date (YYYYMMDD) as the index and keeps the
+        # millisecond event timestamp in its explicit ``time`` column.
+        index=pd.Index([
+            datetime.datetime.fromtimestamp(item[0] / 1000, datetime.timezone.utc)
+            .astimezone(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y%m%d")
+            for item in records
+        ], dtype="object"),
         columns=columns,
     )
 
@@ -300,6 +312,23 @@ def _divid_time_bound(value, end=False):
     if end:
         result += (86400000 if len(value) == 8 else 1000) - 1
     return result
+
+
+def _normalize_divid_timestamp(value):
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("QMT dividend timestamp is invalid")
+    if 19000101 <= number <= 29991231:
+        parsed = datetime.datetime.strptime(str(number), "%Y%m%d").replace(
+            tzinfo=datetime.timezone(datetime.timedelta(hours=8))
+        )
+        return int(parsed.timestamp() * 1000)
+    if 0 < number < 100000000000:
+        return number * 1000
+    if number <= 0:
+        raise ValueError("QMT dividend timestamp is invalid")
+    return number
 
 
 def get_sector_list():
@@ -379,13 +408,13 @@ def download_financial_data2(stock_list, table_list=None, start_time="", end_tim
     return download_financial_data(stock_list, table_list, start_time, end_time, callback, job_id, keep_callback)
 
 
-def get_trading_dates(stockcode, start_date="", end_date="", count=-1, period="1d"):
+def get_trading_dates(market, start_time="", end_time="", count=-1):
+    """Return market trading dates as millisecond timestamps (xtquant signature)."""
     return get_client().request("xtdata.get_trading_dates", {
-        "stockcode": stockcode,
-        "start_date": start_date,
-        "end_date": end_date,
+        "market": market,
+        "start_time": start_time,
+        "end_time": end_time,
         "count": count,
-        "period": period,
     })
 
 

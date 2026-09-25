@@ -11,6 +11,7 @@ not use local files.
 import json
 import re
 import threading
+from .stock_connect import connect_account_type
 import time
 
 
@@ -52,7 +53,7 @@ def safe_key_part(value):
 def normalize_account_type(value):
     if value is None or value == "":
         return DEFAULT_ACCOUNT_TYPE
-    text = str(value).strip().upper()
+    text = connect_account_type(value)
     aliases = {
         "2": "STOCK",
         "STOCK": "STOCK",

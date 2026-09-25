@@ -6,6 +6,7 @@ import threading
 import time
 
 from .config import get_config
+from .stock_connect import connect_account_type, validate_connect_order, validate_connect_market, query_connect_exchange_rate
 from .logging_i18n import get_log_language, set_log_language, translate_log
 from .protocol import loads_message, pack_event, pack_response
 from .batch_orders import CFTRADER_BATCH_CANCEL_ACTIONS, execute_qmt_cancel_batch
@@ -234,6 +235,8 @@ class CfquantQmtBridge(object):
             return pack_response(request_id, ok=False, error=e)
 
     def _dispatch(self, action, params, msg):
+        if action == "xttrader.get_hkt_exchange_rate":
+            return query_connect_exchange_rate(self, params)
         if action in CFTRADER_BATCH_CANCEL_ACTIONS:
             return execute_qmt_cancel_batch(self, params, msg, action.endswith("_async"))
         if action == "cfquant.ping":
@@ -558,6 +561,7 @@ class CfquantQmtBridge(object):
         return func(params.get("stock_code", ""))
 
     def _passorder_optype(self, params, account_type):
+        validate_connect_order(params, account_type)
         qmt_optype = self._first_param(params, ("qmt_optype", "passorder_optype"))
         if qmt_optype is not None:
             return self._coerce_optype(qmt_optype)
@@ -817,6 +821,8 @@ class CfquantQmtBridge(object):
         account = params.get("account") or {}
         account_id = account.get("account_id", "")
         account_type = self._account_type_name(account.get("account_type"))
+        params = dict(params)
+        params["stock_code"] = validate_connect_order(params, account_type)
         order_type = self._passorder_optype(params, account_type)
         user_order_id = self._first_param(
             params,
@@ -1016,6 +1022,7 @@ class CfquantQmtBridge(object):
             raise NotImplementedError("当前QMT环境未找到cancel函数，暂不能撤单")
         account = params.get("account") or {}
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        validate_connect_market(account_type, params.get("stock_code"), self._market_suffix(params.get("market")))
         result = cancel_func(str(params.get("order_id")), account.get("account_id", ""), account_type, self.context)
         return {"cancel_result": 0 if result else -1, "request_result": result, "account_type": str(account_type or "").upper()}
 
@@ -1533,7 +1540,7 @@ class CfquantQmtBridge(object):
         if order_type not in (None, "", 0, "0"):
             return order_type
         market = self._market_suffix(self._get_value(obj, "m_strExchangeID"))
-        if market not in ("SH", "SZ", "BJ"):
+        if market not in ("SH", "SZ", "BJ", "HK", "HGT", "SGT"):
             return order_type
         try:
             offset_flag = int(self._get_value(obj, "m_nOffsetFlag"))
@@ -1704,7 +1711,8 @@ class CfquantQmtBridge(object):
             11: "SHENGANGTONG",
         }
         if isinstance(account_type, str):
-            return account_type
+            value = connect_account_type(account_type)
+            return mapping.get(int(value), value) if value.isdigit() else value
         return mapping.get(account_type, "STOCK")
 
     def _load_txl(self):

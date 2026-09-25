@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import threading
+from .stock_connect import connect_account_type
 
 
 _lock = threading.RLock()
@@ -8,7 +9,7 @@ _client_accounts = {}
 
 
 def _account_type(account_type):
-    value = str(account_type or "STOCK").strip().upper()
+    value = connect_account_type(account_type or "STOCK")
     mapping = {
         "1": "FUTURE",
         "FUTURE_ACCOUNT": "FUTURE",

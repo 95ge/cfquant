@@ -107,9 +107,9 @@ def test_divid_factors_wire_shape_sort_and_exchange_date_range(monkeypatch):
     wire_sdk(monkeypatch, {"get_divid_factors": lambda code: calls.append(code) or raw})
     result = xtdata.get_divid_factors("600000.SH", "20240909", "20240909")
     assert isinstance(result, pd.DataFrame)
-    assert list(result.index) == [start, end]
-    assert list(result.columns) == ["interest", "stockBonus", "stockGift", "allotNum", "allotPrice", "gugai", "dr"]
-    assert result.iloc[0].tolist() == row
+    assert list(result.index) == ["20240909", "20240909"]
+    assert list(result.columns) == ["time", "interest", "stockBonus", "stockGift", "allotNum", "allotPrice", "gugai", "dr"]
+    assert result.iloc[0].tolist() == [float(start)] + row
     assert calls == ["600000.SH"]
     assert start == 1725811200000
     assert len(raw) == 4
@@ -138,10 +138,27 @@ def test_divid_rejects_invalid_backend_shape(monkeypatch, value):
 def test_divid_empty_and_named_rows(monkeypatch):
     wire_sdk(monkeypatch, {"get_divid_factors": lambda code: {}})
     empty = xtdata.get_divid_factors("600000.SH")
-    assert empty.empty and len(empty.columns) == 7
-    row = dict(zip(empty.columns, range(7)))
+    assert empty.empty and len(empty.columns) == 8
+    row = dict(zip(empty.columns[1:], range(7)))
     wire_sdk(monkeypatch, {"get_divid_factors": lambda code: {1: row}})
-    assert xtdata.get_divid_factors("600000.SH").iloc[0].tolist() == list(range(7))
+    assert xtdata.get_divid_factors("600000.SH").iloc[0].tolist() == [1000.0] + list(range(7))
+
+
+@pytest.mark.parametrize("raw, expected", [("20240909", 1725811200000), (1725811200, 1725811200000), (1725811200000, 1725811200000)])
+def test_divid_timestamp_units_are_normalized(monkeypatch, raw, expected):
+    values = [0.1, 0.2, 0.3, 0.4, 5.0, 1, 1.2]
+    wire_sdk(monkeypatch, {"get_divid_factors": lambda code: {raw: values}})
+    result = xtdata.get_divid_factors("600000.SH")
+    assert result.index.tolist() == ["20240909"]
+    assert result.iloc[0]["time"] == float(expected)
+
+
+def test_divid_named_time_takes_precedence(monkeypatch):
+    values = {"time": "20240909", "interest": 0.1, "stockBonus": 0.2, "stockGift": 0.3,
+              "allotNum": 0.4, "allotPrice": 5.0, "gugai": 1, "dr": 1.2}
+    wire_sdk(monkeypatch, {"get_divid_factors": lambda code: {"bad-key": values}})
+    result = xtdata.get_divid_factors("600000.SH")
+    assert result.index.tolist() == ["20240909"]
 
 
 def test_sector_tree_flattens_and_handles_duplicate_and_cyclic_nodes(monkeypatch):

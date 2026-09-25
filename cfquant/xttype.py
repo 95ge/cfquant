@@ -3,6 +3,7 @@ import datetime
 import re
 
 from . import xtconstant
+from .stock_connect import connect_account_type
 
 
 _QMT_COMPACT_PREFIXES = (
@@ -392,7 +393,7 @@ def _normalize_account_type(value):
     if _is_empty(value):
         return xtconstant.SECURITY_ACCOUNT
     if isinstance(value, str):
-        text = value.strip().upper()
+        text = connect_account_type(value)
         if text.isdigit():
             return int(text)
         aliases = {
@@ -525,7 +526,7 @@ class StockAccount(object):
         return super(StockAccount, cls).__new__(cls)
 
     def __init__(self, account_id, account_type="STOCK", bridge_id=None):
-        account_type = account_type.upper()
+        account_type = connect_account_type(account_type)
         for int_type, str_type in xtconstant.ACCOUNT_TYPE_DICT.items():
             if account_type == str_type:
                 self.account_type = int_type

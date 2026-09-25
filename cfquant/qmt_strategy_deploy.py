@@ -225,12 +225,16 @@ def _remove_formula_catalog_entries(document, names):
     return changed
 
 
+_ACCOUNT_BINDING_TYPES = {"STOCK": "2", "CREDIT": "3", "HUGANGTONG": "7", "SHENGANGTONG": "11"}
+
+
 def _account_binding(document, account_id, account_type, supplied=""):
+    expected_kind = _ACCOUNT_BINDING_TYPES.get(account_type)
     candidates = set()
     for item in document.getElementsByTagName("item"):
         if item.getAttribute("account") == account_id:
             key, kind = item.getAttribute("m_strAccountKey"), item.getAttribute("accountType")
-            if key and kind:
+            if key and kind and (not expected_kind or kind == expected_kind):
                 candidates.add((kind, key))
     if supplied:
         parts = supplied.split("____")
@@ -243,8 +247,8 @@ def _account_binding(document, account_id, account_type, supplied=""):
     if (len(parts) != 6 or parts[-1] or parts[-2] != account_id
             or parts[0] != binding[0] or not all(p.isdigit() for p in parts[:-1])):
         raise ValueError("模型账号 Key 与资金账号不匹配")
-    if account_type in ("STOCK", "CREDIT") and binding[0] != {"STOCK": "2", "CREDIT": "3"}[account_type]:
-        raise ValueError("模型账号 Key 与普通/信用账户类型不匹配")
+    if expected_kind and binding[0] != expected_kind:
+        raise ValueError("模型账号 Key 与账户类型不匹配（普通/信用/沪港通/深港通）")
     return binding
 
 
@@ -253,7 +257,9 @@ def _resolve_account_binding(root, document, account_id, account_type, supplied=
     if binding or supplied:
         return binding
     # A conflicting selection must not be silently resolved using another source.
+    expected_kind = _ACCOUNT_BINDING_TYPES.get(account_type)
     if any(item.getAttribute("account") == account_id and item.getAttribute("m_strAccountKey")
+           and (not expected_kind or item.getAttribute("accountType") == expected_kind)
            for item in document.getElementsByTagName("item")):
         return None
     candidates = set()

@@ -7,6 +7,8 @@
     'xtdata.get_market_data_ex': ['market_data_ex'],
     'xtdata.get_instrument_detail': ['instrument_detail'],
     'xtdata.get_stock_list_in_sector': ['sector_stocks'],
+    'xtdata.get_divid_factors': ['divid_factors'],
+    'xtdata.get_trading_dates': ['trading_dates'],
     'xtdata.get_financial_data': ['financial_data'],
     'xtdata.download_history_data': ['history_download'],
     'xtdata.subscribe_quote': ['quote_subscribe_single'],
@@ -35,7 +37,13 @@
     if (entry.module === 'callback') route = ['callbacks', { event_name: `trader:${entry.name}` }];
     if (!route || !['supported', 'partial', 'extension'].includes(entry.status)) return null;
     const endpoint = API_ENDPOINTS.find(item => item.id === route[0]);
-    return endpoint ? { ...endpoint, defaults: { ...endpoint.defaults, ...route[1] } } : null;
+    if (!endpoint) return null;
+    const resolved = { ...endpoint, defaults: { ...endpoint.defaults, ...route[1] } };
+    if (entry.module === 'xtdata') {
+      resolved.path = '/api/python/xtdata';
+      resolved.python_method = entry.name;
+    }
+    return resolved;
   }
 
   function button(entry) {
