@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import threading
 import time
 
@@ -91,6 +92,8 @@ class NormalQmtBridge(TxTradeBridge):
         self.callback_asset_dedupe_max = 4096
         self.order_terminal_statuses = {}
         self.order_terminal_statuses_lock = threading.RLock()
+        self.pending_order_errors = []
+        self.pending_order_errors_lock = threading.RLock()
 
     def start(self):
         if self.running:
@@ -141,6 +144,7 @@ class NormalQmtBridge(TxTradeBridge):
         self._publish_runtime_report("context_ready")
 
     def close(self):
+        self._flush_pending_order_errors(force=True)
         self.running = False
         self.worker_event.set()
         self._close_quote_subscriptions()
@@ -627,6 +631,7 @@ class NormalQmtBridge(TxTradeBridge):
 
     def on_timer(self, *args, **kwargs):
         self._maybe_reset_order_meta_stores()
+        self._flush_pending_order_errors()
         if self.dispatch_on_qmt_thread:
             self._drain_requests("timer")
             return
@@ -844,10 +849,13 @@ class NormalQmtBridge(TxTradeBridge):
     def publish_callback_event(self, event_name, obj):
         if self.tx is None:
             return
+        force_order_error = isinstance(obj, dict) and obj.pop("_cfquant_force_order_error", False)
+        reconciled_order_error = None
         if event_name == "trader:on_stock_order":
             data = self._format_trade_detail(obj, "order")
             if not self._accept_order_callback(data):
                 return
+            reconciled_order_error = self._match_pending_order_error(data)
         elif event_name == "trader:on_stock_trade":
             data = self._format_trade_detail(obj, "deal")
         else:
@@ -860,6 +868,11 @@ class NormalQmtBridge(TxTradeBridge):
             data.setdefault("account_id", account_id)
         if account_type:
             data.setdefault("account_type", account_type)
+        if event_name == "trader:on_order_error":
+            self._enrich_qmt_order_error_fields(data)
+            if not force_order_error:
+                self._queue_pending_order_error(data)
+                return
         if event_name in (
             "trader:on_stock_order",
             "trader:on_stock_trade",
@@ -915,6 +928,115 @@ class NormalQmtBridge(TxTradeBridge):
             "normal bridge callback event sent event=%s account=%s channel_sent=%s clients=%s duplicate=%s"
             % (event_name, account_id or "-", not channel_duplicate, sent_clients, channel_duplicate and sent_clients == 0)
         )
+        if reconciled_order_error is not None:
+            reconciled_order_error.update({
+                "order_id": data.get("order_id", -1),
+                "m_nOrderID": data.get("m_nOrderID", data.get("order_id", -1)),
+                "m_nRef": data.get("m_nRef", data.get("order_id", -1)),
+                "order_sysid": data.get("order_sysid", ""),
+                "stock_code": data.get("stock_code", reconciled_order_error.get("stock_code", "")),
+                "_cfquant_force_order_error": True,
+            })
+            self.publish_callback_event("trader:on_order_error", reconciled_order_error)
+
+    def _queue_pending_order_error(self, data):
+        with self.pending_order_errors_lock:
+            self.pending_order_errors.append({"data": dict(data), "created_at": time.time()})
+
+    def _match_pending_order_error(self, order):
+        if not isinstance(order, dict):
+            return None
+        account = str(order.get("account_id") or "").strip()
+        code = str(order.get("stock_code") or "").upper().split(".", 1)[0]
+        strategy = str(order.get("strategy_name") or "")
+        remark = str(order.get("order_remark") or "")
+        with self.pending_order_errors_lock:
+            for index, item in enumerate(self.pending_order_errors):
+                error = item.get("data") or {}
+                error_account = str(error.get("account_id") or "").strip()
+                error_code = str(error.get("stock_code") or "").upper().split(".", 1)[0]
+                if account and error_account and account != error_account:
+                    continue
+                if code and error_code and code != error_code:
+                    continue
+                error_strategy = str(error.get("strategy_name") or error.get("strategyName") or "")
+                if error_strategy and strategy and error_strategy != strategy and not strategy.startswith(error_strategy + "&&&"):
+                    continue
+                error_remark = str(error.get("order_remark") or error.get("m_strRemark") or "")
+                if error_remark and remark and error_remark != remark:
+                    continue
+                self.pending_order_errors.pop(index)
+                return error
+        return None
+
+    def _flush_pending_order_errors(self, force=False):
+        cutoff = time.time() - 0.5 if not force else time.time() + 1.0
+        expired = []
+        with self.pending_order_errors_lock:
+            keep = []
+            for item in self.pending_order_errors:
+                if item.get("created_at", 0) <= cutoff:
+                    expired.append(item.get("data") or {})
+                else:
+                    keep.append(item)
+            self.pending_order_errors = keep
+        for data in expired:
+            data["_cfquant_force_order_error"] = True
+            self.publish_callback_event("trader:on_order_error", data)
+
+    def _enrich_qmt_order_error_fields(self, data):
+        """Fill canonical fields that大QMT only embeds in ``errMsg``.
+
+        The QMT strategy callback is ``orderError_callback(orderArgs, errMsg)``
+        and does not expose the MiniQMT ``XtOrderError`` structure.  In
+        particular, counter errors commonly look like
+        ``[COUNTER] [251005][...][p_stock_code=518880,...]``.  Preserve any
+        native structured fields and only infer missing canonical values.
+        """
+        if not isinstance(data, dict):
+            return data
+        # orderError_callback supplies QMT orderArgs names rather than the
+        # MiniQMT callback names. Preserve and canonicalize them first.
+        if not data.get("account_id") and data.get("accountID"):
+            data["account_id"] = data["accountID"]
+        if not data.get("stock_code") and data.get("orderCode"):
+            code = str(data["orderCode"]).strip().upper()
+            if code.startswith(("SH", "SZ", "BJ")) and "." not in code:
+                code = "%s.%s" % (code[2:], code[:2])
+            data["stock_code"] = code
+        if not data.get("strategy_name") and data.get("strategyName"):
+            data["strategy_name"] = data["strategyName"]
+        message = data.get("error_msg") or data.get("m_strErrorMsg") or data.get("message") or data.get("msg")
+        if not message:
+            return data
+        message = str(message)
+        if data.get("error_id") in (None, "", 0, "0") and data.get("m_nErrorID") in (None, "", 0, "0") and data.get("error_code") in (None, "", 0, "0"):
+            for token in re.findall(r"\[(\d+)\]", message):
+                try:
+                    error_id = int(token)
+                except (TypeError, ValueError):
+                    continue
+                if error_id:
+                    data["error_id"] = error_id
+                    break
+        if not data.get("stock_code"):
+            match = re.search(r"(?:^|[\[,;\s])p_stock_code\s*=\s*([A-Za-z0-9_.-]+)", message, re.IGNORECASE)
+            if match:
+                data["stock_code"] = match.group(1)
+        internal_strategy = data.get("strategy_name") or data.get("strategyName")
+        context = self._consume_order_error_context(
+            data.get("account_id") or data.get("accountID"),
+            data.get("stock_code") or data.get("orderCode"),
+            internal_strategy,
+        ) if internal_strategy else None
+        if context:
+            data["strategy_name"] = context.get("strategy_name", "")
+            data["m_strStrategyName"] = context.get("strategy_name", "")
+            data["strategyName"] = context.get("strategy_name", "")
+            data["order_remark"] = context.get("order_remark", "")
+            data["m_strRemark"] = context.get("order_remark", "")
+            data["cfquant_order_error_context_consumed"] = True
+        return data
 
     def _accept_order_callback(self, data):
         """Filter a stale partial-fill update emitted after a filled update."""
@@ -975,6 +1097,7 @@ class NormalQmtBridge(TxTradeBridge):
     def _callback_object_to_dict(self, obj):
         fields = [
             "account_id",
+            "accountID",
             "account_type",
             "m_strAccountID",
             "m_strAccountId",
@@ -987,6 +1110,7 @@ class NormalQmtBridge(TxTradeBridge):
             "order_source",
             "source",
             "stock_code",
+            "orderCode",
             "code",
             "market",
             "exchange_id",
@@ -1004,6 +1128,12 @@ class NormalQmtBridge(TxTradeBridge):
             "order_remark",
             "remark",
             "strategy_name",
+            "strategyName",
+            "modelPrice",
+            "modelVolume",
+            "opType",
+            "orderType",
+            "prType",
             "trade_id",
             "deal_id",
             "trade_time",

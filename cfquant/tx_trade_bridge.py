@@ -5,6 +5,7 @@ import json
 import sys
 import threading
 import time
+import uuid
 
 from .protocol import loads_message, pack_event, pack_response
 from .batch_orders import (
@@ -239,6 +240,8 @@ class TxTradeBridge(object):
         self.pending_sync_orders_lock = threading.RLock()
         self.order_request_metadata = {}
         self.order_request_metadata_lock = threading.RLock()
+        self.order_error_contexts = {}
+        self.order_error_contexts_lock = threading.RLock()
         self.order_meta_enabled = bool(order_meta_enabled)
         self.order_meta_cache = order_meta.OrderMetaCache(self.bridge_id)
         self.order_meta_store_lock = threading.RLock()
@@ -982,6 +985,12 @@ class TxTradeBridge(object):
             msg.get("id", "tx_order"),
         )
         strategy_name = params.get("strategy_name", "")
+        qmt_strategy_name = self._register_order_error_context(
+            account_id,
+            params.get("stock_code", params.get("code", "")),
+            strategy_name,
+            order_remark,
+        )
         order_meta_record = None
         if self.order_meta_enabled:
             order_meta_record = self._build_order_meta_record(
@@ -1025,12 +1034,13 @@ class TxTradeBridge(object):
                 price_type,
                 params.get("price", 0),
                 params.get("order_volume", params.get("num", 0)),
-                params.get("strategy_name", "1"),
+                qmt_strategy_name,
                 params.get("quick_trade", 2),
                 order_remark,
                 self.context,
             )
         except Exception as e:
+            self._discard_order_error_context(account_id, params.get("stock_code", params.get("code", "")), qmt_strategy_name)
             if pending_sync_order is not None:
                 self._discard_pending_sync_order(pending_sync_order)
             if order_meta_record is not None:
@@ -1109,6 +1119,44 @@ class TxTradeBridge(object):
             "account_type": str(account_type or "").upper(),
             "previous_order_id": previous_order_id,
         }
+
+    @staticmethod
+    def _order_error_code(stock_code):
+        text = str(stock_code or "").strip().upper()
+        if text.startswith(("SH", "SZ", "BJ")) and "." not in text and len(text) > 2:
+            text = text[2:]
+        return text.split(".", 1)[0]
+
+    def _register_order_error_context(self, account_id, stock_code, strategy_name, order_remark):
+        original = str(strategy_name or "")
+        internal = "%s&&&_cfq_%s" % (original, uuid.uuid4().hex[:12]) if original else "cfq_%s" % uuid.uuid4().hex[:12]
+        key = (str(account_id or "").strip(), self._order_error_code(stock_code), internal)
+        now = time.time()
+        with self.order_error_contexts_lock:
+            cutoff = now - 300.0
+            self.order_error_contexts = {
+                item_key: item for item_key, item in self.order_error_contexts.items()
+                if item.get("created_at", now) >= cutoff
+            }
+            self.order_error_contexts[key] = {
+                "account_id": key[0], "stock_code": key[1],
+                "internal_strategy_name": internal, "strategy_name": original,
+                "order_remark": str(order_remark or ""), "created_at": now,
+                "lifecycle": "pending",
+            }
+            while len(self.order_error_contexts) > 4096:
+                self.order_error_contexts.pop(next(iter(self.order_error_contexts)))
+        return internal
+
+    def _discard_order_error_context(self, account_id, stock_code, internal_strategy):
+        key = (str(account_id or "").strip(), self._order_error_code(stock_code), str(internal_strategy or ""))
+        with self.order_error_contexts_lock:
+            self.order_error_contexts.pop(key, None)
+
+    def _consume_order_error_context(self, account_id, stock_code, internal_strategy):
+        key = (str(account_id or "").strip(), self._order_error_code(stock_code), str(internal_strategy or ""))
+        with self.order_error_contexts_lock:
+            return self.order_error_contexts.pop(key, None)
 
     def _register_pending_sync_order(
         self,

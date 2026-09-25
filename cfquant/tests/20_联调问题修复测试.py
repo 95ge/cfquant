@@ -451,6 +451,34 @@ def test_order_error_callback_can_match_lightweight_request_before_passorder_ret
     assert error.error_id == 103
 
 
+def test_qmt_order_error_message_fills_missing_error_id_and_stock_code():
+    class RecordingTx(object):
+        def __init__(self):
+            self.pushes = []
+
+        def push(self, kind, payload, key):
+            self.pushes.append((kind, payload, key))
+
+    bridge = NormalQmtBridge(None, show=False, schedule_timer=False)
+    tx = RecordingTx()
+    bridge.tx = tx
+    try:
+        bridge.publish_callback_event("trader:on_order_error", {
+            "m_strAccountID": "A123",
+            "m_nAccountType": 2,
+            "order_source": "other",
+            "m_strErrorMsg": "[COUNTER] [251005][证券可用数量不足][p_stock_code=518880,p_enable_amount=0]",
+        })
+    finally:
+        bridge.close()
+
+    payload = json.loads([item for item in tx.pushes if item[0] == "event"][-1][1])
+    data = payload["data"]
+    assert data["error_id"] == 251005
+    assert data["stock_code"] == "518880"
+    assert XtOrderError.from_any(data).error_id == 251005
+
+
 @pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
 def test_cancel_error_callback_restores_context_by_order_id(bridge_class):
     class RecordingTx(object):

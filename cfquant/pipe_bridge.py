@@ -74,6 +74,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         return self
 
     def close(self):
+        self._flush_pending_order_errors(force=True)
         self.running = False
         self.worker_event.set()
         self._close_quote_subscriptions()

@@ -1209,6 +1209,22 @@ class XtOrderError(DictObject):
         _set_first(data, "strategy_name", ("m_strStrategyName",), default="")
         _set_first(data, "order_remark", ("m_strRemark", "m_strOrderRemark"), default="")
         _normalize_order_id_field(data)
+        # 大 QMT 的 orderError_callback 只提供错误文本，柜台错误码和股票代码
+        # 常以内嵌字段出现，例如 [251005]... [p_stock_code=518880,...]。
+        # 仅在标准字段缺失时补充，保留 MiniQMT 原生字段优先级。
+        if data.get("error_id") in (None, "", 0, "0"):
+            for token in re.findall(r"\[(\d+)\]", str(data.get("error_msg") or "")):
+                if int(token):
+                    data["error_id"] = int(token)
+                    break
+        if not data.get("stock_code"):
+            match = re.search(
+                r"(?:^|[\[,;\s])p_stock_code\s*=\s*([A-Za-z0-9_.-]+)",
+                str(data.get("error_msg") or ""),
+                re.IGNORECASE,
+            )
+            if match:
+                data["stock_code"] = match.group(1)
         if data.get("order_id") in (0, "0", -1, "-1"):
             data["order_id"] = -1
         data["account_id"] = _coerce_text(data.get("account_id"))

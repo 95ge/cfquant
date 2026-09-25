@@ -418,16 +418,17 @@ def _object_to_callback_dict(obj):
         return dict(obj)
     fields = (
         "account_id", "account_type", "m_strAccountID", "m_strAccountId",
-        "m_strAccount", "m_accountID", "m_nAccountType", "m_strAccountType",
+        "m_strAccount", "m_accountID", "accountID", "m_nAccountType", "m_strAccountType",
         "stock_code", "code", "market", "exchange_id",
-        "m_strInstrumentID", "m_strExchangeID", "m_nMarket",
+        "m_strInstrumentID", "m_strExchangeID", "orderCode", "m_nMarket",
         "order_id", "order_ref", "order_sysid",
         "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID", "m_strOrderSysID",
-        "order_remark", "remark", "strategy_name",
+        "order_remark", "remark", "strategy_name", "strategyName",
         "m_strRemark", "m_strOrderRemark", "m_strStrategyName",
         "order_type", "m_nOrderType", "m_nBusinessType",
         "order_volume", "m_nVolumeTotalOriginal", "m_nOrderVolume", "m_nVolume",
-        "price", "m_dLimitPrice", "m_dOrderPrice", "m_dPrice",
+        "price", "modelPrice", "modelVolume", "opType", "orderType", "prType",
+        "m_dLimitPrice", "m_dOrderPrice", "m_dPrice",
         "error_id", "error_code", "m_nErrorID",
         "error_msg", "message", "msg", "m_strErrorMsg",
     )
