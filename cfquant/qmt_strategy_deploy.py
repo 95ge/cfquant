@@ -463,7 +463,7 @@ class QmtStrategyManager:
                 result.update(error=self.load_error, message=self.load_error)
             return result
 
-    def configure(self, row, identities):
+    def configure(self, row, identities, force=False):
         if self.load_error:
             raise ValueError(self.load_error)
         settings = normalize_strategy_settings(row.get("qmt_strategy"))
@@ -512,7 +512,7 @@ class QmtStrategyManager:
                 fingerprint = _digest([source_group, mode, [
                     hashlib.sha256(Path(__file__).with_name(filename).read_bytes()).hexdigest()
                     for filename in ("qmt_strategy_runtime.py", "qmt_strategy_package.py", "qmt_strategy_deploy.py")]])
-                if previous.get("fingerprint") == fingerprint and previous.get("enabled"):
+                if not force and previous.get("fingerprint") == fingerprint and previous.get("enabled"):
                     previous["account_key"] = row["account_key"]
                     self._prepare_generation_transition(previous)
                     if previous["settings"] != settings:
@@ -557,11 +557,11 @@ class QmtStrategyManager:
                            retired=sorted(retired))
                 for role in job["roles"]:
                     role["name"] = role_names[role["role"]]
-                    role["reimport_required"] = bool(
-                        previous.get("fingerprint")
-                        and isinstance(previous_roles.get(role["role"]), dict)
-                        and previous_roles[role["role"]].get("name") == role["name"]
-                    )
+                    # Every new generation needs its own imported container.
+                    # Switching back to a mode can find a same-name container
+                    # from an earlier job, even though the previous job used
+                    # a different slot. Its catalog entry proves no freshness.
+                    role["reimport_required"] = True
                     role["identity_path"] = str(directory / (role["name"] + ".json"))
                     _write_json(role["identity_path"], role["identity"])
                     role["runtime_status_path"] = str(directory / (role["name"] + ".status.json"))

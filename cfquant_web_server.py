@@ -9699,7 +9699,9 @@ def configure_account_qmt_strategies(row, identity):
     identities.extend(identity.get("market_identities") or [])
     try:
         QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
-        return QMT_STRATEGIES.configure(row, identities)
+        # Explicit binding saves and updates must replace even an unchanged
+        # managed slot with a newly built package for the selected mode.
+        return QMT_STRATEGIES.configure(row, identities, force=True)
     except Exception as error:
         detail = str(error or "").strip()
         if not detail or detail in ("策略部署失败", "error"):

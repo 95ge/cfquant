@@ -281,6 +281,68 @@ def test_switch_and_delete_revoke_old_generation_and_disable_its_model(deploymen
     assert not list((root / "formulas").glob("*.rzrk"))
 
 
+@pytest.mark.parametrize("mode", ["ctypes", "lite", "lttx"])
+def test_force_save_reimports_unchanged_selected_mode(mode, deployment):
+    manager, row, infos, running, root = deployment
+    row["mode"] = mode
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    original = copy.deepcopy(next(iter(manager.jobs.values())))
+    name = original["roles"][0]["name"]
+    container = root / "python" / (name + ".py")
+    running[0] = True
+    manager.configure(row, infos, force=True)
+    job = next(iter(manager.jobs.values()))
+    assert job["fingerprint"] == original["fingerprint"]
+    assert job["generation"] != original["generation"]
+    assert job["roles"][0]["name"] == name
+    assert job["state"] == "waiting_exit"
+    assert container.is_file()
+    running[0] = False
+    manager.process_once()
+    assert not container.exists()
+    assert job["state"] == "waiting_import"
+    queued = root / "formulas" / (name + ".rzrk")
+    assert queued.read_bytes() == Path(job["roles"][0]["package_path"]).read_bytes()
+    content = json.loads(_cipher().decrypt(queued.read_bytes()).decode("utf-8", "surrogateescape"))["content"]
+    assert job["generation"] in content
+    assert original["generation"] not in content
+    finish_import(manager, root)
+    manager.process_once()
+    assert job["state"] == "configured"
+
+
+def test_switch_back_to_lite_replaces_previously_imported_container(deployment):
+    manager, row, infos, running, root = deployment
+    row["mode"] = "lite"
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    lite_name = next(iter(manager.jobs.values()))["roles"][0]["name"]
+    old_container = root / "python" / (lite_name + ".py")
+    assert old_container.is_file()
+
+    row["mode"] = "ctypes"
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    assert old_container.is_file()
+
+    row["mode"] = "lite"
+    manager.configure(row, infos)
+    job = next(iter(manager.jobs.values()))
+    role = job["roles"][0]
+    assert role["name"] == lite_name
+    assert not old_container.exists()
+    assert job["state"] == "waiting_import"
+    queued = root / "formulas" / (lite_name + ".rzrk")
+    assert queued.read_bytes() == Path(role["package_path"]).read_bytes()
+    content = json.loads(_cipher().decrypt(queued.read_bytes()).decode("utf-8", "surrogateescape"))["content"]
+    assert job["generation"] in content
+    assert "Self-contained ctypes named-pipe entry" in content
+
+
 def test_historical_generated_name_is_disabled_for_the_same_account(deployment):
     manager, row, infos, running, root = deployment
     document, _ = _read_document(root / "config" / "indexUserConfig.xml")
