@@ -464,6 +464,8 @@ def test_all_managed_entry_variants_compile_without_executing(mode, deployment):
     assert document["detail"]["realName"] == role["name"] + ".py"
     assert document["formulaCatalog"][0].encode("utf-8", "surrogateescape").hex() == "ced2b5c4b2dfc2d4"
     ast.parse(document["content"], feature_version=(3, 6))
+    assert "# Mode: %r\n" % mode in document["content"]
+    assert "# Entry: %r\n" % Path(role["source"]).name in document["content"]
     if mode == "lite":
         embedded = [node.args[0].value for node in ast.walk(ast.parse(document["content"]))
                     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
@@ -477,6 +479,8 @@ def test_all_managed_entry_variants_compile_without_executing(mode, deployment):
                                     if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
         assert definitions(actual) == definitions(original)
         assert len(embedded[0].splitlines()) > 7000
+        assert len(document["content"].splitlines()) > 7000
+        assert max(map(len, document["content"].splitlines())) < 2000
     descriptor = {"mode": mode, "generation": "test", "role": "SH", "control_path": "test", "lease_dir": "test"}
     variants = list((SCRIPTS / "同账号独立市场").glob("*.py")) + [SCRIPTS / "CFQUANT_TRADE_LOWLAT.py"]
     for path in variants:
@@ -520,6 +524,64 @@ def test_process_once_detects_stale_runtime_generation_and_queues_reimport(deplo
     manager.process_once()
     assert job["state"] == "waiting_import"
     assert (root / "formulas" / (role["name"] + ".rzrk")).is_file()
+
+
+@pytest.mark.parametrize("report_state", ["running", "stopped"])
+@pytest.mark.parametrize("previous_mode", ["lite", "lttx"])
+def test_old_runtime_report_does_not_reset_prepared_replacement(deployment, report_state, previous_mode):
+    manager, row, infos, running, root = deployment
+    row["mode"] = "lite"
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    first = copy.deepcopy(next(iter(manager.jobs.values())))
+    _write_json(first["roles"][0]["runtime_status_path"], {
+        "state": report_state, "generation": first["generation"], "updated_at": time.time() - 120,
+    })
+    if previous_mode != "lite":
+        row["mode"] = previous_mode
+        manager.configure(row, infos)
+        finish_import(manager, root)
+        manager.process_once()
+
+    row["mode"] = "lite"
+    manager.configure(row, infos, force=True)
+    job = next(iter(manager.jobs.values()))
+    role = job["roles"][0]
+    queue = root / "formulas" / (role["name"] + ".rzrk")
+    assert queue.is_file()
+    assert role["model_prepared"] is True
+
+    # The old heartbeat remains on disk until QMT has imported and started
+    # the new strategy. Repeated polling or a Web restart must not undo it.
+    manager = QmtStrategyManager(manager.path, SCRIPTS, lambda root: running[0])
+    job = next(iter(manager.jobs.values()))
+    role = job["roles"][0]
+    running[0] = True
+    manager.process_once()
+    manager.process_once()
+    assert role["reimport_required"] is False
+    assert role["model_prepared"] is True
+    assert role["queued"] is True
+    assert job["state"] == "waiting_manual_start"
+
+    finish_import(manager, root)
+    container = root / "python" / (role["name"] + ".py")
+    running[0] = False
+    manager.process_once()
+    manager.process_once()
+    assert container.is_file()
+    assert not queue.exists()
+    assert role["imported"] is True
+    assert job["state"] == "configured"
+
+    _write_json(role["runtime_status_path"], {
+        "state": "running", "generation": job["generation"], "updated_at": time.time(),
+    })
+    running[0] = True
+    manager.process_once()
+    assert job["state"] == "running"
+    assert not job.get("control_generation")
 
 
 @pytest.mark.parametrize("encoding", ["utf-8", "gbk", "gb18030"])

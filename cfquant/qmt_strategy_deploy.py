@@ -346,10 +346,20 @@ def managed_source(source_path, identity_path, identity, descriptor):
     source = "".join(lines)
     ast.parse(source, feature_version=(3, 6))
     helper = Path(__file__).with_name("qmt_strategy_runtime.py").read_text(encoding="utf-8")
-    generated = ("# coding: utf-8\n" + helper + "\n_cq_descriptor = " + ascii(descriptor)
+    source_lines = source.splitlines(keepends=True)
+    # Adjacent literals compile to the same source string, while keeping every
+    # entry line visible in QMT's editor. A single ascii(source) hid thousands
+    # of Lite lines behind the same short lease wrapper as the other modes.
+    embedded = "\n".join("        " + ascii(line) for line in source_lines)
+    header = ("# coding: utf-8\n# cfquant managed strategy\n"
+              + "# Mode: " + ascii(descriptor["mode"]) + "\n"
+              + "# Entry: " + ascii(Path(source_path).name) + "\n"
+              + "# Embedded entry: %d lines, preserved line by line below.\n" % len(source_lines)
+              + "# The lease wrapper is shared by all modes.\n\n")
+    generated = (header + helper + "\n_cq_descriptor = " + ascii(descriptor)
             + "\n_cq_guard = _CqStrategyLease(_cq_descriptor).acquire()\n"
             + "_cq_guard.namespace = globals()\ntry:\n"
-            + "    exec(compile(%s, %s, 'exec'), globals())\n" % (ascii(source), ascii(str(source_path)))
+            + "    exec(compile((\n%s\n    ), %s, 'exec'), globals())\n" % (embedded, ascii(str(source_path)))
             + "    for _cq_name in ('_cf_bridge', '_normal_bridge', '_trade_bridge'):\n"
             + "        if globals().get(_cq_name) is not None:\n"
             + "            globals()[_cq_name].account_type = %s\n" % ascii(identity["account_type"])
@@ -414,6 +424,10 @@ class QmtStrategyManager:
             if key in job:
                 job.pop(key, None)
                 changed = True
+        for role in job.get("roles", []):
+            if "reimport_from_generation" in role:
+                role.pop("reimport_from_generation", None)
+                changed = True
         return changed
 
     def _prepare_generation_transition(self, job, previous=None):
@@ -467,19 +481,23 @@ class QmtStrategyManager:
         )
         job["control_generation"] = legacy
         job["accepted_generations"] = accepted
-        if previous is None:
-            for role in job.get("roles", []):
-                if _runtime_generation(role) == legacy:
-                    updates = {
-                        "reimport_required": True,
-                        "imported": False,
-                        "queued": False,
-                        "model_prepared": False,
-                    }
-                    for key, value in updates.items():
-                        if role.get(key) != value:
-                            role[key] = value
-                            changed = True
+        for role in job.get("roles", []):
+            if (_runtime_generation(role) == legacy
+                    and role.get("reimport_from_generation") != legacy):
+                # The old report survives QMT shutdown and import. Handle it
+                # once per replacement job, including across Web restarts;
+                # resetting every poll destroys the prepared/imported model.
+                updates = {
+                    "reimport_from_generation": legacy,
+                    "reimport_required": True,
+                    "imported": False,
+                    "queued": False,
+                    "model_prepared": False,
+                }
+                for key, value in updates.items():
+                    if role.get(key) != value:
+                        role[key] = value
+                        changed = True
         if changed and job.get("state") == "error":
             self._state(job, "waiting_exit")
         return changed

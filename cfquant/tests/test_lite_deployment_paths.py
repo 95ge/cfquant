@@ -98,6 +98,35 @@ def test_edit_without_mode_preserves_lite_binding_and_payload(web_deployment):
     assert_lite_package(manager, root)
 
 
+def test_edit_advanced_binding_to_lite_retires_both_advanced_models(web_deployment):
+    web, manager, row, infos, root = web_deployment
+    trade_root = root.with_name("QMT_trade")
+    shutil.copytree(root, trade_root)
+    row.update(mode="lttx", qmt_trade_dir=str(trade_root / "bin.x64"))
+    row["qmt_strategy"]["autorun"] = True
+    trade_info = dict(infos[0], qmt_role="trade", core_dir=str(trade_root / "bin.x64"),
+                      path=str(trade_root / "bin.x64" / "cfquant_bridge_config.json"))
+    manager.configure(row, infos + [trade_info])
+    advanced_name = "CFQ_%s_LTTX" % row["account_id"]
+    assert models(root)[advanced_name].getAttribute("startupAutorun") == "1"
+    assert models(trade_root)[advanced_name].getAttribute("startupAutorun") == "1"
+
+    body = {key: row[key] for key in ("account_id", "account_type", "bridge_id", "qmt_dir")}
+    result = web.save_account_runtime_config(dict(body, mode="lite", qmt_trade_dir=""))
+
+    assert result["account"]["mode"] == "lite"
+    assert result["account"]["qmt_trade_dir"] == ""
+    assert not result["qmt_strategy_deploy"].get("error")
+    job = assert_lite_package(manager, root)
+    assert job["roles"][0]["name"] == "CFQ_%s_LITE" % row["account_id"]
+    assert models(root)[job["roles"][0]["name"]].getAttribute("startupAutorun") == "1"
+    assert models(root)[advanced_name].getAttribute("startupAutorun") == "0"
+    assert models(trade_root)[advanced_name].getAttribute("startupAutorun") == "0"
+    trade_job = next(job for job in manager.jobs.values() if job["root"] == str(trade_root))
+    assert trade_job["enabled"] is False
+    assert trade_job["state"] == "disabled"
+
+
 @pytest.mark.parametrize("single_account", [False, True])
 def test_shared_qmt_directory_does_not_drop_lite_market_entries(single_account, web_deployment):
     web, _, row, _, root = web_deployment

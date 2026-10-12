@@ -304,7 +304,7 @@ def test_save_and_delete_call_deployment_manager(web_config, monkeypatch):
     assert calls[-1] == ("reconcile", set())
 
 
-def test_save_can_start_qmt_auto_login_and_persist_restart_times(web_config, monkeypatch):
+def test_save_can_start_qmt_auto_login_and_persist_restart_times(web_config, monkeypatch, tmp_path):
     web, config = web_config
     calls = []
     monkeypatch.setattr(web, "auto_deploy_qmt_core_for_account", lambda *args, **kwargs: {})
@@ -325,7 +325,7 @@ def test_save_can_start_qmt_auto_login_and_persist_restart_times(web_config, mon
     data = web.save_account_runtime_config({
         "account_id": "8885060548",
         "display_name": "国金证券",
-        "qmt_dir": r"D:\国金证券QMT交易端\bin.x64",
+        "qmt_dir": str(tmp_path / "QMT" / "bin.x64"),
         "qmt_auto_login": {"enabled": True, "restart_times": ["6:30", "06:30", "18:05"]},
     })
     assert data["qmt_auto_login"]["pid"] == 1234
