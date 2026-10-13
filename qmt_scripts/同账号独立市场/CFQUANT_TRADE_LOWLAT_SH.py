@@ -63,7 +63,8 @@ import json
 
 
 _trade_bridge = None
-DEFAULT_ACCOUNT_ID = ""
+DEFAULT_ACCOUNT_ID = str(os.environ.get("CFQUANT_ACCOUNT_ID") or "").strip()
+DEFAULT_ACCOUNT_TYPE = str(os.environ.get("CFQUANT_ACCOUNT_TYPE") or "STOCK").strip().upper()
 USER_BRIDGE_ID = "default"
 BRIDGE_ID = os.environ.get("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID)
 RUNTIME_CONFIG = {}
@@ -200,12 +201,16 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
-    global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET
+    global BRIDGE_ID, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET, DEFAULT_ACCOUNT_ID, DEFAULT_ACCOUNT_TYPE
 
     data = _load_runtime_config()
     RUNTIME_CONFIG = data
     if not data:
         return
+    if data.get("account_id") and not DEFAULT_ACCOUNT_ID:
+        DEFAULT_ACCOUNT_ID = str(data.get("account_id") or "").strip()
+    if data.get("account_type"):
+        DEFAULT_ACCOUNT_TYPE = str(data.get("account_type") or DEFAULT_ACCOUNT_TYPE or "STOCK").strip().upper()
     if data.get("bridge_id") and _env_allows_runtime_override("CFQUANT_BRIDGE_ID", USER_BRIDGE_ID):
         BRIDGE_ID = data.get("bridge_id")
     if data.get("market"):
@@ -389,6 +394,8 @@ _trade_bridge = start_tx_trade_bridge(
     account_id=DEFAULT_ACCOUNT_ID,
     show=True,
 )
+if DEFAULT_ACCOUNT_TYPE and _trade_bridge:
+    _trade_bridge.account_type = DEFAULT_ACCOUNT_TYPE
 _print_log("cfquant lowlat trade bridge module loaded")
 _print_log("cfquant lowlat entry version:%s" % _ENTRY_VERSION)
 _print_log("cfquant bridge id:%s trade_channel:%s" % (BRIDGE_ID, BRIDGE_CHANNELS["trade"]))

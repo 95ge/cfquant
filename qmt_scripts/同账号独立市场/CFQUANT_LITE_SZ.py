@@ -61,6 +61,7 @@ if _cfquant_market_should_set_config_path():
 import base64
 import datetime as dt
 import io
+import inspect
 import json
 import math
 import os
@@ -164,7 +165,10 @@ native remark so independent QMT processes and restarts can recover both.
 """
 
 import re
+import threading
+import time
 import uuid
+from collections import OrderedDict
 
 
 _ORDER_REMARK_SUFFIX = re.compile(r"__cfq_([0-9a-f]{32})$")
@@ -212,6 +216,121 @@ def restore_order_remark(data):
             data["cfquant_order_remark"] = internal
             data["order_remark"] = original_order_remark(internal)
     return data
+
+
+def order_remark_matches_reference(expected, actual):
+    """Compare remarks only AFTER an order reference has matched.
+
+    Some DEAL reports echo the public remark without our UUID. A different
+    UUID still identifies a different submission, even with the same text.
+    """
+    return (not actual or expected == actual or
+            (is_unique_order_remark(expected) and
+             not is_unique_order_remark(actual) and
+             original_order_remark(expected) == actual))
+
+
+class OrderCallbackCache(object):
+    """Bounded, daily order metadata indexed by separate local/broker IDs."""
+
+    def __init__(self, max_orders=4096):
+        self.max_orders = max_orders
+        self.lock = threading.RLock()
+        self.day = ""
+        self.records = OrderedDict()
+        self.by_ref = {}
+
+    def _identity(self, data, account_type):
+        day = time.strftime("%Y%m%d")
+        if day != self.day:
+            self.records.clear()
+            self.by_ref.clear()
+            self.day = day
+        # Historical query rows must not seed today's broker-ID mapping.
+        for name in ("order_date", "trade_date", "m_strInsertDate", "m_strTradeDate", "m_strTradingDay"):
+            value = str(data.get(name) or "").replace("-", "").replace("/", "")
+            if len(value) == 8 and value.isdigit() and value != day:
+                return None, set()
+        account = str(data.get("account_id") or data.get("m_strAccountID") or "").strip()
+        stock = str(data.get("stock_code") or data.get("m_strInstrumentID") or "").strip().upper()
+        market = str(data.get("market") or data.get("m_strExchangeID") or "").strip().upper()
+        if "." in stock:
+            stock, market = stock.rsplit(".", 1)
+        if not account or not stock:
+            return None, set()
+        scope = (account_type, account, stock, market)
+        refs = set()
+        for name in ("order_id", "m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID"):
+            value = str(data.get(name) or "").strip()
+            if value.isdigit() and int(value) > 0:
+                refs.add(("local", str(int(value))))
+        for name in ("order_sysid", "m_strOrderSysID"):
+            value = str(data.get(name) or "").strip()
+            if value and value not in ("0", "-1"):
+                refs.add(("broker", value))
+        return scope, refs
+
+    def _matches(self, scope, refs, data):
+        groups = [self.by_ref[(scope, ref)] for ref in refs if (scope, ref) in self.by_ref]
+        candidates = set.intersection(*groups) if groups else set()
+        matches = []
+        for key in candidates:
+            record = self.records[key]
+            expected, actual = order_remark_key(record["data"]), order_remark_key(data)
+            if expected and not order_remark_matches_reference(expected, actual):
+                continue
+            local = {ref for ref in refs if ref[0] == "local"}
+            known = {ref for ref in record["refs"] if ref[0] == "local"}
+            if local and known and not local.intersection(known):
+                continue
+            matches.append(key)
+        return matches
+
+    def remember(self, data, account_type):
+        if not (data.get("strategy_name") or data.get("m_strStrategyName") or order_remark_key(data)):
+            return
+        with self.lock:
+            scope, refs = self._identity(data, account_type)
+            if scope is None or not refs:
+                return
+            matches = self._matches(scope, refs, data)
+            remark = order_remark_key(data)
+            local = sorted(ref for ref in refs if ref[0] == "local")
+            identity = ("remark", remark) if is_unique_order_remark(remark) else (local or sorted(refs))[0]
+            key = (scope, identity)
+            if len(matches) == 1:
+                key = matches[0]
+            record = self.records.get(key, {"data": {}, "refs": set()})
+            record["data"].update({name: value for name, value in data.items() if value not in (None, "")})
+            record["refs"].update(refs)
+            self.records[key] = record
+            self.records.move_to_end(key)
+            for ref in refs:
+                self.by_ref.setdefault((scope, ref), set()).add(key)
+            while len(self.records) > self.max_orders:
+                old_key, old = self.records.popitem(last=False)
+                for ref in old["refs"]:
+                    index = (old_key[0], ref)
+                    self.by_ref[index].discard(old_key)
+                    if not self.by_ref[index]:
+                        del self.by_ref[index]
+
+    def enrich(self, data, account_type):
+        with self.lock:
+            scope, refs = self._identity(data, account_type)
+            matches = self._matches(scope, refs, data) if scope is not None else []
+            if len(matches) != 1:
+                return data
+            saved = self.records[matches[0]]["data"]
+            strategy = saved.get("strategy_name") or saved.get("m_strStrategyName")
+            remark = order_remark_key(saved)
+            for name, value in (("strategy_name", strategy), ("m_strStrategyName", strategy),
+                                ("order_remark", remark), ("m_strRemark", remark), ("m_strOrderRemark", remark)):
+                if value and not data.get(name):
+                    data[name] = value
+            if is_unique_order_remark(remark):
+                data["cfquant_order_remark"] = remark
+        return restore_order_remark(data)
 
 """Batch wire contract and QMT execution, compatible with embedded Python 3.6."""
 
@@ -616,7 +735,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.49"
+CORE_VERSION = "0.2.50"
 LITE_ENTRY_VERSION = "lite_20260828_01"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -1804,6 +1923,76 @@ def _is_zero_time_value(value):
     return bool(digits) and not set(digits) - {"0"}
 
 
+def market_data_result_needs_fallback(result):
+    if result is None:
+        return True
+    if isinstance(result, dict):
+        return not result or all(getattr(value, "empty", False) for value in result.values())
+    if getattr(result, "empty", False):
+        return True
+    return not hasattr(result, "columns") and not hasattr(result, "to_records")
+
+SMT_ASYNC_ARGUMENT_COUNTS = {
+    "smt_appointment_order": 4,
+    "smt_appointment_cancel": 1,
+    "smt_negotiate_order": 6,
+    "smt_compact_return": 4,
+    "smt_compact_renewal": 5,
+}
+
+XTTRADER_TRANSFER_RESULT_METHODS = {
+    "bank_transfer_in", "bank_transfer_out", "fund_transfer", "secu_transfer",
+    "ctp_transfer_future_to_option", "ctp_transfer_option_to_future",
+}
+
+
+_LITE_CREDIT_FIELD_ALIASES = {
+    "detail": {
+        "m_nStatus": (), "m_nUpdateTime": (), "m_nCalcConfig": (),
+        "m_dFrozenCash": (), "m_dBalance": (), "m_dAvailable": (),
+        "m_dPositionProfit": (), "m_dMarketValue": ("m_dInstrumentValue",),
+        "m_dFetchBalance": (), "m_dStockValue": (), "m_dFundValue": (),
+        "m_dTotalDebt": ("m_dTotalDebit",), "m_dEnableBailBalance": (),
+        "m_dPerAssurescaleValue": (), "m_dAssureAsset": (), "m_dFinDebt": (),
+        "m_dFinDealAvl": (), "m_dFinFee": (), "m_dSloDebt": (),
+        "m_dSloMarketValue": (), "m_dSloFee": (), "m_dOtherFare": (),
+        "m_dFinMaxQuota": (), "m_dFinEnableQuota": (), "m_dFinUsedQuota": (),
+        "m_dSloMaxQuota": (), "m_dSloEnableQuota": (), "m_dSloUsedQuota": (),
+        "m_dSloSellBalance": (), "m_dUsedSloSellBalance": (),
+        "m_dSurplusSloSellBalance": (),
+    },
+    "compact": {
+        "compact_type": ("m_eCompactType",), "cashgroup_prop": ("m_eCashgroupProp",),
+        "exchange_id": ("m_strExchangeID",), "open_date": ("m_nOpenDate",),
+        "business_vol": ("m_nBusinessVol",), "real_compact_vol": ("m_nRealCompactVol",),
+        "ret_end_date": ("m_nRetEndDate",), "business_balance": ("m_dBusinessBalance",),
+        "businessFare": ("m_dBusinessFare",), "real_compact_balance": ("m_dRealCompactBalance",),
+        "real_compact_fare": ("m_dRealCompactFare",), "repaid_fare": ("m_dRepaidFare",),
+        "repaid_balance": ("m_dRepaidBalance",), "instrument_id": ("m_strInstrumentID",),
+        "compact_id": ("m_strCompactId", "m_strCompactID"), "position_str": ("m_strPositionStr",),
+    },
+    "subjects": {
+        "exchange_id": ("m_strExchangeID",), "instrument_id": ("m_strInstrumentID",),
+        "slo_status": ("m_eSloStatus",), "fin_status": ("m_eFinStatus",),
+        "slo_ratio": ("m_dSloRatio",), "fin_ratio": ("m_dFinRatio",),
+    },
+    "assure": {
+        "exchange_id": ("m_strExchangeID",), "instrument_id": ("m_strInstrumentID",),
+        "assure_status": ("m_eAssureStatus",), "assure_ratio": ("m_dAssureRatio",),
+    },
+    "slo_code": {
+        "exchange_id": ("m_strExchangeID",), "instrument_id": ("m_strInstrumentID",),
+        "cashgroup_prop": ("m_eCashgroupProp", "m_eQuerySloType"),
+        "enable_amount": ("m_nEnableAmount",),
+    },
+}
+
+LITE_OBJECT_QUERY_METHODS = {
+    "query_account_info", "query_account_infos", "query_account_status",
+    "query_secu_account", "query_bank_info", "query_bank_amount",
+    "query_bank_transfer_stream",
+}
+
 class TxTradeBridge(object):
     def __init__(
         self,
@@ -1841,6 +2030,7 @@ class TxTradeBridge(object):
         self.pending_sync_orders_lock = threading.RLock()
         self.order_request_metadata = {}
         self.order_request_metadata_lock = threading.RLock()
+        self.order_callback_cache = OrderCallbackCache()
 
     def set_context(self, context):
         self.context = context
@@ -1996,7 +2186,7 @@ class TxTradeBridge(object):
         if action == "xtdata.get_instrument_detail":
             return self._get_instrument_detail(params)
         if action == "xtdata.get_stock_list_in_sector":
-            return self.context.get_stock_list_in_sector(params.get("sector_name", ""))
+            return self._get_stock_list_in_sector(params)
         if action.startswith("xtdata."):
             return self._dispatch_xtdata_compat(action, params, msg)
         if action.startswith("xttrader."):
@@ -2268,7 +2458,7 @@ class TxTradeBridge(object):
         )
         used_query_account_id = query_account_id
         try:
-            rows = func(query_account_id, account_type.lower(), detail_type.lower()) or []
+            rows = self._call_trade_detail_data(func, query_account_id, account_type.lower(), detail_type.lower()) or []
         except Exception as e:
             if query_account_id != account_id:
                 self._log(
@@ -2276,7 +2466,7 @@ class TxTradeBridge(object):
                     % (account_id, query_account_id, detail_type, e)
                 )
                 used_query_account_id = account_id
-                rows = func(account_id, account_type.lower(), detail_type.lower()) or []
+                rows = self._call_trade_detail_data(func, account_id, account_type.lower(), detail_type.lower()) or []
             else:
                 self._log(
                     "query_trade_detail call failed account=%s detail_type=%s error=%s"
@@ -2289,7 +2479,7 @@ class TxTradeBridge(object):
                 % (account_id, query_account_id, detail_type, account_id)
             )
             used_query_account_id = account_id
-            rows = func(account_id, account_type.lower(), detail_type.lower()) or []
+            rows = self._call_trade_detail_data(func, account_id, account_type.lower(), detail_type.lower()) or []
         result = []
         for index, row in enumerate(rows):
             try:
@@ -2307,6 +2497,8 @@ class TxTradeBridge(object):
                             formatted.setdefault("query_account_key", used_query_account_id)
                     if detail_type.lower() in ("order", "deal"):
                         self._enrich_order_request_fields(formatted)
+                        if detail_type.lower() == "order":
+                            self._remember_order_callback_fields(formatted)
                 result.append(formatted)
             except Exception as e:
                 self._log(
@@ -2931,6 +3123,10 @@ class TxTradeBridge(object):
         return bool(previous_key and previous_key in self._order_reference_values(order))
 
 
+    def _remember_order_callback_fields(self, order):
+        self.order_callback_cache.remember(order, self._account_type_name(order.get("account_type")))
+
+
     def _get_last_order_id(self, account_id, account_type, strategy_name=""):
         func = self._get_callable("get_last_order_id")
         if not func:
@@ -3149,7 +3345,7 @@ class TxTradeBridge(object):
                     for candidate_key, candidate in self.order_request_metadata.items():
                         if candidate_key[0] != key[0]:
                             continue
-                        if key[2] and is_unique_order_remark(candidate_key[2]) and candidate_key[2] != key[2]:
+                        if not order_remark_matches_reference(candidate_key[2], key[2]):
                             continue
                         if key[1] and candidate_key[1] and key[1] != candidate_key[1]:
                             continue
@@ -3196,6 +3392,7 @@ class TxTradeBridge(object):
             for name in ("m_strOrderRef", "m_strOrderID"):
                 if order.get(name) is None or str(order.get(name)).strip() in ("", "0", "-1"):
                     order[name] = str(order_id)
+        self.order_callback_cache.enrich(order, self._account_type_name(order.get("account_type")))
         return restore_order_remark(order)
     def _prune_pending_async_orders_locked(self):
         wait_seconds = os.environ.get("CFQUANT_ASYNC_ORDER_RESPONSE_WAIT_SECONDS", 60.0)
@@ -3369,8 +3566,641 @@ class TxTradeBridge(object):
         self._send_trader_event(msg.get("client_id"), "on_cancel_order_stock_async_response", data)
         return result
 
+    def _require_qmt_callable(self, *names):
+        func = self._get_callable(*names)
+        if not func:
+            raise NotImplementedError("requires QMT callable: %s" % ", ".join(names))
+        return func
+
+    def _get_cb_info(self, stockcode):
+        # The Python source supplies two fields, not the similarly named VBA API.
+        data = self._require_qmt_callable("get_convert_bond_info")(stockcode)
+        if data is None or data == {}:
+            return data
+        if not isinstance(data, dict):
+            raise ValueError("QMT get_convert_bond_info must return a dictionary")
+        result = {
+            "bondCode": stockcode,
+            "cfquant_partial": True,
+            "cfquant_source": "get_convert_bond_info",
+        }
+        for source, target in (("stockcode", "stockCode"), ("convert_price", "bondConvPrice")):
+            if source in data:
+                result[target] = data[source]
+        return result
+
+    def _get_divid_factors(self, stock_code):
+        return self._require_qmt_callable("get_divid_factors")(stock_code)
+
+    def _get_stock_list_in_sector(self, params):
+        func = self._require_qmt_callable("get_stock_list_in_sector")
+        sector = params.get("sector_name", "")
+        timetag = params.get("real_timetag", -1)
+        if timetag == -1:
+            return func(sector)
+        # Never retry without a requested historical timestamp.
+        return func(sector, timetag)
+
+    def _get_sector_list(self):
+        func = self._require_qmt_callable("get_sector_list")
+        pending, visited, sectors, seen = [""], set(), [], set()
+        while pending:
+            node = pending.pop()
+            if node in visited:
+                continue
+            visited.add(node)
+            if len(visited) > 10000:
+                raise ValueError("QMT sector tree exceeds 10000 nodes")
+            info = func(node)
+            if not isinstance(info, (list, tuple)) or len(info) != 2:
+                raise ValueError("QMT get_sector_list must return [sectors, folders]")
+            if any(not isinstance(items, (list, tuple)) for items in info):
+                raise ValueError("invalid QMT sector tree node")
+            if any(not isinstance(name, str) or not name for items in info for name in items):
+                raise ValueError("invalid QMT sector or folder name")
+            for sector in info[0]:
+                if sector not in seen:
+                    seen.add(sector)
+                    sectors.append(sector)
+            pending.extend(reversed(info[1]))
+        return sectors
+
+    def _create_sector_folder(self, parent_node, folder_name, overwrite=True):
+        return self._require_qmt_callable("create_sector_folder")(parent_node, folder_name, overwrite)
+
+    def _create_sector(self, parent_node, sector_name, overwrite=True):
+        return self._require_qmt_callable("create_sector")(parent_node, sector_name, overwrite)
+
+    def _validate_sector_stocks(self, sector_name, stock_list):
+        if not isinstance(sector_name, str) or not sector_name.strip():
+            raise ValueError("sector_name must be a non-empty string")
+        if not isinstance(stock_list, (list, tuple)) or any(
+            not isinstance(code, str) or not code.strip() for code in stock_list
+        ):
+            raise ValueError("stock_list must be a list of non-empty stock codes")
+
+    def _reset_sector(self, sector_name, stock_list):
+        self._validate_sector_stocks(sector_name, stock_list)
+        return self._require_qmt_callable("reset_sector_stock_list", "reset_sector")(sector_name, list(stock_list))
+
+    def _remove_stock_from_sector(self, sector_name, stock_list):
+        self._validate_sector_stocks(sector_name, stock_list)
+        func = self._require_qmt_callable("remove_stock_from_sector")
+        succeeded = True
+        for code in dict.fromkeys(stock_list):
+            # Evaluate every deletion; False must not short-circuit the remaining stocks.
+            if not func(sector_name, code):
+                succeeded = False
+        return succeeded
+
+    def _call_formula_batch(self, formula_names, stock_codes, period, start_time="", end_time="",
+                            count=-1, dividend_type="none", extend_params=None):
+        return self._require_qmt_callable("call_formula_batch")(
+            formula_names, stock_codes, period, start_time, end_time, count, dividend_type,
+            [] if extend_params is None else extend_params,
+        )
+
+    def _instrument_detail_callable_missing(self, error):
+        if isinstance(error, NotImplementedError):
+            return True
+        text = str(error or "").strip().lower().replace("_", " ")
+        if not text:
+            return False
+        missing_markers = ("not found", "not implemented", "unsupported", "no attribute")
+        is_detail = "get instrument detail" in text or "get instrumentdetail" in text
+        return is_detail and any(marker in text for marker in missing_markers)
+
+    def _fallback_instrument_detail(self, params, stock_code):
+        code_info = self._instrument_code_info(stock_code)
+        candidates = self._stock_code_candidates(code_info)
+        stock_name = self._optional_stock_callable("get_stock_name", candidates)
+        stock_type = self._optional_stock_callable("get_stock_type", candidates)
+        open_date = self._optional_stock_callable("get_open_date", candidates, prefer_nonzero=True)
+        expire_date = self._optional_stock_callable("get_contract_expire_date", candidates, prefer_nonzero=True)
+        multiplier = self._optional_stock_callable("get_contract_multiplier", candidates, prefer_nonzero=True)
+        is_stock = self._optional_stock_bool("is_stock", candidates)
+        is_fund = self._optional_stock_bool("is_fund", candidates)
+        is_future = self._optional_stock_bool("is_future", candidates)
+        product_id = self._fallback_product_id(code_info, is_stock, is_fund, is_future)
+        canonical_code = code_info.get("canonical") or code_info.get("raw") or ""
+
+        detail = {
+            "ExchangeID": code_info.get("exchange_id", ""),
+            "InstrumentID": code_info.get("instrument_id", ""),
+            "InstrumentName": stock_name if stock_name is not None else "",
+            "ProductID": product_id,
+            "ProductName": product_id,
+            "ExchangeCode": code_info.get("exchange_id", ""),
+            "RzrkCode": "",
+            "UniCode": canonical_code,
+            "CreateDate": "",
+            "OpenDate": open_date if open_date is not None else "",
+            "ExpireDate": expire_date if expire_date is not None else "",
+            "TradingDay": time.strftime("%Y%m%d"),
+            "PreClose": 0.0,
+            "SettlementPrice": 0.0,
+            "UpStopPrice": 0.0,
+            "DownStopPrice": 0.0,
+            "FloatVolumn": 0,
+            "TotalVolumn": 0,
+            "FloatVolume": 0,
+            "TotalVolume": 0,
+            "LongMarginRatio": 0.0,
+            "ShortMarginRatio": 0.0,
+            "PriceTick": 0.0,
+            "VolumeMultiple": multiplier if multiplier is not None else 0,
+            "MainContract": 0,
+            "LastVolume": 0,
+            "InstrumentStatus": 0,
+            "IsTrading": False,
+            "IsRecent": False,
+            "HSGTFlag": "",
+            "StockCode": canonical_code,
+            "stock_code": canonical_code,
+            "InputStockCode": code_info.get("raw", ""),
+            "cfquant_detail_fallback": True,
+            "cfquant_detail_partial": True,
+        }
+        if stock_type is not None:
+            detail["StockType"] = stock_type
+        if is_stock is not None:
+            detail["IsStock"] = is_stock
+        if is_fund is not None:
+            detail["IsFund"] = is_fund
+        if is_future is not None:
+            detail["IsFuture"] = is_future
+        return detail
+
+    def _instrument_code_info(self, stock_code):
+        raw = str(stock_code or "").strip().upper()
+        instrument_id = raw
+        exchange_id = ""
+        if "." in raw:
+            left, right = raw.rsplit(".", 1)
+            instrument_id = left.strip()
+            exchange_id = self._market_suffix(right.strip())
+        elif len(raw) > 2 and raw[:2] in ("SH", "SZ", "BJ") and raw[2:].isdigit():
+            exchange_id = self._market_suffix(raw[:2])
+            instrument_id = raw[2:]
+        elif len(raw) > 2 and raw[-2:] in ("SH", "SZ", "BJ") and raw[:-2].isdigit():
+            exchange_id = self._market_suffix(raw[-2:])
+            instrument_id = raw[:-2]
+        else:
+            exchange_id = self._infer_stock_exchange_id(raw)
+        canonical = "%s.%s" % (instrument_id, exchange_id) if instrument_id and exchange_id else raw
+        return {
+            "raw": raw,
+            "instrument_id": instrument_id,
+            "exchange_id": exchange_id,
+            "canonical": canonical,
+        }
+
+    def _infer_stock_exchange_id(self, instrument_id):
+        code = str(instrument_id or "").strip().upper()
+        if not code:
+            return ""
+        if code.startswith(("43", "83", "87", "88", "92")) and len(code) == 6:
+            return "BJ"
+        if code.startswith(("600", "601", "603", "605", "688", "689", "900")):
+            return "SH"
+        if code.startswith(("510", "511", "512", "513", "515", "516", "517", "518", "519", "588", "589")):
+            return "SH"
+        if code.startswith(("000", "001", "002", "003", "159", "184", "200", "300", "301", "399")):
+            return "SZ"
+        return ""
+
+    def _stock_code_candidates(self, code_info):
+        raw = code_info.get("raw", "")
+        instrument_id = code_info.get("instrument_id", "")
+        exchange_id = code_info.get("exchange_id", "")
+        canonical = code_info.get("canonical", "")
+        prefixed = "%s%s" % (exchange_id, instrument_id) if exchange_id in ("SH", "SZ", "BJ") and instrument_id else ""
+        values = []
+        for value in (raw, canonical, prefixed, instrument_id):
+            if value and value not in values:
+                values.append(value)
+        return values
+
+    def _optional_stock_callable(self, method, candidates, prefer_nonzero=False):
+        func = self._get_callable(method)
+        if not func:
+            return None
+        fallback_value = None
+        for stock_code in candidates:
+            try:
+                value = self._plain_value(func(stock_code))
+            except Exception:
+                continue
+            if value is None or value == "":
+                continue
+            if prefer_nonzero and value in (0, "0", False):
+                fallback_value = value
+                continue
+            return value
+        return fallback_value
+
+    def _optional_stock_bool(self, method, candidates):
+        func = self._get_callable(method)
+        if not func:
+            return None
+        fallback_value = None
+        for stock_code in candidates:
+            try:
+                value = self._plain_value(func(stock_code))
+            except Exception:
+                continue
+            if value is None or value == "":
+                continue
+            bool_value = self._coerce_optional_bool(value)
+            if bool_value is True:
+                return True
+            if bool_value is False:
+                fallback_value = False
+        return fallback_value
+
+    def _coerce_optional_bool(self, value):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        text = str(value).strip().lower()
+        if text in ("1", "true", "yes", "y", "on"):
+            return True
+        if text in ("0", "false", "no", "n", "off"):
+            return False
+        return bool(text)
+
+    def _fallback_product_id(self, code_info, is_stock, is_fund, is_future):
+        if is_fund:
+            return "FUND"
+        if is_future:
+            return "FUTURE"
+        if is_stock:
+            return "STOCK"
+        exchange_id = code_info.get("exchange_id", "")
+        instrument_id = code_info.get("instrument_id", "")
+        if exchange_id in ("IF", "SF", "DF", "ZF", "INE", "GF"):
+            return "FUTURE"
+        if instrument_id.startswith(("510", "511", "512", "513", "515", "516", "517", "518", "519", "588", "589", "159")):
+            return "FUND"
+        if exchange_id in ("SH", "SZ", "BJ"):
+            return "STOCK"
+        return ""
+
+    def _query_account_id(self, params):
+        account = params.get("account") or {}
+        account_id = account.get("account_id") or params.get("account_id") or self.account_id
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError("account_id must be a non-empty string")
+        return account_id
+
+
+    def _call_trade_detail_data(self, func, account_id, account_type, detail_type):
+        variants = [
+            ((account_id, account_type, detail_type), {}),
+            ((account_id, account_type, detail_type, ""), {}),
+        ]
+        last_error = None
+        for args, kwargs in variants:
+            try:
+                return func(*args, **kwargs)
+            except TypeError as error:
+                last_error = error
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no available trade detail call variant")
+
+
+    def _credit_account_id(self, params):
+        account_id = self._query_account_id(params)
+        account = params.get("account") or {}
+        account_type = self._account_type_name(
+            account.get("account_type") or params.get("account_type")
+        )
+        if account_type.upper() != "CREDIT":
+            raise ValueError("credit query requires a CREDIT account")
+        return account_id
+
+
+    def _credit_row_data(self, row, aliases):
+        if isinstance(row, dict):
+            return self._plain_value(row)
+        data = {}
+        names = {"account_id", "account_type", "m_strAccountID", "m_nAccountType", "m_strAccountType", "m_nBrokerType"}
+        names.update(aliases.keys())
+        for values in aliases.values():
+            names.update(values)
+        for name in names:
+            value = self._get_value(row, name)
+            if value is not None:
+                data[name] = value
+        if not data:
+            try:
+                for name in dir(row):
+                    if name.startswith("_"):
+                        continue
+                    value = getattr(row, name)
+                    if not callable(value):
+                        data[name] = self._plain_value(value)
+            except Exception:
+                pass
+        return data
+
+
+    def _credit_field_value(self, data, names):
+        for name in names:
+            if name in data and data.get(name) is not None:
+                return data.get(name)
+            if name.startswith("m_"):
+                compact = name[:1] + name[2:]
+                if compact in data and data.get(compact) is not None:
+                    return data.get(compact)
+        return None
+
+
+    def _format_credit_rows(self, rows, params, kind, source):
+        account_id = self._credit_account_id(params)
+        if rows is None:
+            return None
+        if isinstance(rows, (str, bytes, dict)):
+            raise ValueError("%s returned an invalid credit query result" % source)
+        aliases = _LITE_CREDIT_FIELD_ALIASES.get(kind, {})
+        result = []
+        for row in rows:
+            data = self._credit_row_data(row, aliases)
+            if not data:
+                raise ValueError("%s returned an invalid credit account row" % source)
+            for name in ("account_id", "m_strAccountID"):
+                value = data.get(name)
+                if value not in (None, "", account_id):
+                    raise ValueError("%s returned a different account" % source)
+            for name in ("account_type", "m_nAccountType", "m_strAccountType", "m_nBrokerType"):
+                value = data.get(name)
+                if value not in (None, "") and str(value).upper() not in ("3", "CREDIT"):
+                    raise ValueError("%s returned a non-CREDIT account" % source)
+            for target, names in aliases.items():
+                value = self._credit_field_value(data, (target,) + tuple(names))
+                if value is not None:
+                    data[target] = value
+            data["account_id"] = account_id
+            data["account_type"] = 3
+            if kind == "detail" and source == "get_trade_detail_data":
+                raw_quotas = {
+                    name: data.pop(name)
+                    for name in ("m_dFinUsedQuota", "m_dSloUsedQuota")
+                    if name in data
+                }
+                if raw_quotas:
+                    data["cfquant_qmt_fields"] = raw_quotas
+            data["cfquant_source"] = source
+            data["cfquant_missing_fields"] = [
+                target for target, names in aliases.items()
+                if self._credit_field_value(data, (target,) + tuple(names)) is None
+            ]
+            result.append(data)
+        return result
+
+
+    def _query_credit_detail(self, params):
+        account_id = self._credit_account_id(params)
+        func = self._get_callable("get_trade_detail_data")
+        if func:
+            rows = self._call_trade_detail_data(func, account_id, "credit", "account")
+            return self._format_credit_rows(rows, params, "detail", "get_trade_detail_data")
+        rows = self._generic_xttrader_call("query_credit_detail", params)
+        return self._format_credit_rows(rows, params, "detail", "query_credit_detail")
+
+
+    def _query_qmt_objects(self, params, kind, source):
+        account_id = self._credit_account_id(params)
+        func = self._get_callable(source)
+        if not func:
+            raise NotImplementedError("%s not found" % source)
+        rows = func(account_id)
+        return self._format_credit_rows(rows, params, kind, source)
+
+
+    def _query_stk_compacts(self, params):
+        account_id = self._credit_account_id(params)
+        func = self._get_callable("get_unclosed_compacts")
+        if func:
+            rows = func(account_id, "CREDIT")
+            source = "get_unclosed_compacts"
+        else:
+            func = self._get_callable("get_debt_contract")
+            if func:
+                rows = func(account_id)
+                source = "get_debt_contract"
+            else:
+                rows = self._generic_xttrader_call("query_stk_compacts", params)
+                source = "query_stk_compacts"
+        return self._format_credit_rows(rows, params, "compact", source)
+    def _smt_request(self, params, msg, method):
+        account_id = self._credit_account_id(params)
+        seq = params.get("seq")
+        client_id = msg.get("client_id") or msg.get("reply_channel")
+        if isinstance(seq, bool) or not isinstance(seq, int) or seq <= 0 or not client_id:
+            raise ValueError("SMT request requires a positive seq and client_id")
+        args = list(params.get("args") or [])
+        if len(args) != SMT_ASYNC_ARGUMENT_COUNTS[method] or params.get("kwargs"):
+            raise ValueError("invalid arguments for %s" % method)
+        func = self._get_callable(method)
+        if not func:
+            raise NotImplementedError(
+                "xttrader.%s_async is unavailable: this QMT does not expose %s with a final SMT business response"
+                % (method, method)
+            )
+        # A broker extension must return its final business response. Do not
+        # retry a mutating call with alternative signatures or treat an ACK as success.
+        raw = func(account_id, *args)
+        if raw is False or (isinstance(raw, int) and not isinstance(raw, bool) and raw == -1):
+            return {"seq": -1, "accepted": False}
+        data = self._smt_response_data(raw)
+        if not data:
+            raise RuntimeError("%s returned no final business response; outcome unknown, reconcile before retrying" % method)
+        for name in ("account_id", "m_strAccountID"):
+            if data.get(name) not in (None, "", account_id):
+                raise ValueError("%s returned a different account" % method)
+        for name in ("account_type", "m_nAccountType", "m_strAccountType", "m_nBrokerType"):
+            if data.get(name) not in (None, "") and str(data[name]).upper() not in ("3", "CREDIT"):
+                raise ValueError("%s returned a non-CREDIT account" % method)
+        apply_id = data.get("apply_id")
+        valid_apply_id = isinstance(apply_id, str) and bool(apply_id.strip())
+        if isinstance(apply_id, int) and not isinstance(apply_id, bool) and apply_id == -1:
+            valid_apply_id = data.get("success") is False
+        if (not isinstance(data.get("success"), bool)
+                or not valid_apply_id
+                or not isinstance(data.get("msg"), str)):
+            raise RuntimeError("%s returned an incomplete business response; outcome unknown, reconcile before retrying" % method)
+        if data["success"] and str(data["apply_id"]) == "-1":
+            raise RuntimeError("%s returned success without a valid apply_id" % method)
+        data.update(seq=seq, account_id=account_id, account_type=3)
+        self._send_trader_event(client_id, "on_smt_appointment_async_response", data)
+        return {"seq": seq, "accepted": True}
+    def _format_transfer_result(self, result, params):
+        seq = params.get("seq")
+        if isinstance(result, (list, tuple)) and len(result) >= 2:
+            return {"seq": seq, "success": self._plain_value(result[0]), "msg": self._plain_value(result[1])}
+        data = result if isinstance(result, dict) else self._credit_row_data(result, {})
+        if isinstance(data, dict):
+            return {
+                "seq": seq if seq is not None else self._first_present(data, ("seq", "m_nSeq", "request_id")),
+                "success": self._first_present(data, ("success", "m_bSuccess", "ok", "accepted")),
+                "msg": self._first_present(data, ("msg", "m_strMsg", "m_strError", "message", "error", "error_msg"), ""),
+            }
+        return data
+
+    def _format_compat_query_objects(self, rows, cls=None, force_list=False):
+        if rows is None:
+            return None
+        is_list = isinstance(rows, (list, tuple))
+        values = list(rows) if is_list else [rows]
+        result = [self._format_compat_query_object(row, cls) for row in values]
+        return result if force_list or is_list else result[0]
+
+    def _format_compat_query_object(self, row, cls=None):
+        data = self._plain_object(row, self._known_query_fields(cls))
+        if not isinstance(data, dict):
+            return data
+        if cls is None:
+            return data
+        obj = cls.from_any(data)
+        if hasattr(obj, "__dict__"):
+            return self._plain_value(vars(obj))
+        return self._plain_value(obj)
+
+    def _known_query_fields(self, cls):
+        if cls is None:
+            return None
+        if hasattr(cls, "known_field_names"):
+            return cls.known_field_names()
+        if cls is XtAccountStatus:
+            return set(_with_qmt_compact_aliases(
+                "account_id",
+                "account_type",
+                "m_strAccountID",
+                "m_nAccountType",
+                "m_strAccountType",
+                "m_nBrokerType",
+                "status",
+                "m_nStatus",
+                "m_nLoginStatus",
+                "login_status",
+            ))
+        return None
+
+    def _plain_object(self, value, known_fields=None):
+        if value is None or isinstance(value, (str, bool, int, float, bytes)):
+            return self._plain_value(value)
+        if isinstance(value, dict):
+            return self._plain_value(value)
+        if isinstance(value, (list, tuple)):
+            return [self._plain_object(item, known_fields) for item in value]
+        if hasattr(value, "__dict__"):
+            return self._plain_value(vars(value))
+        data = {}
+        for name in dir(value):
+            if name.startswith("_"):
+                continue
+            if known_fields is not None and name not in known_fields and not name.startswith("m_"):
+                continue
+            try:
+                field = getattr(value, name)
+            except Exception as e:
+                self._log(
+                    "query object getattr failed type=%s field=%s error=%s"
+                    % (type(value).__name__, name, e)
+                )
+                continue
+            if callable(field):
+                continue
+            data[name] = self._plain_value(field)
+        return data if data else self._plain_value(value)
+
+    def _first_present(self, data, names, default=None):
+        for name in names:
+            if name in data and data.get(name) is not None:
+                return data.get(name)
+        return default
+
+    def _smt_response_data(self, raw):
+        # Validate before SDK coercion: bool("false") and str([]) must never
+        # turn a malformed acknowledgement into a final business response.
+        data = self._plain_object(raw)
+        data = dict(data) if isinstance(data, dict) else {}
+        aliases = {
+            "success": ("m_bSuccess",),
+            "msg": ("m_strMsg", "m_strError", "error"),
+            "apply_id": ("m_strApplyID", "m_strApplyId", "applyId"),
+            "account_id": (), "m_strAccountID": (),
+            "account_type": (), "m_nAccountType": (),
+            "m_strAccountType": (), "m_nBrokerType": (),
+        }
+        for target, sources in aliases.items():
+            for name in (target,) + sources:
+                value = self._get_value(raw, name)
+                if value is not None:
+                    data[target] = value
+                    break
+        return data
+
     def _dispatch_xttrader_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
+        if method in SMT_ASYNC_ARGUMENT_COUNTS:
+            return self._smt_request(params, msg, method)
+        if method in ("smt_query_quoter", "smt_query_compact", "smt_query_order"):
+            self._credit_account_id(params)
+            rows = self._generic_xttrader_call(method, params)
+            if rows is None:
+                return None
+            if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError("%s requires a list of SMT result dictionaries" % method)
+            return self._plain_value(rows)
+        if method in LITE_OBJECT_QUERY_METHODS:
+            rows = self._generic_xttrader_call(method, params)
+            return self._format_compat_query_objects(rows, force_list=True)
+        if method == "query_position_statistics":
+            account_id = self._query_account_id(params)
+            account = params.get("account") or {}
+            account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+            if account_type.upper() != "FUTURE":
+                raise ValueError("query_position_statistics requires a FUTURE account")
+            func = self._get_callable("get_trade_detail_data")
+            if func:
+                rows = self._call_trade_detail_data(func, account_id, "future", "position_statistics")
+            else:
+                rows = self._generic_xttrader_call(method, params)
+            return self._format_compat_query_objects(rows, force_list=True)
+        if method == "query_credit_detail":
+            return self._query_credit_detail(params)
+        if method == "query_stk_compacts":
+            return self._query_stk_compacts(params)
+        if method in ("query_credit_assure", "query_credit_subjects", "query_credit_slo_code"):
+            kind, native = {
+                "query_credit_assure": ("assure", "get_assure_contract"),
+                "query_credit_subjects": ("subjects", "get_assure_contract"),
+                "query_credit_slo_code": ("slo_code", "get_enable_short_contract"),
+            }[method]
+            self._credit_account_id(params)
+            if self._get_callable(native):
+                return self._query_qmt_objects(params, kind, native)
+            rows = self._generic_xttrader_call(method, params)
+            return self._format_credit_rows(rows, params, kind, method)
+        if method == "query_position_statistics" and self._get_callable("get_trade_detail_data"):
+            account_id = self._query_account_id(params)
+            account = params.get("account") or {}
+            account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+            if account_type.upper() != "FUTURE":
+                raise ValueError("query_position_statistics requires a FUTURE account")
+            return self._query_trade_detail(params, "position")
+        if method == "query_new_purchase_limit":
+            func = self._get_callable("get_new_purchase_limit")
+            if func:
+                return func(self._query_account_id(params))
+        if method == "query_ipo_data":
+            func = self._get_callable("get_ipo_data")
+            if func:
+                return func()
         if method == "query_com_fund":
             rows = self._query_trade_detail(params, "account")
             return rows[0] if rows else {}
@@ -3384,6 +4214,9 @@ class TxTradeBridge(object):
             return self._query_trade_detail(params, "deal")
         if method == "query_stock_positions_async":
             return self._query_trade_detail(params, "position")
+        if method in XTTRADER_TRANSFER_RESULT_METHODS:
+            result = self._generic_xttrader_call(method, params)
+            return self._format_transfer_result(result, params)
         return self._generic_xttrader_call(method, params)
 
     def _dispatch_xtdata_compat(self, action, params, msg):
@@ -3393,6 +4226,18 @@ class TxTradeBridge(object):
         if method == "get_l2thousand_queue":
             func = require_l2_callable(self._get_callable(method), method)
             return quote_plain(func(params.get("stock_code", ""), gear_num=params.get("gear_num"), price=thousand_price(params)))
+        adapters = {
+            "get_cb_info": self._get_cb_info,
+            "get_divid_factors": self._get_divid_factors,
+            "get_sector_list": self._get_sector_list,
+            "create_sector_folder": self._create_sector_folder,
+            "create_sector": self._create_sector,
+            "reset_sector": self._reset_sector,
+            "remove_stock_from_sector": self._remove_stock_from_sector,
+            "call_formula_batch": self._call_formula_batch,
+        }
+        if method in adapters:
+            return adapters[method](*(params.get("args") or []), **(params.get("kwargs") or {}))
         if method == "get_trading_dates":
             return self._get_trading_dates(params)
         if method in (
@@ -3543,7 +4388,7 @@ class TxTradeBridge(object):
                 params.get("field_list", []),
                 params.get("stock_list", []),
             )
-        return func(
+        result = func(
             params.get("field_list", []),
             params.get("stock_list", []),
             params.get("start_time", ""),
@@ -3553,6 +4398,11 @@ class TxTradeBridge(object):
             params.get("dividend_type", "none"),
             params.get("count", -1),
         )
+        if market_data_result_needs_fallback(result):
+            result = self._get_market_data_ex(params)
+            return market_data_legacy_shape(result, params.get("period", "1d"),
+                                             params.get("field_list", []), params.get("stock_list", []))
+        return result
 
     def _get_market_data_ex(self, params):
         func = self._get_callable("get_market_data_ex")
@@ -3570,9 +4420,34 @@ class TxTradeBridge(object):
         )
 
     def _get_local_data(self, params):
+        modern = self._get_callable("get_market_data_ex")
+        if modern:
+            # The ninth QMT argument disables subscription and reads local data.
+            arguments = (
+                params.get("field_list", []),
+                params.get("stock_list") or params.get("code_list") or ([params["stock_code"]] if params.get("stock_code") else []),
+                params.get("period", "1d"),
+                params.get("start_time", ""),
+                params.get("end_time", ""),
+                params.get("count", -1),
+                params.get("dividend_type", "none"),
+                params.get("fill_data", True),
+                False,
+            )
+            try:
+                signature = inspect.signature(modern)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None:
+                try:
+                    signature.bind(*arguments)
+                except TypeError:
+                    modern = None
+            if modern is not None:
+                return modern(*arguments)
         func = self._get_callable("get_local_data")
         if not func:
-            return self._get_market_data_ex(params)
+            raise NotImplementedError("get_local_data requires local QMT data access")
         stock_code = self._first_param(params, ("stock_code", "stockcode", "stock", "code"), "")
         stock_list = self._list_param(params.get("stock_list", params.get("code_list", [])))
         if not stock_code and stock_list:
@@ -3580,26 +4455,28 @@ class TxTradeBridge(object):
         return self._call_local_data(func, stock_code, params)
 
     def _call_local_data(self, func, stock_code, params):
+        start_time = params.get("start_time") or params.get("start_date") or "19700101"
+        end_time = params.get("end_time") or params.get("end_date") or "22010101"
         return self._call_variants(func, [
             ((
                 stock_code,
-                params.get("start_time", params.get("start_date", "19700101")),
-                params.get("end_time", params.get("end_date", "22010101")),
+                start_time,
+                end_time,
                 params.get("period", "follow"),
                 params.get("divid_type", params.get("dividend_type", "none")),
                 params.get("count", -1),
             ), {}),
             ((
                 stock_code,
-                params.get("start_time", params.get("start_date", "19700101")),
-                params.get("end_time", params.get("end_date", "22010101")),
+                start_time,
+                end_time,
                 params.get("period", "follow"),
                 params.get("divid_type", params.get("dividend_type", "none")),
             ), {}),
             ((
                 stock_code,
-                params.get("start_time", params.get("start_date", "19700101")),
-                params.get("end_time", params.get("end_date", "22010101")),
+                start_time,
+                end_time,
             ), {}),
             ((stock_code,), {}),
         ])
@@ -3758,10 +4635,28 @@ class TxTradeBridge(object):
         return result
 
     def _get_instrument_detail(self, params):
-        func = self._get_callable("get_instrument_detail")
-        if not func:
-            raise NotImplementedError("get_instrument_detail not found")
-        return func(params.get("stock_code", ""))
+        params = params or {}
+        stock_code = self._first_param(params, ("stock_code", "stockcode", "stock", "code"), "")
+        iscomplete = params.get("iscomplete", params.get("is_complete", params.get("complete", False)))
+        for name in ("get_instrument_detail", "get_instrumentdetail"):
+            func = self._get_callable(name)
+            if not func:
+                continue
+            try:
+                if name == "get_instrumentdetail":
+                    result = func(stock_code)
+                    if isinstance(result, dict):
+                        result = dict(result)
+                        result["cfquant_detail_partial"] = True
+                        result["cfquant_detail_source"] = name
+                    return result
+                return self._call_variants(func, [((stock_code, iscomplete), {}), ((stock_code,), {})])
+            except Exception as e:
+                if not self._instrument_detail_callable_missing(e):
+                    raise
+                self._log("%s unavailable: %s" % (name, e))
+        self._log("get_instrument_detail not found, using fallback")
+        return self._fallback_instrument_detail(params, stock_code)
 
     def _get_financial_data(self, params):
         func = self._get_callable("get_financial_data")
@@ -5251,6 +6146,8 @@ class NormalQmtBridge(TxTradeBridge):
             data = self._callback_object_to_dict(obj)
         account_id = self._callback_account_id(obj, data)
         account_type = self._callback_account_type(obj, data)
+        if account_id:
+            data.setdefault("account_id", account_id)
         if account_type:
             data.setdefault("account_type", account_type)
         if event_name in ("trader:on_stock_order", "trader:on_stock_trade", "trader:on_order_error", "trader:on_cancel_error", "trader:on_order_stock_async_response", "trader:on_cancel_order_stock_async_response"):
@@ -5258,6 +6155,7 @@ class NormalQmtBridge(TxTradeBridge):
         if event_name == "trader:on_stock_order":
             self._resolve_pending_sync_order_callback(data)
             self._handle_async_order_callback(data)
+            self._remember_order_callback_fields(data)
         payload = {
             "type": "event",
             "event": event_name,

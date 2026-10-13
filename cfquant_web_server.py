@@ -114,6 +114,7 @@ from cfquant.qmt_strategy_deploy import (QmtStrategyManager, account_qmt_roots,
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
+from cfquant.level2 import L2_PERIODS
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
@@ -675,6 +676,10 @@ NORMAL_QMT_ACTIONS = {
     "xtdata.download_history_data2",
     "xtdata.download_financial_data",
     "xtdata.download_financial_data2",
+    "xtdata.get_local_data",
+    "xtdata.get_financial_data",
+    "xtdata.get_financial_data_ori",
+    "xtdata.get_financial_data_raw",
     "xtdata.subscribe_formula",
     "xtdata.unsubscribe_formula",
     "xtdata.subscribe_l2thousand",
@@ -4116,6 +4121,10 @@ def xtdata_action_requires_normal_bridge(action, params=None):
     params = params if isinstance(params, dict) else {}
     if params.get("callback_event") or params.get("callback_positions"):
         return True
+    # Advanced mode has separate QMT data directories. Historical reads must
+    # use the same instance that receives downloads, even if trade returns {}.
+    if action in ("xtdata.get_market_data", "xtdata.get_market_data_ex"):
+        return params.get("period") not in L2_PERIODS
     method = action.split(".", 1)[1]
     return action in NORMAL_QMT_ACTIONS or method.startswith(XTDATA_NORMAL_METHOD_PREFIXES)
 

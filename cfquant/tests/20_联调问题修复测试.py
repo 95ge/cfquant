@@ -1091,7 +1091,7 @@ def test_local_query_does_not_swallow_internal_type_error():
     ("xtdata.get_full_tick", {}, "trade"),
     ("xtdata.get_instrument_detail", {}, "trade"),
     ("xtdata.get_cb_info", {}, "trade"),
-    ("xtdata.get_local_data", {}, "trade"),
+    ("xtdata.get_local_data", {}, "normal"),
     ("xtdata.subscribe_quote", {}, "normal"),
     ("xtdata.subscribe_whole_quote", {}, "normal"),
     ("xtdata.get_market_data_ex", {"callback_event": "probe"}, "normal"),

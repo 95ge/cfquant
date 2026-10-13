@@ -13,6 +13,7 @@ import re
 import threading
 from .stock_connect import connect_account_type
 from .order_identity import order_remark_key, restore_order_remark, is_unique_order_remark
+from .order_identity import order_remark_matches_reference
 import time
 
 
@@ -609,7 +610,7 @@ class OrderMetaCache(object):
             for order_ref in order_refs:
                 record = self.by_ref.get(self._ctx(callback_record) + (order_ref,))
                 if record and user_order_id and is_unique_order_remark(user_order_id_from_data(record)):
-                    if user_order_id != user_order_id_from_data(record):
+                    if not order_remark_matches_reference(user_order_id_from_data(record), user_order_id):
                         record = None
                 if record:
                     confidence = "order_ref"

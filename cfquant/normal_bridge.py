@@ -893,6 +893,7 @@ class NormalQmtBridge(TxTradeBridge):
             self._resolve_pending_sync_order_callback(data)
             relay_sync_order_callback(self.context, data)
             self._handle_async_order_callback(data)
+            self._remember_order_callback_fields(data)
         payload = {
             "type": "event",
             "event": event_name,

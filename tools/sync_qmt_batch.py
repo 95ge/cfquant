@@ -168,6 +168,17 @@ def updated_source(source):
         1,
     )
     core = (ROOT / 'cfquant/tx_trade_bridge.py').read_text(encoding='utf-8')
+    if 'self.order_callback_cache = OrderCallbackCache()' not in source:
+        source = source.replace(
+            '        self.order_request_metadata_lock = threading.RLock()\n',
+            '        self.order_request_metadata_lock = threading.RLock()\n'
+            '        self.order_callback_cache = OrderCallbackCache()\n', 1)
+    if 'self._remember_order_callback_fields(formatted)' not in source:
+        source = source.replace(
+            '                        self._enrich_order_request_fields(formatted)\n',
+            '                        self._enrich_order_request_fields(formatted)\n'
+            '                        if detail_type.lower() == "order":\n'
+            '                            self._remember_order_callback_fields(formatted)\n', 1)
     for name in ('_passorder_optype', '_account_type_name', '_stock_order_type', '_cancel_order_stock'):
         source = _replace_class_method(source, 'TxTradeBridge', name,
                                        _class_method(core, 'TxTradeBridge', name))
@@ -259,6 +270,7 @@ def updated_source(source):
         '_async_order_record',
         '_remember_order_request',
         '_enrich_order_request_fields',
+        '_remember_order_callback_fields',
         '_consume_pending_async_order',
         '_handle_async_order_callback',
         '_send_async_order_response',
@@ -309,6 +321,19 @@ def updated_source(source):
         1,
     ) if 'self._resolve_pending_sync_order_callback(data)' not in source else source
     normal = (ROOT / 'cfquant/normal_bridge.py').read_text(encoding='utf-8')
+    callback_method = _class_method(source, 'NormalQmtBridge', 'publish_callback_event')
+    if 'data.setdefault("account_id", account_id)' not in callback_method:
+        callback_method = callback_method.replace(
+            '        account_type = self._callback_account_type(obj, data)\n',
+            '        account_type = self._callback_account_type(obj, data)\n'
+            '        if account_id:\n'
+            '            data.setdefault("account_id", account_id)\n', 1)
+        source = _replace_class_method(source, 'NormalQmtBridge', 'publish_callback_event', callback_method)
+    if 'self._remember_order_callback_fields(data)' not in source:
+        source = source.replace(
+            '            self._handle_async_order_callback(data)\n',
+            '            self._handle_async_order_callback(data)\n'
+            '            self._remember_order_callback_fields(data)\n', 1)
     source = _replace_class_method(source, 'NormalQmtBridge', '_callback_account_type',
                                    _class_method(normal, 'NormalQmtBridge', '_callback_account_type'))
     for name in ('_drain_requests', '_drain_single_request'):

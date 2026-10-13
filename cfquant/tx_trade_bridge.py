@@ -9,6 +9,7 @@ import uuid
 
 from .protocol import loads_message, pack_event, pack_response
 from .order_identity import prepare_order_remark, order_remark_key, original_order_remark, restore_order_remark, is_unique_order_remark
+from .order_identity import OrderCallbackCache, order_remark_matches_reference
 from .stock_connect import connect_account_type, validate_connect_order, validate_connect_market, query_connect_exchange_rate
 from .batch_orders import (
     CFTRADER_BATCH_CANCEL_ACTIONS,
@@ -33,7 +34,7 @@ from .logging_i18n import get_log_enabled, get_log_language, set_log_enabled, se
 from .runtime_report import build_qmt_runtime_report, module_source_state, source_sha256, write_qmt_runtime_marker
 from .xttype import (
     CreditAssure, CreditSloCode, CreditSubjects, StkCompacts, XtCreditDetail, XtPositionStatistics,
-    XtAccountInfo, XtAccountStatus, XtSmtAppointmentResponse,
+    XtAccountInfo, XtAccountStatus,
     filter_cancelable_orders, normalize_order_price_type, _is_zero_time_value, _with_qmt_compact_aliases,
 )
 
@@ -242,6 +243,7 @@ class TxTradeBridge(object):
         self.pending_sync_orders_lock = threading.RLock()
         self.order_request_metadata = {}
         self.order_request_metadata_lock = threading.RLock()
+        self.order_callback_cache = OrderCallbackCache()
         self.order_error_contexts = {}
         self.order_error_contexts_lock = threading.RLock()
         self.order_meta_enabled = bool(order_meta_enabled)
@@ -681,6 +683,8 @@ class TxTradeBridge(object):
                     if detail_type.lower() in ("order", "deal"):
                         self._enrich_order_request_fields(formatted)
                         self._enrich_query_order_meta_fields(formatted, account_id, account_type)
+                        if detail_type.lower() == "order":
+                            self._remember_order_callback_fields(formatted)
                 result.append(formatted)
             except Exception as e:
                 self._log(
@@ -1685,7 +1689,7 @@ class TxTradeBridge(object):
                     for candidate_key, candidate in self.order_request_metadata.items():
                         if candidate_key[0] != key[0]:
                             continue
-                        if key[2] and is_unique_order_remark(candidate_key[2]) and candidate_key[2] != key[2]:
+                        if not order_remark_matches_reference(candidate_key[2], key[2]):
                             continue
                         if key[1] and candidate_key[1] and key[1] != candidate_key[1]:
                             continue
@@ -1728,7 +1732,11 @@ class TxTradeBridge(object):
             for name in ("m_strOrderRef", "m_strOrderID"):
                 if order.get(name) is None or str(order.get(name)).strip() in ("", "0", "-1"):
                     order[name] = str(order_id)
+        self.order_callback_cache.enrich(order, self._account_type_name(order.get("account_type")))
         return restore_order_remark(order)
+
+    def _remember_order_callback_fields(self, order):
+        self.order_callback_cache.remember(order, self._account_type_name(order.get("account_type")))
 
     def _enrich_query_order_meta_fields(self, data, account_id="", account_type=""):
         if not isinstance(data, dict):
@@ -1780,7 +1788,7 @@ class TxTradeBridge(object):
             for order_ref in order_refs:
                 record = self.order_meta_cache.by_ref.get(ctx + (order_ref,))
                 if record and user_order_id and is_unique_order_remark(order_meta.user_order_id_from_data(record)):
-                    if user_order_id != order_meta.user_order_id_from_data(record):
+                    if not order_remark_matches_reference(order_meta.user_order_id_from_data(record), user_order_id):
                         record = None
                 if record:
                     return record, {"match_confidence": "order_ref"}
@@ -2059,6 +2067,27 @@ class TxTradeBridge(object):
         rows = self._call_trade_detail_data(func, account_id, "credit", "account")
         return self._format_credit_rows(rows, params, XtCreditDetail, "get_trade_detail_data")
 
+    def _smt_response_data(self, raw):
+        # Validate before SDK coercion: bool("false") and str([]) must never
+        # turn a malformed acknowledgement into a final business response.
+        data = self._plain_object(raw)
+        data = dict(data) if isinstance(data, dict) else {}
+        aliases = {
+            "success": ("m_bSuccess",),
+            "msg": ("m_strMsg", "m_strError", "error"),
+            "apply_id": ("m_strApplyID", "m_strApplyId", "applyId"),
+            "account_id": (), "m_strAccountID": (),
+            "account_type": (), "m_nAccountType": (),
+            "m_strAccountType": (), "m_nBrokerType": (),
+        }
+        for target, sources in aliases.items():
+            for name in (target,) + sources:
+                value = self._get_value(raw, name)
+                if value is not None:
+                    data[target] = value
+                    break
+        return data
+
     def _smt_request(self, params, msg, method):
         account_id = self._credit_account_id(params)
         seq = params.get("seq")
@@ -2079,10 +2108,9 @@ class TxTradeBridge(object):
         raw = func(account_id, *args)
         if raw is False or (isinstance(raw, int) and not isinstance(raw, bool) and raw == -1):
             return {"seq": -1, "accepted": False}
-        response = XtSmtAppointmentResponse.from_any(raw)
-        if not isinstance(response, XtSmtAppointmentResponse):
+        data = self._smt_response_data(raw)
+        if not data:
             raise RuntimeError("%s returned no final business response; outcome unknown, reconcile before retrying" % method)
-        data = self._plain_value(vars(response))
         for name in ("account_id", "m_strAccountID"):
             if data.get(name) not in (None, "", account_id):
                 raise ValueError("%s returned a different account" % method)
