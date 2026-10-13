@@ -10,7 +10,7 @@ import threading
 import time
 
 from . import order_meta
-from .order_identity import prepare_order_remark, order_remark_key, restore_order_remark
+from .order_identity import prepare_order_remark, order_remark_key, restore_order_remark, restore_strategy_name
 from .level2 import L2_THOUSAND_SUBSCRIPTIONS, quote_callback_data, quote_plain, require_l2_callable, thousand_price
 from .protocol import loads_message, pack_event, pack_response
 from .tx_trade_bridge import TxTradeBridge, relay_sync_order_callback
@@ -190,6 +190,12 @@ class NormalQmtBridge(TxTradeBridge):
             return
         if action == "cfquant.status":
             self._send_response(msg, self._status())
+            return
+        if action == "cfquant.strategy.control":
+            try:
+                self._send_response(msg, self._dispatch(action, msg.get("params") or {}, msg))
+            except Exception as error:
+                self._send_error(msg, error)
             return
         if self._try_enqueue_coalesced_request(msg):
             return
@@ -894,6 +900,7 @@ class NormalQmtBridge(TxTradeBridge):
             relay_sync_order_callback(self.context, data)
             self._handle_async_order_callback(data)
             self._remember_order_callback_fields(data)
+        restore_strategy_name(data)
         payload = {
             "type": "event",
             "event": event_name,

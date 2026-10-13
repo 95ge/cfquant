@@ -6,6 +6,10 @@ import io
 import re
 import tokenize
 from pathlib import Path
+try:
+    from tools.sync_qmt_fileless import updated_source as update_fileless_source
+except ImportError:
+    from sync_qmt_fileless import updated_source as update_fileless_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -328,7 +332,12 @@ def updated_source(source):
             '        account_type = self._callback_account_type(obj, data)\n'
             '        if account_id:\n'
             '            data.setdefault("account_id", account_id)\n', 1)
-        source = _replace_class_method(source, 'NormalQmtBridge', 'publish_callback_event', callback_method)
+    if 'restore_strategy_name(data)' not in callback_method:
+        callback_method = callback_method.replace(
+            '        payload = {\n',
+            '        restore_strategy_name(data)\n'
+            '        payload = {\n', 1)
+    source = _replace_class_method(source, 'NormalQmtBridge', 'publish_callback_event', callback_method)
     if 'self._remember_order_callback_fields(data)' not in source:
         source = source.replace(
             '            self._handle_async_order_callback(data)\n',
@@ -360,7 +369,7 @@ def main():
     for path in sorted((ROOT / 'qmt_scripts').rglob('CFQUANT_LITE*.py')):
         raw = path.read_bytes()
         source = raw.decode('gbk')
-        updated = updated_source(source)
+        updated = update_fileless_source(updated_source(source), lite=True)
         if source.replace('\r\n', '\n') == updated:
             continue
         outdated.append(str(path.relative_to(ROOT)))

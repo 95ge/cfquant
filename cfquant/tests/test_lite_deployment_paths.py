@@ -7,23 +7,31 @@ import shutil
 
 import pytest
 
-from cfquant.qmt_strategy_deploy import QmtStrategyManager
+from cfquant.qmt_strategy_deploy import QmtStrategyManager, configured_pipe_source, read_entry_source
 from cfquant.qmt_strategy_package import _cipher
 from cfquant.tests.test_qmt_strategy_deploy import deployment, finish_import, models, SCRIPTS
 
 
-def embedded_source(package):
+def package_source(package):
     content = json.loads(_cipher().decrypt(package.read_bytes()).decode("utf-8", "surrogateescape"))["content"]
-    return next(node.args[0].value for node in ast.walk(ast.parse(content))
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                and node.func.id == "compile" and isinstance(node.args[0], ast.Constant))
+    assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id in ("exec", "compile", "eval") for node in ast.walk(ast.parse(content)))
+    return content
+
+
+def expected_entry(source, root, market=""):
+    config = root / "bin.x64" / ("cfquant_bridge_config_%s.json" % market if market else "cfquant_bridge_config.json")
+    if config.is_file():
+        text = configured_pipe_source(read_entry_source(source), json.loads(config.read_text(encoding="utf-8")))
+        return text.replace("\r\n", "\n").replace("\n", "\r\n").encode("gbk")
+    return source.read_bytes()
 
 
 def assert_lite_package(manager, root):
     job = next(job for job in manager.jobs.values() if job.get("enabled"))
     assert job["mode"] == "lite"
     for role in job["roles"]:
-        source = embedded_source(root / "formulas" / (role["name"] + ".rzrk"))
+        source = package_source(root / "formulas" / (role["name"] + ".rzrk"))
         assert "LITE_ENTRY_VERSION =" in source
         assert "def account_route_client_ids(" in source
         assert not any(isinstance(node, ast.ImportFrom) and (node.module or "").startswith("cfquant")
@@ -86,7 +94,7 @@ def test_selected_lite_replaces_imported_generic_code(action, web_deployment, mo
     assert_lite_package(manager, root)
     assert models(root)[generic_name].getAttribute("startupAutorun") == "0"
     if action != "startup":
-        assert (root / "python" / "CFQUANT_LITE.py").read_bytes() == (SCRIPTS / "CFQUANT_LITE.py").read_bytes()
+        assert (root / "python" / "CFQUANT_LITE.py").read_bytes() == expected_entry(SCRIPTS / "CFQUANT_LITE.py", root)
 
 
 def test_edit_without_mode_preserves_lite_binding_and_payload(web_deployment):
@@ -145,7 +153,8 @@ def test_shared_qmt_directory_does_not_drop_lite_market_entries(single_account, 
     for name, directory in (("CFQUANT_LITE.py", SCRIPTS),
                             ("CFQUANT_LITE_SH.py", SCRIPTS / "同账号独立市场"),
                             ("CFQUANT_LITE_SZ.py", SCRIPTS / "同账号独立市场")):
-        assert (root / "python" / name).read_bytes() == (directory / name).read_bytes()
+        market = Path(name).stem.rsplit("_", 1)[-1]
+        assert (root / "python" / name).read_bytes() == expected_entry(directory / name, root, market if market in ("SH", "SZ") else "")
 
 
 def test_update_uses_new_source_and_rejects_mislabeled_generic_entry(web_deployment, tmp_path):
@@ -158,7 +167,7 @@ def test_update_uses_new_source_and_rejects_mislabeled_generic_entry(web_deploym
     result = web.auto_deploy_qmt_core_for_all_accounts(str(source), sync_entry_scripts=True)
     assert result["summary"]["ok"]
     job = assert_lite_package(manager, root)
-    assert 'RELEASE_TEST_MARKER = "new-source"' in embedded_source(
+    assert 'RELEASE_TEST_MARKER = "new-source"' in package_source(
         root / "formulas" / (job["roles"][0]["name"] + ".rzrk"))
     previous = (root / "python" / entry.name).read_bytes()
     shutil.copyfile(SCRIPTS / "CFQUANT_CTYPE_ALL_LOWLAT.py", entry)

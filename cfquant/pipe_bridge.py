@@ -9,6 +9,8 @@ from .tx_trade_bridge import TxTradeBridge
 
 
 class PipeNormalQmtBridge(NormalQmtBridge):
+    file_io_enabled = False
+
     def __init__(
         self,
         context,
@@ -48,6 +50,9 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         self.connect_timeout_ms = int(connect_timeout_ms)
 
     def start(self):
+        runtime = self.globals_dict.get("_managed_runtime")
+        if runtime is not None:
+            runtime.attach_bridge(self)
         if self.running:
             return self
         self.running = True
@@ -104,6 +109,8 @@ class PipeNormalQmtBridge(NormalQmtBridge):
 
 
 class PipeTradeBridge(TxTradeBridge):
+    file_io_enabled = False
+
     def __init__(
         self,
         context,
@@ -131,6 +138,9 @@ class PipeTradeBridge(TxTradeBridge):
         self.connect_timeout_ms = int(connect_timeout_ms)
 
     def start(self):
+        runtime = self.globals_dict.get("_managed_runtime")
+        if runtime is not None:
+            runtime.attach_bridge(self)
         if self.running:
             return self
         self.running = True

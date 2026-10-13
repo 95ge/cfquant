@@ -12,6 +12,23 @@ from collections import OrderedDict
 
 
 _ORDER_REMARK_SUFFIX = re.compile(r"__cfq_([0-9a-f]{32})$")
+_STRATEGY_NAME_SUFFIX = re.compile(r"(?:&&&_cfq_|^cfq_)[0-9a-f]{12}\Z")
+
+
+def restore_strategy_name(data):
+    """Remove our request token only at the public callback/object boundary.
+
+    Keep the full strategy until error-context matching has finished. Match
+    the generated suffix precisely so user underscores and delimiters survive.
+    """
+    if isinstance(data, dict):
+        for name in ("strategy_name", "m_strStrategyName", "mstrStrategyName", "strategyName"):
+            value = data.get(name)
+            if isinstance(value, str):
+                match = _STRATEGY_NAME_SUFFIX.search(value)
+                if match:
+                    data[name] = value[:match.start()]
+    return data
 
 
 def original_order_remark(value):

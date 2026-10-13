@@ -39,7 +39,7 @@ from .xttype import (
 )
 
 
-_LOADED_SOURCE_SHA256 = source_sha256(__file__)
+_LOADED_SOURCE_SHA256 = "" if os.environ.get("CFQUANT_QMT_NO_FILE_IO") == "1" else source_sha256(__file__)
 
 
 # A single all-in-one QMT entry can create both a normal bridge and a trade
@@ -483,10 +483,13 @@ class TxTradeBridge(object):
             entry_file=entry_file,
             module_file=__file__,
             started_at=self.started_at,
-            extra=module_source_state(__file__, _LOADED_SOURCE_SHA256, self.started_at),
+            extra=self._source_state(),
         )
 
     def _publish_runtime_report(self, reason):
+        if not getattr(self, "file_io_enabled", True):
+            # NormalQmtBridge publishes the report through its Pipe callback channel.
+            return
         try:
             channel_key = "normal" if "normal" in str(self.request_channel or "").lower() else "trade"
             if not self.started_at:
@@ -545,6 +548,8 @@ class TxTradeBridge(object):
         return {"enabled": enabled}
 
     def _cleanup_qmt_userdata_logs(self, params):
+        if not getattr(self, "file_io_enabled", True):
+            raise NotImplementedError("QMT file IO is disabled; clean logs from the external Web process.")
         params = params or {}
         retention_days = self._retention_days(params.get("retention_days"), default=5)
         dry_run = str(params.get("dry_run") or "").strip().lower() in ("1", "true", "yes", "on")
@@ -2375,7 +2380,7 @@ class TxTradeBridge(object):
             )
         if method in XTDATA_COMPAT_CANDIDATES:
             return self._generic_xtdata_call(method, params, msg)
-        source = module_source_state(__file__, _LOADED_SOURCE_SHA256, self.started_at)
+        source = self._source_state()
         hint = "; bridge source changed on disk, restart the QMT process to load the updated module" if source["restart_required"] else ""
         raise NotImplementedError("xtdata.%s is not implemented by cfquant QMT bridge%s" % (method, hint))
 
@@ -4059,6 +4064,8 @@ class TxTradeBridge(object):
             )
 
     def _default_log_file(self):
+        if not getattr(self, "file_io_enabled", True):
+            return ""
         base_dir = os.getcwd()
         configured = os.environ.get("CFQUANT_QMT_LOG_DIR")
         if configured:
@@ -4078,13 +4085,19 @@ class TxTradeBridge(object):
             return
         msg = translate_log(msg)
         line = "%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
-        try:
-            with open(self.log_file, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
-        except Exception:
-            pass
+        if getattr(self, "file_io_enabled", True):
+            try:
+                with open(self.log_file, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
         if self.show:
             print(msg)
+
+    def _source_state(self):
+        if not getattr(self, "file_io_enabled", True):
+            return {"restart_required": False, "source_inspection_enabled": False}
+        return module_source_state(__file__, _LOADED_SOURCE_SHA256, self.started_at)
 
 
 def start_tx_trade_bridge(

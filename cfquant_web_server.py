@@ -14,6 +14,7 @@ import json
 import math
 import mimetypes
 import os
+from pathlib import Path
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
 import posixpath
 import queue
@@ -110,7 +111,8 @@ from cfquant.batch_orders import (
 from cfquant import _editable_install
 from cfquant import xtconstant as cf_xtconstant
 from cfquant.qmt_strategy_deploy import (QmtStrategyManager, account_qmt_roots,
-    normalize_strategy_settings, qmt_root, entry_script_for_mode, read_entry_source)
+    normalize_strategy_settings, qmt_root, entry_script_for_mode, read_entry_source,
+    configured_pipe_source, PipeStrategyController)
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
@@ -7883,10 +7885,21 @@ class CfquantUpdater(object):
                 source_path = os.path.abspath(os.path.join(source_root, "qmt_scripts", *entry_script.split("/")))
                 if not os.path.isfile(source_path):
                     raise RuntimeError("QMT entry script not found in update source: %s" % entry_script)
-                read_entry_source(source_path)
+                entry_source = read_entry_source(source_path)
+                entry_bytes = Path(source_path).read_bytes()
+                if os.path.basename(entry_script).startswith(("CFQUANT_LITE", "CFQUANT_CTYPE_ALL_LOWLAT")):
+                    market = os.path.splitext(os.path.basename(entry_script))[0].rsplit("_", 1)[-1]
+                    config_name = "cfquant_bridge_config_%s.json" % market if market in ("SH", "SZ") else QMT_BRIDGE_CONFIG_FILENAME
+                    config_path = Path(target["python_dir"]) / config_name
+                    if config_path.is_file():
+                        identity = json.loads(config_path.read_text(encoding="utf-8"))
+                        if not isinstance(identity, dict):
+                            raise ValueError("QMT account configuration must be a JSON object")
+                        identity.pop("managed_strategy", None)
+                        entry_bytes = configured_pipe_source(entry_source, identity).replace("\r\n", "\n").replace("\n", "\r\n").encode("gbk")
                 entry_file = os.path.abspath(os.path.join(script_dir, os.path.basename(entry_script)))
                 result["entry_file"] = entry_file
-                if file_content_equal(source_path, entry_file):
+                if os.path.isfile(entry_file) and Path(entry_file).read_bytes() == entry_bytes:
                     result.update(
                         skipped=True,
                         message="QMT entry script is already the current version",
@@ -7909,7 +7922,7 @@ class CfquantUpdater(object):
                     script_dir,
                     ".cfquant_entry_%s_%s.tmp" % (uuid.uuid4().hex, os.path.basename(entry_script)),
                 )
-                shutil.copy2(source_path, temp_file)
+                Path(temp_file).write_bytes(entry_bytes)
                 os.replace(temp_file, entry_file)
                 result.update({
                     "updated": True,
@@ -9940,6 +9953,7 @@ PROJECT_UPDATER = CfquantProjectUpdater()
 QMT_STRATEGIES = QmtStrategyManager(
     os.path.join(RUNTIME_CONFIG_DIR, "qmt_strategy_jobs.json"),
     os.path.join(_SOURCE_ROOT, "qmt_scripts"),
+    runtime_request=PipeStrategyController(),
 )
 
 

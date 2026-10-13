@@ -3,6 +3,7 @@
 import ast
 import copy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -319,14 +320,36 @@ def _resolve_account_binding(root, document, account_id, account_type, supplied=
     return None
 
 
+def _ascii_entry_source(source):
+    """Preserve executable source through QMT's possible Windows ANSI recoding."""
+    tokens = []
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if not token.string.isascii():
+            if token.type == tokenize.STRING:
+                # Escape string values, not the whole program. In particular,
+                # raw strings must retain their literal backslashes.
+                prefix = "u" if token.string[:1].lower() == "u" else ""
+                token = token._replace(string=prefix + ascii(ast.literal_eval(token.string)))
+            elif token.type == tokenize.COMMENT:
+                token = token._replace(string=token.string.encode("ascii", "backslashreplace").decode("ascii"))
+        tokens.append(token)
+    return tokenize.untokenize(tokens)
+
+
 def managed_source(source_path, identity_path, identity, descriptor):
     source = read_entry_source(source_path)
+    fileless = normalize_strategy_mode(descriptor["mode"]) in ("ctypes", "lite")
     lines = source.splitlines(keepends=True)
     tree = ast.parse(source)
     replacements = []
     constants = {"DEFAULT_ACCOUNT_ID": identity["account_id"], "DEFAULT_ACCOUNT_TYPE": identity["account_type"],
                  "USER_BRIDGE_ID": identity["bridge_id"], "BRIDGE_ID": identity["bridge_id"],
                  "QMT_MARKET": identity.get("market", "")}
+    if fileless:
+        config = dict(identity)
+        config["managed_strategy"] = {key: descriptor[key] for key in ("mode", "generation", "role")}
+        config["managed_strategy"]["runtime_key"] = descriptor.get("runtime_key") or _digest(str(identity_path))[:24]
+        constants["EMBEDDED_RUNTIME_CONFIG"] = config
     seen = set()
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
@@ -334,7 +357,7 @@ def managed_source(source_path, identity_path, identity, descriptor):
             if name in constants and (name not in seen or name == "QMT_MARKET"):
                 replacements.append((node.lineno - 1, node.end_lineno, name + " = " + ascii(constants[name]) + "\n"))
                 seen.add(name)
-        elif isinstance(node, ast.FunctionDef) and node.name == "_runtime_config_paths":
+        elif not fileless and isinstance(node, ast.FunctionDef) and node.name == "_runtime_config_paths":
             replacements.append((node.lineno - 1, node.end_lineno,
                                  "def _runtime_config_paths():\n    return [%s]\n" % ascii(str(identity_path))))
         elif isinstance(node, ast.FunctionDef) and node.name == "_env_allows_runtime_override":
@@ -345,21 +368,28 @@ def managed_source(source_path, identity_path, identity, descriptor):
     lines[0] = "# coding: utf-8\n"
     source = "".join(lines)
     ast.parse(source, feature_version=(3, 6))
+    if fileless:
+        if "EMBEDDED_RUNTIME_CONFIG" not in seen:
+            raise ValueError("QMT Pipe entry does not support embedded account configuration; update the entry source.")
+        # Deploy the entry itself. No file lease, exec wrapper, or surrounding try block.
+        generated = _ascii_entry_source(source)
+        generated.encode("ascii")
+        ast.parse(generated, feature_version=(3, 6))
+        return generated
     helper = Path(__file__).with_name("qmt_strategy_runtime.py").read_text(encoding="utf-8")
     source_lines = source.splitlines(keepends=True)
-    # Adjacent literals compile to the same source string, while keeping every
-    # entry line visible in QMT's editor. A single ascii(source) hid thousands
-    # of Lite lines behind the same short lease wrapper as the other modes.
     embedded = "\n".join("        " + ascii(line) for line in source_lines)
+    entry = "    exec(compile((\n%s\n    ), %s, 'exec'), globals())\n" % (embedded, ascii(str(source_path)))
+    description = "# Embedded entry: %d lines, preserved line by line below.\n" % len(source_lines)
     header = ("# coding: utf-8\n# cfquant managed strategy\n"
               + "# Mode: " + ascii(descriptor["mode"]) + "\n"
               + "# Entry: " + ascii(Path(source_path).name) + "\n"
-              + "# Embedded entry: %d lines, preserved line by line below.\n" % len(source_lines)
+              + description
               + "# The lease wrapper is shared by all modes.\n\n")
     generated = (header + helper + "\n_cq_descriptor = " + ascii(descriptor)
             + "\n_cq_guard = _CqStrategyLease(_cq_descriptor).acquire()\n"
             + "_cq_guard.namespace = globals()\ntry:\n"
-            + "    exec(compile((\n%s\n    ), %s, 'exec'), globals())\n" % (embedded, ascii(str(source_path)))
+            + entry
             + "    for _cq_name in ('_cf_bridge', '_normal_bridge', '_trade_bridge'):\n"
             + "        if globals().get(_cq_name) is not None:\n"
             + "            globals()[_cq_name].account_type = %s\n" % ascii(identity["account_type"])
@@ -367,14 +397,55 @@ def managed_source(source_path, identity_path, identity, descriptor):
             + "    _cq_guard.failure = str(_cq_error)\n    _cq_guard.close()\n    raise\n")
     # QMT may recode source through the Windows ANSI code page before compiling.
     generated.encode("ascii")
+    ast.parse(generated, feature_version=(3, 6))
     return generated
 
 
+def configured_pipe_source(source, identity):
+    """Embed a standalone entry's config while still in the external deployer."""
+    lines = source.splitlines(keepends=True)
+    for node in ast.parse(source).body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "EMBEDDED_RUNTIME_CONFIG"):
+            lines[node.lineno - 1:node.end_lineno] = ["EMBEDDED_RUNTIME_CONFIG = " + ascii(identity) + "\n"]
+            return "".join(lines)
+    raise ValueError("QMT Pipe entry is missing EMBEDDED_RUNTIME_CONFIG")
+
+
+class PipeStrategyController:
+    """External Web-side client; QMT receives desired state without opening files."""
+    def __init__(self):
+        self.clients = {}
+
+    def __call__(self, identity, desired):
+        from .channels import channels_for_bridge
+        from .pipe_client import PipeRpcClient
+        channel = ((identity.get("channels") or {}).get("normal") or identity.get("normal_channel")
+                   or channels_for_bridge(identity.get("bridge_id"))["normal"])
+        key = (identity.get("pipe_name"), channel)
+        client = self.clients.get(key)
+        if client is None:
+            client = self.clients[key] = PipeRpcClient(pipe_name=key[0], request_channel=channel,
+                                                       timeout=0.5, connect_timeout_ms=150)
+        try:
+            return client.request("cfquant.strategy.control", desired)
+        except Exception:
+            self.clients.pop(key, None)
+            client.close()
+            raise
+
+    def close(self):
+        for client in self.clients.values():
+            client.close()
+        self.clients.clear()
+
+
 class QmtStrategyManager:
-    def __init__(self, state_path, scripts_dir, process_checker=qmt_is_running):
+    def __init__(self, state_path, scripts_dir, process_checker=qmt_is_running, runtime_request=None):
         self.path = Path(state_path)
         self.scripts_dir = Path(scripts_dir)
         self.process_checker = process_checker
+        self.runtime_request = runtime_request
         self.lock = threading.RLock()
         self.event = threading.Event()
         self.stopping = threading.Event()
@@ -562,7 +633,7 @@ class QmtStrategyManager:
                     role.pop("account_key", None)
                 fingerprint = _digest([source_group, mode, [
                     hashlib.sha256(Path(__file__).with_name(filename).read_bytes()).hexdigest()
-                    for filename in ("qmt_strategy_runtime.py", "qmt_strategy_package.py", "qmt_strategy_deploy.py")]])
+                    for filename in ("qmt_strategy_runtime.py", "qmt_pipe_runtime.py", "qmt_strategy_package.py", "qmt_strategy_deploy.py")]])
                 if not force and previous.get("fingerprint") == fingerprint and previous.get("enabled"):
                     previous["account_key"] = row["account_key"]
                     self._prepare_generation_transition(previous)
@@ -606,6 +677,13 @@ class QmtStrategyManager:
                            enabled=True, generation=generation, fingerprint=fingerprint,
                            control_path=str(directory / "desired.json"),
                            retired=sorted(retired))
+                current_endpoints = {self._role_endpoint(role) for role in job["roles"]}
+                old_endpoints = {}
+                for old_role in previous.get("roles", []) + previous.get("retired_roles", []):
+                    endpoint = self._role_endpoint(old_role)
+                    if endpoint not in current_endpoints:
+                        old_endpoints[endpoint] = {"identity": old_role["identity"], "role": old_role["role"]}
+                job["retired_roles"] = list(old_endpoints.values())
                 for role in job["roles"]:
                     role["name"] = role_names[role["role"]]
                     # Every new generation needs its own imported container.
@@ -617,6 +695,7 @@ class QmtStrategyManager:
                     _write_json(role["identity_path"], role["identity"])
                     role["runtime_status_path"] = str(directory / (role["name"] + ".status.json"))
                     descriptor = {"mode": job["mode"], "generation": generation, "role": role["role"],
+                                  "runtime_key": _digest([os.path.normcase(job["root"]), job["account_id"]])[:24],
                                   "control_path": job["control_path"], "lease_dir": str(directory / "leases"),
                                   "runtime_status_path": role["runtime_status_path"]}
                     source = managed_source(Path(role["source"]), role["identity_path"], role["identity"], descriptor)
@@ -643,13 +722,44 @@ class QmtStrategyManager:
             return self.status(row["account_key"])
 
     def _control(self, job):
+        _write_json(job["control_path"], self._desired(job))
+
+    def _desired(self, job):
         generation = str(job.get("control_generation") or job.get("generation") or "")
         payload = {"enabled": bool(job.get("enabled")), "generation": generation, "mode": job.get("mode", "")}
         accepted = [item for item in _generation_values(job.get("accepted_generations"))
                     if item and item != generation]
         if accepted:
             payload["accepted_generations"] = accepted
-        _write_json(job["control_path"], payload)
+        payload["runtime_key"] = _digest([os.path.normcase(job["root"]), job["account_id"]])[:24]
+        return payload
+
+    def _sync_pipe_runtime(self, job):
+        if self.runtime_request is None:
+            return
+        desired = self._desired(job)
+        for role in job.get("retired_roles", []):
+            try:
+                self.runtime_request(role["identity"], dict(desired, enabled=False))
+            except Exception:
+                pass
+        for role in job["roles"]:
+            try:
+                report = self.runtime_request(role["identity"], desired)
+                if (isinstance(report, dict) and report.get("runtime_key") == desired["runtime_key"]
+                        and report.get("role") == role["role"]):
+                    # Only the external manager writes status files.
+                    _write_json(role["runtime_status_path"], report)
+            except Exception:
+                # A stopped/not-yet-imported strategy has no Pipe endpoint.
+                # Existing reports expire normally in _observe_runtime.
+                pass
+
+    @staticmethod
+    def _role_endpoint(role):
+        identity = role.get("identity") or {}
+        return (identity.get("pipe_name"), (identity.get("channels") or {}).get("normal")
+                or identity.get("normal_channel") or identity.get("bridge_id"))
 
     def reconcile(self, accounts):
         with self.lock:
@@ -719,8 +829,10 @@ class QmtStrategyManager:
     def _advance(self, job):
         root = qmt_root(job["root"], validate=True)
         if self.process_checker(root):
+            self._sync_pipe_runtime(job)
             self._observe_runtime(job)
             return
+        job["retired_roles"] = []
         if (job.get("state") in ("configured", "running", "waiting_start", "waiting_manual_start")
                 and all(role.get("imported") for role in job["roles"])):
             self._state(job, "configured")
@@ -921,3 +1033,6 @@ class QmtStrategyManager:
         self.event.set()
         if self.worker:
             self.worker.join(timeout=5.0)
+        close = getattr(self.runtime_request, "close", None)
+        if callable(close) and not (self.worker and self.worker.is_alive()):
+            close()

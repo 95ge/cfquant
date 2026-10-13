@@ -2,6 +2,7 @@
 
 import functools as _cq_functools
 import glob as _cq_glob
+import io as _cq_io
 import json as _cq_json
 import os as _cq_os
 import threading as _cq_threading
@@ -9,7 +10,7 @@ import time as _cq_time
 
 
 def _cq_lock(path):
-    stream = open(path, "a+b")
+    stream = _cq_io.open(path, "a+b")
     try:
         stream.seek(0)
         if _cq_os.name == "nt":
@@ -62,7 +63,7 @@ class _CqStrategyLease(object):
         try:
             payload = {"state": state, "error": error, "generation": self.descriptor["generation"],
                        "pid": _cq_os.getpid(), "updated_at": _cq_time.time()}
-            with open(temporary, "w", encoding="utf-8") as stream:
+            with _cq_io.open(temporary, "w", encoding="utf-8") as stream:
                 _cq_json.dump(payload, stream, ensure_ascii=True)
             _cq_os.replace(temporary, path)
             self.last_report = payload["updated_at"]
@@ -75,10 +76,18 @@ class _CqStrategyLease(object):
             except OSError:
                 pass
 
+    def _read_control(self):
+        # QMT can supply its own open() in the strategy namespace. Use the
+        # standard-library IO API, as the standalone Lite entry already does.
+        with _cq_io.open(self.descriptor["control_path"], encoding="utf-8") as stream:
+            desired = _cq_json.load(stream)
+        if not isinstance(desired, dict):
+            raise ValueError("control file must contain a JSON object")
+        return desired
+
     def allowed(self):
         try:
-            with open(self.descriptor["control_path"], encoding="utf-8") as stream:
-                desired = _cq_json.load(stream)
+            desired = self._read_control()
             accepted = desired.get("accepted_generations")
             if not isinstance(accepted, (list, tuple, set)):
                 accepted = ()
@@ -87,13 +96,12 @@ class _CqStrategyLease(object):
             return (desired.get("enabled") is True
                     and self.descriptor["generation"] in allowed_generations
                     and desired.get("mode") == self.descriptor["mode"])
-        except (OSError, ValueError):
+        except (OSError, ValueError, TypeError):
             return False
 
     def _denial_reason(self):
         try:
-            with open(self.descriptor["control_path"], encoding="utf-8") as stream:
-                desired = _cq_json.load(stream)
+            desired = self._read_control()
             if desired.get("enabled") is not True:
                 return "control_enabled=false"
             if desired.get("mode") != self.descriptor["mode"]:
@@ -107,8 +115,9 @@ class _CqStrategyLease(object):
             if self.descriptor["generation"] not in allowed_generations:
                 return "generation_mismatch expected=%s actual=%s" % (
                     desired.get("generation"), self.descriptor["generation"])
-        except (OSError, ValueError, TypeError):
-            return "control_file_unavailable"
+        except (OSError, ValueError, TypeError) as error:
+            return "control_file_unavailable path=%s error=%s: %s" % (
+                ascii(self.descriptor.get("control_path")), type(error).__name__, str(error))
         return "control_state_changed"
 
     def acquire(self, timeout=10.0):
@@ -126,7 +135,7 @@ class _CqStrategyLease(object):
                             _cq_unlock(probe)
                             continue
                         try:
-                            with open(path + ".json", encoding="utf-8") as stream:
+                            with _cq_io.open(path + ".json", encoding="utf-8") as stream:
                                 owner = _cq_json.load(stream)
                             compatible = owner.get("generation") == self.descriptor["generation"]
                         except (OSError, ValueError):
@@ -137,7 +146,7 @@ class _CqStrategyLease(object):
                     if not busy and self.allowed():
                         self.lease = _cq_lock(own_path)
                         if self.lease is not None:
-                            with open(own_path + ".json", "w", encoding="utf-8") as stream:
+                            with _cq_io.open(own_path + ".json", "w", encoding="utf-8") as stream:
                                 _cq_json.dump(self.descriptor, stream, ensure_ascii=True)
                             self.active = True
                             return self

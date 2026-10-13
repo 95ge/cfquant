@@ -29,6 +29,8 @@ def get_git_commit(source_root=None):
     override = _valid_commit(os.environ.get("CFQUANT_GIT_COMMIT"))
     if override:
         return override
+    if os.environ.get("CFQUANT_QMT_NO_FILE_IO") == "1":
+        return ""
     root = Path(source_root or Path(__file__).resolve().parent.parent).resolve()
     try:
         result = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], stdout=subprocess.PIPE,

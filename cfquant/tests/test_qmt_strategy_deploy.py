@@ -464,28 +464,44 @@ def test_all_managed_entry_variants_compile_without_executing(mode, deployment):
     assert document["detail"]["realName"] == role["name"] + ".py"
     assert document["formulaCatalog"][0].encode("utf-8", "surrogateescape").hex() == "ced2b5c4b2dfc2d4"
     ast.parse(document["content"], feature_version=(3, 6))
-    assert "# Mode: %r\n" % mode in document["content"]
-    assert "# Entry: %r\n" % Path(role["source"]).name in document["content"]
+    compile(document["content"].encode("ascii"), role["name"], "exec")
+    if mode == "lttx":
+        assert "# Mode: %r\n" % mode in document["content"]
+        assert "# Entry: %r\n" % Path(role["source"]).name in document["content"]
+    else:
+        assert "_CqStrategyLease" not in document["content"]
+        assert "control_path" not in document["content"]
     if mode == "lite":
-        embedded = [node.args[0].value for node in ast.walk(ast.parse(document["content"]))
-                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                    and node.func.id == "compile" and node.args
-                    and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)]
-        assert len(embedded) == 1
+        generated = ast.parse(document["content"], feature_version=(3, 6))
+        assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                       and node.func.id in ("exec", "compile", "eval") for node in ast.walk(generated))
         with tokenize.open(str(SCRIPTS / "CFQUANT_LITE.py")) as stream:
             original = ast.parse(stream.read())
-        actual = ast.parse(embedded[0], feature_version=(3, 6))
+        actual = generated
         definitions = lambda tree: {node.name for node in tree.body
                                     if isinstance(node, (ast.FunctionDef, ast.ClassDef))}
         assert definitions(actual) == definitions(original)
-        assert len(embedded[0].splitlines()) > 7000
+        original_classes = {node.name: ast.dump(node) for node in original.body if isinstance(node, ast.ClassDef)}
+        actual_classes = {node.name: ast.dump(node) for node in actual.body if isinstance(node, ast.ClassDef)}
+        assert actual_classes == original_classes
         assert len(document["content"].splitlines()) > 7000
         assert max(map(len, document["content"].splitlines())) < 2000
     descriptor = {"mode": mode, "generation": "test", "role": "SH", "control_path": "test", "lease_dir": "test"}
     variants = list((SCRIPTS / "同账号独立市场").glob("*.py")) + [SCRIPTS / "CFQUANT_TRADE_LOWLAT.py"]
     for path in variants:
+        if mode != "lttx" and not path.stem.startswith("CFQUANT_LITE" if mode == "lite" else "CFQUANT_CTYPE"):
+            continue
         source = managed_source(path, role["identity_path"], role["identity"], descriptor)
         ast.parse(source, feature_version=(3, 6))
+        compile(source.encode("ascii"), str(path), "exec")
+        if mode == "lite" and path.stem.startswith("CFQUANT_LITE"):
+            tree = ast.parse(source)
+            assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                           and node.func.id in ("exec", "compile", "eval") for node in ast.walk(tree))
+            actual = tree
+            original = ast.parse(read_entry_source(path))
+            classes = lambda nodes: {node.name: ast.dump(node) for node in nodes if isinstance(node, ast.ClassDef)}
+            assert classes(actual.body) == classes(original.body)
 
 
 def test_alias_paths_and_strict_setting_types(deployment):
@@ -584,8 +600,9 @@ def test_old_runtime_report_does_not_reset_prepared_replacement(deployment, repo
     assert not job.get("control_generation")
 
 
+@pytest.mark.parametrize("mode", ["ctypes", "lite", "lttx"])
 @pytest.mark.parametrize("encoding", ["utf-8", "gbk", "gb18030"])
-def test_managed_package_executes_after_qmt_encoding_with_chinese_paths(tmp_path, encoding):
+def test_managed_package_executes_after_qmt_encoding_with_chinese_paths(tmp_path, encoding, mode):
     directory = tmp_path / "\u534e\u6cf0\u8bc1\u5238 QMT \u6a21\u62df"
     directory.mkdir()
     source_path = directory / "entry.py"
@@ -593,18 +610,30 @@ def test_managed_package_executes_after_qmt_encoding_with_chinese_paths(tmp_path
     identity = {"account_id": ACCOUNT, "account_type": "CREDIT", "bridge_id": "test_bridge"}
     _write_json(identity_path, identity)
     source_path.write_text(
-        '# coding: utf-8\nimport json\nMESSAGE = "\u4fe1\u7528\u8d26\u53f7"\n'
+        '# coding: utf-8\nimport json\n# \u4e2d\u6587\u6ce8\u91ca\nMESSAGE = "\u4fe1\u7528\u8d26\u53f7"\n'
+        'RAW = r"\u4fe1\u7528\\n"\n'
+        'MULTILINE = """first\n    second\nthird"""\n'
+        'EMBEDDED_RUNTIME_CONFIG = {}\n'
         'def _runtime_config_paths():\n    return []\n'
         'def init(context):\n'
-        '    with open(_runtime_config_paths()[0], encoding="utf-8") as stream:\n'
-        '        context["identity"] = json.load(stream)\n'
-        '    context["message"] = MESSAGE\n', encoding="utf-8")
+        '    if EMBEDDED_RUNTIME_CONFIG:\n'
+        '        context["identity"] = {k: v for k, v in EMBEDDED_RUNTIME_CONFIG.items() if k != "managed_strategy"}\n'
+        '    else:\n'
+        '        with open(_runtime_config_paths()[0], encoding="utf-8") as stream:\n'
+        '            context["identity"] = json.load(stream)\n'
+        '    context["message"] = MESSAGE\n'
+        'def order_callback(context, order):\n    context.append(order)\n'
+        'def deal_callback(context, deal):\n    context.append(deal)\n', encoding="utf-8")
     value = descriptor(directory, "old")
+    value["mode"] = mode
     value["runtime_status_path"] = str(directory / "runtime.status.json")
     grant(value)
     generated = managed_source(source_path, identity_path, identity, value)
     package = build_package("CFQ_ENCODING_TEST", generated)
     content = json.loads(_cipher().decrypt(package).decode("utf-8", "surrogateescape"))["content"]
+    if mode == "lite":
+        assert not any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                       and node.func.id in ("exec", "compile", "eval") for node in ast.walk(ast.parse(content)))
     code = compile(content.encode(encoding), "<QMT byte source>", "exec")
     namespace = {}
     try:
@@ -612,11 +641,116 @@ def test_managed_package_executes_after_qmt_encoding_with_chinese_paths(tmp_path
         context = {}
         namespace["init"](context)
         assert context == {"identity": identity, "message": "\u4fe1\u7528\u8d26\u53f7"}
-        assert namespace["_cq_descriptor"] == value
-        assert namespace["_runtime_config_paths"]() == [str(identity_path)]
+        if mode == "lttx":
+            assert namespace["_cq_descriptor"] == value
+            assert namespace["_runtime_config_paths"]() == [str(identity_path)]
+        else:
+            assert namespace["EMBEDDED_RUNTIME_CONFIG"]["managed_strategy"]["generation"] == value["generation"]
+        assert namespace["RAW"] == '\u4fe1\u7528\\n'
+        assert namespace["MULTILINE"] == 'first\n    second\nthird'
+        callbacks = []
+        namespace["order_callback"](callbacks, "order")
+        namespace["deal_callback"](callbacks, "deal")
+        assert callbacks == ["order", "deal"]
+        if mode == "lttx":
+            _write_json(value["control_path"], {"enabled": False})
+            namespace["order_callback"](callbacks, "stale")
+            namespace["deal_callback"](callbacks, "stale")
+            assert callbacks == ["order", "deal"]
     finally:
         if "_cq_guard" in namespace:
             namespace["_cq_guard"].close()
+
+
+@pytest.mark.parametrize("stage", ["load", "init"])
+def test_advanced_failure_closes_bridge_and_releases_account(tmp_path, stage):
+    path = tmp_path / "entry.py"
+    path.write_text(
+        '# coding: utf-8\n'
+        'class Bridge:\n'
+        '    closed = False\n'
+        '    def close(self):\n        self.closed = True\n'
+        '_normal_bridge = Bridge()\n'
+        + ('raise RuntimeError("load failure")\n' if stage == "load" else
+           'def init(context):\n    raise RuntimeError("init failure")\n'), encoding="utf-8")
+    value = descriptor(tmp_path, "new")
+    value["mode"] = "lttx"
+    value["runtime_status_path"] = str(tmp_path / "runtime.status.json")
+    grant(value)
+    source = managed_source(path, tmp_path / "identity.json", {
+        "account_id": ACCOUNT, "account_type": "STOCK", "bridge_id": "test",
+    }, value)
+    namespace = {}
+    try:
+        with pytest.raises(RuntimeError, match=stage + " failure"):
+            exec(compile(source, str(path), "exec"), namespace)
+            namespace["init"](None)
+        assert namespace["_normal_bridge"].closed
+        assert namespace["_cq_guard"].lease is None
+        report = json.loads(Path(value["runtime_status_path"]).read_text(encoding="utf-8"))
+        assert (report["state"], report["error"]) == ("error", stage + " failure")
+        replacement = _CqStrategyLease(value).acquire(timeout=0.05)
+        replacement.close()
+    finally:
+        if "_cq_guard" in namespace:
+            namespace["_cq_guard"].close()
+
+
+@pytest.mark.parametrize("mode", ["lttx"])
+def test_managed_runtime_uses_standard_io_when_qmt_replaces_open(tmp_path, mode):
+    directory = tmp_path / "\u56fd\u91d1QMT\u4ea4\u6613\u7aef\u6a21\u62df"
+    directory.mkdir()
+    path = directory / "entry.py"
+    path.write_text('# coding: utf-8\ndef init(context):\n    context.append("started")\n', encoding="utf-8")
+    value = descriptor(directory, "new")
+    value["mode"] = mode
+    value["runtime_status_path"] = str(directory / "runtime.status.json")
+    grant(value)
+    source = managed_source(path, directory / "identity.json", {
+        "account_id": ACCOUNT, "account_type": "STOCK", "bridge_id": "test",
+    }, value)
+    attempts = []
+
+    def qmt_open(*args, **kwargs):
+        attempts.append(args)
+        raise PermissionError("QMT injected open cannot access this file")
+
+    namespace = {"open": qmt_open}
+    try:
+        exec(compile(source, "<QMT strategy>", "exec"), namespace)
+        calls = []
+        namespace["init"](calls)
+        assert calls == ["started"]
+        lease = namespace["_cq_guard"]
+        assert lease.allowed()
+        assert json.loads(Path(value["runtime_status_path"]).read_text(encoding="utf-8"))["state"] == "loaded"
+        with pytest.raises(RuntimeError, match="Another cfquant strategy"):
+            namespace["_CqStrategyLease"](value).acquire(timeout=0.01)
+        _write_json(value["control_path"], dict(value, enabled=False))
+        namespace["init"](calls)
+        assert calls == ["started"]
+        namespace["stop"]()
+        assert lease.lease is None
+        assert json.loads(Path(value["runtime_status_path"]).read_text(encoding="utf-8"))["state"] == "stopped"
+        assert attempts == []
+    finally:
+        if "_cq_guard" in namespace:
+            namespace["_cq_guard"].close()
+
+
+@pytest.mark.parametrize("content,error", [(None, "FileNotFoundError"), ("{bad", "JSONDecodeError"), ("[]", "ValueError")])
+def test_unavailable_control_reports_path_and_read_error(tmp_path, content, error):
+    value = descriptor(tmp_path, "new")
+    if content is not None:
+        Path(value["control_path"]).write_text(content, encoding="utf-8")
+    lease = _CqStrategyLease(value)
+    assert not lease.allowed()
+    with pytest.raises(RuntimeError) as caught:
+        lease.acquire()
+    assert "control_file_unavailable" in str(caught.value)
+    assert "desired.json" in str(caught.value)
+    assert error in str(caught.value)
+    assert lease.lease is None
 
 
 def test_changing_only_live_and_autorun_updates_model_without_reimport(deployment):

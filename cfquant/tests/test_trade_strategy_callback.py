@@ -11,6 +11,7 @@ import pytest
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.order_identity import prepare_order_remark
 from cfquant.pipe_bridge import PipeNormalQmtBridge
+from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
 from cfquant.xttype import XtTrade, normalize_order_price_type
 
 
@@ -94,6 +95,73 @@ def submitted(bridge, order_id=700009, strategy='strategy-a'):
     internal = prepare_order_remark(dict(order_remark='remark'))
     bridge._remember_order_request('TEST_ONLY', '000001.SZ', internal, strategy, order_id=order_id)
     return internal
+
+
+@pytest.mark.parametrize('event', [
+    'on_stock_order', 'on_stock_trade', 'on_order_error', 'on_cancel_error',
+    'on_order_stock_async_response', 'on_cancel_order_stock_async_response',
+])
+@pytest.mark.parametrize('strategy', ['', 'alpha_beta_v2', '\u7b56\u7565_\u4e00', 'alpha&&&beta'])
+def test_public_callback_removes_internal_strategy_without_request_cache(bridge, event, strategy):
+    internal = bridge._register_order_error_context('TEST_ONLY', '000001.SZ', strategy, 'remark')
+    bridge.order_error_contexts.clear()
+    bridge.publish_callback_event('trader:' + event, raw(
+        strategy_name=internal, m_strStrategyName=internal, strategyName=internal,
+        error_msg='rejected', _cfquant_force_order_error=True))
+    data = json.loads([p[1] for p in bridge.tx.pushes if p[0] == 'event'][-1])['data']
+    assert data['strategy_name'] == data['m_strStrategyName'] == strategy
+    if 'strategyName' in data:
+        assert data['strategyName'] == strategy
+
+
+@pytest.mark.parametrize('event', [
+    'on_stock_order', 'on_stock_trade', 'on_order_error', 'on_cancel_error',
+    'on_order_stock_async_response', 'on_cancel_order_stock_async_response',
+])
+@pytest.mark.parametrize('strategy,tagged', [
+    ('', True), ('alpha_beta_v2', True), ('\u7b56\u7565_\u4e00', True),
+    ('alpha_beta_v2', False), ('alpha&&&beta', False), ('cfq_manual', False),
+    ('alpha&&&_cfq_not-a-token', False),
+])
+def test_sdk_user_callback_restores_strategy_from_older_bridge(event, strategy, tagged):
+    internal = strategy
+    if tagged:
+        internal = (strategy + '&&&_cfq_' if strategy else 'cfq_') + '0123456789ab'
+    received = []
+    callback = XtQuantTraderCallback()
+    setattr(callback, event, received.append)
+    trader = XtQuantTrader(callback=callback)
+    try:
+        trader._make_trader_handler(event)(dict(
+            account_id='TEST_ONLY', order_id=700009, seq=1,
+            strategy_name=internal, m_strStrategyName=internal,
+            mstrStrategyName=internal, strategyName=internal))
+        assert len(received) == 1
+        for field in ('strategy_name', 'm_strStrategyName', 'mstrStrategyName', 'strategyName'):
+            assert getattr(received[0], field) == strategy
+    finally:
+        trader.stop()
+
+
+@pytest.mark.parametrize('bridge_class', [NormalQmtBridge, PipeNormalQmtBridge])
+def test_strategy_is_restored_after_exact_error_context_matching(bridge_class):
+    bridge = bridge_class(None, show=False, schedule_timer=False)
+    bridge.order_meta_enabled = False
+    bridge.tx = RecordingTx()
+    try:
+        tokens = [bridge._register_order_error_context('TEST_ONLY', '000001.SZ', 'alpha_beta', remark)
+                  for remark in ('first', 'second')]
+        for token, remark in zip(reversed(tokens), ('second', 'first')):
+            bridge.publish_callback_event('trader:on_order_error', dict(
+                accountID='TEST_ONLY', orderCode='SZ000001', strategyName=token,
+                error_msg='rejected', _cfquant_force_order_error=True))
+            data = json.loads([p[1] for p in bridge.tx.pushes if p[0] == 'event'][-1])['data']
+            assert data['strategy_name'] == data['m_strStrategyName'] == data['strategyName'] == 'alpha_beta'
+            assert data['order_remark'] == remark
+            assert data['cfquant_order_error_context_consumed'] is True
+        assert not bridge.order_error_contexts
+    finally:
+        bridge.close()
 
 
 def test_trade_with_only_broker_id_restores_metadata_for_each_partial_fill(bridge):

@@ -11,6 +11,10 @@ from __future__ import annotations
 import ast
 import re
 from pathlib import Path
+try:
+    from tools.sync_qmt_fileless import updated_source as update_fileless_source
+except ImportError:
+    from sync_qmt_fileless import updated_source as update_fileless_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -377,9 +381,10 @@ LITE_OBJECT_QUERY_METHODS = {
     )
     # The current shared source has a one-line hint expression; keep Lite
     # standalone and remove that package-only source-state branch robustly.
-    if "module_source_state" in xtdata_dispatch:
-        start = xtdata_dispatch.index("        source = module_source_state")
-        xtdata_dispatch = xtdata_dispatch[:start] + '        raise NotImplementedError("xtdata.%s is not implemented by cfquant QMT bridge" % method)\n'
+    for marker in ("        source = module_source_state", "        source = self._source_state()"):
+        if marker in xtdata_dispatch:
+            start = xtdata_dispatch.index(marker)
+            xtdata_dispatch = xtdata_dispatch[:start] + '        raise NotImplementedError("xtdata.%s is not implemented by cfquant QMT bridge" % method)\n'
     source = _replace_method(source, "TxTradeBridge", "_dispatch_xtdata_compat", xtdata_dispatch)
 
     # Credit/query compatibility is deliberately plain-dict based in Lite;
@@ -509,7 +514,7 @@ def main():
     for path in LITE_PATHS:
         raw = path.read_bytes()
         source = raw.decode("gbk").replace("\r\n", "\n")
-        updated = _patch_source(source, core)
+        updated = update_fileless_source(_patch_source(source, core), lite=True)
         if updated == source:
             continue
         outdated.append(str(path.relative_to(ROOT)))
