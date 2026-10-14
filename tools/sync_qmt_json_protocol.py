@@ -1,17 +1,20 @@
-"""Sync the outgoing JSON boundary into standalone GBK QMT entries."""
+"""Sync protocol and table conversion helpers into standalone GBK QMT entries."""
 import ast
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-FUNCTIONS = {"normalize_json_value", "dumps_message", "pack_request"}
+FUNCTIONS = {"normalize_json_value", "dumps_message", "loads_message", "pack_request", "pack_response",
+             "_encode_dataframe", "decode_value", "dataframe_numeric_rows"}
 
 
 def main():
-    source = (ROOT / "cfquant/protocol.py").read_text(encoding="utf-8")
-    source_lines = source.splitlines(keepends=True)
-    functions = {node.name: "".join(source_lines[node.lineno - 1:node.end_lineno]).replace("\n", "\r\n")
-                 for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name in FUNCTIONS}
+    functions = {}
+    for filename, names in (("cfquant/protocol.py", FUNCTIONS), ("cfquant/level2.py", {"quote_records"})):
+        source = (ROOT / filename).read_text(encoding="utf-8")
+        source_lines = source.splitlines(keepends=True)
+        functions.update({node.name: "".join(source_lines[node.lineno - 1:node.end_lineno]).replace("\n", "\r\n")
+                          for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name in names})
     for path in sorted((ROOT / "qmt_scripts").rglob("CFQUANT_LITE*.py")):
         original = path.read_bytes()
         text = original.decode("gbk")

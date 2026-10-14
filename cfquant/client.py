@@ -8,6 +8,7 @@ import time
 from .config import get_config
 from .callback_dispatcher import CallbackDispatcher, dispatch_callbacks
 from .protocol import decode_value, dumps_message, loads_message, new_id, pack_request
+from .rpc_timing import RpcTiming
 
 
 class CfquantError(RuntimeError):
@@ -155,7 +156,7 @@ class LTtxRpcClient(object):
                         pass
                 self._pending.clear()
 
-    def request(self, action, params=None, timeout=None, request_channel=None):
+    def request(self, action, params=None, timeout=None, request_channel=None, response_meta=None):
         effective_timeout = float(timeout or self.timeout)
         request_id = new_id("req")
         raw = pack_request(
@@ -167,6 +168,7 @@ class LTtxRpcClient(object):
             timeout=effective_timeout,
         )
         q = queue.Queue(maxsize=1)
+        timing = RpcTiming(response_meta, request_id)
         try:
             with self._lock:
                 self.start()
@@ -177,11 +179,13 @@ class LTtxRpcClient(object):
                 msg = q.get(timeout=effective_timeout)
             except queue.Empty:
                 raise CfquantTimeout("cfquant request timeout: %s" % action)
+            timing.received(msg)
             if not msg.get("ok"):
                 err = msg.get("error") or {}
                 raise CfquantError(err.get("message") or str(err))
-            return decode_value(msg.get("result"))
+            return timing.decode(msg.get("result"), decode_value)
         finally:
+            timing.finish()
             with self._pending_lock:
                 self._pending.pop(request_id, None)
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261014_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20261014_04">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -1138,6 +1138,7 @@
               </section>
               <section class="settings-section" data-settings-tab="qmt-log">
                 <h3>QMT 日志</h3>
+                <p class="settings-note">全局日志开关用于“跟随全局”的绑定。账号独立的开启或关闭设置，请在“绑定 → 编辑”中修改。</p>
                 <form id="qmtLogLanguageForm" class="api-serverbar">
                   <label class="toggle api-remote-toggle">
                     <input id="qmtLogEnabled" type="checkbox" checked>
@@ -2838,6 +2839,7 @@ else:
                           <tr><td><code>POST /api/cancel</code></td><td>撤单。</td></tr>
                           <tr><td><code>POST /api/data/full-tick</code></td><td>实时 Tick。</td></tr>
                           <tr><td><code>POST /api/data/market</code></td><td>K 线和行情数据。</td></tr>
+                          <tr><td><code>POST /api/data/market-ex</code></td><td><code>get_market_data_ex</code> 扩展行情，按证券返回 K 线数据。</td></tr>
                           <tr><td><code>POST /api/data/history/download</code></td><td>历史行情下载。</td></tr>
                           <tr><td><code>POST /api/data/financial</code></td><td>财务数据读取。</td></tr>
                           <tr><td><code>GET /api/callbacks</code></td><td>读取交易回调。</td></tr>
@@ -3007,6 +3009,26 @@ else:
           <div id="bindingQmtTradeProcessStatus" class="metric-note" role="status" aria-live="polite"></div>
           <small>高级模式必须填写与普通端不同的第二个 QMT，保存后系统会自动同步对应代码并写入身份配置。</small>
         </label>
+        <section id="bindingRuntimeSettings" class="binding-runtime-settings binding-dialog-wide-row" aria-labelledby="bindingRuntimeSettingsTitle">
+          <strong id="bindingRuntimeSettingsTitle">调度与日志</strong>
+          <div class="binding-runtime-grid">
+            <label class="field">
+              <span>QMT 调度间隔（ms）</span>
+              <input id="bindingQmtTimerInterval" name="qmt_timer_interval_ms" type="number" min="1" max="1000" step="1" value="1" required aria-describedby="bindingQmtTimerHint">
+              <small id="bindingQmtTimerHint">默认 1 ms，优先降低调度等待，可设 1–1000 ms。越小调度开销越高；实际精度取决于 QMT 和系统负载。</small>
+            </label>
+            <label class="field">
+              <span>QMT 桥接日志</span>
+              <select id="bindingQmtLogEnabled" name="qmt_log_enabled" aria-describedby="bindingQmtLogHint">
+                <option value="off">关闭（减少输出开销）</option>
+                <option value="on">开启（排查问题）</option>
+                <option value="inherit">跟随全局设置</option>
+              </select>
+              <small id="bindingQmtLogHint">控制此绑定的 cfquant 日志，不影响 QMT 客户端自身提示。新绑定默认关闭。</small>
+            </label>
+          </div>
+          <p class="metric-note">适用于通用、极致模式；独立市场入口沿用此绑定的设置。保存并同步策略后，按部署提示重新启动策略或 QMT 生效。</p>
+        </section>
         <details class="market-routing-panel binding-dialog-bleed wide" open>
           <summary class="market-routing-head">
             <div>
@@ -3223,6 +3245,6 @@ else:
   <script src="/api-tester.js?v=20260916_apikey_01"></script>
   <script src="/python-api.js?v=20260925_trading_dates_01"></script>
   <script src="/docs.js?v=20260925_data_docs_01"></script>
-  <script src="/app.js?v=web_20261014_01"></script>
+  <script src="/app.js?v=web_20261014_04"></script>
 </body>
 </html>

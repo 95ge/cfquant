@@ -66,7 +66,9 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             endpoint_name="normal",
             show=self.show,
             connect_timeout_ms=self.connect_timeout_ms,
-        ).start()
+        )
+        self.tx._log = self._log
+        self.tx.start()
         self.tx.start_txg(self.request_channel)
         self.recv_thread = threading.Thread(target=self._recv_loop)
         self.recv_thread.daemon = True
@@ -153,7 +155,9 @@ class PipeTradeBridge(TxTradeBridge):
             endpoint_name="trade",
             show=self.show,
             connect_timeout_ms=self.connect_timeout_ms,
-        ).start()
+        )
+        self.tx._log = self._log
+        self.tx.start()
         self.tx.start_txg(self.request_channel)
         self._log(
             "pipe trade bridge started pipe=%s request_channel=%s"

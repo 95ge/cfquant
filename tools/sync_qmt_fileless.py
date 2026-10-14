@@ -4,6 +4,13 @@ import ast
 from pathlib import Path
 import textwrap
 
+try:
+    from .sync_qmt_dispatch import updated_source as update_dispatch_source
+    from .sync_qmt_binding_settings import updated_source as update_binding_source
+except ImportError:
+    from sync_qmt_dispatch import updated_source as update_dispatch_source
+    from sync_qmt_binding_settings import updated_source as update_binding_source
+
 ROOT = Path(__file__).resolve().parents[1]
 BEGIN = '# BEGIN GENERATED PIPE RUNTIME\n'
 END = '# END GENERATED PIPE RUNTIME\n'
@@ -145,6 +152,9 @@ def updated_source(source, lite):
     # Removed functions leave large empty gaps in old generated entries.
     while '\n\n\n\n' in source:
         source = source.replace('\n\n\n\n', '\n\n\n')
+    if lite:
+        source = update_dispatch_source(source)
+    source = update_binding_source(source, lite)
     ast.parse(source, feature_version=(3, 6))
     return source
 

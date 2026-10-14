@@ -184,6 +184,7 @@ class NormalQmtBridge(TxTradeBridge):
         msg = loads_message(raw)
         if not msg or msg.get("type") != "request":
             return
+        msg["_received_monotonic"] = time.perf_counter()
         action = msg.get("action")
         if action == "cfquant.ping":
             self._send_response(msg, {"pong": True, "ts": time.time(), "request_channel": self.request_channel})
@@ -840,7 +841,7 @@ class NormalQmtBridge(TxTradeBridge):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
-        response = pack_response(msg.get("id"), ok=True, result=result)
+        response = pack_response(msg.get("id"), ok=True, result=result, meta=msg.get("_response_meta"))
         self.tx.push("response", response, client_id)
 
     def _send_error(self, msg, error):
@@ -851,7 +852,7 @@ class NormalQmtBridge(TxTradeBridge):
             "normal bridge send_error action=%s id=%s client_id=%s error=%s"
             % (msg.get("action"), msg.get("id"), client_id, error)
         )
-        response = pack_response(msg.get("id"), ok=False, error=error)
+        response = pack_response(msg.get("id"), ok=False, error=error, meta=msg.get("_response_meta"))
         self.tx.push("response", response, client_id)
 
     def publish_callback_event(self, event_name, obj):

@@ -58,7 +58,7 @@ NORMAL_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_NORMAL_PUMP_MAX_MS", "0
 TRADE_SLEEP_SECONDS = float(os.environ.get("CFQUANT_CTYPE_TRADE_SLEEP_SECONDS", "0.001"))
 TRADE_PUMP_MAX_COUNT = int(os.environ.get("CFQUANT_CTYPE_TRADE_PUMP_MAX_COUNT", "100"))
 TRADE_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_TRADE_PUMP_MAX_MS", "0"))
-TRADE_TIMER_INTERVAL_MS = int(os.environ.get("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "20"))
+TRADE_TIMER_INTERVAL_MS = int(os.environ.get("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "1"))
 
 
 def _entry_file_path():
@@ -209,11 +209,13 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
+    global TRADE_TIMER_INTERVAL_MS
     global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET, DEFAULT_ACCOUNT_ID, DEFAULT_ACCOUNT_TYPE
 
     path, data = _load_runtime_config()
     RUNTIME_CONFIG_PATH = path
     RUNTIME_CONFIG = data
+    TRADE_TIMER_INTERVAL_MS = _qmt_timer_interval(data)
     if not data:
         _write_runtime_log("cfquant ctypes runtime config not found")
         return
@@ -237,8 +239,6 @@ def _apply_runtime_config():
         RUNTIME_CHANNELS = channels
     if not os.environ.get("CFQUANT_QMT_LOG_LANGUAGE") and data.get("qmt_log_language"):
         os.environ["CFQUANT_QMT_LOG_LANGUAGE"] = str(data.get("qmt_log_language") or "zh")
-    if not os.environ.get("CFQUANT_QMT_LOG_ENABLED") and "qmt_log_enabled" in data:
-        os.environ["CFQUANT_QMT_LOG_ENABLED"] = "1" if _config_bool(data.get("qmt_log_enabled"), True) else "0"
     _write_runtime_log(
         "cfquant ctypes runtime config loaded path=%s bridge_id=%s pipe=%s"
         % (path, BRIDGE_ID, PIPE_NAME)
@@ -246,11 +246,38 @@ def _apply_runtime_config():
 
 
 _ensure_path()
+# BEGIN GENERATED BINDING SETTINGS
+_QMT_BOUND_LOG_ENABLED = None
+
+
+def get_log_enabled():
+    if _QMT_BOUND_LOG_ENABLED is not None:
+        return _QMT_BOUND_LOG_ENABLED
+    value = RUNTIME_CONFIG.get("qmt_log_enabled", os.environ.get("CFQUANT_QMT_LOG_ENABLED", "1"))
+    return _config_bool(value, True)
+
+
+def set_log_enabled(value):
+    global _QMT_BOUND_LOG_ENABLED
+    _QMT_BOUND_LOG_ENABLED = _config_bool(value, True)
+    return _QMT_BOUND_LOG_ENABLED
+
+
+def _qmt_timer_interval(data):
+    value = data.get("qmt_timer_interval_ms", os.environ.get("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "1"))
+    try:
+        if isinstance(value, bool) or str(value).strip() != str(int(value)):
+            return 1
+        value = int(value)
+        return value if 1 <= value <= 1000 else 1
+    except (TypeError, ValueError, OverflowError):
+        return 1
+# END GENERATED BINDING SETTINGS
+
 _apply_runtime_config()
 _write_runtime_log("cfquant ctypes entry executing file=%s sys_path_head=%s" % (_entry_file_path() or "<string>", sys.path[:5]))
 
 _logging_i18n = _install_logging_compat()
-get_log_enabled = _logging_i18n.get_log_enabled
 translate_log = _logging_i18n.translate_log
 
 try:
@@ -671,7 +698,8 @@ def stop(ContextInfo):
 
 def _publish_callback(event_name, obj):
     try:
-        _print_log("cfquant ctypes raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
+        if get_log_enabled():
+            _print_log("cfquant ctypes raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
         if _normal_bridge:
             _normal_bridge.publish_callback_event(event_name, obj)
         # Forward stock-order callbacks to the separate trade bridge so a

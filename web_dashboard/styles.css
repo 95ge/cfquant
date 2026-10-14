@@ -4102,6 +4102,7 @@ th.num .sort-header {
 
 .binding-dialog {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   width: min(1100px, 100%);
   max-height: calc(100vh - 36px);
   overflow: auto;
@@ -4339,6 +4340,7 @@ th.num .sort-header {
 }
 
 .binding-dialog-form {
+  min-width: 0;
   padding: 16px 18px 18px;
 }
 
@@ -4349,6 +4351,32 @@ th.num .sort-header {
 .binding-dialog-wide-row {
   grid-column: 1 / -1;
   align-self: start;
+}
+
+.binding-runtime-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.binding-runtime-settings.hidden {
+  display: none;
+}
+
+.binding-runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.binding-runtime-settings p {
+  margin: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .binding-dialog-bleed {
@@ -4598,6 +4626,19 @@ th.num .sort-header {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.api-endpoint .api-endpoint-label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.api-endpoint-label code {
+  font-size: 11px;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .api-workbench {
@@ -5871,6 +5912,7 @@ input[type="file"] {
 
 .api-form-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: end;
   gap: 8px;
 }
@@ -9592,8 +9634,9 @@ tr.order-row-updated td {
     grid-template-columns: 1fr;
   }
 
-  .binding-dialog-form {
-    grid-template-columns: 1fr;
+  .binding-dialog-form,
+  .binding-runtime-grid {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .market-routing-head,

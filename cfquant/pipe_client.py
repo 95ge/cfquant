@@ -12,6 +12,7 @@ from .pipe_transport import (
     normalize_pipe_name,
 )
 from .protocol import decode_value, dumps_message, loads_message, new_id, pack_request
+from .rpc_timing import RpcTiming
 
 
 class PipeRpcClient(object):
@@ -70,7 +71,7 @@ class PipeRpcClient(object):
             self._close_conns_locked()
             self._fail_pending("cfquant pipe client closed")
 
-    def request(self, action, params=None, timeout=None, request_channel=None):
+    def request(self, action, params=None, timeout=None, request_channel=None, response_meta=None):
         effective_timeout = float(timeout or self.timeout)
         request_id = new_id("req")
         raw = pack_request(
@@ -82,6 +83,7 @@ class PipeRpcClient(object):
             timeout=effective_timeout,
         )
         q = queue.Queue(maxsize=1)
+        timing = RpcTiming(response_meta, request_id)
         try:
             with self._lock:
                 self.start()
@@ -98,13 +100,15 @@ class PipeRpcClient(object):
                 from .client import CfquantTimeout
 
                 raise CfquantTimeout("cfquant pipe request timeout: %s" % action)
+            timing.received(msg)
             if not msg.get("ok"):
                 err = msg.get("error") or {}
                 from .client import CfquantError
 
                 raise CfquantError(err.get("message") or str(err))
-            return decode_value(msg.get("result"))
+            return timing.decode(msg.get("result"), decode_value)
         finally:
+            timing.finish()
             with self._pending_lock:
                 self._pending.pop(request_id, None)
 

@@ -80,7 +80,7 @@ def loads_message(raw):
         raw = raw.decode("utf-8", errors="replace")
     if not isinstance(raw, str):
         return None
-    if "|" in raw:
+    if not raw.startswith(MESSAGE_PREFIX) and "|" in raw:
         _, raw = raw.split("|", 1)
     if not raw.startswith(MESSAGE_PREFIX):
         return None
@@ -108,13 +108,19 @@ def pack_request(action, params=None, reply_channel=None, client_id=None, reques
 
 
 def pack_response(request_id, ok=True, result=None, error=None, meta=None):
+    started = time.perf_counter()
+    encoded = encode_value(result)
+    meta = dict(meta or {})
+    timing = meta.get("timing")
+    if isinstance(timing, dict) and isinstance(timing.get("qmt"), dict):
+        timing["qmt"]["encode_ms"] = round((time.perf_counter() - started) * 1000, 3)
     return dumps_message({
         "type": "response",
         "id": request_id,
         "ok": bool(ok),
-        "result": encode_value(result),
+        "result": encoded,
         "error": encode_error(error),
-        "meta": meta or {},
+        "meta": meta,
     })
 
 
@@ -220,17 +226,52 @@ def _clean_cell(value):
     return encode_value(value)
 
 
+def dataframe_numeric_rows(value):
+    """Bulk rows for plain numeric frames; None keeps pandas' other semantics."""
+    columns = getattr(value, "columns", None)
+    dtypes = getattr(value, "dtypes", None)
+    if columns is None or not len(columns) or dtypes is None or not getattr(columns, "is_unique", False):
+        return None
+    # Nullable, object and date-like columns need pandas' scalar boxing rules.
+    # Restrict this fast path so callers keep their existing null/date behavior.
+    for dtype in dtypes:
+        if (type(dtype).__module__.split(".", 1)[0] != "numpy"
+                or dtype.kind not in ("b", "i", "u", "f") or dtype.itemsize > 8):
+            return None
+    # Combining mixed numeric blocks before this cast can round large IDs.
+    return value.astype(object, copy=False).values.tolist()
+
+
 def _encode_dataframe(value):
     try:
-        raw_rows = list(value.itertuples(index=False, name=None))
+        # itertuples builds a Series per column, which is expensive for QMT's
+        # stock-by-date history frames. Cast BEFORE combining the blocks: using
+        # values directly can round int64/uint64 IDs in mixed float/int frames.
+        # astype also works with QMT's pandas 0.22 (which has no to_numpy).
+        raw_rows = value.astype(object, copy=False).values.tolist() if len(value.columns) else []
     except Exception:
         try:
-            raw_rows = value.values.tolist()
+            raw_rows = list(value.itertuples(index=False, name=None))
         except Exception:
-            raw_rows = []
+            try:
+                raw_rows = value.values.tolist()
+            except Exception:
+                raw_rows = []
     rows = []
     for row in raw_rows:
         rows.append([_clean_cell(v) for v in row])
+    # Thousands of date columns usually share one dtype. Formatting its name
+    # repeatedly can cost more than extracting the actual values.
+    dtype_flags = {}
+    object_columns = []
+    for name, dtype in getattr(value, "dtypes", {}).items():
+        is_object = dtype_flags.get(dtype)
+        if is_object is None:
+            dtype_name = str(dtype)
+            is_object = dtype_name == "object" or dtype_name.startswith(("Int", "UInt"))
+            dtype_flags[dtype] = is_object
+        if is_object:
+            object_columns.append(_encode_label(name))
     index_name = getattr(getattr(value, "index", None), "name", None)
     return {
         "__cf_type__": "dataframe",
@@ -238,8 +279,7 @@ def _encode_dataframe(value):
         "index": [_encode_label(i) for i in getattr(value, "index", [])],
         "data": rows,
         "index_name": _encode_label(index_name) if index_name is not None else None,
-        "object_columns": [_encode_label(name) for name, dtype in getattr(value, "dtypes", {}).items()
-                           if str(dtype) == "object" or str(dtype).startswith(("Int", "UInt"))],
+        "object_columns": object_columns,
     }
 
 
@@ -328,6 +368,13 @@ def decode_value(value):
                     parts[2] = tuple(parts[2])
                 dtype_descr.append(tuple(parts))
             dtype = np.dtype(dtype_descr)
+            # JSON turns each structured record tuple into a list. NumPy
+            # treats that list as another array dimension unless restored.
+            def record_tuples(items, dimensions):
+                if dimensions == 0:
+                    return tuple(items)
+                return [record_tuples(item, dimensions - 1) for item in items]
+            data = record_tuples(data, len(value.get("shape", [len(data)])))
         elif value.get("dtype"):
             try:
                 dtype = np.dtype(value.get("dtype"))

@@ -16,8 +16,8 @@ def open_test(page, frontend_url, entry):
     requests, errors = open_app(page, frontend_url)
     page.locator('#setupOverlay [data-open-tutorial]').click()
     page.evaluate('(id) => window.CfquantPythonReference.open(id)', entry)
-    page.locator('[data-python-test]').click()
-    panel = page.locator('.api-inline-test:not([hidden])')
+    page.locator('#tutorialReader [data-python-test]').click()
+    panel = page.locator('#tutorialReader .api-inline-test:not([hidden])')
     expect(panel).to_be_visible()
     assert all(method == 'GET' for method, path in requests)
     return panel, requests, errors
@@ -36,7 +36,7 @@ def test_tutorial_query_results_copy_reset_and_error(page, frontend_url):
     def reply(route):
         sent.append(route.request.post_data_json)
         route.fulfill(json={'ok': True, 'data': {'result': {'000001.SZ': {'lastPrice': 11.7}}, 'latency_ms': 12.5}})
-    page.route('**/api/data/full-tick', reply)
+    page.route('**/api/python/xtdata', reply)
     panel.locator('[name="code_list"]').fill('000001.SZ')
     panel.locator('[type="submit"]').click()
     expect(panel.locator('[data-test-status]')).to_have_text('请求完成')
@@ -51,7 +51,7 @@ def test_tutorial_query_results_copy_reset_and_error(page, frontend_url):
     expect(panel.locator('[data-test-output]')).to_have_text('')
     panel.locator('[data-test-reset]').click()
     expect(panel.locator('[name="code_list"]')).to_have_value('000001.SZ,600000.SH')
-    page.route('**/api/data/full-tick', lambda route: route.fulfill(status=401, json={'ok': False, 'error': 'invalid credentials'}))
+    page.route('**/api/python/xtdata', lambda route: route.fulfill(status=401, json={'ok': False, 'error': 'invalid credentials'}))
     panel.locator('[type="submit"]').click()
     expect(panel.locator('[data-test-status]')).to_have_text('请求失败')
     expect(panel.locator('[data-test-output]')).to_contain_text('invalid credentials')
@@ -72,7 +72,7 @@ def test_inline_api_tester_prefers_api_key_when_web_auth_enabled(page, frontend_
         sent_headers.append(route.request.headers)
         route.fulfill(json={'ok': True, 'data': {'result': {'000001.SZ': {'lastPrice': 11.7}}}})
 
-    page.route('**/api/data/full-tick', reply)
+    page.route('**/api/python/xtdata', reply)
     panel.locator('[name="code_list"]').fill('000001.SZ')
     panel.locator('[type="submit"]').click()
     expect(panel.locator('[data-test-output]')).to_contain_text('lastPrice')
@@ -179,8 +179,8 @@ def test_stop_waiting_does_not_resubmit_and_result_survives_navigation(page, fro
     pending[0].abort()
     page.evaluate("window.CfquantPythonReference.open('xtdata.get_full_tick')")
     page.evaluate("window.CfquantPythonReference.open('cftrader.order_stock_batch')")
-    page.locator('[data-python-test]').click()
-    expect(page.locator('[data-test-output]')).to_contain_text('避免重复提交')
+    page.locator('#tutorialReader [data-python-test]').click()
+    expect(page.locator('#tutorialReader [data-test-output]')).to_contain_text('避免重复提交')
     assert len(pending) == 1
     assert errors == []
 
@@ -197,7 +197,7 @@ def test_callback_view_filters_original_events_and_types_are_not_executable(page
     expect(panel.locator('[data-test-output]')).to_contain_text('1001')
     assert 'event_name=trader%3Aon_stock_order' in pending[0]
     page.evaluate("window.CfquantPythonReference.open('type.XtAsset')")
-    expect(page.locator('[data-python-test]')).to_have_count(0)
+    expect(page.locator('#tutorialReader [data-python-test]')).to_have_count(0)
     assert errors == []
 
 
@@ -207,6 +207,9 @@ def test_main_api_batch_testing_summary_and_clear(page, frontend_url):
     page.mouse.move(page.viewport_size['width'] - 1, page.viewport_size['height'] - 1)
     page.keyboard.press('Escape')
     page.locator('.nav-item[data-view="api"]').click()
+    group = page.locator('.api-group').filter(has=page.locator('[data-endpoint-id="cftrader.order_stock_batch"]'))
+    if group.locator('.api-group-head').get_attribute('aria-expanded') != 'true':
+        group.locator('.api-group-head').click()
     page.locator('[data-endpoint-id="cftrader.order_stock_batch"]').click()
     sent = []
 
@@ -233,4 +236,96 @@ def test_main_api_batch_testing_summary_and_clear(page, frontend_url):
     page.locator('#apiClearResultBtn').click()
     expect(page.locator('#apiResponseBox')).to_have_text('')
     expect(page.locator('#apiResultSummary')).to_have_text('')
+    assert errors == []
+
+
+def test_main_market_timing_success_timeout_and_old_bridge(page, frontend_url):
+    requests, errors = open_app(page, frontend_url, setup_required=False)
+    page.locator('#closeOnboardingBtn').click()
+    page.mouse.move(page.viewport_size['width'] - 1, page.viewport_size['height'] - 1)
+    page.keyboard.press('Escape')
+    page.locator('.nav-item[data-view="api"]').click()
+    page.locator('[data-api-group="data"]').click()
+    page.locator('[data-endpoint-id="full_tick"]').click()
+    replies = [{
+        'ok': True, 'data': {'latency_ms': 500, 'result': {'000001.SZ': {'lastPrice': 11.3}},
+        'timing': {'qmt': {'available': True, 'queue_ms': 400, 'native_ms': 70,
+                          'convert_ms': 5, 'encode_ms': 4, 'fallback_used': True},
+                   'rpc': {'wait_ms': 495, 'decode_ms': 2}, 'web': {'result_convert_ms': 3}}}},
+        {'ok': False, 'error': 'cfquant pipe request timeout', 'status': 400,
+         'timing': {'qmt': {'available': False, 'reason': 'no_response'}, 'rpc': {'wait_ms': 12000}}},
+        {'ok': True, 'data': {'latency_ms': 80, 'result': {},
+         'timing': {'qmt': {'available': False, 'reason': 'bridge_timing_unavailable'}}}},
+    ]
+    page.route('**/api/data/full-tick', lambda route: route.fulfill(json=replies.pop(0)))
+    form = page.locator('#apiForm')
+    form.locator('[type="submit"]').click()
+    timing = page.locator('#apiResponseLatencyMeta')
+    expect(timing).to_contain_text('QMT 原生取数 70.0 ms')
+    expect(timing).to_contain_text('兼容格式转换 5.00 ms')
+    expect(timing).to_contain_text('Web 结果转换 3.00 ms')
+    expect(timing).to_contain_text('旧行情接口已回退到扩展接口')
+    assert page.locator('.api-workbench').evaluate('node => node.scrollWidth <= node.clientWidth')
+    page.locator('#apiResponseLatency').scroll_into_view_if_needed()
+    screenshot(page, 'market-timing')
+    form.locator('[type="submit"]').click()
+    expect(timing).to_contain_text('QMT 耗时未取得（未收到回包）')
+    expect(timing).not_to_contain_text('QMT 原生取数')
+    form.locator('[type="submit"]').click()
+    expect(timing).to_contain_text('QMT 耗时未取得（桥接脚本未提供）')
+    assert errors == []
+
+
+def test_market_ex_switch_keeps_query_and_displays_response_timing(page, frontend_url):
+    requests, errors = open_app(page, frontend_url, setup_required=False)
+    page.locator('#closeOnboardingBtn').click()
+    page.mouse.move(page.viewport_size['width'] - 1, page.viewport_size['height'] - 1)
+    page.keyboard.press('Escape')
+    page.locator('.nav-item[data-view="api"]').click()
+    page.locator('[data-api-group="data"]').click()
+    entry = page.locator('[data-endpoint-id="market_data_ex"]')
+    expect(entry).to_contain_text('get_market_data_ex')
+    page.locator('[data-endpoint-id="market_data"]').click()
+    form = page.locator('#apiForm')
+    fields = {'field_list': 'open,close,volume', 'stock_list': '000001.SZ,600000.SH',
+              'start_time': '20260101', 'end_time': '20261014', 'count': '20', 'timeout': '15'}
+    for name, value in fields.items():
+        form.locator('[name="%s"]' % name).fill(value)
+    form.locator('[name="period"]').fill('1d')
+    form.locator('[name="fill_data"]').fill('0')
+    page.locator('#apiResponseBox').evaluate("node => node.textContent = 'old response'")
+    before = page.evaluate('currentApiRequest().body')
+    form.locator('[data-market-variant="market_data_ex"]').click()
+    expect(page.locator('#apiTitle')).to_contain_text('get_market_data_ex')
+    expect(page.locator('#apiRoute')).to_have_text('POST /api/data/market-ex')
+    expect(page.locator('#apiResponseBox')).to_have_text('')
+    assert page.evaluate('currentApiRequest().body') == before
+    pending = []
+    page.route('**/api/data/market-ex', lambda route: pending.append(route))
+    form.locator('[type="submit"]').click()
+    expect(form.locator('[type="submit"]')).to_be_disabled()
+    expect(form.locator('[data-market-variant]')).to_be_disabled()
+    page.wait_for_function("state.apiDebugBusy")
+    assert len(pending) == 1
+    assert pending[0].request.post_data_json == before
+    assert before['stock_list'] == ['000001.SZ', '600000.SH']
+    assert before['field_list'] == ['open', 'close', 'volume']
+    assert before['count'] == 20 and before['fill_data'] is False
+    pending[0].fulfill(json={'ok': True, 'data': {'latency_ms': 85, 'result': {
+        '000001.SZ': {'20261014': {'open': 11.0, 'close': 11.5, 'volume': 120000}}},
+        'timing': {'qmt': {'available': True, 'queue_ms': 20, 'native_ms': 5,
+                          'convert_ms': 0, 'encode_ms': 3, 'fallback_used': False},
+                   'rpc': {'wait_ms': 80, 'decode_ms': 2}, 'web': {'result_convert_ms': 1}}}})
+    expect(page.locator('#apiResponseBox')).to_contain_text('120000')
+    expect(page.locator('#apiResponseLatencyMeta')).to_contain_text('QMT 原生取数 5.00 ms')
+    expect(page.locator('#apiResponseLatencyMeta')).to_contain_text('QMT 结果编码 3.00 ms')
+    expect(page.locator('#apiResponseLatencyMeta')).not_to_contain_text('旧行情接口已回退')
+    expect(form.locator('[data-market-variant]')).to_be_enabled()
+    assert page.locator('.api-workbench').evaluate('node => node.scrollWidth <= node.clientWidth')
+    assert page.locator('#apiEndpointList').evaluate('node => node.scrollWidth <= node.clientWidth')
+    screenshot(page, 'market-ex')
+    form.locator('[data-market-variant="market_data"]').click()
+    expect(page.locator('#apiRoute')).to_have_text('POST /api/data/market')
+    assert page.evaluate('currentApiRequest().body') == before
+    assert all(method == 'GET' for method, path in requests)
     assert errors == []

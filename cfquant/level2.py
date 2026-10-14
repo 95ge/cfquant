@@ -1,5 +1,7 @@
 """Level2 data adapters shared by the SDK and QMT bridges."""
 
+from .protocol import dataframe_numeric_rows
+
 L2_PERIODS = (
     "l2quote", "l2quoteaux", "l2order", "l2transaction",
     "l2transactioncount", "l2orderqueue",
@@ -93,7 +95,11 @@ def quote_plain(value):
 
 def quote_records(value):
     if hasattr(value, "columns") and hasattr(value, "to_dict"):
-        # DataFrame.values can round large integer IDs in a mixed float/int table.
+        rows = dataframe_numeric_rows(value)
+        if rows is not None:
+            columns = list(value.columns)
+            return quote_plain([dict(zip(columns, row)) for row in rows])
+        # Keep pandas' scalar boxing for nullable, date-like and object fields.
         return quote_plain(value.to_dict("records"))
     names = getattr(getattr(value, "dtype", None), "names", None)
     if names:

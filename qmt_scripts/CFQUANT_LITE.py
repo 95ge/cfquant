@@ -698,8 +698,8 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.51"
-LITE_ENTRY_VERSION = "lite_20260828_01"
+CORE_VERSION = "0.2.52"
+LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
 _ORDER_STATUS_FIELD_NAMES = (
@@ -1203,6 +1203,22 @@ def normalize_json_value(value, path="message", _active=None):
         active.remove(identity)
 
 
+def dataframe_numeric_rows(value):
+    """Bulk rows for plain numeric frames; None keeps pandas' other semantics."""
+    columns = getattr(value, "columns", None)
+    dtypes = getattr(value, "dtypes", None)
+    if columns is None or not len(columns) or dtypes is None or not getattr(columns, "is_unique", False):
+        return None
+    # Nullable, object and date-like columns need pandas' scalar boxing rules.
+    # Restrict this fast path so callers keep their existing null/date behavior.
+    for dtype in dtypes:
+        if (type(dtype).__module__.split(".", 1)[0] != "numpy"
+                or dtype.kind not in ("b", "i", "u", "f") or dtype.itemsize > 8):
+            return None
+    # Combining mixed numeric blocks before this cast can round large IDs.
+    return value.astype(object, copy=False).values.tolist()
+
+
 def dumps_message(payload):
     data = dict(payload)
     data.setdefault("protocol", "cfquant")
@@ -1216,7 +1232,7 @@ def loads_message(raw):
         raw = raw.decode("utf-8", errors="replace")
     if not isinstance(raw, str):
         return None
-    if "|" in raw:
+    if not raw.startswith(MESSAGE_PREFIX) and "|" in raw:
         _, raw = raw.split("|", 1)
     if not raw.startswith(MESSAGE_PREFIX):
         return None
@@ -1244,13 +1260,19 @@ def pack_request(action, params=None, reply_channel=None, client_id=None, reques
 
 
 def pack_response(request_id, ok=True, result=None, error=None, meta=None):
+    started = time.perf_counter()
+    encoded = encode_value(result)
+    meta = dict(meta or {})
+    timing = meta.get("timing")
+    if isinstance(timing, dict) and isinstance(timing.get("qmt"), dict):
+        timing["qmt"]["encode_ms"] = round((time.perf_counter() - started) * 1000, 3)
     return dumps_message({
         "type": "response",
         "id": request_id,
         "ok": bool(ok),
-        "result": encode_value(result),
+        "result": encoded,
         "error": encode_error(error),
-        "meta": meta or {},
+        "meta": meta,
     })
 
 
@@ -1348,15 +1370,34 @@ def _clean_cell(value):
 
 def _encode_dataframe(value):
     try:
-        raw_rows = list(value.itertuples(index=False, name=None))
+        # itertuples builds a Series per column, which is expensive for QMT's
+        # stock-by-date history frames. Cast BEFORE combining the blocks: using
+        # values directly can round int64/uint64 IDs in mixed float/int frames.
+        # astype also works with QMT's pandas 0.22 (which has no to_numpy).
+        raw_rows = value.astype(object, copy=False).values.tolist() if len(value.columns) else []
     except Exception:
         try:
-            raw_rows = value.values.tolist()
+            raw_rows = list(value.itertuples(index=False, name=None))
         except Exception:
-            raw_rows = []
+            try:
+                raw_rows = value.values.tolist()
+            except Exception:
+                raw_rows = []
     rows = []
     for row in raw_rows:
         rows.append([_clean_cell(v) for v in row])
+    # Thousands of date columns usually share one dtype. Formatting its name
+    # repeatedly can cost more than extracting the actual values.
+    dtype_flags = {}
+    object_columns = []
+    for name, dtype in getattr(value, "dtypes", {}).items():
+        is_object = dtype_flags.get(dtype)
+        if is_object is None:
+            dtype_name = str(dtype)
+            is_object = dtype_name == "object" or dtype_name.startswith(("Int", "UInt"))
+            dtype_flags[dtype] = is_object
+        if is_object:
+            object_columns.append(_encode_label(name))
     index_name = getattr(getattr(value, "index", None), "name", None)
     return {
         "__cf_type__": "dataframe",
@@ -1364,8 +1405,7 @@ def _encode_dataframe(value):
         "index": [_encode_label(i) for i in getattr(value, "index", [])],
         "data": rows,
         "index_name": _encode_label(index_name) if index_name is not None else None,
-        "object_columns": [_encode_label(name) for name, dtype in getattr(value, "dtypes", {}).items()
-                           if str(dtype) == "object" or str(dtype).startswith(("Int", "UInt"))],
+        "object_columns": object_columns,
     }
 
 
@@ -1415,9 +1455,65 @@ def decode_value(value):
     value_type = value.get("__cf_type__")
     if value_type == "bytes":
         return base64.b64decode(value.get("data", ""))
-    if value_type in ("dataframe", "series"):
-        return value
-
+    if value_type == "tuple":
+        return tuple(decode_value(item) for item in value.get("data", []))
+    if value_type == "dataframe":
+        import pandas as pd
+        columns = [decode_value(item) for item in value.get("columns", [])]
+        rows = [[decode_value(cell) for cell in row] for row in value.get("data", [])]
+        object_columns = [decode_value(item) for item in value.get("object_columns", [])]
+        if object_columns and columns:
+            # Construct columns independently, preserving duplicate field labels too.
+            df = pd.concat([pd.Series([row[i] for row in rows], dtype=object if name in object_columns else None)
+                            for i, name in enumerate(columns)], axis=1)
+            df.columns = columns
+        else:
+            df = pd.DataFrame(rows, columns=columns)
+        index = [decode_value(item) for item in value.get("index", [])]
+        if len(index) == len(df):
+            df.index = index
+        if value.get("index_name") is not None:
+            df.index.name = decode_value(value.get("index_name"))
+        return df
+    if value_type == "series":
+        import pandas as pd
+        return pd.Series(
+            [decode_value(v) for v in value.get("data", [])],
+            index=[decode_value(item) for item in value.get("index", [])],
+            name=decode_value(value.get("name")),
+        )
+    if value_type == "ndarray":
+        import numpy as np
+        data = decode_value(value.get("data"))
+        dtype = None
+        if value.get("dtype_descr"):
+            dtype_descr = []
+            for item in value.get("dtype_descr", []):
+                parts = list(item)
+                if len(parts) >= 3 and isinstance(parts[2], list):
+                    parts[2] = tuple(parts[2])
+                dtype_descr.append(tuple(parts))
+            dtype = np.dtype(dtype_descr)
+            # JSON turns each structured record tuple into a list. NumPy
+            # treats that list as another array dimension unless restored.
+            def record_tuples(items, dimensions):
+                if dimensions == 0:
+                    return tuple(items)
+                return [record_tuples(item, dimensions - 1) for item in items]
+            data = record_tuples(data, len(value.get("shape", [len(data)])))
+        elif value.get("dtype"):
+            try:
+                dtype = np.dtype(value.get("dtype"))
+            except Exception:
+                dtype = None
+        result = np.asarray(data, dtype=dtype)
+        shape = value.get("shape")
+        if shape is not None:
+            try:
+                result = result.reshape(tuple(shape))
+            except Exception:
+                pass
+        return result
     if value_type == "object":
         return SimpleObject(**decode_value(value.get("attrs", {})))
     return {k: decode_value(v) for k, v in value.items()}
@@ -1794,7 +1890,11 @@ def quote_plain(value):
 
 def quote_records(value):
     if hasattr(value, "columns") and hasattr(value, "to_dict"):
-        # DataFrame.values can round large integer IDs in a mixed float/int table.
+        rows = dataframe_numeric_rows(value)
+        if rows is not None:
+            columns = list(value.columns)
+            return quote_plain([dict(zip(columns, row)) for row in rows])
+        # Keep pandas' scalar boxing for nullable, date-like and object fields.
         return quote_plain(value.to_dict("records"))
     names = getattr(getattr(value, "dtype", None), "names", None)
     if names:
@@ -2055,15 +2155,16 @@ class TxTradeBridge(object):
         msg = loads_message(raw)
         if not msg or msg.get("type") != "request":
             return
+        msg["_received_monotonic"] = time.perf_counter()
         request_id = msg.get("id")
         action = msg.get("action")
         client_id = msg.get("client_id") or msg.get("reply_channel")
         try:
             result = self._dispatch(action, msg.get("params") or {}, msg)
-            response = pack_response(request_id, ok=True, result=result)
+            response = pack_response(request_id, ok=True, result=result, meta=msg.get("_response_meta"))
             self._log("tx trade response_ready action=%s id=%s" % (action, request_id))
         except Exception as e:
-            response = pack_response(request_id, ok=False, error=e)
+            response = pack_response(request_id, ok=False, error=e, meta=msg.get("_response_meta"))
             self._log("tx trade request_error action=%s id=%s error=%s" % (action, request_id, e))
         if client_id:
             self.tx.push("response", response, client_id)
@@ -2073,6 +2174,8 @@ class TxTradeBridge(object):
             )
 
     def _dispatch(self, action, params, msg):
+        if action in ("xtdata.get_market_data", "xtdata.get_market_data_ex", "xtdata.get_full_tick"):
+            return self._dispatch_timed_market_data(action, params, msg)
         if action == "xttrader.get_hkt_exchange_rate":
             return query_connect_exchange_rate(self, params)
         if action in CFTRADER_BATCH_ORDER_ACTIONS:
@@ -2095,7 +2198,7 @@ class TxTradeBridge(object):
         if action == "cfquant.set_log_enabled":
             return self._set_log_enabled(params)
         if action == "cfquant.get_log_enabled":
-            return {"enabled": get_log_enabled()}
+            return {"enabled": self._get_log_enabled()}
         if action == "cfquant.cleanup_qmt_logs":
             return self._cleanup_qmt_userdata_logs(params)
         if action == "cfquant.query_info":
@@ -2126,12 +2229,6 @@ class TxTradeBridge(object):
             return self._cancel_order_stock_sysid(params)
         if action == "xttrader.cancel_order_stock_sysid_async":
             return self._cancel_order_stock_sysid_async(params, msg)
-        if action == "xtdata.get_market_data":
-            return self._get_market_data(params)
-        if action == "xtdata.get_market_data_ex":
-            return self._get_market_data_ex(params)
-        if action == "xtdata.get_full_tick":
-            return self.context.get_full_tick(params.get("code_list", []))
         if action == "xtdata.get_local_data":
             return self._get_local_data(params)
         if action == "xtdata.download_history_data":
@@ -2179,7 +2276,7 @@ class TxTradeBridge(object):
             "runtime": runtime,
             "account_subscribers": self._account_subscriber_status(),
             "log_language": get_log_language(),
-            "log_enabled": get_log_enabled(),
+            "log_enabled": self._get_log_enabled(),
             "context_ready": self.context is not None,
             "tx_ready": self.tx is not None,
             "ts": time.time(),
@@ -2276,15 +2373,22 @@ class TxTradeBridge(object):
         self._log("QMT日志语言已切换为:%s" % ("中文" if lang == "zh" else "English"))
         return {"language": lang}
 
+    def _get_log_enabled(self):
+        getter = self.globals_dict.get("get_log_enabled")
+        if callable(getter):
+            return bool(getter())
+        return get_log_enabled()
+
     def _set_log_enabled(self, params):
         params = params or {}
         if "enabled" in params:
             value = params.get("enabled")
         else:
             value = params.get("show")
-        enabled = set_log_enabled(value)
+        setter = self.globals_dict.get("set_log_enabled") or set_log_enabled
+        enabled = setter(value)
         self.show = True
-        self._log("QMT log output enabled=%s" % ("1" if enabled else "0"), force=True)
+        self._log("QMT log output enabled=%s" % ("1" if enabled else "0"))
         return {"enabled": enabled}
 
     def _cleanup_qmt_userdata_logs(self, params):
@@ -3994,6 +4098,54 @@ class TxTradeBridge(object):
                     break
         return data
 
+    def _dispatch_timed_market_data(self, action, params, msg):
+        started = time.perf_counter()
+        received = msg.get("_received_monotonic")
+        timing = {
+            "available": True,
+            "queue_ms": round(max(0.0, started - received) * 1000, 3) if received is not None else None,
+            "native_ms": 0.0, "convert_ms": 0.0,
+            "native_calls": [], "fallback_used": False,
+        }
+        msg["_response_meta"] = {"timing": {"qmt": timing}}
+        try:
+            if action == "xtdata.get_full_tick":
+                return self._timed_market_call(timing, "get_full_tick", self.context.get_full_tick,
+                                               params.get("code_list", []))
+            if action == "xtdata.get_market_data_ex":
+                return self._get_market_data_ex(params, timing=timing)
+            return self._get_market_data(params, timing=timing)
+        finally:
+            timing["execute_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            self._log(
+                "market_timing action=%s id=%s queue_ms=%s native_ms=%.3f convert_ms=%.3f execute_ms=%.3f fallback=%s"
+                % (action, msg.get("id"), timing["queue_ms"], timing["native_ms"],
+                   timing["convert_ms"], timing["execute_ms"], timing["fallback_used"])
+            )
+
+    def _timed_market_call(self, timing, name, func, *args):
+        if timing is None:
+            return func(*args)
+        started = time.perf_counter()
+        succeeded = False
+        try:
+            result = func(*args)
+            succeeded = True
+            return result
+        finally:
+            elapsed = (time.perf_counter() - started) * 1000
+            timing["native_ms"] = round(timing["native_ms"] + elapsed, 3)
+            timing["native_calls"].append({"method": name, "elapsed_ms": round(elapsed, 3), "ok": succeeded})
+
+    def _legacy_market_result(self, result, params, timing):
+        started = time.perf_counter()
+        try:
+            return market_data_legacy_shape(result, params.get("period", "1d"),
+                                            params.get("field_list", []), params.get("stock_list", []))
+        finally:
+            if timing is not None:
+                timing["convert_ms"] = round(timing["convert_ms"] + (time.perf_counter() - started) * 1000, 3)
+
     def _dispatch_xttrader_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
         if method in SMT_ASYNC_ARGUMENT_COUNTS:
@@ -4220,25 +4372,18 @@ class TxTradeBridge(object):
         ])
         return self._call_variants(func, variants)
 
-    def _get_market_data(self, params):
+    def _get_market_data(self, params, timing=None):
         if params.get("period") in L2_PERIODS:
-            result = self._get_market_data_ex(params)
-            return market_data_legacy_shape(
-                result,
-                params.get("period", "1d"),
-                params.get("field_list", []),
-                params.get("stock_list", []),
-            )
+            result = self._get_market_data_ex(params, timing=timing)
+            return self._legacy_market_result(result, params, timing)
         func = self._get_callable("get_market_data")
         if not func:
-            result = self._get_market_data_ex(params)
-            return market_data_legacy_shape(
-                result,
-                params.get("period", "1d"),
-                params.get("field_list", []),
-                params.get("stock_list", []),
-            )
-        result = func(
+            if timing is not None:
+                timing["fallback_used"] = True
+            result = self._get_market_data_ex(params, timing=timing)
+            return self._legacy_market_result(result, params, timing)
+        result = self._timed_market_call(
+            timing, "get_market_data", func,
             params.get("field_list", []),
             params.get("stock_list", []),
             params.get("start_time", ""),
@@ -4249,16 +4394,18 @@ class TxTradeBridge(object):
             params.get("count", -1),
         )
         if market_data_result_needs_fallback(result):
-            result = self._get_market_data_ex(params)
-            return market_data_legacy_shape(result, params.get("period", "1d"),
-                                             params.get("field_list", []), params.get("stock_list", []))
+            if timing is not None:
+                timing["fallback_used"] = True
+            result = self._get_market_data_ex(params, timing=timing)
+            return self._legacy_market_result(result, params, timing)
         return result
 
-    def _get_market_data_ex(self, params):
+    def _get_market_data_ex(self, params, timing=None):
         func = self._get_callable("get_market_data_ex")
         if not func:
             raise NotImplementedError("get_market_data_ex not found")
-        return func(
+        return self._timed_market_call(
+            timing, "get_market_data_ex", func,
             params.get("field_list", []),
             params.get("stock_list", []),
             params.get("period", "1d"),
@@ -5454,7 +5601,7 @@ class TxTradeBridge(object):
         return ""
 
     def _log(self, msg, force=False):
-        if self.show and (force or get_log_enabled()):
+        if self.show and (force or self._get_log_enabled()):
             print(translate_log(msg))
 
 
@@ -5513,6 +5660,7 @@ class NormalQmtBridge(TxTradeBridge):
         schedule_timer=True,
         pump_max_count=20,
         pump_max_ms=0,
+        dispatch_on_qmt_thread=False,
     ):
         super(NormalQmtBridge, self).__init__(
             context,
@@ -5533,6 +5681,7 @@ class NormalQmtBridge(TxTradeBridge):
         self.worker_source_lock = threading.Lock()
         self.pump_max_count = int(pump_max_count)
         self.pump_max_ms = float(pump_max_ms)
+        self.dispatch_on_qmt_thread = bool(dispatch_on_qmt_thread)
         self.coalesce_lock = threading.RLock()
         self.coalesced_requests = {}
         self.coalesce_join_count = 0
@@ -5568,10 +5717,20 @@ class NormalQmtBridge(TxTradeBridge):
 
     def set_context(self, context):
         self.context = context
-        self._start_worker_thread(context)
+        if self.account_id:
+            self._set_context_account(self.account_id, self.account_type)
+        self._enable_auto_trade_callback()
+        if self.dispatch_on_qmt_thread:
+            self._log("normal bridge QMT-thread dispatch enabled")
+        else:
+            self._start_worker_thread(context)
         if self.schedule_timer:
             self._schedule_timer()
-        self._log("normal bridge worker is released by quote/timer/handlebar callbacks")
+        if self.dispatch_on_qmt_thread:
+            dispatch_source = "QMT timer/handlebar callbacks" if self.schedule_timer else "QMT caller thread callbacks"
+            self._log("normal bridge requests are consumed by %s" % dispatch_source)
+        else:
+            self._log("normal bridge worker is released by quote/timer/handlebar callbacks")
         self._log("normal bridge context ready")
         self._publish_runtime_report("context_ready")
 
@@ -5602,6 +5761,7 @@ class NormalQmtBridge(TxTradeBridge):
         msg = loads_message(raw)
         if not msg or msg.get("type") != "request":
             return
+        msg["_received_monotonic"] = time.perf_counter()
         action = msg.get("action")
         if action == "cfquant.ping":
             self._send_response(msg, {"pong": True, "ts": time.time(), "request_channel": self.request_channel})
@@ -5756,10 +5916,15 @@ class NormalQmtBridge(TxTradeBridge):
         return "%s|%s" % (action, params_key)
 
     def pump(self):
+        if self.dispatch_on_qmt_thread:
+            return self._drain_requests("pump")
         self._release_worker("pump")
         return self.request_queue.qsize()
 
     def on_timer(self, *args, **kwargs):
+        if self.dispatch_on_qmt_thread:
+            self._drain_requests("timer")
+            return
         self._release_worker("timer")
 
     def _release_worker(self, source):
@@ -5881,7 +6046,7 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_single_request(self, source, msg, received_at):
         try:
-            if getattr(self, "dispatch_on_qmt_thread", False) and msg.get("action") == "xttrader.order_stock":
+            if self.dispatch_on_qmt_thread and msg.get("action") == "xttrader.order_stock":
                 self._defer_sync_order_response(msg)
                 return
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
@@ -5957,7 +6122,7 @@ class NormalQmtBridge(TxTradeBridge):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
-        response = pack_response(msg.get("id"), ok=True, result=result)
+        response = pack_response(msg.get("id"), ok=True, result=result, meta=msg.get("_response_meta"))
         self.tx.push("response", response, client_id)
 
     def _send_error(self, msg, error):
@@ -5968,7 +6133,7 @@ class NormalQmtBridge(TxTradeBridge):
             "normal bridge send_error action=%s id=%s client_id=%s error=%s"
             % (msg.get("action"), msg.get("id"), client_id, error)
         )
-        response = pack_response(msg.get("id"), ok=False, error=error)
+        response = pack_response(msg.get("id"), ok=False, error=error, meta=msg.get("_response_meta"))
         self.tx.push("response", response, client_id)
 
     def publish_callback_event(self, event_name, obj):
@@ -6280,6 +6445,14 @@ class NormalQmtBridge(TxTradeBridge):
             "schedule_timer": self.schedule_timer,
             "pump_max_count": self.pump_max_count,
             "pump_max_ms": self.pump_max_ms,
+            "dispatch_on_qmt_thread": self.dispatch_on_qmt_thread,
+            "dispatch_thread": (
+                "qmt_timer_or_handlebar"
+                if self.dispatch_on_qmt_thread and self.schedule_timer
+                else "qmt_caller_thread"
+                if self.dispatch_on_qmt_thread
+                else "worker"
+            ),
             "coalesced_group_count": coalesced_group_count,
             "coalesced_waiter_count": coalesced_waiters,
             "coalesce_join_count": self.coalesce_join_count,
@@ -6407,6 +6580,7 @@ def start_normal_bridge(
     schedule_timer=True,
     pump_max_count=20,
     pump_max_ms=0,
+    dispatch_on_qmt_thread=False,
 ):
     import sys
 
@@ -6428,6 +6602,7 @@ def start_normal_bridge(
         schedule_timer=schedule_timer,
         pump_max_count=pump_max_count,
         pump_max_ms=pump_max_ms,
+        dispatch_on_qmt_thread=dispatch_on_qmt_thread,
     ).start()
 
 DEFAULT_PIPE_NAME = os.environ.get("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub")
@@ -7003,6 +7178,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         schedule_timer=True,
         pump_max_count=20,
         pump_max_ms=0,
+        dispatch_on_qmt_thread=False,
         connect_timeout_ms=3000,
     ):
         super(PipeNormalQmtBridge, self).__init__(
@@ -7019,9 +7195,10 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             schedule_timer=schedule_timer,
             pump_max_count=pump_max_count,
             pump_max_ms=pump_max_ms,
+            dispatch_on_qmt_thread=dispatch_on_qmt_thread,
         )
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
-        self.request_channels = request_channels or [request_channel]
+        self.request_channels = list(request_channels or [request_channel])
         self.connect_timeout_ms = int(connect_timeout_ms)
 
     def start(self):
@@ -7031,6 +7208,8 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         if self.running:
             return self
         self.running = True
+        if not self.started_at:
+            self.started_at = time.time()
         self.tx = PipeTxClient(
             pipe_name=self.pipe_name,
             request_channel=self.request_channel,
@@ -7039,7 +7218,9 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             endpoint_name="normal",
             show=self.show,
             connect_timeout_ms=self.connect_timeout_ms,
-        ).start()
+        )
+        self.tx._log = self._log
+        self.tx.start()
         self.tx.start_txg(self.request_channel)
         self.recv_thread = threading.Thread(target=self._recv_loop)
         self.recv_thread.daemon = True
@@ -7048,6 +7229,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             "pipe normal bridge started pipe=%s request_channel=%s"
             % (self.pipe_name, self.request_channel)
         )
+        self._publish_runtime_report("start")
         return self
 
     def close(self):
@@ -7114,6 +7296,8 @@ class PipeTradeBridge(TxTradeBridge):
         if self.running:
             return self
         self.running = True
+        if not self.started_at:
+            self.started_at = time.time()
         self.tx = PipeTxClient(
             pipe_name=self.pipe_name,
             request_channel=self.request_channel,
@@ -7121,12 +7305,15 @@ class PipeTradeBridge(TxTradeBridge):
             endpoint_name="trade",
             show=self.show,
             connect_timeout_ms=self.connect_timeout_ms,
-        ).start()
+        )
+        self.tx._log = self._log
+        self.tx.start()
         self.tx.start_txg(self.request_channel)
         self._log(
             "pipe trade bridge started pipe=%s request_channel=%s"
             % (self.pipe_name, self.request_channel)
         )
+        self._publish_runtime_report("start")
         return self
 
     def close(self):
@@ -7178,6 +7365,7 @@ def start_pipe_normal_bridge(
     schedule_timer=True,
     pump_max_count=20,
     pump_max_ms=0,
+    dispatch_on_qmt_thread=False,
     connect_timeout_ms=3000,
 ):
     import sys
@@ -7199,6 +7387,7 @@ def start_pipe_normal_bridge(
         schedule_timer=schedule_timer,
         pump_max_count=pump_max_count,
         pump_max_ms=pump_max_ms,
+        dispatch_on_qmt_thread=dispatch_on_qmt_thread,
         connect_timeout_ms=connect_timeout_ms,
     ).start()
 
@@ -7266,7 +7455,7 @@ NORMAL_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_NORMAL_PUMP_MAX_MS", "0
 TRADE_SLEEP_SECONDS = float(os.environ.get("CFQUANT_CTYPE_TRADE_SLEEP_SECONDS", "0.001"))
 TRADE_PUMP_MAX_COUNT = int(os.environ.get("CFQUANT_CTYPE_TRADE_PUMP_MAX_COUNT", "100"))
 TRADE_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_TRADE_PUMP_MAX_MS", "0"))
-TRADE_TIMER_INTERVAL_MS = int(os.environ.get("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "20"))
+TRADE_TIMER_INTERVAL_MS = int(os.environ.get("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "1"))
 
 
 def _entry_file_path():
@@ -7341,11 +7530,13 @@ def _env_allows_runtime_override(name, default_value=""):
 
 
 def _apply_runtime_config():
+    global TRADE_TIMER_INTERVAL_MS
     global BRIDGE_ID, PIPE_NAME, RUNTIME_CONFIG_PATH, RUNTIME_CONFIG, RUNTIME_CHANNELS, QMT_MARKET, DEFAULT_ACCOUNT_ID, DEFAULT_ACCOUNT_TYPE
 
     path, data = _load_runtime_config()
     RUNTIME_CONFIG_PATH = path
     RUNTIME_CONFIG = data
+    TRADE_TIMER_INTERVAL_MS = _qmt_timer_interval(data)
     if not data:
         _write_runtime_log("cfquant lite runtime config not found")
         return
@@ -7369,8 +7560,6 @@ def _apply_runtime_config():
         RUNTIME_CHANNELS = channels
     if not os.environ.get("CFQUANT_QMT_LOG_LANGUAGE") and data.get("qmt_log_language"):
         os.environ["CFQUANT_QMT_LOG_LANGUAGE"] = str(data.get("qmt_log_language") or "zh")
-    if not os.environ.get("CFQUANT_QMT_LOG_ENABLED") and "qmt_log_enabled" in data:
-        os.environ["CFQUANT_QMT_LOG_ENABLED"] = "1" if _config_bool(data.get("qmt_log_enabled"), True) else "0"
     _write_runtime_log(
         "cfquant lite runtime config loaded path=%s bridge_id=%s pipe=%s"
         % (path, BRIDGE_ID, PIPE_NAME)
@@ -7383,6 +7572,34 @@ def _print_log(message):
     translated = translate_log(message)
     print(translated)
 
+
+# BEGIN GENERATED BINDING SETTINGS
+_QMT_BOUND_LOG_ENABLED = None
+
+
+def get_log_enabled():
+    if _QMT_BOUND_LOG_ENABLED is not None:
+        return _QMT_BOUND_LOG_ENABLED
+    value = RUNTIME_CONFIG.get("qmt_log_enabled", os.environ.get("CFQUANT_QMT_LOG_ENABLED", "1"))
+    return _config_bool(value, True)
+
+
+def set_log_enabled(value):
+    global _QMT_BOUND_LOG_ENABLED
+    _QMT_BOUND_LOG_ENABLED = _config_bool(value, True)
+    return _QMT_BOUND_LOG_ENABLED
+
+
+def _qmt_timer_interval(data):
+    value = data.get("qmt_timer_interval_ms", os.environ.get("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "1"))
+    try:
+        if isinstance(value, bool) or str(value).strip() != str(int(value)):
+            return 1
+        value = int(value)
+        return value if 1 <= value <= 1000 else 1
+    except (TypeError, ValueError, OverflowError):
+        return 1
+# END GENERATED BINDING SETTINGS
 
 _apply_runtime_config()
 _write_runtime_log("cfquant lite entry executing from {} cwd {}".format(_entry_file_path() or "<string>", os.getcwd()))
@@ -7583,9 +7800,10 @@ try:
         bridge_id=BRIDGE_ID,
         account_id=DEFAULT_ACCOUNT_ID,
         show=True,
-        schedule_timer=True,
+        schedule_timer=False,
         pump_max_count=NORMAL_PUMP_MAX_COUNT,
         pump_max_ms=NORMAL_PUMP_MAX_MS,
+        dispatch_on_qmt_thread=True,
         connect_timeout_ms=PIPE_CONNECT_TIMEOUT_MS,
     )
 
@@ -7703,7 +7921,7 @@ def _attach_normal_status_extra():
             "ctype_trade_pump_max_ms": TRADE_PUMP_MAX_MS,
             "ctype_trade_timer_interval_ms": TRADE_TIMER_INTERVAL_MS,
             "ctype_trade_dispatch_thread": "qmt_timer_or_handlebar",
-            "ctype_trade_route_mode": "xttrader_to_normal_worker",
+            "ctype_trade_route_mode": "xttrader_to_normal_qmt_timer",
         })
         return data
 
@@ -7812,8 +8030,24 @@ def _start_trade_loop():
     _run_trade_loop()
 
 
+def _bind_dispatch_context(ContextInfo):
+    if ContextInfo is None:
+        return
+    if _normal_bridge:
+        _normal_bridge.context = ContextInfo
+    if _trade_bridge:
+        _trade_bridge.context = ContextInfo
+
+
 def cfquant_ctype_trade_timer(*args, **kwargs):
+    context = args[0] if args else kwargs.get("ContextInfo") or kwargs.get("context")
+    _bind_dispatch_context(context)
     _drain_trade_requests("timer")
+    if _normal_bridge:
+        try:
+            _normal_bridge.pump()
+        except Exception as e:
+            _print_log("cfquant lite normal bridge pump failed source=trade_timer error:%s" % e)
 
 
 def _schedule_trade_timer(ContextInfo):
@@ -7949,6 +8183,7 @@ def after_init(ContextInfo):
 
 
 def handlebar(ContextInfo):
+    _bind_dispatch_context(ContextInfo)
     if TRADE_LOOP_IN_THREAD:
         _start_trade_loop()
     _drain_trade_requests("handlebar")
@@ -7980,7 +8215,8 @@ def stop(ContextInfo):
 
 def _publish_callback(event_name, obj):
     try:
-        _print_log("cfquant lite raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
+        if get_log_enabled():
+            _print_log("cfquant lite raw qmt callback received event=%s %s" % (event_name, _callback_brief(obj)))
         if _normal_bridge:
             _normal_bridge.publish_callback_event(event_name, obj)
         # The low-latency trade bridge is a separate bridge instance. Forward

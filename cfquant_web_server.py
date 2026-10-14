@@ -5,6 +5,7 @@ sys.dont_write_bytecode = True
 import argparse
 import base64
 from contextlib import contextmanager
+from contextvars import ContextVar
 import email.parser
 import email.policy
 import fnmatch
@@ -16,6 +17,7 @@ import mimetypes
 import os
 from pathlib import Path
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
+from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
 import posixpath
 import queue
 import re
@@ -117,6 +119,7 @@ from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
 from cfquant.level2 import L2_PERIODS
+from cfquant.protocol import dataframe_numeric_rows
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
@@ -2709,6 +2712,7 @@ class WebRuntimeConfig(object):
         market_bridges=None,
         qmt_strategy=None,
         qmt_auto_login=None,
+        qmt_runtime=None,
     ):
         account_id = str(account_id or "").strip()
         if not account_id:
@@ -2724,6 +2728,9 @@ class WebRuntimeConfig(object):
             bridge_id = self._account_bridge_id_locked(account_id, account_type, bridge_id, qmt_dir)
             account_key = account_key_for(account_id, account_type, bridge_id)
             existing = configs.get(account_key)
+            runtime_settings = normalize_qmt_runtime_settings(
+                qmt_runtime, existing=(existing or {}).get("qmt_runtime"), strict=True,
+            )
             # Older clients may omit mode when editing an existing binding.
             # Preserve its strategy selection instead of silently choosing ctypes.
             mode = normalize_transport_mode(mode or (existing or {}).get("mode") or "ctypes")
@@ -2837,6 +2844,7 @@ class WebRuntimeConfig(object):
                 "market_bridges": market_routes if market_routing_enabled else {},
                 "qmt_strategy": strategy_settings,
                 "qmt_auto_login": auto_login_settings,
+                "qmt_runtime": runtime_settings,
                 "updated_at": now,
             }
             if enabled:
@@ -3668,6 +3676,7 @@ class WebRuntimeConfig(object):
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
                 "qmt_strategy": normalize_strategy_settings(item.get("qmt_strategy")),
                 "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
+                "qmt_runtime": normalize_qmt_runtime_settings(item.get("qmt_runtime")),
                 "data_provider": bool(item.get("data_provider")),
                 "enabled": item.get("enabled", True) is not False,
                 "market_routing_enabled": parse_config_bool(item.get("market_routing_enabled"), False),
@@ -4228,6 +4237,10 @@ def is_pipe_client_closed_error(error):
     return any(marker in text for marker in closed_markers)
 
 
+MARKET_TIMING_ACTIONS = frozenset(("xtdata.get_full_tick", "xtdata.get_market_data", "xtdata.get_market_data_ex"))
+_market_timing_attempts = ContextVar("market_timing_attempts", default=None)
+
+
 class GlobalTxClient(object):
     def __init__(self):
         self._lock = threading.RLock()
@@ -4261,12 +4274,19 @@ class GlobalTxClient(object):
         last_error = None
         for attempt in range(2):
             client = self._get_client(mode)
+            request_options = {}
+            timing_attempts = _market_timing_attempts.get()
+            if timing_attempts is not None and action in MARKET_TIMING_ACTIONS:
+                response_meta = {"bridge_id": normalize_bridge_id(bridge_id), "channel": channel_key, "mode": mode}
+                timing_attempts.append(response_meta)
+                request_options["response_meta"] = response_meta
             try:
                 result = client.request(
                     action,
                     params or {},
                     timeout=timeout,
                     request_channel=channels[channel_key],
+                    **request_options,
                 )
                 self._cooldown_until.pop(cooldown_key, None)
                 self._last_error.pop(cooldown_key, None)
@@ -7335,11 +7355,19 @@ UPDATER = None
 
 
 def ok(data=None):
-    return {"ok": True, "data": to_jsonable(data)}
+    started = time.perf_counter()
+    converted = to_jsonable(data)
+    if isinstance(converted, dict) and isinstance(converted.get("timing"), dict):
+        converted["timing"].setdefault("web", {})["result_convert_ms"] = round((time.perf_counter() - started) * 1000, 3)
+    return {"ok": True, "data": converted}
 
 
 def fail(error, status=400):
-    return {"ok": False, "error": str(error), "status": status}
+    result = {"ok": False, "error": str(error), "status": status}
+    timing = getattr(error, "market_timing", None)
+    if timing is not None:
+        result["timing"] = timing
+    return result
 
 
 def is_project_update_trade_write_path(path):
@@ -7371,6 +7399,17 @@ def to_jsonable(value, depth=0):
 
     type_name = value.__class__.__name__
     if type_name == "DataFrame" and hasattr(value, "to_dict"):
+        if depth <= 38 and getattr(value.index, "is_unique", False):
+            rows = dataframe_numeric_rows(value)
+            if rows is not None:
+                columns = [jsonable_key(column) for column in value.columns] if rows else []
+                return {
+                    jsonable_key(index): {
+                        column: to_jsonable(cell, depth + 3)
+                        for column, cell in zip(columns, row)
+                    }
+                    for index, row in zip(value.index, rows)
+                }
         return to_jsonable(value.to_dict(orient="index"), depth + 1)
     if type_name == "Series" and hasattr(value, "to_dict"):
         return to_jsonable(value.to_dict(), depth + 1)
@@ -10079,7 +10118,7 @@ def _write_qmt_bridge_identity_for_dir(row, qmt_dir_override=None, qmt_role="nor
             "qmt_runtime_marker_dir": QMT_RUNTIME_MARKER_DIR,
             "qmt_runtime_version_file": QMT_RUNTIME_VERSION_FILE,
             "qmt_log_language": WEB_CONFIG.qmt_log_language() if WEB_CONFIG is not None else "zh",
-            "qmt_log_enabled": WEB_CONFIG.qmt_log_enabled() if WEB_CONFIG is not None else True,
+            **qmt_runtime_identity(row, WEB_CONFIG.qmt_log_enabled() if WEB_CONFIG is not None else True),
             "updated_at": time.time(),
             "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
             "source": "cfquant_web_account_binding",
@@ -10223,7 +10262,7 @@ def write_qmt_market_bridge_identities(row):
                 "market_route_parent_bridge_id": parent_bridge_id,
                 "market_routing_enabled": True,
                 "qmt_log_language": WEB_CONFIG.qmt_log_language() if WEB_CONFIG is not None else "zh",
-                "qmt_log_enabled": WEB_CONFIG.qmt_log_enabled() if WEB_CONFIG is not None else True,
+                **qmt_runtime_identity(row, WEB_CONFIG.qmt_log_enabled() if WEB_CONFIG is not None else True),
                 "updated_at": time.time(),
                 "updated_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                 "source": "cfquant_web_account_market_binding",
@@ -14012,6 +14051,7 @@ def save_account_runtime_config(body):
         market_bridges=market_bridges,
         qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
         qmt_auto_login=qmt_auto_login_request,
+        qmt_runtime=body.get("qmt_runtime") if "qmt_runtime" in body else None,
     )
     row_enabled = account_config_is_enabled(row)
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
@@ -14804,6 +14844,13 @@ def save_qmt_log_language(body):
     targets = [normalize_bridge_id(bridge_id)] if bridge_id else list(current_bridges().keys())
     results = []
     for target_bridge_id in targets:
+        target_enabled = info["enabled"]
+        for row in WEB_CONFIG.account_configs().values():
+            routes = (row.get("market_bridges") or {}).values()
+            row_bridges = {row.get("bridge_id")} | {route.get("bridge_id") for route in routes}
+            if account_config_is_enabled(row) and target_bridge_id in row_bridges:
+                target_enabled = qmt_runtime_identity(row, info["enabled"])["qmt_log_enabled"]
+                break
         for channel in ("normal", "trade"):
             try:
                 language_result = CLIENTS.request(
@@ -14818,7 +14865,7 @@ def save_qmt_log_language(body):
                     target_bridge_id,
                     channel,
                     "cfquant.set_log_enabled",
-                    {"enabled": info["enabled"]},
+                    {"enabled": target_enabled},
                     timeout=3.0,
                     ignore_cooldown=True,
                 )
@@ -15454,6 +15501,40 @@ def channel_online(bridge_id, channel):
         return None
 
 
+def with_market_timing(func):
+    @wraps(func)
+    def measured(body, action, *args, **kwargs):
+        if action not in MARKET_TIMING_ACTIONS:
+            return func(body, action, *args, **kwargs)
+        attempts = []
+        token = _market_timing_attempts.set(attempts)
+        started = time.perf_counter()
+
+        def snapshot():
+            last = attempts[-1] if attempts else {}
+            return {
+                "request_id": last.get("request_id"),
+                "qmt": last.get("qmt") or {"available": False, "reason": "no_rpc_timing"},
+                "rpc": last.get("rpc") or {},
+                "attempts": attempts,
+                "web": {"route_ms": round((time.perf_counter() - started) * 1000, 3)},
+            }
+
+        try:
+            result = func(body, action, *args, **kwargs)
+            result["timing"] = snapshot()
+            if result.get("mode") == "local":
+                result["timing"]["qmt"] = {"available": False, "reason": "local_data_source"}
+            return result
+        except Exception as error:
+            error.market_timing = snapshot()
+            raise
+        finally:
+            _market_timing_attempts.reset(token)
+    return measured
+
+
+@with_market_timing
 def data_channel_request(body, action, params, default_channel="normal", force_channel=None):
     body = body or {}
     account_id = str(body.get("account_id") or "").strip()

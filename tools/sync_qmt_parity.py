@@ -338,7 +338,13 @@ LITE_OBJECT_QUERY_METHODS = {
     # These methods have no package-only dependencies and can follow the
     # shared bridge exactly.
     for name in (
+        "_handle_raw",
+        "_dispatch",
+        "_dispatch_timed_market_data",
+        "_timed_market_call",
+        "_legacy_market_result",
         "_get_market_data",
+        "_get_market_data_ex",
         "_get_local_data",
         "_call_local_data",
         "_get_instrument_detail",
@@ -371,6 +377,10 @@ LITE_OBJECT_QUERY_METHODS = {
         "_smt_request",
     ):
         source = _replace_method(source, "TxTradeBridge", name, _method_source(core, "TxTradeBridge", name)) if "    def %s(" % name in source else _insert_method(source, _method_source(core, "TxTradeBridge", name))
+
+    normal = (ROOT / "cfquant" / "normal_bridge.py").read_text(encoding="utf-8")
+    for name in ("_send_response", "_send_error"):
+        source = _replace_method(source, "NormalQmtBridge", name, _method_source(normal, "NormalQmtBridge", name))
 
     xtdata_dispatch = _method_source(core, "TxTradeBridge", "_dispatch_xtdata_compat")
     xtdata_dispatch = xtdata_dispatch.replace(

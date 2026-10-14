@@ -59,6 +59,9 @@ class NoThread:
 
 
 class Context:
+    def __init__(self):
+        self.intervals = []
+
     def set_account(self, *args):
         pass
 
@@ -66,6 +69,7 @@ class Context:
         pass
 
     def schedule_run(self, *args, **kwargs):
+        self.intervals.append(kwargs['interval'].total_seconds() * 1000)
         return "test-timer"
 
     def cancel_schedule_run(self, *args, **kwargs):
@@ -84,14 +88,14 @@ def deny_files(monkeypatch, attempts):
 
 @pytest.mark.parametrize("path", ENTRIES, ids=lambda p: p.stem)
 @pytest.mark.parametrize("managed", [False, True])
-def test_entry_load_init_status_callbacks_and_stop_without_files(path, managed, tmp_path, monkeypatch):
+def test_entry_load_init_status_callbacks_and_stop_without_files(path, managed, tmp_path, monkeypatch, capsys):
     import cfquant.pipe_bridge as pipe_bridge
     import cfquant.pipe_transport as pipe_transport
     mode = "lite" if "LITE" in path.name else "ctypes"
     market = path.stem.rsplit("_", 1)[-1]
     market = market if market in ("SH", "SZ") else ""
     identity = dict(account_id="test-account", account_type="CREDIT", bridge_id="test-bridge",
-                    market=market, pipe_name="test-pipe", qmt_log_enabled=False,
+                    market=market, pipe_name="test-pipe", qmt_log_enabled=False, qmt_timer_interval_ms=7,
                     channels={"normal": "test.normal", "trade": "test.trade", "callback": "test.callback"})
     descriptor = dict(runtime_key=uuid.uuid4().hex, mode=mode, role=market or "normal", generation="current")
     source = (managed_source(path, tmp_path / "absent.json", identity, descriptor) if managed
@@ -116,7 +120,8 @@ def test_entry_load_init_status_callbacks_and_stop_without_files(path, managed, 
         patch.setattr(threading, "Thread", NoThread)
         patch.setattr(sys, "dont_write_bytecode", True)
         patch.setenv("CFQUANT_QMT_NO_FILE_IO", "1")
-        patch.setenv("CFQUANT_QMT_LOG_ENABLED", "0")
+        patch.setenv("CFQUANT_QMT_LOG_ENABLED", "1")
+        patch.setenv("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "99")
         patch.setenv("CFQUANT_ACCOUNT_ID", "stale-other-account")
         # Scripts mutate these process globals; isolate each simulated QMT.
         patch.setattr(os, "environ", os.environ.copy())
@@ -137,6 +142,12 @@ def test_entry_load_init_status_callbacks_and_stop_without_files(path, managed, 
                 runtime.approved = False
             namespace["init"](context)
             namespace["after_init"](context)
+            assert namespace['TRADE_TIMER_INTERVAL_MS'] == 7
+            assert 7 in context.intervals
+            assert namespace['get_log_enabled']() is False
+            assert normal._status()['log_enabled'] is False
+            assert trade._status()['log_enabled'] is False
+            assert capsys.readouterr().out == ''
             if managed:
                 with pytest.raises(RuntimeError, match="awaiting"):
                     normal._dispatch("cfquant.set_log_language", {}, {})

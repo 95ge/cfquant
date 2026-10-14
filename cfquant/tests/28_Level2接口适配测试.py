@@ -32,7 +32,8 @@ CODE = "000001.SZ"
 def lite_namespace(path):
     tree = ast.parse(path.read_text(encoding="gbk"))
     helpers = {key for key in vars(level2) if not key.startswith("__") and key != "l2_array"}
-    functions = {"encode_value", "_encode_dataframe", "_encode_series", "_clean_cell", "_looks_like_dataframe", "_looks_like_series", "_get_pandas"}
+    functions = {"encode_value", "_encode_dataframe", "_encode_series", "_encode_label", "_encode_ndarray",
+                 "_clean_cell", "_looks_like_dataframe", "_looks_like_series", "_get_pandas"}
     body = []
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in helpers | functions:
@@ -143,7 +144,8 @@ def test_sdk_l2_queries_preserve_fields_precision_and_depth(monkeypatch, bridge,
 def test_six_period_query_protocol_and_no_forward_fill(bridge, period):
     result = rpc(bridge, "xtdata.get_market_data_ex", {"stock_list": [CODE], "period": period, "fill_data": True})
     assert result[CODE]["orderNo"].iloc[0] == BIG_ID
-    assert result[CODE]["bidPrice"].iloc[0] == [11.6, 11.5]
+    assert isinstance(result[CODE]["bidPrice"].iloc[0], np.ndarray)
+    np.testing.assert_array_equal(result[CODE]["bidPrice"].iloc[0], [11.6, 11.5])
     assert bridge.context.calls[-1][2] == period
     assert bridge.context.calls[-1][-1] is False
     rpc(bridge, "xtdata.get_market_data", {"stock_list": [CODE], "period": period})
@@ -254,7 +256,8 @@ def test_wire_encoder_preserves_nullable_ids_arrays_and_numpy_scalars(path):
     result = decode_value(json.loads(json.dumps(encoder(frame))))
     assert result["id"].iloc[0] == BIG_ID
     assert result["id"].iloc[1] is None
-    assert result["depth"].iloc[0] == [100, 200]
+    assert isinstance(result["depth"].iloc[0], np.ndarray)
+    np.testing.assert_array_equal(result["depth"].iloc[0], [100, 200])
     assert encoder(np.uint64(2 ** 64 - 1)) == 2 ** 64 - 1
 
 

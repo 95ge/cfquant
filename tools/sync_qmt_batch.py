@@ -112,7 +112,9 @@ def updated_source(source):
         '        if action in CFTRADER_BATCH_CANCEL_ACTIONS:\n',
         '            return execute_qmt_cancel_batch(self, params, msg, action.endswith("_async"))\n',
     ]
-    if lines[dispatch.lineno:dispatch.lineno + len(branch)] != branch:
+    # Timing dispatch can precede the batch branches; do not insert duplicates
+    # merely because this block is no longer the first statement.
+    if ''.join(branch) not in ''.join(lines[dispatch.lineno:dispatch.end_lineno]):
         if lines[dispatch.lineno:dispatch.lineno + 4] == branch[2:]:
             lines[dispatch.lineno:dispatch.lineno] = branch[:2]
         elif (lines[dispatch.lineno:dispatch.lineno + 2]
@@ -355,8 +357,6 @@ def updated_source(source):
         else:
             anchor = '    def _drain_single_request(self, source, msg, received_at):\n'
             source = source.replace(anchor, replacement + '\n' + anchor, 1)
-    source = source.replace('if self.dispatch_on_qmt_thread and msg.get(',
-                            'if getattr(self, "dispatch_on_qmt_thread", False) and msg.get(')
     ast.parse(source, feature_version=(3, 6))
     return source
 

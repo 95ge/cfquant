@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261014_01';
+const FRONTEND_VERSION = 'web_20261014_04';
 
 const state = {
   accountId: '',
@@ -1560,6 +1560,7 @@ const API_ENDPOINTS = [
     id: 'market_data',
     group: 'data',
     title: '行情数据',
+    functionName: 'get_market_data',
     method: 'POST',
     path: '/api/data/market',
     desc: '查询行情数据，字段、证券列表、周期和区间可配置。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
@@ -1570,9 +1571,10 @@ const API_ENDPOINTS = [
     id: 'market_data_ex',
     group: 'data',
     title: '扩展行情数据',
+    functionName: 'get_market_data_ex',
     method: 'POST',
     path: '/api/data/market-ex',
-    desc: '调用 QMT get_market_data_ex，适合读取本地缓存行情数据。通用模式走 ctypes 单桥，高级模式支持极速优先并回退普通 QMT。',
+    desc: '测试 get_market_data_ex，可配置证券、字段、周期、日期范围和条数。结果按证券代码 → 时间 → 字段展示；count=-1 读取指定范围内的全部可用数据。请求完成后可查看 QMT 取数、编码及页面往返耗时。',
     defaults: { channel: 'trade', field_list: 'open,high,low,close,volume', stock_list: '000001.SZ', period: '1d', count: '-1', dividend_type: 'none', fill_data: '1', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['bridge_id', 'channel', 'field_list', 'stock_list', 'period', 'start_time', 'end_time', 'count', 'dividend_type', 'fill_data', 'timeout'],
   },
@@ -2110,14 +2112,17 @@ const API_RETURN_DOCS = {
   full_tick: [
     ['result', '实时 tick 快照'],
     ['latency_ms', '请求耗时'],
+    ['timing', 'QMT 排队、原生取数、转换和编解码耗时；未取得 QMT 计时时 available 为 false。'],
   ],
   market_data: [
     ['result', '行情数据结果'],
     ['latency_ms', '请求耗时'],
+    ['timing', '分阶段耗时，含旧接口回退情况和每次原生调用；单位毫秒，各阶段有包含关系。'],
   ],
   market_data_ex: [
     ['result', '扩展行情数据结果'],
     ['latency_ms', '请求耗时'],
+    ['timing', 'QMT 排队、原生取数、结果编解码及 Web 转换耗时；单位毫秒。'],
   ],
   quote_subscribe_single: [
     ['subscribe_id', '行情订阅 ID'],
@@ -2662,6 +2667,27 @@ function syncAdvancedQmtDirField(inputId, mode) {
   const advanced = normalizeTransportMode(mode) === 'lttx';
   if (field) field.classList.toggle('hidden', !advanced);
   input.required = advanced;
+  if (inputId === 'bindingQmtTradeDir') {
+    const runtime = $('bindingRuntimeSettings');
+    if (runtime) runtime.classList.toggle('hidden', advanced);
+    if ($('bindingQmtTimerInterval')) $('bindingQmtTimerInterval').disabled = advanced;
+    if ($('bindingQmtLogEnabled')) $('bindingQmtLogEnabled').disabled = advanced;
+  }
+}
+
+function fillBindingRuntimeSettings(settings) {
+  const value = settings || {};
+  if ($('bindingQmtTimerInterval')) $('bindingQmtTimerInterval').value = String(value.timer_interval_ms ?? 1);
+  const enabled = settings === undefined ? false : value.log_enabled;
+  if ($('bindingQmtLogEnabled')) $('bindingQmtLogEnabled').value = enabled === true ? 'on' : enabled === false ? 'off' : 'inherit';
+}
+
+function readBindingRuntimeSettings(form) {
+  const raw = String(form.qmt_timer_interval_ms.value).trim();
+  const interval = Number(raw);
+  if (!raw || !Number.isInteger(interval) || interval < 1 || interval > 1000) return null;
+  const choice = form.qmt_log_enabled.value;
+  return { timer_interval_ms: interval, log_enabled: choice === 'inherit' ? null : choice === 'on' };
 }
 
 function qmtDirsAreSame(first, second) {
@@ -3976,13 +4002,13 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
       button.type = 'button';
       button.className = `api-endpoint${item.id === endpoint.id ? ' active' : ''}`;
       button.dataset.endpointId = item.id;
-      button.innerHTML = `<span class="api-method">${esc(item.sdkEntry ? 'SDK' : item.method)}</span><span>${esc(item.title)}</span>`;
+      button.innerHTML = `<span class="api-method">${esc(item.sdkEntry ? 'SDK' : item.method)}</span><span class="api-endpoint-label"><span>${esc(item.title)}</span>${item.functionName ? `<code>${esc(item.functionName)}</code>` : ''}</span>`;
       body.appendChild(button);
     });
     wrap.appendChild(body);
     list.appendChild(wrap);
   });
-  $('apiTitle').textContent = endpoint.title;
+  $('apiTitle').textContent = endpoint.functionName ? `${endpoint.title} · ${endpoint.functionName}` : endpoint.title;
   $('apiDesc').textContent = endpoint.desc;
   $('apiRoute').textContent = endpoint.sdkEntry && endpoint.id !== 'async_order_example'
     ? `Python SDK cfquant.cftrader.CfQuantTrader.${endpoint.sdkEntry.name}`
@@ -3997,6 +4023,10 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
       ? (endpoint.sdkEntry.name.startsWith('cancel_order_stock_batch') ? '测试撤单' : '测试下单')
       : '发送请求';
     actions.innerHTML = `<button class="primary api-submit-btn" type="submit" data-default-label="${esc(submitLabel)}"><span class="button-spinner" aria-hidden="true"></span><span class="api-submit-label">${esc(submitLabel)}</span></button><button id="apiResetBtn" type="button">重置参数</button>`;
+    if (['market_data', 'market_data_ex'].includes(endpoint.id)) {
+      const alternate = apiEndpointById(endpoint.id === 'market_data' ? 'market_data_ex' : 'market_data');
+      actions.insertAdjacentHTML('beforeend', `<button type="button" data-market-variant="${esc(alternate.id)}">切换到 ${esc(alternate.functionName)}</button>`);
+    }
     form.appendChild(actions);
     setApiDefaults(endpoint);
   }
@@ -4004,6 +4034,21 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   updateQuoteLivePanel(endpoint);
   updateDownloadProgressPanel(endpoint);
   renderApiResponseLatency(null, endpoint);
+  updateApiRequestPreview();
+}
+
+function switchMarketDataEndpoint(endpointId) {
+  const variants = ['market_data', 'market_data_ex'];
+  if (state.apiDebugBusy || !variants.includes(state.apiEndpointId) || !variants.includes(endpointId)) return;
+  const form = $('apiForm');
+  const values = Array.from(form.elements).filter(element => element.name && element.tagName !== 'BUTTON')
+    .map(element => ({ name: element.name, value: element.value }));
+  renderApiDocs(endpointId, { ensureGroupOpen: true });
+  values.forEach(({ name, value }) => {
+    const field = form.elements.namedItem(name);
+    if (field) field.value = value;
+  });
+  $('apiResponseBox').textContent = '';
   updateApiRequestPreview();
 }
 
@@ -7388,6 +7433,8 @@ function setApiDebugBusy(busy, label = '') {
     if (labelNode) labelNode.textContent = busy ? (label || '请求中') : defaultLabel;
   }
   if (reset) reset.disabled = !!busy;
+  const marketVariant = form.querySelector('[data-market-variant]');
+  if (marketVariant) marketVariant.disabled = !!busy;
   if ($('apiClearResultBtn')) $('apiClearResultBtn').disabled = !!busy;
 }
 
@@ -7443,6 +7490,35 @@ function apiResponseLatency(payload, endpoint) {
   return null;
 }
 
+function apiMarketTimingDetails(payload) {
+  const timing = payload?.data?.timing || payload?.timing;
+  if (!timing) return [];
+  const qmt = timing.qmt || {};
+  const details = [];
+  const add = (label, value) => {
+    if (toLatencyMs(value) !== null) details.push(`${label} ${formatLatencyMs(value)}`);
+  };
+  if (qmt.available) {
+    add('QMT 排队', qmt.queue_ms);
+    add('QMT 原生取数', qmt.native_ms);
+    add('兼容格式转换', qmt.convert_ms);
+    add('QMT 结果编码', qmt.encode_ms);
+    if (qmt.fallback_used) details.push('旧行情接口已回退到扩展接口');
+  } else {
+    const reasons = {
+      no_response: 'QMT 耗时未取得（未收到回包）',
+      bridge_timing_unavailable: 'QMT 耗时未取得（桥接脚本未提供）',
+      local_data_source: '本次使用本地数据源',
+    };
+    details.push(reasons[qmt.reason] || 'QMT 耗时未取得');
+  }
+  add('RPC 等待（含 QMT 处理）', timing.rpc?.wait_ms);
+  add('客户端结果解码', timing.rpc?.decode_ms);
+  add('Web 结果转换', timing.web?.result_convert_ms);
+  if (timing.attempts?.length > 1) details.push(`共 ${timing.attempts.length} 次尝试，阶段耗时为最后一次`);
+  return details;
+}
+
 function renderApiResponseLatency(payload, endpoint, clientElapsedMs = null) {
   if ($('apiResultSummary')) $('apiResultSummary').innerHTML = payload
     ? (window.CfquantApiTester?.resultSummary(payload, clientElapsedMs) || '') : '';
@@ -7480,10 +7556,11 @@ function renderApiResponseLatency(payload, endpoint, clientElapsedMs = null) {
       details.push(`缓存年龄 ${formatLatencyMs(metrics.cacheAgeMs)}`);
     }
     if (clientElapsed !== null) details.push(`页面往返 ${formatLatencyMs(clientElapsed)}`);
-    metaNode.textContent = details.join(' · ');
+    if (payload?.data?.timing) details[0] = '服务端路由与 RPC 耗时';
+    metaNode.textContent = details.concat(apiMarketTimingDetails(payload)).join(' · ');
   } else {
     valueNode.textContent = formatLatencyMs(clientElapsed);
-    metaNode.textContent = '页面往返耗时，服务端未返回 latency_ms';
+    metaNode.textContent = ['页面往返耗时，服务端未返回 latency_ms', ...apiMarketTimingDetails(payload)].join(' · ');
   }
 }
 
@@ -9317,6 +9394,7 @@ function syncBindingForm() {
   form.dataset.bridgeId = info.bridgeId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(info.accountType || 'STOCK');
   const config = info.config;
+  fillBindingRuntimeSettings(config ? (config.qmt_runtime || {}) : undefined);
   if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
   if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(config && config.qmt_dir ? config.qmt_dir : '');
   if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
@@ -9355,6 +9433,7 @@ function fillBindingForm(values = {}) {
   form.dataset.accountKey = values.accountKey || '';
   form.dataset.bridgeId = values.bridgeId || '';
   fillQmtStrategySettings('binding', values.qmtStrategy);
+  fillBindingRuntimeSettings(values.qmtRuntime);
   if (form.display_name) form.display_name.value = values.displayName || '';
   form.account_id.value = values.accountId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
@@ -9405,6 +9484,7 @@ function openBindingDialog(options = {}) {
     marketBridges: config ? normalizeMarketRoutes(config) : (options.marketBridges || {}),
     qmtStrategy: config ? (config.qmt_strategy || { enabled: false }) : undefined,
     qmtAutoLogin: config ? config.qmt_auto_login : options.qmtAutoLogin,
+    qmtRuntime: config ? (config.qmt_runtime || {}) : options.qmtRuntime,
   });
   const editing = !!accountId;
   const title = $('bindingDialogTitle');
@@ -9696,6 +9776,12 @@ async function submitBindingForm(event) {
   const qmtDir = form.qmt_dir ? qmtDeploymentPath(form.qmt_dir.value) : '';
   const qmtTradeDir = form.qmt_trade_dir ? qmtDeploymentPath(form.qmt_trade_dir.value) : '';
   const mode = form.mode ? form.mode.value : 'ctypes';
+  const qmtRuntime = readBindingRuntimeSettings(form);
+  if (normalizeTransportMode(mode) !== 'lttx' && !qmtRuntime) {
+    setBindingNotice('QMT 调度间隔必须是 1–1000 ms 的整数。', 'error', { autoHide: false });
+    form.qmt_timer_interval_ms.focus();
+    return;
+  }
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
   const enabled = !(form.enabled && !form.enabled.checked);
   const qmtAutoLoginSettings = readBindingQmtAutoLoginSettings(form);
@@ -9766,8 +9852,15 @@ async function submitBindingForm(event) {
       market_routing_enabled: marketRoutingEnabled,
       market_bridges: marketBridges,
       qmt_strategy: strategySettings,
+      qmt_runtime: normalizeTransportMode(mode) === 'lttx' ? undefined : qmtRuntime,
     });
     const responseAccount = data.account && typeof data.account === 'object' ? data.account : {};
+    if (normalizeTransportMode(mode) !== 'lttx' && qmtRuntime
+        && (!responseAccount.qmt_runtime
+          || responseAccount.qmt_runtime.timer_interval_ms !== qmtRuntime.timer_interval_ms
+          || responseAccount.qmt_runtime.log_enabled !== qmtRuntime.log_enabled)) {
+      throw new Error('绑定已保存，但调度与日志设置未被后端保存。请重启 Web 后端后重新保存这两项设置。');
+    }
     const savedBridgeId = responseAccount.bridge_id || bridgeId || state.defaultBridgeId || 'default';
     const savedAccountKey = responseAccount.account_key || form.dataset.accountKey || makeAccountKey(accountId, accountType, savedBridgeId);
     state.accountPairs = data.account_pairs || {};
@@ -14050,6 +14143,11 @@ async function boot() {
   $('apiForm').addEventListener('change', updateApiRequestPreview);
   $('apiForm').addEventListener('submit', sendApiDebugRequest);
   $('apiForm').addEventListener('click', (event) => {
+    const variant = event.target.closest('button[data-market-variant]');
+    if (variant) {
+      switchMarketDataEndpoint(variant.dataset.marketVariant);
+      return;
+    }
     if (event.target.id === 'apiResetBtn') {
       renderApiDocs(state.apiEndpointId);
     }
