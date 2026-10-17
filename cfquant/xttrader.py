@@ -396,6 +396,10 @@ class XtQuantTrader(object):
         self.connected = False
         for payload in list(self._subscribed_accounts.values()):
             try:
+                bridge_id = normalize_bridge_id(_bridge_id_from_params({"account": payload}) or self.bridge_id)
+                client = self._clients.get(bridge_id)
+                if client is not None and getattr(client, "_closed", False):
+                    continue
                 self._trade_request("xttrader.unsubscribe", {
                     "account": dict(payload),
                 }, timeout=2)
@@ -852,9 +856,12 @@ class XtQuantTrader(object):
     def run_forever(self):
         import time
 
-        self.start()
-        while True:
-            time.sleep(1)
+        try:
+            self.start()
+            while self.connected:
+                time.sleep(.2)
+        finally:
+            self.stop()
 
     def _register_trader_events(self, bridge_id=None):
         bridge_id = normalize_bridge_id(bridge_id or self.bridge_id)

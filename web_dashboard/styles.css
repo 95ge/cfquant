@@ -5987,10 +5987,54 @@ input[type="file"] {
 
 .quote-live-panel {
   margin-bottom: 14px;
+  min-width: 0;
+}
+
+.quote-live-panel > [data-quote-latency] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.quote-live-panel > [data-quote-latency] p {
+  margin: 8px 0;
+}
+
+.quote-live-panel [data-quote-latency].hidden {
+  display: none;
 }
 
 .quote-live-panel.hidden {
   display: none;
+}
+
+.quote-latency-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  margin: 12px 0;
+}
+
+.quote-latency-controls label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.quote-latency-controls input,
+.quote-latency-controls select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.quote-latency-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex-basis: 100%;
 }
 
 .download-progress-panel {
@@ -6122,10 +6166,21 @@ input[type="file"] {
 
 .quote-live-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+}
+
+.quote-live-head > div {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#quoteLiveStatus {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .quote-live-head h3 {

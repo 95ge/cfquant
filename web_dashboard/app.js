@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261014_04';
+const FRONTEND_VERSION = 'web_20261017_01';
 
 const state = {
   accountId: '',
@@ -90,6 +90,15 @@ const state = {
   projectUpdateBusy: false,
   apiOpenGroups: new Set(),
   quoteRows: new Map(),
+  quoteLatencyMode: false,
+  quoteLatencyWindow: [],
+  quoteLatencyBatch: null,
+  quoteLatencyPending: null,
+  quoteLatencyPaused: false,
+  quoteLatencyPage: 1,
+  quoteLatencyPageSize: 100,
+  quoteLatencyFilter: '',
+  quoteLatencySort: 'code',
   quoteSeq: 0,
   quoteEventCount: 0,
   quoteSubscribeId: '',
@@ -1526,6 +1535,16 @@ const API_ENDPOINTS = [
       sdkEntry: entry,
     };
   }),
+  {
+    id: 'quote_latency',
+    group: 'data',
+    title: '内部延迟',
+    method: 'POST',
+    path: '/api/diagnostics/quotes/subscribe',
+    desc: '独立订阅全推行情，分别显示行情时间 → QMT 回调入口、行情时间 → Web 接收回调，以及 QMT 发送前 → Web 接收回调的时间差。默认订阅 SH,SZ,BJ 全市场，也可填写证券代码缩小范围。保留本批全部数据，支持分页、代码筛选、排序和导出，统计覆盖本批全部有效时间。订阅后点击“连接推送”；可暂停刷新以检查某一批数据。',
+    defaults: { channel: 'normal', markets: 'SH,SZ,BJ', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
+    fields: ['bridge_id', 'whole_quote_channel', 'markets', 'timeout'],
+  },
   {
     id: 'quote_subscribe_whole',
     group: 'data',
@@ -3860,7 +3879,7 @@ function isTaskProgressEndpoint(endpoint) {
 }
 
 function isQuoteSubscriptionEndpoint(endpoint) {
-  return !!endpoint && ['quote_subscribe_whole', 'quote_subscribe_single', 'quote_unsubscribe'].includes(endpoint.id);
+  return !!endpoint && ['quote_latency', 'quote_subscribe_whole', 'quote_subscribe_single', 'quote_unsubscribe'].includes(endpoint.id);
 }
 
 function endpointHasChannelField(endpoint) {
@@ -4056,6 +4075,9 @@ function updateQuoteLivePanel(endpoint) {
   const panel = $('quoteLivePanel');
   if (!panel) return;
   const show = isQuoteEndpoint(endpoint);
+  if (state.quoteSubscribeId && state.quoteLatencyMode !== (endpoint.id === 'quote_latency')) {
+    stopQuoteLive();
+  }
   panel.classList.toggle('hidden', !show);
   if (!show) {
     stopQuoteLive();
@@ -4437,6 +4459,7 @@ function resetQuoteLive(subscribeId = '', options = {}) {
     state.quoteRenderTimer = null;
   }
   state.quoteRows.clear();
+  resetQuoteLatencyView();
   state.quoteSeq = 0;
   state.quoteEventCount = 0;
   state.quoteSocketLogCount = 0;
@@ -7272,7 +7295,7 @@ function currentApiRequest(endpoint = apiEndpointById(state.apiEndpointId), form
     }
   }
   delete params.credit_order_action;
-  if (endpoint.id === 'quote_subscribe_whole') {
+  if (['quote_subscribe_whole', 'quote_latency'].includes(endpoint.id)) {
     params.channel = 'normal';
     params.markets = String(params.markets ?? 'SH,SZ,BJ')
       .split(/[,，]/)
@@ -7503,6 +7526,7 @@ function apiMarketTimingDetails(payload) {
     add('QMT 原生取数', qmt.native_ms);
     add('兼容格式转换', qmt.convert_ms);
     add('QMT 结果编码', qmt.encode_ms);
+    add('其中 JSON 编码', qmt.json_encode_ms);
     if (qmt.fallback_used) details.push('旧行情接口已回退到扩展接口');
   } else {
     const reasons = {
@@ -7514,7 +7538,9 @@ function apiMarketTimingDetails(payload) {
   }
   add('RPC 等待（含 QMT 处理）', timing.rpc?.wait_ms);
   add('客户端结果解码', timing.rpc?.decode_ms);
+  add('客户端 JSON 解析（计入 RPC 等待）', timing.rpc?.json_decode_ms);
   add('Web 结果转换', timing.web?.result_convert_ms);
+  add('Web JSON 编码', timing.web?.json_encode_ms);
   if (timing.attempts?.length > 1) details.push(`共 ${timing.attempts.length} 次尝试，阶段耗时为最后一次`);
   return details;
 }
@@ -7634,6 +7660,9 @@ async function sendApiDebugRequest(event) {
     $('apiResponseBox').textContent = `请求中...\n前端调试超时 ${Math.round(timeoutMs / 1000)} 秒`;
   }
   try {
+    if (['quote_latency', 'quote_subscribe_whole', 'quote_subscribe_single'].includes(endpoint.id)) {
+      await stopQuoteLive();
+    }
     const response = await fetch(request.url, {
       method: request.method,
       headers: {
@@ -7651,6 +7680,11 @@ async function sendApiDebugRequest(event) {
       payload = text;
     }
     if (!isCurrentApiDebugRequest(requestSeq, endpoint)) return;
+    const jsonTiming = response.headers.get('Server-Timing')?.match(/(?:^|,)\s*web_json;dur=([\d.]+)/);
+    const timing = payload?.data?.timing || payload?.timing;
+    if (jsonTiming && timing) {
+      timing.web = { ...(timing.web || {}), json_encode_ms: Number(jsonTiming[1]) };
+    }
     renderApiResponseLatency(payload, endpoint, apiDebugElapsedMs(startedAt));
     $('apiResponseBox').textContent = apiDebugOutput(payload, request, startedAt, { http_status: response.status });
     handleApiDebugPayload(payload);
@@ -7682,10 +7716,13 @@ async function sendApiDebugRequest(event) {
 function handleApiDebugPayload(payload) {
   if (!payload || !payload.ok || !payload.data) return;
   const endpoint = apiEndpointById(state.apiEndpointId);
-  if (endpoint.id === 'quote_subscribe_whole' || endpoint.id === 'quote_subscribe_single') {
+  if (['quote_latency', 'quote_subscribe_whole', 'quote_subscribe_single'].includes(endpoint.id)) {
     const subscribeId = payload.data.subscribe_id || '';
     if (subscribeId) {
       resetQuoteLive(subscribeId, { active: false });
+      state.quoteLatencyMode = endpoint.id === 'quote_latency';
+      state.quoteLatencyWindow = [];
+      renderQuoteLiveTable();
       const field = $('apiForm').elements.subscribe_id;
       if (field) field.value = subscribeId;
       $('apiResponseBox').textContent = `${JSON.stringify(payload, null, 2)}\n\n已获取订阅 ID。网页端不会自动连接全推行情，请点击“连接推送”后再查看实时行情。`;
@@ -7720,6 +7757,7 @@ function closeApiSocket() {
 
 function stopQuoteLive(options = {}) {
   const subscribeId = String(state.quoteSubscribeId || '');
+  const unsubscribePath = state.quoteLatencyMode ? '/api/diagnostics/quotes/unsubscribe' : '/api/quotes/unsubscribe';
   const shouldUnsubscribe = !!subscribeId && options.unsubscribe !== false;
   closeApiSocket();
   if (state.quoteRenderTimer) {
@@ -7727,6 +7765,8 @@ function stopQuoteLive(options = {}) {
     state.quoteRenderTimer = null;
   }
   state.quoteRows.clear();
+  resetQuoteLatencyView();
+  state.quoteLatencyMode = false;
   state.quoteSeq = 0;
   state.quoteEventCount = 0;
   state.quoteSocketLogCount = 0;
@@ -7744,7 +7784,7 @@ function stopQuoteLive(options = {}) {
   if (options.beacon && navigator.sendBeacon) {
     try {
       const authQuery = authQueryString();
-      const url = apiUrl(`/api/quotes/unsubscribe${authQuery ? `?${authQuery}` : ''}`);
+      const url = apiUrl(`${unsubscribePath}${authQuery ? `?${authQuery}` : ''}`);
       const blob = new Blob([JSON.stringify(body)], { type: 'application/json' });
       navigator.sendBeacon(url, blob);
       return;
@@ -7752,7 +7792,7 @@ function stopQuoteLive(options = {}) {
       // fall through to fetch
     }
   }
-  fetch(apiUrl('/api/quotes/unsubscribe'), {
+  return fetch(apiUrl(unsubscribePath), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -7784,7 +7824,7 @@ function connectQuoteWebSocket(subscribeId = '') {
     method: 'WS',
     endpointId: 'ws_quotes',
     quoteStream: true,
-    url: apiWsUrl(`/ws/quotes${params.toString() ? `?${params.toString()}` : ''}`),
+    url: apiWsUrl(`${state.quoteLatencyMode ? '/ws/diagnostics/quotes' : '/ws/quotes'}${params.toString() ? `?${params.toString()}` : ''}`),
   };
   connectApiWebSocket(request);
 }
@@ -7855,10 +7895,32 @@ function connectApiWebSocket(request) {
 function handleQuoteEvent(event, options = {}) {
   if (!state.quoteLiveActive && !options.force) return;
   if (state.quoteSubscribeId && String(event.subscribe_id || '') !== String(state.quoteSubscribeId)) return;
+  if (event.latency && event.seq && Number(event.seq) <= state.quoteSeq) return;
+  if (event.latency && state.quoteLatencyPaused) {
+    if (!state.quoteLatencyPending || Number(event.seq || 0) >= Number(state.quoteLatencyPending.seq || 0)) {
+      state.quoteLatencyPending = event;
+    }
+    return;
+  }
   const panel = $('quoteLivePanel');
   if (panel) panel.classList.remove('hidden');
   state.quoteEventCount += 1;
   state.quoteSeq = Math.max(state.quoteSeq, Number(event.seq || state.quoteSeq || 0));
+  if (event.latency) {
+    state.quoteLatencyBatch = event;
+    // Keep only small timing records in the rolling window, not 120 full-market batches.
+    state.quoteLatencyWindow.push({ internal_latency_ms: event.latency.internal_latency_ms });
+    if (state.quoteLatencyWindow.length > 120) state.quoteLatencyWindow.shift();
+    state.quoteRows.clear();
+    const samples = new Map((event.latency.samples || []).map(sample => [sample.code, sample]));
+    Object.entries(event.data || {}).forEach(([code, value]) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        upsertQuoteRow(code, value, event, samples.get(code));
+      }
+    });
+    scheduleQuoteRender(!!options.force);
+    return;
+  }
   const data = event.data || {};
   if (data && typeof data === 'object' && !Array.isArray(data)) {
     Object.entries(data).slice(0, QUOTE_EVENT_PROCESS_LIMIT).forEach(([code, value]) => {
@@ -7875,18 +7937,81 @@ function handleQuoteEvent(event, options = {}) {
   scheduleQuoteRender(!!options.force);
 }
 
-function upsertQuoteRow(code, quote, event) {
+function upsertQuoteRow(code, quote, event, latency = null) {
   const normalized = {
     code,
     updatedAt: Date.now(),
     price: quote.lastPrice ?? quote.last_price ?? quote.price ?? quote.close ?? quote.now ?? quote.value ?? '',
     pct: quote.ratio ?? quote.pct_chg ?? quote.changeRatio ?? quote.change_ratio ?? quote['涨跌幅'] ?? '',
     volume: quote.volume ?? quote.vol ?? quote['成交量'] ?? '',
-    time: formatQuoteTime(quote.time ?? quote.timetag ?? quote.datetime ?? quote.updateTime ?? quote.update_time, event),
+    time: event.latency ? ''
+      : formatQuoteTime(quote.time ?? quote.timetag ?? quote.datetime ?? quote.updateTime ?? quote.update_time, event),
+    quoteAt: latency?.quote_at_ms,
     raw: quote,
+    quoteLatency: latency?.quote_latency_ms,
+    qmtQuoteLatency: latency?.qmt_quote_latency_ms,
+    internalLatency: event.latency?.internal_latency_ms,
+    qmtPrepare: event.latency?.qmt_prepare_ms,
+    quoteTimeRaw: latency?.quote_time_raw,
+    qmtCallbackAt: event.latency?.qmt_callback_at_ms,
+    qmtPushAt: event.latency?.qmt_push_at_ms,
+    receivedAt: event.latency?.received_at_ms,
   };
   state.quoteRows.set(String(code), normalized);
-  trimQuoteRows();
+  if (!event.latency) trimQuoteRows();
+}
+
+function resetQuoteLatencyView() {
+  state.quoteLatencyWindow = [];
+  state.quoteLatencyBatch = null;
+  state.quoteLatencyPending = null;
+  state.quoteLatencyPaused = false;
+  state.quoteLatencyPage = 1;
+  state.quoteLatencyFilter = '';
+  const filter = $('quoteLatencyFilter');
+  if (filter) filter.value = '';
+}
+
+function filteredQuoteLatencyRows() {
+  const filter = state.quoteLatencyFilter.trim().toUpperCase();
+  const rows = Array.from(state.quoteRows.values()).filter(row => !filter || row.code.toUpperCase().includes(filter));
+  const key = state.quoteLatencySort;
+  return rows.sort((a, b) => {
+    if (key !== 'code') {
+      const av = a[key], bv = b[key];
+      const aValid = typeof av === 'number' && Number.isFinite(av);
+      const bValid = typeof bv === 'number' && Number.isFinite(bv);
+      if (aValid !== bValid) return aValid ? -1 : 1;
+      if (aValid && av !== bv) return bv - av;
+    }
+    return a.code < b.code ? -1 : a.code > b.code ? 1 : 0;
+  });
+}
+
+function exportQuoteLatency(format) {
+  const batch = state.quoteLatencyBatch;
+  if (!batch) return;
+  let content;
+  if (format === 'csv') {
+    const report = batch.latency;
+    const fields = ['code', 'last_price', 'volume', 'quote_at_ms', 'qmt_callback_at_ms', 'qmt_push_at_ms',
+      'received_at_ms', 'qmt_quote_latency_ms', 'quote_latency_ms', 'internal_latency_ms', 'qmt_prepare_ms', 'qmt_encode_ms', 'quote_json'];
+    const cell = value => `"${String(value ?? '').replace(/"/g, '""')}"`;
+    const rows = filteredQuoteLatencyRows().map(row => [row.code, row.price, row.volume, row.quoteAt, row.qmtCallbackAt,
+      row.qmtPushAt, row.receivedAt, row.qmtQuoteLatency, row.quoteLatency, row.internalLatency, row.qmtPrepare,
+      report.qmt_encode_ms, JSON.stringify(row.raw)].map(cell).join(','));
+    content = '\ufeff' + [fields.join(','), ...rows].join('\r\n');
+  } else {
+    content = JSON.stringify(batch);
+  }
+  const url = URL.createObjectURL(new Blob([content], { type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `cfquant-quotes-${batch.subscribe_id}-${batch.seq}.${format}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function trimQuoteRows(maxRows = 80) {
@@ -7901,24 +8026,64 @@ function renderQuoteLiveTable() {
   const body = $('quoteLiveBody');
   const status = $('quoteLiveStatus');
   if (!body) return;
-  const rows = Array.from(state.quoteRows.values())
-    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-    .slice(0, 80);
+  const diagnostic = state.quoteLatencyMode || state.apiEndpointId === 'quote_latency';
+  document.querySelectorAll('[data-quote-latency]').forEach(node => node.classList.toggle('hidden', !diagnostic));
+  const summary = $('quoteLatencySummary');
+  if (summary && diagnostic) {
+    const reports = state.quoteLatencyWindow;
+    const internal = reports.map(report => report.internal_latency_ms);
+    const last = state.quoteLatencyBatch?.latency;
+    summary.textContent = last
+      ? `本批全部 ${last.code_count} 只 · 行情到 QMT ${quoteLatencySummary(last.summary?.qmt_quote_latency)} · 行情到程序 ${quoteLatencySummary(last.summary?.quote_latency)} · cfquant 内部 ${latencyCell(last.internal_latency_ms)}（最近 ${reports.length} 批：${quoteLatencyStats(internal)}） · QMT 准备 ${latencyCell(last.qmt_prepare_ms)} · QMT 编码 ${latencyCell(last.qmt_encode_ms)}${last.qmt_encoding === 'compatible_json' ? '（兼容模式）' : ''} · 外部统计 ${latencyCell(last.analysis_ms)} · 接收于 ${last.received_at_ms ? new Date(last.received_at_ms).toLocaleString() : '--'}`
+      : '等待全推数据；无行情变化时不会产生新测量。';
+  }
+  const allRows = diagnostic ? filteredQuoteLatencyRows() : Array.from(state.quoteRows.values())
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const pages = Math.max(1, Math.ceil(allRows.length / state.quoteLatencyPageSize));
+  state.quoteLatencyPage = Math.max(1, Math.min(pages, state.quoteLatencyPage));
+  const offset = diagnostic ? (state.quoteLatencyPage - 1) * state.quoteLatencyPageSize : 0;
+  const rows = allRows.slice(offset, offset + (diagnostic ? state.quoteLatencyPageSize : 80));
+  if (diagnostic) {
+    $('quoteLatencyPageInfo').textContent = `第 ${state.quoteLatencyPage} / ${pages} 页 · 匹配 ${allRows.length} / 本批 ${state.quoteRows.size} 只`;
+    $('quoteLatencyPrev').disabled = state.quoteLatencyPage <= 1;
+    $('quoteLatencyNext').disabled = state.quoteLatencyPage >= pages;
+    $('quoteLatencyPause').textContent = state.quoteLatencyPaused ? '恢复刷新' : '暂停刷新';
+    $('quoteLatencyPause').disabled = !state.quoteLatencyBatch;
+    $('quoteLatencyExportJson').disabled = !state.quoteLatencyBatch;
+    $('quoteLatencyExportCsv').disabled = !state.quoteLatencyBatch;
+  }
   body.innerHTML = rows.map((row) => `<tr>
     <td>${esc(row.code)}</td>
     <td class="num">${plain(row.price)}</td>
     <td class="num ${signedClass(row.pct)}">${plain(row.pct)}</td>
     <td class="num">${plain(row.volume)}</td>
-    <td>${plain(row.time)}</td>
-  </tr>`).join('') || '<tr><td colspan="5">等待行情推送</td></tr>';
+    <td>${plain(diagnostic ? (row.quoteAt != null ? formatQuoteTime(row.quoteAt, state.quoteLatencyBatch) : '--') : row.time)}</td>
+    ${diagnostic ? `<td class="num" title="原始行情时间：${esc(row.quoteTimeRaw ?? '缺失或无法解析')}；QMT 回调入口：${esc(row.qmtCallbackAt ?? '--')}（Unix 毫秒）">${latencyCell(row.qmtQuoteLatency)}</td><td class="num" title="原始行情时间：${esc(row.quoteTimeRaw ?? '缺失或无法解析')}">${latencyCell(row.quoteLatency)}</td><td class="num" title="QMT 发送前：${esc(row.qmtPushAt ?? '--')}；程序接收：${esc(row.receivedAt ?? '--')}（Unix 毫秒）">${latencyCell(row.internalLatency)}</td><td class="num">${latencyCell(row.qmtPrepare)}</td>` : ''}
+  </tr>`).join('') || `<tr><td colspan="${diagnostic ? 9 : 5}">${diagnostic && state.quoteLatencyBatch ? '没有匹配的证券代码' : '等待行情推送'}</td></tr>`;
   if (status) {
     const subText = state.quoteSubscribeId ? ` #${state.quoteSubscribeId}` : '';
-    status.textContent = `${state.quoteConnectionText}${state.quoteConnectionText.includes('#') ? '' : subText} · ${state.quoteEventCount || 0} 次推送 · ${rows.length} 条 / seq ${state.quoteSeq || 0}`;
+    status.textContent = `${state.quoteConnectionText}${state.quoteConnectionText.includes('#') ? '' : subText} · ${diagnostic ? '已展示 ' : ''}${state.quoteEventCount || 0} 批推送 · ${rows.length} 条${diagnostic ? ` / 本批 ${state.quoteRows.size} 只${state.quoteLatencyPaused ? ' · 已暂停刷新' : ''}` : ''} / seq ${state.quoteSeq || 0}`;
   }
   const connectBtn = $('quoteConnectBtn');
   const stopBtn = $('quoteStopBtn');
   if (connectBtn) connectBtn.disabled = !state.quoteSubscribeId || state.quoteLiveActive;
   if (stopBtn) stopBtn.disabled = !state.quoteSubscribeId && !state.quoteLiveActive;
+}
+
+function latencyCell(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(3)} ms` : '--';
+}
+
+function quoteLatencySummary(stats) {
+  if (!stats?.count) return '--（无有效时间）';
+  return `均值 ${latencyCell(stats.avg_ms)} / P95 ${latencyCell(stats.p95_ms)} / 最小 ${latencyCell(stats.min_ms)} / 最大 ${latencyCell(stats.max_ms)}（${stats.count} 只有效）`;
+}
+
+function quoteLatencyStats(values) {
+  const sorted = values.filter(value => typeof value === 'number' && Number.isFinite(value)).sort((a, b) => a - b);
+  if (!sorted.length) return '--';
+  const avg = sorted.reduce((sum, value) => sum + value, 0) / sorted.length;
+  return `均值 ${latencyCell(avg)} / P95 ${latencyCell(sorted[Math.ceil(sorted.length * 0.95) - 1])} / 最小 ${latencyCell(sorted[0])} / 最大 ${latencyCell(sorted[sorted.length - 1])}`;
 }
 
 function scheduleQuoteRender(force = false) {
@@ -14137,6 +14302,32 @@ async function boot() {
   });
   $('quoteConnectBtn').addEventListener('click', () => connectQuoteWebSocket(state.quoteSubscribeId));
   $('quoteStopBtn').addEventListener('click', () => stopQuoteLive());
+  $('quoteLatencyFilter').addEventListener('input', event => {
+    state.quoteLatencyFilter = event.target.value;
+    state.quoteLatencyPage = 1;
+    scheduleQuoteRender(true);
+  });
+  $('quoteLatencySort').addEventListener('change', event => {
+    state.quoteLatencySort = event.target.value;
+    state.quoteLatencyPage = 1;
+    scheduleQuoteRender(true);
+  });
+  $('quoteLatencyPageSize').addEventListener('change', event => {
+    state.quoteLatencyPageSize = Number(event.target.value) || 100;
+    state.quoteLatencyPage = 1;
+    scheduleQuoteRender(true);
+  });
+  $('quoteLatencyPrev').addEventListener('click', () => { state.quoteLatencyPage -= 1; scheduleQuoteRender(true); });
+  $('quoteLatencyNext').addEventListener('click', () => { state.quoteLatencyPage += 1; scheduleQuoteRender(true); });
+  $('quoteLatencyPause').addEventListener('click', () => {
+    state.quoteLatencyPaused = !state.quoteLatencyPaused;
+    const pending = state.quoteLatencyPending;
+    state.quoteLatencyPending = null;
+    if (!state.quoteLatencyPaused && pending) handleQuoteEvent(pending, { force: true });
+    else scheduleQuoteRender(true);
+  });
+  $('quoteLatencyExportJson').addEventListener('click', () => exportQuoteLatency('json'));
+  $('quoteLatencyExportCsv').addEventListener('click', () => exportQuoteLatency('csv'));
   const downloadClearBtn = $('downloadProgressClearBtn');
   if (downloadClearBtn) downloadClearBtn.addEventListener('click', clearDownloadProgress);
   $('apiForm').addEventListener('input', updateApiRequestPreview);

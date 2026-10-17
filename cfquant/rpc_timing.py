@@ -22,6 +22,7 @@ class RpcTiming(object):
             "response_received": True,
             "response_ok": bool(message.get("ok")),
             "wait_ms": round((self.received_at - self.started) * 1000, 3),
+            "json_decode_ms": message.get("_client_parse_ms"),
         })
         meta = message.get("meta") or {}
         qmt = (meta.get("timing") or {}).get("qmt")

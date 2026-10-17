@@ -190,7 +190,7 @@ def example_for(entry):
         if name == "get_trading_dates":
             usage = "无需完成 Web 账号绑定，也无需启动大 QMT 桥策略；外部 Python 环境需要安装 pandas-market-calendars。"
         if name in ("subscribe_quote", "subscribe_whole_quote", "unsubscribe_quote", "run"):
-            call = 'xtdata.subscribe_whole_quote(["600000.SH", "000001.SZ"], callback=on_quote)' if name == "subscribe_whole_quote" else 'xtdata.subscribe_quote("600000.SH", period="tick", callback=on_quote)'
+            call = 'xtdata.subscribe_whole_quote(["SH", "SZ", "BJ"], callback=on_quote)' if name == "subscribe_whole_quote" else 'xtdata.subscribe_quote("600000.SH", period="tick", callback=on_quote)'
             body = 'def on_quote(data):\n    print(data)\n\nseq = ' + call + '\nif seq is None or int(seq) <= 0:\n    raise RuntimeError("Quote subscription failed")\ntry:\n    xtdata.run()\nexcept KeyboardInterrupt:\n    pass\nfinally:\n    xtdata.unsubscribe_quote(seq)'
             usage += " 行情变化通过 on_quote 到达；退出时按订阅号清理订阅。"
         else:

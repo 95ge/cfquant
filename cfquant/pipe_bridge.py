@@ -24,7 +24,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         globals_dict=None,
         schedule_timer=True,
         pump_max_count=20,
-        pump_max_ms=0,
+        pump_max_ms=5,
         dispatch_on_qmt_thread=False,
         connect_timeout_ms=3000,
     ):
@@ -212,7 +212,7 @@ def start_pipe_normal_bridge(
     show=True,
     schedule_timer=True,
     pump_max_count=20,
-    pump_max_ms=0,
+    pump_max_ms=5,
     dispatch_on_qmt_thread=False,
     connect_timeout_ms=3000,
 ):

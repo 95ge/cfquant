@@ -4,12 +4,14 @@ import json
 import os
 import queue
 import struct
+import sys
 import threading
 import time
 import uuid
 from ctypes import wintypes
 
 from .logging_i18n import get_log_enabled, translate_log
+from .flow_control import OrderedSender
 
 
 DEFAULT_PIPE_NAME = os.environ.get("CFQUANT_PIPE_NAME", r"\\.\pipe\cfquant_pipe_hub")
@@ -361,15 +363,21 @@ class PipeTxClient(object):
         self.conn_lock = threading.RLock()
         self.thread = None
         self.heartbeat_thread = None
+        self._sender = None
+        self._sender_conn = None
+        self._stop_event = threading.Event()
+        self.send_max_bytes = int(os.environ.get("CFQUANT_PIPE_SEND_MAX_BYTES", 128 * 1024 * 1024))
+        self.send_timeout = float(os.environ.get("CFQUANT_PIPE_SEND_TIMEOUT", "15"))
 
     def start(self):
         if self.running:
             return self
         self.running = True
+        self._stop_event.clear()
         self.thread = threading.Thread(target=self._connect_loop)
         self.thread.daemon = True
         self.thread.start()
-        if self.heartbeat_interval > 0:
+        if self.heartbeat_interval > 0 or self.send_timeout > 0:
             self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
             self.heartbeat_thread.daemon = True
             self.heartbeat_thread.start()
@@ -386,11 +394,6 @@ class PipeTxClient(object):
     def push(self, key, payload, channel):
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8", errors="replace")
-        envelope = dumps_pipe_message(self._pipe_envelope("publish", "qmt_tx", {
-            "key": key,
-            "channel": channel,
-            "payload": payload,
-        }))
         conn, generation = self._get_tx_state()
         if conn is None:
             rx_conn, rx_generation = self._get_rx_state()
@@ -398,8 +401,28 @@ class PipeTxClient(object):
                 self._drop_pair(rx_generation, reason="pipe tx connection missing", conns=(rx_conn,))
             return {"code": -1, "msg": "pipe not connected"}
         try:
-            conn.write_frame(envelope)
-            return {"code": 0, "msg": "ok"}
+            # Strings/bytes are already frozen by the bridge. Never enqueue a
+            # mutable native QMT callback object or replay after reconnecting.
+            if not isinstance(payload, str):
+                raise TypeError("pipe publish payload must be an encoded string")
+            with self.conn_lock:
+                if (self.tx_conn, self.connection_generation) != (conn, generation):
+                    raise RuntimeError("pipe connection changed before send")
+                if self._sender is None or self._sender_conn is not conn:
+                    def send(item):
+                        kind, body, target = item
+                        envelope = self._pipe_envelope("heartbeat", "qmt_tx") if kind == "__cfquant_heartbeat__" else self._pipe_envelope("publish", "qmt_tx", {
+                            "key": kind, "channel": target, "payload": body,
+                            "event_passthrough": kind == "event" and body.startswith("cfquant:"),
+                        })
+                        conn.write_frame(dumps_pipe_message(envelope))
+                    self._sender = OrderedSender(send, lambda error: self._drop_pair(
+                        generation, reason="pipe sender failed: %s" % error, conns=(conn,)),
+                        max_bytes=self.send_max_bytes)
+                    self._sender_conn = conn
+                sender = self._sender
+            sender.submit((key, payload, channel), size=sys.getsizeof(payload) + 1024)
+            return {"code": 0, "msg": "queued"}
         except Exception as e:
             message = "pipe push failed: %s" % e
             self._log(message)
@@ -408,6 +431,7 @@ class PipeTxClient(object):
 
     def close(self):
         self.running = False
+        self._stop_event.set()
         try:
             self.Q.put_nowait(None)
         except Exception:
@@ -504,6 +528,10 @@ class PipeTxClient(object):
         close_conns = []
         with self.conn_lock:
             if generation is None or self.connection_generation == generation:
+                if self._sender is not None:
+                    self._sender.close()
+                self._sender = None
+                self._sender_conn = None
                 for conn in (self.rx_conn, self.tx_conn):
                     if conn is not None and conn not in close_conns:
                         close_conns.append(conn)
@@ -528,15 +556,24 @@ class PipeTxClient(object):
                 pass
 
     def _heartbeat_loop(self):
+        next_heartbeat = time.monotonic() + self.heartbeat_interval
         while self.running:
-            time.sleep(max(0.1, self.heartbeat_interval))
+            self._stop_event.wait(0.5)
             if not self.running:
                 break
             conn, generation = self._get_tx_state()
             if conn is None:
                 continue
+            sender = self._sender
+            if sender is not None and self.send_timeout > 0 and sender.status()["oldest_age_ms"] > self.send_timeout * 1000:
+                self._drop_pair(generation, reason="pipe send backlog timed out", conns=(conn,))
+                continue
+            if self.heartbeat_interval <= 0 or time.monotonic() < next_heartbeat:
+                continue
+            next_heartbeat = time.monotonic() + self.heartbeat_interval
             try:
-                conn.write_frame(dumps_pipe_message(self._pipe_envelope("heartbeat", "qmt_tx")))
+                # Queue behind data; the watchdog must never block in WriteFile.
+                self.push("__cfquant_heartbeat__", "", "")
             except Exception as e:
                 message = "pipe heartbeat failed: %s" % e
                 self._log(message)
@@ -557,6 +594,10 @@ class PipeTxClient(object):
         if extra:
             data.update(extra)
         return data
+
+    def send_status(self):
+        sender = self._sender
+        return sender.status() if sender is not None else {"queued_frames": 0, "buffered_bytes": 0, "error": self.last_error}
 
     def _log(self, msg):
         if self.show and get_log_enabled():

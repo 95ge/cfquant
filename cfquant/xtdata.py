@@ -144,7 +144,14 @@ def _subscribe_quote_request(action, params, callback):
 
 
 def unsubscribe_quote(seq):
-    result = get_client().request("xtdata.unsubscribe_quote", {"subscribe_id": seq})
+    client = get_client()
+    if getattr(client, "_closed", False):
+        # Cleanup after run()/Ctrl+C must not open a new network connection.
+        item = _subscription_callbacks.pop(seq, None)
+        if item:
+            client.remove_callback(*item)
+        return False
+    result = client.request("xtdata.unsubscribe_quote", {"subscribe_id": seq})
     if result is False or (isinstance(result, (int, float)) and result < 0):
         return result
     item = _subscription_callbacks.pop(seq, None)
@@ -616,6 +623,10 @@ def _stock_basic_request(action, stock_code):
 
 
 def run():
-    get_client().start()
-    while True:
-        time.sleep(1)
+    client = get_client()
+    try:
+        client.start()
+        while not getattr(client, "_closed", False):
+            time.sleep(.2)
+    finally:
+        client.close()

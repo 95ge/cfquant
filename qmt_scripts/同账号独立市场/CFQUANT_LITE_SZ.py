@@ -20,6 +20,7 @@ _cfquant_market_os.environ["CFQUANT_MARKET_SOURCE"] = "cfquant_market_entry"
 
 import base64
 import datetime as dt
+import inspect
 import json
 import math
 import os
@@ -30,6 +31,7 @@ import sys
 sys.dont_write_bytecode = True
 os.environ["CFQUANT_QMT_NO_FILE_IO"] = "1"
 import threading
+from collections import deque
 import time
 import traceback
 import uuid
@@ -712,7 +714,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.52"
+CORE_VERSION = "0.2.53"
 LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -1233,6 +1235,130 @@ def dataframe_numeric_rows(value):
     return value.astype(object, copy=False).values.tolist()
 
 
+def encode_response_result(result):
+    """Freeze one response body for reuse; include all serialization work."""
+    started = time.perf_counter()
+    encoded = encode_value(result)
+    converted = time.perf_counter()
+    normalized = normalize_json_value(encoded, "result")
+    normalized_at = time.perf_counter()
+    body = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    finished = time.perf_counter()
+    return body, {"encode_value_ms": round((converted - started) * 1000, 3),
+                  "normalize_ms": round((normalized_at - converted) * 1000, 3),
+                  "json_encode_ms": round((finished - normalized_at) * 1000, 3),
+                  "encode_ms": round((finished - started) * 1000, 3)}
+
+
+def is_readonly_request(action):
+    # Only known query families. Downloads, subscriptions and all writes retain
+    # their existing execution semantics, including on an ambiguous timeout.
+    return (str(action).startswith(("xtdata.get_", "xttrader.query_"))
+            or action in ("cfquant.ping", "cfquant.status", "cfquant.query_info"))
+
+
+def request_expired(msg, now=None):
+    if not is_readonly_request(msg.get("action")):
+        return False
+    received = msg.get("_received_monotonic")
+    timeout = msg.get("timeout")
+    if received is None or timeout is None:
+        return False
+    return (time.perf_counter() if now is None else now) - received >= max(0.0, float(timeout))
+
+
+class OrderedSender(object):
+    """One FIFO writer per connection; overflow/failure closes that connection.
+
+    Capacity includes the in-flight frame. Accepted frames are never coalesced,
+    silently evicted, or replayed on a different connection.
+    """
+    def __init__(self, send, on_error, max_items=1024, max_bytes=128 * 1024 * 1024):
+        self.send = send
+        self.on_error = on_error
+        self.max_items = max(1, int(max_items))
+        self.max_bytes = max(1, int(max_bytes))
+        self._condition = threading.Condition()
+        self._queue = deque()
+        self._bytes = 0
+        self._inflight = None
+        self._closed = False
+        self._thread = None
+        self._sent = 0
+        self._last_queue_ms = 0.0
+        self._last_send_ms = 0.0
+        self._error = ""
+
+    def submit(self, payload, size=None):
+        size = len(payload) if size is None else int(size)
+        error = None
+        with self._condition:
+            if self._closed:
+                raise RuntimeError("sender is closed: %s" % self._error)
+            count = len(self._queue) + (self._inflight is not None)
+            if count >= self.max_items or self._bytes + size > self.max_bytes:
+                error = BufferError("send backlog exceeded limits (%s frames, %s bytes)" % (count, self._bytes))
+            else:
+                self._queue.append((payload, size, time.monotonic()))
+                self._bytes += size
+                if self._thread is None:
+                    self._thread = threading.Thread(target=self._run, name="cfquant-ordered-send")
+                    self._thread.daemon = True
+                    self._thread.start()
+                self._condition.notify()
+        if error is not None:
+            self._fail(error)
+            raise error
+
+    def close(self):
+        with self._condition:
+            self._closed = True
+            self._queue.clear()
+            self._bytes = self._inflight[1] if self._inflight is not None else 0
+            self._condition.notify_all()
+
+    def _fail(self, error):
+        with self._condition:
+            if self._closed:
+                return
+            self._error = str(error)
+            self.close()
+        self.on_error(error)
+
+    def _run(self):
+        while True:
+            with self._condition:
+                while not self._closed and not self._queue:
+                    self._condition.wait()
+                if self._closed:
+                    return
+                item = self._queue.popleft()
+                self._inflight = item
+            started = time.monotonic()
+            try:
+                self.send(item[0])
+            except Exception as error:
+                self._fail(error)
+                return
+            finally:
+                with self._condition:
+                    self._last_queue_ms = (started - item[2]) * 1000
+                    self._last_send_ms = (time.monotonic() - started) * 1000
+                    self._bytes -= item[1]
+                    self._inflight = None
+            with self._condition:
+                self._sent += 1
+
+    def status(self):
+        with self._condition:
+            oldest = self._inflight or (self._queue[0] if self._queue else None)
+            return {"queued_frames": len(self._queue), "buffered_bytes": self._bytes,
+                    "sending": self._inflight is not None, "sent_frames": self._sent,
+                    "oldest_age_ms": round((time.monotonic() - oldest[2]) * 1000, 3) if oldest else 0,
+                    "last_queue_ms": round(self._last_queue_ms, 3),
+                    "last_send_ms": round(self._last_send_ms, 3), "error": self._error}
+
+
 def dumps_message(payload):
     data = dict(payload)
     data.setdefault("protocol", "cfquant")
@@ -1273,21 +1399,21 @@ def pack_request(action, params=None, reply_channel=None, client_id=None, reques
     return dumps_message(payload)
 
 
-def pack_response(request_id, ok=True, result=None, error=None, meta=None):
-    started = time.perf_counter()
-    encoded = encode_value(result)
+def pack_response(request_id, ok=True, result=None, error=None, meta=None, encoded_result=None):
+    body, encoding_timing = encode_response_result(result) if encoded_result is None else encoded_result
     meta = dict(meta or {})
     timing = meta.get("timing")
     if isinstance(timing, dict) and isinstance(timing.get("qmt"), dict):
-        timing["qmt"]["encode_ms"] = round((time.perf_counter() - started) * 1000, 3)
-    return dumps_message({
+        timing = dict(timing, qmt=dict(timing["qmt"], **encoding_timing))
+        meta["timing"] = timing
+    header = dumps_message({
         "type": "response",
         "id": request_id,
         "ok": bool(ok),
-        "result": encoded,
         "error": encode_error(error),
         "meta": meta,
     })
+    return header[:-1] + ',"result":' + body + '}'
 
 
 def pack_event(event, data=None, client_id=None, subscription_id=None, meta=None):
@@ -2069,6 +2195,46 @@ LITE_OBJECT_QUERY_METHODS = {
     "query_secu_account", "query_bank_info", "query_bank_amount",
     "query_bank_transfer_stream",
 }
+
+def _quote_json_default(value):
+    """Box only uncommon quote scalars; ordinary dict/list traversal stays in JSON's C encoder."""
+    if type(value).__module__.startswith("pandas.") and type(value).__name__ in ("NAType", "NaTType"):
+        return None
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if hasattr(value, "item"):
+        return value.item()
+    raise TypeError("unsupported quote JSON type: %s" % type(value).__name__)
+
+def pack_quote_latency_event(event, data, client_id=None, subscription_id=None):
+    """Encode the complete diagnostic snapshot once, without recursive Python preprocessing.
+
+    Nonfinite or unusual payloads raise and use the bridge's existing compatibility
+    encoder. The wire format remains ordinary strict JSON, consumable by old receivers.
+    """
+    started = time.perf_counter()
+    quotes_json = json.dumps(data["quotes"], default=_quote_json_default,
+                             ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    metadata = {key: value for key, value in data.items() if key != "quotes"}
+    metadata["qmt_encode_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    metadata["qmt_encoding"] = "direct_json"
+    header = dumps_message({"type": "event", "event": event, "client_id": client_id,
+                           "subscription_id": subscription_id, "meta": {"quote_json_plain": True}})
+    details = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return header[:-1] + ',"data":' + details[:-1] + ',"quotes":' + quotes_json + '}}'
+
+def pack_whole_quote_event(event, data, client_id=None, subscription_id=None):
+    """Serialize a whole-quote batch without recursive Python preprocessing.
+
+    Only the event metadata carries the encoding marker; callback data keeps
+    its stock-code dictionary shape. Unsupported values require the caller's
+    compatibility fallback, just as for diagnostic snapshots.
+    """
+    quotes_json = json.dumps(data, default=_quote_json_default,
+                             ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    header = dumps_message({"type": "event", "event": event, "client_id": client_id,
+                           "subscription_id": subscription_id, "meta": {"quote_json_plain": True}})
+    return header[:-1] + ',"data":' + quotes_json + '}'
 
 class TxTradeBridge(object):
     def __init__(
@@ -5711,7 +5877,7 @@ class NormalQmtBridge(TxTradeBridge):
         globals_dict=None,
         schedule_timer=True,
         pump_max_count=20,
-        pump_max_ms=0,
+        pump_max_ms=5,
         dispatch_on_qmt_thread=False,
     ):
         super(NormalQmtBridge, self).__init__(
@@ -5998,8 +6164,11 @@ class NormalQmtBridge(TxTradeBridge):
                 source = self.worker_source or "unknown"
             try:
                 self._drain_requests(source)
+                if not self.request_queue.empty():
+                    self.worker_event.set()
             except Exception as e:
                 self._log("normal bridge worker error source=%s error=%s" % (source, e))
+
 
     def _drain_requests(self, source):
         with self.dispatch_lock:
@@ -6098,6 +6267,10 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_single_request(self, source, msg, received_at):
         try:
+            if request_expired(msg):
+                self._expired_requests = getattr(self, "_expired_requests", 0) + 1
+                self._send_error(msg, TimeoutError("read-only request expired before QMT execution"))
+                return
             if self.dispatch_on_qmt_thread and msg.get("action") == "xttrader.order_stock":
                 self._defer_sync_order_response(msg)
                 return
@@ -6114,15 +6287,39 @@ class NormalQmtBridge(TxTradeBridge):
             )
             self._send_error(msg, e)
 
+
     def _drain_coalesced_request(self, source, msg, received_at, coalesce_key):
+        response_waiters = None
+        counted = False
         try:
+            with self.coalesce_lock:
+                entry = self.coalesced_requests.get(coalesce_key)
+                waiters = entry["waiters"] if entry else [(msg, received_at)]
+                expired, active = [], []
+                for item in waiters:
+                    (expired if request_expired(item[0]) else active).append(item)
+                if entry is not None:
+                    entry["waiters"] = active
+                    if not active:
+                        self.coalesced_requests.pop(coalesce_key, None)
+            for waiter, _ in expired:
+                self._expired_requests = getattr(self, "_expired_requests", 0) + 1
+                self._send_error(waiter, TimeoutError("read-only request expired before QMT execution"))
+            if not active:
+                return
+            msg = active[0][0]
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
             with self.coalesce_lock:
                 entry = self.coalesced_requests.pop(coalesce_key, None)
                 self.coalesce_dispatch_count += 1
+                counted = True
             waiters = entry.get("waiters", []) if entry else [(msg, received_at)]
-            for waiter_msg, _ in waiters:
-                self._send_response(waiter_msg, result)
+            response_waiters = list(waiters)
+            encoded_result = encode_response_result(result)
+            while response_waiters:
+                waiter_msg, _ = response_waiters[0]
+                self._send_response(waiter_msg, result, encoded_result=encoded_result)
+                response_waiters.pop(0)
             self._log(
                 "normal bridge worker coalesced_response source=%s action=%s id=%s waiters=%s total_ms=%.2f"
                 % (source, msg.get("action"), msg.get("id"), len(waiters), (time.time() - received_at) * 1000)
@@ -6130,14 +6327,16 @@ class NormalQmtBridge(TxTradeBridge):
         except Exception as e:
             with self.coalesce_lock:
                 entry = self.coalesced_requests.pop(coalesce_key, None)
-                self.coalesce_dispatch_count += 1
-            waiters = entry.get("waiters", []) if entry else [(msg, received_at)]
+                if not counted:
+                    self.coalesce_dispatch_count += 1
+            waiters = entry.get("waiters", []) if entry else (response_waiters if response_waiters is not None else [(msg, received_at)])
             self._log(
                 "normal bridge worker coalesced_error source=%s action=%s id=%s waiters=%s error=%s"
                 % (source, msg.get("action"), msg.get("id"), len(waiters), e)
             )
             for waiter_msg, _ in waiters:
                 self._send_error(waiter_msg, e)
+
 
     def _on_whole_quote(self, data):
         self._release_worker("whole_quote")
@@ -6149,7 +6348,7 @@ class NormalQmtBridge(TxTradeBridge):
         if self.context is None or self.whole_quote_sub_id:
             return
         try:
-            self.whole_quote_sub_id = self.context.subscribe_whole_quote(["SH", "SZ"], callback=self._on_whole_quote)
+            self.whole_quote_sub_id = self.context.subscribe_whole_quote(["SH", "SZ", "BJ"], callback=self._on_whole_quote)
             self._log("normal bridge internal whole quote subscribed id=%s" % self.whole_quote_sub_id)
         except Exception as e:
             self._log("normal bridge internal whole quote subscribe failed: %s" % e)
@@ -6170,12 +6369,13 @@ class NormalQmtBridge(TxTradeBridge):
         except Exception as e:
             self._log("normal bridge timer schedule failed: %s" % e)
 
-    def _send_response(self, msg, result):
+    def _send_response(self, msg, result, encoded_result=None):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
-        response = pack_response(msg.get("id"), ok=True, result=result, meta=msg.get("_response_meta"))
+        response = pack_response(msg.get("id"), ok=True, result=result, meta=msg.get("_response_meta"), encoded_result=encoded_result)
         self.tx.push("response", response, client_id)
+
 
     def _send_error(self, msg, error):
         client_id = msg.get("client_id") or msg.get("reply_channel")
@@ -6487,6 +6687,8 @@ class NormalQmtBridge(TxTradeBridge):
             coalesced_group_count = len(self.coalesced_requests)
         return {
             "request_queue_size": self.request_queue.qsize(),
+            "expired_readonly_requests": getattr(self, "_expired_requests", 0),
+            "send_queue": self.tx.send_status() if hasattr(self.tx, "send_status") else None,
             "recv_thread_alive": self.recv_thread.is_alive() if self.recv_thread else False,
             "worker_thread_alive": self.worker_thread.is_alive() if self.worker_thread else False,
             "whole_quote_sub_id": self.whole_quote_sub_id,
@@ -6511,7 +6713,10 @@ class NormalQmtBridge(TxTradeBridge):
             "coalesce_dispatch_count": self.coalesce_dispatch_count,
         }
 
+
     def _dispatch(self, action, params, msg):
+        if action == "xtdata.subscribe_whole_quote_latency":
+            return self._subscribe_native_quote(dict(msg, params=params), "whole_quote_latency", "subscribe_whole_quote")
         if action in ("xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"):
             return self._subscribe_native_quote(dict(msg, params=params), "thousand", action.split(".", 1)[1])
         if action in ("xtdata.subscribe_whole_quote", "xtdata.subscribe_quote", "xtdata.unsubscribe_quote"):
@@ -6557,19 +6762,46 @@ class NormalQmtBridge(TxTradeBridge):
         callback_lock = threading.RLock()
         initializing = [True]
 
+        def publish(payload, callback_at_ms):
+            client_id = sub.get("client_id")
+            if client_id:
+                if kind == "whole_quote_latency":
+                    payload = {
+                        "schema": "cfquant.quote_latency.v1",
+                        "qmt_callback_at_ms": callback_at_ms,
+                        "qmt_push_at_ms": time.time() * 1000.0,
+                        "quotes": payload,
+                    }
+                    try:
+                        event = pack_quote_latency_event(sub["callback_event"], payload, client_id, sub_id)
+                    except (TypeError, ValueError):
+                        # Preserve the existing contract for NaN/Inf and unusual objects.
+                        payload["quotes"] = quote_plain(payload["quotes"])
+                        payload["qmt_encoding"] = "compatible_json"
+                        event = pack_event(sub["callback_event"], data=payload, client_id=client_id, subscription_id=sub_id)
+                elif kind == "whole_quote":
+                    try:
+                        event = pack_whole_quote_event(sub["callback_event"], payload, client_id, sub_id)
+                    except (TypeError, ValueError):
+                        event = pack_event(sub["callback_event"], data=quote_plain(payload),
+                                           client_id=client_id, subscription_id=sub_id)
+                else:
+                    event = pack_event(sub["callback_event"], data=payload, client_id=client_id, subscription_id=sub_id)
+                if initializing[0]:
+                    # Freeze the snapshot before returning to native QMT, which may
+                    # reuse/mutate callback objects while subscription completes.
+                    pending.append(event)
+                else:
+                    self.tx.push("event", event, client_id)
+
         def callback(data):
+            callback_at_ms = time.time() * 1000.0 if kind == "whole_quote_latency" else None
             with callback_lock:
                 self._release_worker("quote")
                 if self.quote_subscriptions.get(sub_id) is not sub or self.tx is None:
                     return
-                payload = quote_plain(data) if kind == "whole_quote" else quote_callback_data(data)
-                if initializing[0]:
-                    pending.append(payload)
-                    return
-                client_id = sub.get("client_id")
-                if client_id:
-                    event = pack_event(sub["callback_event"], data=payload, client_id=client_id, subscription_id=sub_id)
-                    self.tx.push("event", event, client_id)
+                payload = data if kind in ("whole_quote", "whole_quote_latency") else quote_callback_data(data)
+                publish(payload, callback_at_ms)
 
         func = self._get_callable(method)
         if method in L2_THOUSAND_SUBSCRIPTIONS:
@@ -6578,7 +6810,7 @@ class NormalQmtBridge(TxTradeBridge):
             raise NotImplementedError("QMT %s not found" % method)
         self.quote_subscriptions[sub_id] = sub
         try:
-            if kind == "whole_quote":
+            if kind in ("whole_quote", "whole_quote_latency"):
                 internal_id = self._call_variants(func, [
                     ((sub["code_list"],), {"callback": callback}),
                     ((sub["code_list"], callback), {}),
@@ -6603,8 +6835,8 @@ class NormalQmtBridge(TxTradeBridge):
         with callback_lock:
             initializing[0] = False
             try:
-                for payload in pending:
-                    callback(payload)
+                for event in pending:
+                    self.tx.push("event", event, sub["client_id"])
             except Exception:
                 self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
                 raise
@@ -6631,7 +6863,7 @@ def start_normal_bridge(
     show=True,
     schedule_timer=True,
     pump_max_count=20,
-    pump_max_ms=0,
+    pump_max_ms=5,
     dispatch_on_qmt_thread=False,
 ):
     import sys
@@ -7006,15 +7238,21 @@ class PipeTxClient(object):
         self.conn_lock = threading.RLock()
         self.thread = None
         self.heartbeat_thread = None
+        self._sender = None
+        self._sender_conn = None
+        self._stop_event = threading.Event()
+        self.send_max_bytes = int(os.environ.get("CFQUANT_PIPE_SEND_MAX_BYTES", 128 * 1024 * 1024))
+        self.send_timeout = float(os.environ.get("CFQUANT_PIPE_SEND_TIMEOUT", "15"))
 
     def start(self):
         if self.running:
             return self
         self.running = True
+        self._stop_event.clear()
         self.thread = threading.Thread(target=self._connect_loop)
         self.thread.daemon = True
         self.thread.start()
-        if self.heartbeat_interval > 0:
+        if self.heartbeat_interval > 0 or self.send_timeout > 0:
             self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
             self.heartbeat_thread.daemon = True
             self.heartbeat_thread.start()
@@ -7031,11 +7269,6 @@ class PipeTxClient(object):
     def push(self, key, payload, channel):
         if isinstance(payload, bytes):
             payload = payload.decode("utf-8", errors="replace")
-        envelope = dumps_pipe_message(self._pipe_envelope("publish", "qmt_tx", {
-            "key": key,
-            "channel": channel,
-            "payload": payload,
-        }))
         conn, generation = self._get_tx_state()
         if conn is None:
             rx_conn, rx_generation = self._get_rx_state()
@@ -7043,8 +7276,28 @@ class PipeTxClient(object):
                 self._drop_pair(rx_generation, reason="pipe tx connection missing", conns=(rx_conn,))
             return {"code": -1, "msg": "pipe not connected"}
         try:
-            conn.write_frame(envelope)
-            return {"code": 0, "msg": "ok"}
+            # Strings/bytes are already frozen by the bridge. Never enqueue a
+            # mutable native QMT callback object or replay after reconnecting.
+            if not isinstance(payload, str):
+                raise TypeError("pipe publish payload must be an encoded string")
+            with self.conn_lock:
+                if (self.tx_conn, self.connection_generation) != (conn, generation):
+                    raise RuntimeError("pipe connection changed before send")
+                if self._sender is None or self._sender_conn is not conn:
+                    def send(item):
+                        kind, body, target = item
+                        envelope = self._pipe_envelope("heartbeat", "qmt_tx") if kind == "__cfquant_heartbeat__" else self._pipe_envelope("publish", "qmt_tx", {
+                            "key": kind, "channel": target, "payload": body,
+                            "event_passthrough": kind == "event" and body.startswith("cfquant:"),
+                        })
+                        conn.write_frame(dumps_pipe_message(envelope))
+                    self._sender = OrderedSender(send, lambda error: self._drop_pair(
+                        generation, reason="pipe sender failed: %s" % error, conns=(conn,)),
+                        max_bytes=self.send_max_bytes)
+                    self._sender_conn = conn
+                sender = self._sender
+            sender.submit((key, payload, channel), size=sys.getsizeof(payload) + 1024)
+            return {"code": 0, "msg": "queued"}
         except Exception as e:
             message = "pipe push failed: %s" % e
             self._log(message)
@@ -7053,6 +7306,7 @@ class PipeTxClient(object):
 
     def close(self):
         self.running = False
+        self._stop_event.set()
         try:
             self.Q.put_nowait(None)
         except Exception:
@@ -7149,6 +7403,10 @@ class PipeTxClient(object):
         close_conns = []
         with self.conn_lock:
             if generation is None or self.connection_generation == generation:
+                if self._sender is not None:
+                    self._sender.close()
+                self._sender = None
+                self._sender_conn = None
                 for conn in (self.rx_conn, self.tx_conn):
                     if conn is not None and conn not in close_conns:
                         close_conns.append(conn)
@@ -7173,15 +7431,24 @@ class PipeTxClient(object):
                 pass
 
     def _heartbeat_loop(self):
+        next_heartbeat = time.monotonic() + self.heartbeat_interval
         while self.running:
-            time.sleep(max(0.1, self.heartbeat_interval))
+            self._stop_event.wait(0.5)
             if not self.running:
                 break
             conn, generation = self._get_tx_state()
             if conn is None:
                 continue
+            sender = self._sender
+            if sender is not None and self.send_timeout > 0 and sender.status()["oldest_age_ms"] > self.send_timeout * 1000:
+                self._drop_pair(generation, reason="pipe send backlog timed out", conns=(conn,))
+                continue
+            if self.heartbeat_interval <= 0 or time.monotonic() < next_heartbeat:
+                continue
+            next_heartbeat = time.monotonic() + self.heartbeat_interval
             try:
-                conn.write_frame(dumps_pipe_message(self._pipe_envelope("heartbeat", "qmt_tx")))
+                # Queue behind data; the watchdog must never block in WriteFile.
+                self.push("__cfquant_heartbeat__", "", "")
             except Exception as e:
                 message = "pipe heartbeat failed: %s" % e
                 self._log(message)
@@ -7203,6 +7470,10 @@ class PipeTxClient(object):
             data.update(extra)
         return data
 
+    def send_status(self):
+        sender = self._sender
+        return sender.status() if sender is not None else {"queued_frames": 0, "buffered_bytes": 0, "error": self.last_error}
+
     def _log(self, msg):
         if self.show and get_log_enabled():
             print("cfquant pipe tx %s" % translate_log(msg))
@@ -7214,6 +7485,7 @@ class PipeTxClient(object):
             if channel and channel not in result:
                 result.append(channel)
         return result or [self.request_channel]
+
 
 class PipeNormalQmtBridge(NormalQmtBridge):
     def __init__(
@@ -7229,7 +7501,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         globals_dict=None,
         schedule_timer=True,
         pump_max_count=20,
-        pump_max_ms=0,
+        pump_max_ms=5,
         dispatch_on_qmt_thread=False,
         connect_timeout_ms=3000,
     ):
@@ -7416,7 +7688,7 @@ def start_pipe_normal_bridge(
     show=True,
     schedule_timer=True,
     pump_max_count=20,
-    pump_max_ms=0,
+    pump_max_ms=5,
     dispatch_on_qmt_thread=False,
     connect_timeout_ms=3000,
 ):
@@ -7503,10 +7775,10 @@ QMT_MARKET = os.environ.get("CFQUANT_MARKET", "").strip().upper()
 PIPE_CONNECT_TIMEOUT_MS = int(os.environ.get("CFQUANT_PIPE_CONNECT_TIMEOUT_MS", "3000"))
 TRADE_LOOP_IN_THREAD = os.environ.get("CFQUANT_CTYPE_TRADE_THREAD", "1").strip().lower() in ("1", "true", "yes", "on")
 NORMAL_PUMP_MAX_COUNT = int(os.environ.get("CFQUANT_CTYPE_NORMAL_PUMP_MAX_COUNT", "100"))
-NORMAL_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_NORMAL_PUMP_MAX_MS", "0"))
+NORMAL_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_NORMAL_PUMP_MAX_MS", "5"))
 TRADE_SLEEP_SECONDS = float(os.environ.get("CFQUANT_CTYPE_TRADE_SLEEP_SECONDS", "0.001"))
 TRADE_PUMP_MAX_COUNT = int(os.environ.get("CFQUANT_CTYPE_TRADE_PUMP_MAX_COUNT", "100"))
-TRADE_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_TRADE_PUMP_MAX_MS", "0"))
+TRADE_PUMP_MAX_MS = float(os.environ.get("CFQUANT_CTYPE_TRADE_PUMP_MAX_MS", "5"))
 TRADE_TIMER_INTERVAL_MS = int(os.environ.get("CFQUANT_CTYPE_TRADE_TIMER_INTERVAL_MS", "1"))
 
 

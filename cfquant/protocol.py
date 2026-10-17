@@ -107,21 +107,36 @@ def pack_request(action, params=None, reply_channel=None, client_id=None, reques
     return dumps_message(payload)
 
 
-def pack_response(request_id, ok=True, result=None, error=None, meta=None):
+def encode_response_result(result):
+    """Freeze one response body for reuse; include all serialization work."""
     started = time.perf_counter()
     encoded = encode_value(result)
+    converted = time.perf_counter()
+    normalized = normalize_json_value(encoded, "result")
+    normalized_at = time.perf_counter()
+    body = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    finished = time.perf_counter()
+    return body, {"encode_value_ms": round((converted - started) * 1000, 3),
+                  "normalize_ms": round((normalized_at - converted) * 1000, 3),
+                  "json_encode_ms": round((finished - normalized_at) * 1000, 3),
+                  "encode_ms": round((finished - started) * 1000, 3)}
+
+
+def pack_response(request_id, ok=True, result=None, error=None, meta=None, encoded_result=None):
+    body, encoding_timing = encode_response_result(result) if encoded_result is None else encoded_result
     meta = dict(meta or {})
     timing = meta.get("timing")
     if isinstance(timing, dict) and isinstance(timing.get("qmt"), dict):
-        timing["qmt"]["encode_ms"] = round((time.perf_counter() - started) * 1000, 3)
-    return dumps_message({
+        timing = dict(timing, qmt=dict(timing["qmt"], **encoding_timing))
+        meta["timing"] = timing
+    header = dumps_message({
         "type": "response",
         "id": request_id,
         "ok": bool(ok),
-        "result": encoded,
         "error": encode_error(error),
         "meta": meta,
     })
+    return header[:-1] + ',"result":' + body + '}'
 
 
 def pack_event(event, data=None, client_id=None, subscription_id=None, meta=None):
@@ -133,6 +148,66 @@ def pack_event(event, data=None, client_id=None, subscription_id=None, meta=None
         "data": encode_value(data),
         "meta": meta or {},
     })
+
+
+def is_readonly_request(action):
+    # Only known query families. Downloads, subscriptions and all writes retain
+    # their existing execution semantics, including on an ambiguous timeout.
+    return (str(action).startswith(("xtdata.get_", "xttrader.query_"))
+            or action in ("cfquant.ping", "cfquant.status", "cfquant.query_info"))
+
+
+def request_expired(msg, now=None):
+    if not is_readonly_request(msg.get("action")):
+        return False
+    received = msg.get("_received_monotonic")
+    timeout = msg.get("timeout")
+    if received is None or timeout is None:
+        return False
+    return (time.perf_counter() if now is None else now) - received >= max(0.0, float(timeout))
+
+
+def _quote_json_default(value):
+    """Box only uncommon quote scalars; ordinary dict/list traversal stays in JSON's C encoder."""
+    if type(value).__module__.startswith("pandas.") and type(value).__name__ in ("NAType", "NaTType"):
+        return None
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    if hasattr(value, "item"):
+        return value.item()
+    raise TypeError("unsupported quote JSON type: %s" % type(value).__name__)
+
+
+def pack_whole_quote_event(event, data, client_id=None, subscription_id=None):
+    """Serialize a whole-quote batch without recursive Python preprocessing.
+
+    Only the event metadata carries the encoding marker; callback data keeps
+    its stock-code dictionary shape. Unsupported values require the caller's
+    compatibility fallback, just as for diagnostic snapshots.
+    """
+    quotes_json = json.dumps(data, default=_quote_json_default,
+                             ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    header = dumps_message({"type": "event", "event": event, "client_id": client_id,
+                           "subscription_id": subscription_id, "meta": {"quote_json_plain": True}})
+    return header[:-1] + ',"data":' + quotes_json + '}'
+
+
+def pack_quote_latency_event(event, data, client_id=None, subscription_id=None):
+    """Encode the complete diagnostic snapshot once, without recursive Python preprocessing.
+
+    Nonfinite or unusual payloads raise and use the bridge's existing compatibility
+    encoder. The wire format remains ordinary strict JSON, consumable by old receivers.
+    """
+    started = time.perf_counter()
+    quotes_json = json.dumps(data["quotes"], default=_quote_json_default,
+                             ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    metadata = {key: value for key, value in data.items() if key != "quotes"}
+    metadata["qmt_encode_ms"] = round((time.perf_counter() - started) * 1000.0, 3)
+    metadata["qmt_encoding"] = "direct_json"
+    header = dumps_message({"type": "event", "event": event, "client_id": client_id,
+                           "subscription_id": subscription_id, "meta": {"quote_json_plain": True}})
+    details = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    return header[:-1] + ',"data":' + details[:-1] + ',"quotes":' + quotes_json + '}}'
 
 
 def encode_error(error):

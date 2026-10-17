@@ -148,6 +148,33 @@ def test_qmt_callback_dispatches_market_data_on_caller_and_preserves_frames(lite
     assert status['worker_thread_alive'] is False
 
 
+@pytest.mark.parametrize('stocks', [['000001.SZ'], ['000001.SZ', '600000.SH']])
+def test_local_data_reads_requested_stocks_without_subscription(lite, stocks):
+    # Use only the standalone entry's namespace: borrowing the shared bridge's
+    # globals would hide missing imports in the generated scripts.
+    frames = {code: lite.context.frame + index for index, code in enumerate(stocks)}
+    calls = []
+
+    def local_market(fields, codes, period, start, end, count, dividend, fill, subscribe):
+        calls.append((fields, codes, period, start, end, count, dividend, fill, subscribe))
+        return frames
+
+    lite.context.get_market_data_ex = local_market
+    params = {'field_list': ['close', 'volume'], 'stock_list': stocks,
+              'period': '1d', 'count': 2}
+    enqueue(lite, 'xtdata.get_local_data', params=params)
+    assert not calls
+    lite.ns['cfquant_ctype_trade_timer'](lite.context)
+    assert len(lite.tx.responses) == 1
+    response = lite.tx.responses[0]
+    assert response['ok'] is True, response.get('error')
+    assert calls == [(['close', 'volume'], stocks, '1d', '', '', 2, 'none', True, False)]
+    result = decode_value(response['result'])
+    assert set(result) == set(stocks)
+    for code in stocks:
+        pd.testing.assert_frame_equal(result[code], frames[code])
+
+
 def test_entry_uses_one_fast_timer_and_can_dispatch_without_ticks(lite):
     assert lite.context.timers == []
     lite.ns['_schedule_trade_timer'](lite.context)
@@ -251,16 +278,71 @@ def test_sync_order_failure_finishes_once_without_resubmission(lite, outcome):
     assert len(submissions) == 1
 
 
+@pytest.mark.parametrize('kind', ['whole_quote', 'whole_quote_latency'])
+def test_whole_quote_uses_actual_standalone_timer_and_encoder(lite, kind):
+    callbacks, subscriptions, unsubscribed = [], [], []
+    def subscribe(codes, callback):
+        subscriptions.append((codes, threading.get_ident()))
+        callbacks.append(callback)
+        return 321
+    lite.context.subscribe_whole_quote = subscribe
+    lite.context.unsubscribe_quote = unsubscribed.append
+    enqueue(lite, action='xtdata.subscribe_' + kind,
+            params={'code_list': ['000001.SZ', '600000.SH'], 'callback_event': 'quote:latency-test'})
+    assert subscriptions == []
+    lite.ns['cfquant_ctype_trade_timer'](lite.context)
+    assert subscriptions == [(['000001.SZ', '600000.SH'], threading.get_ident())]
+    response = lite.tx.responses[-1]
+    assert response['ok'] is True
+    quotes = {'000001.SZ': {'time': 1792112400000, 'lastPrice': 10.5},
+              '600000.SH': {'time': 1792112400001, 'lastPrice': 11.5}}
+    callbacks[0](quotes)
+    event = lite.tx.messages[-1][1]
+    assert event['meta']['quote_json_plain'] is True
+    payload = decode_value(event['data'])
+    if kind == 'whole_quote_latency':
+        assert payload['quotes'] == quotes
+        assert payload['schema'] == 'cfquant.quote_latency.v1'
+        assert payload['qmt_callback_at_ms'] <= payload['qmt_push_at_ms']
+    else:
+        assert payload == quotes
+    enqueue(lite, action='xtdata.unsubscribe_quote', params={'subscribe_id': response['result']['subscribe_id']})
+    lite.ns['cfquant_ctype_trade_timer'](lite.context)
+    assert unsubscribed == [321]
+
+
 def test_templates_and_regenerators_keep_qmt_dispatch():
     from tools.sync_qmt_dispatch import updated_source
     from tools.sync_qmt_fileless import updated_source as fileless_source
     from tools.sync_qmt_batch import updated_source as batch_source
+    from tools.sync_qmt_parity import CORE_PATH, _patch_source as parity_source
+    from tools.sync_qmt_latency import updated_source as latency_source
+    core = CORE_PATH.read_text(encoding='utf-8')
     for path in LITE_PATHS:
         raw = path.read_bytes()
         assert b'\n' not in raw.replace(b'\r\n', b'')
         source = raw.decode('gbk').replace('\r\n', '\n')
         assert updated_source(source) == source
+        assert latency_source(source) == source
         assert fileless_source(source, lite=True) == source
         assert fileless_source(batch_source(source), lite=True) == source
+        assert fileless_source(parity_source(source, core), lite=True) == source
         assert '"xttrader_to_normal_qmt_timer"' in source
         assert 'from cfquant.' not in source
+
+
+def test_lite_coalesced_encoding_once_and_unstarted_read_expiry(lite, monkeypatch):
+    calls, encoded = [], []
+    original = lite.ns['encode_response_result']
+    monkeypatch.setitem(lite.ns, 'encode_response_result', lambda value: encoded.append(value) or original(value))
+    monkeypatch.setattr(lite.bridge, '_dispatch', lambda action, params, msg: calls.append(msg['id']) or {'volume': 2**63 + 1})
+    for i in range(3):
+        enqueue(lite, action='xttrader.query_stock_positions', request_id=str(i), params={'account_id': 'TEST_ONLY'})
+    entry = next(iter(lite.bridge.coalesced_requests.values()))
+    expired = entry['waiters'][0][0]
+    expired['timeout'] = 0
+    lite.ns['cfquant_ctype_trade_timer'](lite.context)
+    assert calls == ['1'] and len(encoded) == 2  # One error body and one shared success body.
+    assert [(r['id'], r['ok']) for r in lite.tx.responses] == [('0', False), ('1', True), ('2', True)]
+    assert lite.tx.responses[-1]['result']['volume'] == 2**63 + 1
+    assert lite.bridge.pump_max_ms == 5

@@ -15,7 +15,9 @@ from cfquant import xtdata
 from cfquant import level2
 from cfquant.normal_bridge import COALESCED_QUERY_ACTIONS, NormalQmtBridge
 from cfquant.pipe_bridge import PipeNormalQmtBridge
-from cfquant.protocol import loads_message, pack_event, pack_request, pack_response
+from cfquant.protocol import loads_message, pack_event, pack_request, pack_response, pack_quote_latency_event, pack_whole_quote_event, decode_value
+from cfquant.callback_dispatcher import dispatch_callbacks
+from cfquant.protocol import encode_response_result, request_expired
 from cfquant.tx_trade_bridge import TxTradeBridge
 
 
@@ -30,6 +32,9 @@ def lite_bridge_class(path):
     namespace = dict(TxTradeBridge=TxTradeBridge, queue=queue, threading=threading,
                      time=time, dt=dt, json=json, loads_message=loads_message,
                      pack_event=pack_event, pack_response=pack_response,
+                     encode_response_result=encode_response_result, request_expired=request_expired,
+                     pack_quote_latency_event=pack_quote_latency_event,
+                     pack_whole_quote_event=pack_whole_quote_event,
                      COALESCED_QUERY_ACTIONS=COALESCED_QUERY_ACTIONS,
                      DEFAULT_PIPE_NAME="offline-test")
     namespace.update({key: value for key, value in vars(level2).items() if not key.startswith("__")})
@@ -213,6 +218,107 @@ def test_close_releases_public_and_internal_quotes(bridge):
         callback({"830799.BJ": {}})
 
 
+def test_diagnostic_subscription_is_independent_and_preserves_quotes(bridge):
+    ordinary = rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": ["SZ"]})
+    diagnostic = rpc(bridge, "xtdata.subscribe_whole_quote_latency", {"code_list": ["SZ"]})
+    assert ordinary["subscribe_id"] != diagnostic["subscribe_id"]
+    data = {"000001.SZ": {"time": 1792112400000, "lastPrice": 10, "bidPrice": [9, 8]}}
+    begin = time.time() * 1000
+    bridge.context.callbacks[diagnostic["internal_subscribe_id"]](data)
+    _, event, client = bridge.tx.messages[-1]
+    assert client == "client-a"
+    assert event["data"]["quotes"] == data
+    assert event["data"]["schema"] == "cfquant.quote_latency.v1"
+    assert begin <= event["data"]["qmt_callback_at_ms"] <= event["data"]["qmt_push_at_ms"] <= time.time() * 1000
+    bridge.context.callbacks[ordinary["internal_subscribe_id"]](data)
+    assert bridge.tx.messages[-1][1]["data"] == data
+    rpc(bridge, "xtdata.unsubscribe_quote", {"subscribe_id": diagnostic["subscribe_id"]})
+    count = len(bridge.tx.messages)
+    bridge.context.callbacks[diagnostic["internal_subscribe_id"]](data)
+    assert len(bridge.tx.messages) == count
+    assert ordinary["subscribe_id"] in bridge.quote_subscriptions
+
+
+def test_diagnostic_first_snapshot_keeps_callback_timestamp(bridge):
+    data = {"000001.SZ": {"lastPrice": 10}}
+    called = []
+    def subscribe(codes, callback):
+        callback(data)
+        called.append(time.time() * 1000)
+        return 777
+    bridge.context.subscribe_whole_quote = subscribe
+    rpc(bridge, "xtdata.subscribe_whole_quote_latency", {"code_list": ["SZ"]})
+    payload = bridge.tx.messages[-1][1]["data"]
+    assert payload["quotes"] == data
+    assert payload["qmt_callback_at_ms"] <= payload["qmt_push_at_ms"] <= called[0]
+
+
+@pytest.mark.parametrize('kind', ['whole_quote', 'whole_quote_latency'])
+def test_whole_quote_freezes_native_snapshot_and_does_not_preconvert(bridge, monkeypatch, kind):
+    data = {"000001.SZ": {"lastPrice": 10, "bidPrice": [9, 8]}}
+    def unexpected_conversion(value):
+        raise AssertionError("plain quote must not run recursive quote_plain")
+    monkeypatch.setitem(bridge._subscribe_native_quote.__func__.__globals__, 'quote_plain', unexpected_conversion)
+    def subscribe(codes, callback):
+        callback(data)
+        data['000001.SZ']['lastPrice'] = 99
+        data['000001.SZ']['bidPrice'][0] = 98
+        return 777
+    bridge.context.subscribe_whole_quote = subscribe
+    rpc(bridge, 'xtdata.subscribe_' + kind, {'code_list': ['SZ']})
+    event = bridge.tx.messages[-1][1]
+    quotes = event['data']['quotes'] if kind == 'whole_quote_latency' else event['data']
+    assert quotes == {'000001.SZ': {'lastPrice': 10, 'bidPrice': [9, 8]}}
+    assert event['meta']['quote_json_plain'] is True
+    if kind == 'whole_quote_latency':
+        assert event['data']['qmt_encoding'] == 'direct_json'
+        assert event['data']['qmt_encode_ms'] >= 0
+
+
+def test_diagnostic_nonfinite_quote_uses_compatible_encoding(bridge):
+    result = rpc(bridge, 'xtdata.subscribe_whole_quote_latency', {'code_list': ['SZ']})
+    bridge.context.callbacks[result['internal_subscribe_id']]({
+        '000001.SZ': {'lastPrice': float('nan'), 'askPrice': [float('inf'), 10]}})
+    event = bridge.tx.messages[-1][1]
+    assert event['data']['quotes']['000001.SZ'] == {'lastPrice': None, 'askPrice': [None, 10]}
+    assert event['data']['qmt_encoding'] == 'compatible_json'
+    assert not event['meta'].get('quote_json_plain')
+
+
+def test_ordinary_full_batches_reach_callback_once_in_order(bridge):
+    result = rpc(bridge, 'xtdata.subscribe_whole_quote', {'code_list': ['SH', 'SZ']})
+    received = []
+    callbacks = {result['callback_event']: [received.append]}
+    batches = [{'%06d.SZ' % i: {'lastPrice': i / 100, 'volume': i} for i in range(26475)},
+               {'000001.SZ': {'lastPrice': 99.125, 'volume': 999}}]
+    for batch in batches:
+        bridge.context.callbacks[result['internal_subscribe_id']](batch)
+        event = bridge.tx.messages[-1][1]
+        assert event['meta']['quote_json_plain'] is True
+        dispatch_callbacks(callbacks, event, lambda: True)
+    assert len(bridge.tx.messages) == len(received) == 2
+    assert received == batches
+    assert list(received[1]) == ['000001.SZ']  # No merging with the preceding batch.
+
+
+def test_ordinary_special_values_preserve_legacy_callback_contract(bridge):
+    np = pytest.importorskip('numpy')
+    result = rpc(bridge, 'xtdata.subscribe_whole_quote', {'code_list': ['SZ']})
+    batch = {'000001.SZ': {'lastPrice': np.float64('nan'), 'askPrice': np.array([float('inf'), 10]),
+                          'volume': np.uint64(2**63 + 17), 'raw': b'\x00\xff', 'custom': SimpleNamespace(value=2)}}
+    expected = decode_value(loads_message(pack_event('quote:test', level2.quote_plain(batch)))['data'])
+    bridge.context.callbacks[result['internal_subscribe_id']](batch)
+    event = bridge.tx.messages[-1][1]
+    assert not event['meta'].get('quote_json_plain')
+    received = []
+    dispatch_callbacks({result['callback_event']: [received.append]}, event, lambda: True)
+    quote = received[0]['000001.SZ']
+    assert quote['lastPrice'] is None and quote['askPrice'] == [None, 10]
+    assert quote['volume'] == expected['000001.SZ']['volume'] == 2**63 + 17
+    assert quote['raw'] == expected['000001.SZ']['raw'] == b'\x00\xff'
+    assert vars(quote['custom']) == vars(expected['000001.SZ']['custom'])
+
+
 def test_legacy_single_quote_is_not_broken_by_whole_quote(bridge):
     single = rpc(bridge, "xtdata.subscribe_quote", {"stock_code": "000001.SZ"})
     whole = rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": ["BJ"]})
@@ -244,6 +350,48 @@ def test_sdk_passes_list_and_registers_callback(monkeypatch, bridge):
     assert received == [{"rb2610.SF": {"lastPrice": 3000}}]
     xtdata.unsubscribe_quote(sub_id)
     assert callbacks == {}
+
+
+@pytest.mark.parametrize('plain', [True, False])
+def test_web_route_preserves_whole_quote_batches_and_encoding_marker(monkeypatch, plain):
+    messages, received = [], []
+    router = web.LttxWebRouteServer()
+    router.tx = SimpleNamespace(push=lambda kind, raw, channel: messages.append((kind, loads_message(raw), channel)))
+    batch = {'000001.SZ': {'lastPrice': 10.25, 'volume': 2**63 + 17, 'bidPrice': [10, 9]},
+             '600000.SH': {'lastPrice': 8.6}}
+    if not plain:
+        batch['000001.SZ']['raw'] = b'\x00\xff'
+    def request(msg):
+        router._on_quote_event({'subscription_id': 42, 'event': msg['params']['callback_event'],
+                               'data': batch, 'meta': {'quote_json_plain': True} if plain else {}})
+        return {'subscribe_id': 42}, {'bridge_id': 'test', 'channel': 'normal', 'mode': 'lite'}
+    monkeypatch.setattr(web, 'route_external_lttx_request', request)
+    monkeypatch.setattr(web.CLIENTS, 'request', lambda *args, **kwargs: True)
+    if plain:
+        def unexpected_pack(*args, **kwargs):
+            raise AssertionError('Web must not run generic encoding for a plain whole-quote batch')
+        monkeypatch.setattr(web, 'pack_event', unexpected_pack)
+    router._handle_raw(pack_request('xtdata.subscribe_whole_quote',
+        {'code_list': ['SH', 'SZ'], 'callback_event': 'quote:sdk'}, client_id='sdk'))
+    assert [message[0] for message in messages] == ['event', 'response']
+    event = messages[0][1]
+    assert bool(event['meta'].get('quote_json_plain')) is plain
+    assert messages[0][2] == 'sdk'
+    dispatch_callbacks({'quote:sdk': [received.append]}, event, lambda: True)
+    assert received == [batch]
+    sid = messages[-1][1]['result']['subscribe_id']
+    assert event['subscription_id'] == sid
+    router._handle_raw(pack_request('xtdata.unsubscribe_quote', {'subscribe_id': sid}, client_id='sdk'))
+    assert router._quote_routes == {} and router._quote_event_routes == {}
+
+
+def test_web_plain_quote_fallback_does_not_leave_plain_marker_on_tagged_data():
+    messages = []
+    router = web.LttxWebRouteServer()
+    router.tx = SimpleNamespace(push=lambda kind, raw, channel: messages.append(loads_message(raw)))
+    router._push_event('sdk', 'quote:sdk', {'000001.SZ': {'raw': b'bytes'}}, 7, plain_quote=True)
+    assert len(messages) == 1 and not messages[0]['meta'].get('quote_json_plain')
+    assert decode_value(messages[0]['data']) == {'000001.SZ': {'raw': b'bytes'}}
 
 
 @pytest.fixture

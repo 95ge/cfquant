@@ -12,7 +12,8 @@ import time
 from . import order_meta
 from .order_identity import prepare_order_remark, order_remark_key, restore_order_remark, restore_strategy_name
 from .level2 import L2_THOUSAND_SUBSCRIPTIONS, quote_callback_data, quote_plain, require_l2_callable, thousand_price
-from .protocol import loads_message, pack_event, pack_response
+from .protocol import loads_message, pack_event, pack_response, pack_quote_latency_event, pack_whole_quote_event
+from .protocol import encode_response_result, request_expired
 from .tx_trade_bridge import TxTradeBridge, relay_sync_order_callback
 
 
@@ -44,7 +45,7 @@ class NormalQmtBridge(TxTradeBridge):
         globals_dict=None,
         schedule_timer=True,
         pump_max_count=20,
-        pump_max_ms=0,
+        pump_max_ms=5,
         dispatch_on_qmt_thread=False,
         order_meta_enabled=True,
     ):
@@ -449,6 +450,8 @@ class NormalQmtBridge(TxTradeBridge):
         self._log("normal bridge worker thread started in init context")
 
     def _dispatch(self, action, params, msg):
+        if action == "xtdata.subscribe_whole_quote_latency":
+            return self._subscribe_native_quote(dict(msg, params=params), "whole_quote_latency", "subscribe_whole_quote")
         if action in ("xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"):
             return self._subscribe_native_quote(dict(msg, params=params), "thousand", action.split(".", 1)[1])
         if action in ("xtdata.subscribe_whole_quote", "xtdata.subscribe_quote", "xtdata.unsubscribe_quote"):
@@ -487,19 +490,46 @@ class NormalQmtBridge(TxTradeBridge):
         callback_lock = threading.RLock()
         initializing = [True]
 
+        def publish(payload, callback_at_ms):
+            client_id = sub.get("client_id")
+            if client_id:
+                if kind == "whole_quote_latency":
+                    payload = {
+                        "schema": "cfquant.quote_latency.v1",
+                        "qmt_callback_at_ms": callback_at_ms,
+                        "qmt_push_at_ms": time.time() * 1000.0,
+                        "quotes": payload,
+                    }
+                    try:
+                        event = pack_quote_latency_event(sub["callback_event"], payload, client_id, sub_id)
+                    except (TypeError, ValueError):
+                        # Preserve the existing contract for NaN/Inf and unusual objects.
+                        payload["quotes"] = quote_plain(payload["quotes"])
+                        payload["qmt_encoding"] = "compatible_json"
+                        event = pack_event(sub["callback_event"], data=payload, client_id=client_id, subscription_id=sub_id)
+                elif kind == "whole_quote":
+                    try:
+                        event = pack_whole_quote_event(sub["callback_event"], payload, client_id, sub_id)
+                    except (TypeError, ValueError):
+                        event = pack_event(sub["callback_event"], data=quote_plain(payload),
+                                           client_id=client_id, subscription_id=sub_id)
+                else:
+                    event = pack_event(sub["callback_event"], data=payload, client_id=client_id, subscription_id=sub_id)
+                if initializing[0]:
+                    # Freeze the snapshot before returning to native QMT, which may
+                    # reuse/mutate callback objects while subscription completes.
+                    pending.append(event)
+                else:
+                    self.tx.push("event", event, client_id)
+
         def callback(data):
+            callback_at_ms = time.time() * 1000.0 if kind == "whole_quote_latency" else None
             with callback_lock:
                 self._release_worker("quote")
                 if self.quote_subscriptions.get(sub_id) is not sub or self.tx is None:
                     return
-                payload = quote_plain(data) if kind == "whole_quote" else quote_callback_data(data)
-                if initializing[0]:
-                    pending.append(payload)
-                    return
-                client_id = sub.get("client_id")
-                if client_id:
-                    event = pack_event(sub["callback_event"], data=payload, client_id=client_id, subscription_id=sub_id)
-                    self.tx.push("event", event, client_id)
+                payload = data if kind in ("whole_quote", "whole_quote_latency") else quote_callback_data(data)
+                publish(payload, callback_at_ms)
 
         func = self._get_callable(method)
         if method in L2_THOUSAND_SUBSCRIPTIONS:
@@ -508,7 +538,7 @@ class NormalQmtBridge(TxTradeBridge):
             raise NotImplementedError("QMT %s not found" % method)
         self.quote_subscriptions[sub_id] = sub
         try:
-            if kind == "whole_quote":
+            if kind in ("whole_quote", "whole_quote_latency"):
                 internal_id = self._call_variants(func, [
                     ((sub["code_list"],), {"callback": callback}),
                     ((sub["code_list"], callback), {}),
@@ -533,8 +563,8 @@ class NormalQmtBridge(TxTradeBridge):
         with callback_lock:
             initializing[0] = False
             try:
-                for payload in pending:
-                    callback(payload)
+                for event in pending:
+                    self.tx.push("event", event, sub["client_id"])
             except Exception:
                 self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
                 raise
@@ -665,6 +695,8 @@ class NormalQmtBridge(TxTradeBridge):
                 source = self.worker_source or "unknown"
             try:
                 self._drain_requests(source)
+                if not self.request_queue.empty():
+                    self.worker_event.set()
             except Exception as e:
                 self._log("normal bridge worker error source=%s error=%s" % (source, e))
 
@@ -699,6 +731,10 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_single_request(self, source, msg, received_at):
         try:
+            if request_expired(msg):
+                self._expired_requests = getattr(self, "_expired_requests", 0) + 1
+                self._send_error(msg, TimeoutError("read-only request expired before QMT execution"))
+                return
             if self.dispatch_on_qmt_thread and msg.get("action") == "xttrader.order_stock":
                 self._defer_sync_order_response(msg)
                 return
@@ -782,14 +818,37 @@ class NormalQmtBridge(TxTradeBridge):
                 self._send_error(record["response_msg"], error)
 
     def _drain_coalesced_request(self, source, msg, received_at, coalesce_key):
+        response_waiters = None
+        counted = False
         try:
+            with self.coalesce_lock:
+                entry = self.coalesced_requests.get(coalesce_key)
+                waiters = entry["waiters"] if entry else [(msg, received_at)]
+                expired, active = [], []
+                for item in waiters:
+                    (expired if request_expired(item[0]) else active).append(item)
+                if entry is not None:
+                    entry["waiters"] = active
+                    if not active:
+                        self.coalesced_requests.pop(coalesce_key, None)
+            for waiter, _ in expired:
+                self._expired_requests = getattr(self, "_expired_requests", 0) + 1
+                self._send_error(waiter, TimeoutError("read-only request expired before QMT execution"))
+            if not active:
+                return
+            msg = active[0][0]
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
             with self.coalesce_lock:
                 entry = self.coalesced_requests.pop(coalesce_key, None)
                 self.coalesce_dispatch_count += 1
+                counted = True
             waiters = entry.get("waiters", []) if entry else [(msg, received_at)]
-            for waiter_msg, _ in waiters:
-                self._send_response(waiter_msg, result)
+            response_waiters = list(waiters)
+            encoded_result = encode_response_result(result)
+            while response_waiters:
+                waiter_msg, _ = response_waiters[0]
+                self._send_response(waiter_msg, result, encoded_result=encoded_result)
+                response_waiters.pop(0)
             self._log(
                 "normal bridge worker coalesced_response source=%s action=%s id=%s waiters=%s total_ms=%.2f"
                 % (source, msg.get("action"), msg.get("id"), len(waiters), (time.time() - received_at) * 1000)
@@ -797,8 +856,9 @@ class NormalQmtBridge(TxTradeBridge):
         except Exception as e:
             with self.coalesce_lock:
                 entry = self.coalesced_requests.pop(coalesce_key, None)
-                self.coalesce_dispatch_count += 1
-            waiters = entry.get("waiters", []) if entry else [(msg, received_at)]
+                if not counted:
+                    self.coalesce_dispatch_count += 1
+            waiters = entry.get("waiters", []) if entry else (response_waiters if response_waiters is not None else [(msg, received_at)])
             self._log(
                 "normal bridge worker coalesced_error source=%s action=%s id=%s waiters=%s error=%s"
                 % (source, msg.get("action"), msg.get("id"), len(waiters), e)
@@ -816,7 +876,7 @@ class NormalQmtBridge(TxTradeBridge):
         if self.context is None or self.whole_quote_sub_id:
             return
         try:
-            self.whole_quote_sub_id = self.context.subscribe_whole_quote(["SH", "SZ"], callback=self._on_whole_quote)
+            self.whole_quote_sub_id = self.context.subscribe_whole_quote(["SH", "SZ", "BJ"], callback=self._on_whole_quote)
             self._log("normal bridge internal whole quote subscribed id=%s" % self.whole_quote_sub_id)
         except Exception as e:
             self._log("normal bridge internal whole quote subscribe failed: %s" % e)
@@ -837,11 +897,11 @@ class NormalQmtBridge(TxTradeBridge):
         except Exception as e:
             self._log("normal bridge timer schedule failed: %s" % e)
 
-    def _send_response(self, msg, result):
+    def _send_response(self, msg, result, encoded_result=None):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
-        response = pack_response(msg.get("id"), ok=True, result=result, meta=msg.get("_response_meta"))
+        response = pack_response(msg.get("id"), ok=True, result=result, meta=msg.get("_response_meta"), encoded_result=encoded_result)
         self.tx.push("response", response, client_id)
 
     def _send_error(self, msg, error):
@@ -1413,6 +1473,8 @@ class NormalQmtBridge(TxTradeBridge):
             coalesced_group_count = len(self.coalesced_requests)
         return {
             "request_queue_size": self.request_queue.qsize(),
+            "expired_readonly_requests": getattr(self, "_expired_requests", 0),
+            "send_queue": self.tx.send_status() if hasattr(self.tx, "send_status") else None,
             "recv_thread_alive": self.recv_thread.is_alive() if self.recv_thread else False,
             "worker_thread_alive": self.worker_thread.is_alive() if self.worker_thread else False,
             "whole_quote_sub_id": self.whole_quote_sub_id,
@@ -1450,7 +1512,7 @@ def start_normal_bridge(
     show=True,
     schedule_timer=True,
     pump_max_count=20,
-    pump_max_ms=0,
+    pump_max_ms=5,
     dispatch_on_qmt_thread=False,
 ):
     import sys

@@ -8,7 +8,7 @@ import pytest
 from cfquant.client import LTtxRpcClient, WebLttxRpcClient, CfquantTimeout, CfquantError
 from cfquant.pipe_client import PipeRpcClient
 from cfquant.pipe_transport import loads_pipe_message
-from cfquant.protocol import loads_message, pack_event, pack_response
+from cfquant.protocol import loads_message, pack_event, pack_response, pack_whole_quote_event
 from cfquant.xttrader import XtQuantTrader, XtQuantTraderCallback
 from cfquant.xttype import StockAccount
 
@@ -126,6 +126,32 @@ def test_slow_callback_does_not_block_rpc_and_callbacks_remain_serial(env, caplo
     assert 'callback-test-error' in caplog.text
 
 
+def test_callback_disk_failure_disconnects_and_notifies_pending_rpc(env, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    def slow(value):
+        entered.set()
+        release.wait(3)
+    env.client.add_callback('test-spool', slow)
+    env.client._event_dispatcher._memory_limit = 1
+    pending = queue.Queue()
+    env.client._pending['waiting'] = pending
+    def disk_full(**kwargs):
+        raise OSError('test disk full')
+    monkeypatch.setattr('cfquant.callback_dispatcher.tempfile.TemporaryFile', disk_full)
+    try:
+        env.incoming.put(pack_event('test-spool', 0))
+        assert entered.wait(2)
+        env.incoming.put(pack_event('test-spool', 1))
+        env.incoming.put(pack_event('test-spool', 2))
+        result = pending.get(timeout=2)
+        assert result['ok'] is False and 'test disk full' in result['error']['message']
+        env.client._recv_thread.join(2)
+        assert not env.client._started
+        assert env.client._event_dispatcher._spool is None
+    finally:
+        release.set()
+
+
 def test_callback_query_timeout_does_not_kill_later_callbacks(env):
     done = threading.Event()
     errors = []
@@ -144,6 +170,22 @@ def test_callback_query_timeout_does_not_kill_later_callbacks(env):
     assert done.wait(2)
     assert len(errors) == 1
     assert not env.client._pending
+
+
+def test_whole_quote_batches_use_real_receive_loop_without_changing_callback_shape(env):
+    received, done = [], threading.Event()
+    def on_quote(data):
+        received.append(data)
+        if len(received) == 2:
+            done.set()
+    env.client.add_callback('quote:test-whole', on_quote)
+    first = {'000001.SZ': {'lastPrice': 10.25, 'volume': 2**63 + 17, 'bidPrice': [10, 9]},
+             '600000.SH': {'lastPrice': 8.6}}
+    second = {'600000.SH': {'lastPrice': 8.7}}
+    for batch in (first, second):
+        env.incoming.put(pack_whole_quote_event('quote:test-whole', batch, subscription_id=7))
+    assert done.wait(2)
+    assert received == [first, second]
 
 
 def test_stop_inside_callback_drops_queued_callbacks(env):

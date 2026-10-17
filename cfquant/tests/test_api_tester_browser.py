@@ -250,20 +250,23 @@ def test_main_market_timing_success_timeout_and_old_bridge(page, frontend_url):
     replies = [{
         'ok': True, 'data': {'latency_ms': 500, 'result': {'000001.SZ': {'lastPrice': 11.3}},
         'timing': {'qmt': {'available': True, 'queue_ms': 400, 'native_ms': 70,
-                          'convert_ms': 5, 'encode_ms': 4, 'fallback_used': True},
-                   'rpc': {'wait_ms': 495, 'decode_ms': 2}, 'web': {'result_convert_ms': 3}}}},
+                          'convert_ms': 5, 'encode_ms': 4, 'json_encode_ms': 1, 'fallback_used': True},
+                   'rpc': {'wait_ms': 495, 'decode_ms': 2, 'json_decode_ms': 1.5}, 'web': {'result_convert_ms': 3}}}},
         {'ok': False, 'error': 'cfquant pipe request timeout', 'status': 400,
          'timing': {'qmt': {'available': False, 'reason': 'no_response'}, 'rpc': {'wait_ms': 12000}}},
         {'ok': True, 'data': {'latency_ms': 80, 'result': {},
          'timing': {'qmt': {'available': False, 'reason': 'bridge_timing_unavailable'}}}},
     ]
-    page.route('**/api/data/full-tick', lambda route: route.fulfill(json=replies.pop(0)))
+    page.route('**/api/data/full-tick', lambda route: route.fulfill(json=replies.pop(0), headers={'Server-Timing': 'web_json;dur=2.5'}))
     form = page.locator('#apiForm')
     form.locator('[type="submit"]').click()
     timing = page.locator('#apiResponseLatencyMeta')
     expect(timing).to_contain_text('QMT 原生取数 70.0 ms')
     expect(timing).to_contain_text('兼容格式转换 5.00 ms')
     expect(timing).to_contain_text('Web 结果转换 3.00 ms')
+    expect(timing).to_contain_text('Web JSON 编码 2.50 ms')
+    expect(timing).to_contain_text('其中 JSON 编码 1.00 ms')
+    expect(timing).to_contain_text('客户端 JSON 解析（计入 RPC 等待） 1.50 ms')
     expect(timing).to_contain_text('旧行情接口已回退到扩展接口')
     assert page.locator('.api-workbench').evaluate('node => node.scrollWidth <= node.clientWidth')
     page.locator('#apiResponseLatency').scroll_into_view_if_needed()

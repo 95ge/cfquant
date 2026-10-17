@@ -16,6 +16,7 @@ import math
 import mimetypes
 import os
 from pathlib import Path
+from cfquant.diagnostics import latency_report, SCHEMA as QUOTE_LATENCY_SCHEMA
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
 import posixpath
@@ -121,7 +122,10 @@ from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
 from cfquant.level2 import L2_PERIODS
 from cfquant.protocol import dataframe_numeric_rows
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
-from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response
+from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response, pack_whole_quote_event
+from cfquant.protocol import is_readonly_request
+from cfquant.flow_control import KeyedExecutor, OrderedSender
+from cfquant.quote_history import QuoteHistory
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
 from cfquant.runtime_report import module_source_state
 from cfquant.version import WEB_VERSION, __version__ as CORE_VERSION
@@ -676,6 +680,7 @@ ACCOUNT_ACTIONS = {
 NORMAL_QMT_ACTIONS = {
     "xtdata.subscribe_quote",
     "xtdata.subscribe_whole_quote",
+    "xtdata.subscribe_whole_quote_latency",
     "xtdata.unsubscribe_quote",
     "xtdata.download_history_data",
     "xtdata.download_history_data2",
@@ -922,6 +927,12 @@ TEST_SOURCE_META = {
         "自动化测试",
         "验证教程阅读器页面结构、导航和内容读取行为。",
         'python -X utf8 -m pytest "cfquant/tests/test_tutorial_reader.py" -q',
+    ),
+    "34_全推内部延迟测试.py": (
+        "全推内部延迟测试",
+        "行情测试",
+        "独立订阅全推，打印行情时间到程序、QMT 发送到程序的延迟及数据样本。",
+        'python -X utf8 "cfquant/tests/34_全推内部延迟测试.py"',
     ),
     "1_行情接收测试.py": (
         "全市场行情接收测试",
@@ -4293,12 +4304,12 @@ class GlobalTxClient(object):
                 return result
             except CfquantError as e:
                 last_error = e
-                if action in CFTRADER_BATCH_ACTIONS and is_pipe_client_closed_error(e):
+                if is_pipe_client_closed_error(e):
                     self._drop_client(mode, client)
-                    raise
-                if attempt == 0 and action not in CFTRADER_BATCH_ACTIONS and is_pipe_client_closed_error(e):
-                    self._drop_client(mode, client)
-                    continue
+                    if attempt == 0 and is_readonly_request(action) and not action.endswith("_async"):
+                        continue
+                    # A disconnected sender may already have delivered a write.
+                    # Never retry an order, cancel, subscription or download here.
                 raise
             except CfquantTimeout as e:
                 if mark_offline_on_timeout:
@@ -5667,6 +5678,7 @@ class LttxWebRouteServer(object):
         self._trader_event_dedupe = {}
         self._trader_event_dedupe_ttl = float(os.environ.get("CFQUANT_WEB_LTTX_TRADER_EVENT_DEDUPE_SECONDS", "2.0") or 2.0)
         self._last_registry_put = 0.0
+        self._executor = None
 
     def start(self):
         with self._lock:
@@ -5682,6 +5694,11 @@ class LttxWebRouteServer(object):
 
     def close(self):
         self.running = False
+        with self._lock:
+            tx, self.tx = self.tx, None
+            executor, self._executor = self._executor, None
+        if executor is not None:
+            executor.close()
         CLIENTS.remove_callback("quote", self._on_quote_event)
         CLIENTS.remove_callback("__event__", self._on_client_event)
         with self._lock:
@@ -5694,8 +5711,6 @@ class LttxWebRouteServer(object):
                 self._release_external_quote(row, timeout=2.0)
             except Exception as error:
                 safe_print("cfquant quote cleanup failed: %s" % error)
-        tx = self.tx
-        self.tx = None
         if tx is not None:
             try:
                 tx.close()
@@ -5738,7 +5753,7 @@ class LttxWebRouteServer(object):
                         continue
                     if raw is None:
                         break
-                    self._handle_raw(raw)
+                    self._enqueue_raw(raw, tx)
             except Exception as e:
                 if self.running:
                     safe_print("cfquant LTtx 统一路由异常: %s，1秒后重试" % e)
@@ -5752,8 +5767,57 @@ class LttxWebRouteServer(object):
                     except Exception:
                         pass
 
-    def _handle_raw(self, raw):
+    def _enqueue_raw(self, raw, tx):
         msg = loads_message(raw)
+        if not msg or msg.get("type") != "request":
+            return
+        entered = time.perf_counter()
+        client_id = msg.get("client_id") or msg.get("reply_channel")
+        keys = [("client", client_id)]
+        action = str(msg.get("action") or "")
+        if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS:
+            params = msg.get("params") or {}
+            # All clients addressing the same account retain arrival ordering.
+            keys.append(("account", _external_account_id(params) or configured_default_account_id(),
+                         _external_account_type(params)))
+
+        def reject(error):
+            if client_id and self.tx is tx:
+                tx.push("response", pack_response(msg.get("id"), ok=False, error=error), client_id)
+
+        def run():
+            if self.tx is not tx:
+                return
+            waited = time.perf_counter() - entered
+            current = dict(msg, _web_queue_ms=round(waited * 1000, 3))
+            if is_readonly_request(action):
+                remaining = float(msg.get("timeout") or 12.0) - waited
+                if remaining <= 0:
+                    reject(TimeoutError("read-only request expired in Web route queue"))
+                    return
+                current["timeout"] = remaining
+                params = dict(current.get("params") or {})
+                if "timeout" in params:
+                    params["timeout"] = min(float(params["timeout"]), remaining)
+                current["params"] = params
+            self._handle_raw(current, response_tx=tx)
+
+        with self._lock:
+            if self.tx is not tx:
+                return
+            if self._executor is None:
+                self._executor = KeyedExecutor(
+                    workers=int(os.environ.get("CFQUANT_WEB_ROUTE_WORKERS", "8")),
+                    max_pending=int(os.environ.get("CFQUANT_WEB_ROUTE_MAX_PENDING", "1024")))
+            executor = self._executor
+        try:
+            executor.submit(keys, run, reject)
+        except Exception as error:
+            reject(error)
+
+    def _handle_raw(self, raw, response_tx=None):
+        response_tx = response_tx if response_tx is not None else self.tx
+        msg = raw if isinstance(raw, dict) else loads_message(raw)
         if not msg or msg.get("type") != "request":
             return
         request_id = msg.get("id")
@@ -5762,7 +5826,7 @@ class LttxWebRouteServer(object):
         params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         callback_event = params.get("callback_event")
         quote_subscribe = action in (
-            "xtdata.subscribe_quote", "xtdata.subscribe_whole_quote",
+            "xtdata.subscribe_quote", "xtdata.subscribe_whole_quote", "xtdata.subscribe_whole_quote_latency",
             "xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue",
         )
         # QMT may emit a first snapshot before returning its subscription ID.
@@ -5771,7 +5835,8 @@ class LttxWebRouteServer(object):
             with self._lock:
                 self._quote_sequence += 1
                 quote_route = {"subscribe_id": self._quote_sequence, "client_id": client_id,
-                               "callback_event": callback_event or "quote:%s" % self._quote_sequence}
+                               "callback_event": callback_event or "quote:%s" % self._quote_sequence,
+                               "transport": response_tx}
                 callback_event = "quote:%s" % new_id("web_subscription")
                 self._quote_event_routes[callback_event] = quote_route
             msg = dict(msg, params=dict(params, callback_event=callback_event))
@@ -5793,18 +5858,26 @@ class LttxWebRouteServer(object):
                 result = dict(result) if isinstance(result, dict) else {}
                 result.update(subscribe_id=quote_route["subscribe_id"], callback_event=quote_route["callback_event"])
                 with self._lock:
-                    self._quote_routes[(str(quote_route["subscribe_id"]), client_id)] = quote_route
+                    abandoned = response_tx is not self.tx
+                    if not abandoned:
+                        self._quote_routes[(str(quote_route["subscribe_id"]), client_id)] = quote_route
+                if abandoned:
+                    self._release_external_quote(quote_route, timeout=2.0)
+                    raise RuntimeError("Web route connection closed during quote subscription")
+            meta = dict(meta, web_queue_ms=msg.get("_web_queue_ms", 0))
             response = pack_response(request_id, ok=True, result=result, meta=meta)
-            self._remember_external_subscription(action, msg, result)
+            if response_tx is self.tx:
+                self._remember_external_subscription(action, msg, result)
         except Exception as e:
             if quote_subscribe and callback_event:
                 with self._lock:
                     self._quote_event_routes.pop(callback_event, None)
             response = pack_response(request_id, ok=False, error=e, meta={"route": "web_lttx"})
             safe_print("cfquant LTtx 统一路由请求失败 action=%s id=%s error=%s" % (action, request_id, e))
-        if client_id and self.tx is not None:
+        response_tx = response_tx if response_tx is not None else self.tx
+        if client_id and response_tx is not None and response_tx is self.tx:
             try:
-                self.tx.push("response", response, client_id)
+                response_tx.push("response", response, client_id)
             except Exception as e:
                 safe_print("cfquant LTtx 统一路由回包失败 client=%s error=%s" % (client_id, e))
 
@@ -5883,8 +5956,11 @@ class LttxWebRouteServer(object):
         event = msg.get("event") or "quote:%s" % subscribe_id
         with self._lock:
             route = self._quote_event_routes.get(event)
-        if route:
-            self._push_event(route["client_id"], route["callback_event"], msg.get("data"), route["subscribe_id"])
+        if route and ("native_id" in route or route.get("transport", self.tx) is self.tx):
+            meta = msg.get("meta")
+            plain_quote = isinstance(meta, dict) and meta.get("quote_json_plain") is True
+            self._push_event(route["client_id"], route["callback_event"], msg.get("data"), route["subscribe_id"],
+                             plain_quote=plain_quote)
 
     def _on_client_event(self, msg):
         if not isinstance(msg, dict):
@@ -5947,12 +6023,20 @@ class LttxWebRouteServer(object):
         raw = json.dumps(to_jsonable(key_payload), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
-    def _push_event(self, client_id, event, data=None, subscription_id=None):
+    def _push_event(self, client_id, event, data=None, subscription_id=None, plain_quote=False):
         tx = self.tx
         if tx is None or not client_id:
             return
         try:
-            payload = pack_event(event, data=data, client_id=client_id, subscription_id=subscription_id)
+            if plain_quote:
+                try:
+                    # Preserve the plain-JSON marker across the optional Web
+                    # route, without repeating the generic object conversion.
+                    payload = pack_whole_quote_event(event, data, client_id, subscription_id)
+                except (TypeError, ValueError):
+                    payload = pack_event(event, data=data, client_id=client_id, subscription_id=subscription_id)
+            else:
+                payload = pack_event(event, data=data, client_id=client_id, subscription_id=subscription_id)
             tx.push("event", payload, client_id)
         except Exception as e:
             safe_print("cfquant LTtx 统一路由事件转发失败 client=%s event=%s error=%s" % (client_id, event, e))
@@ -6353,6 +6437,8 @@ class WebSocketCallbackClient(object):
         self.job_id = str(job_id or "").strip()
         self._lock = threading.RLock()
         self.alive = True
+        self._sender = OrderedSender(self._write_frame, self._send_failed,
+                                    max_bytes=int(os.environ.get("CFQUANT_WS_SEND_MAX_BYTES", 128 * 1024 * 1024)))
 
     def matches(self, event):
         if self.bridge_id:
@@ -6383,13 +6469,28 @@ class WebSocketCallbackClient(object):
         return True
 
     def send_json(self, payload):
-        raw = json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        frame = self._frame(raw)
+        self.send_frame(self._frame(web_json_bytes(payload)))
+
+    def send_frame(self, frame):
+        if not self.alive:
+            raise RuntimeError("websocket is closed")
+        self._sender.submit(frame)
+
+    def _write_frame(self, frame):
         with self._lock:
             self.sock.sendall(frame)
 
+    def _send_failed(self, error):
+        safe_print("websocket send failed: %s" % error)
+        self.close()
+
     def close(self):
         self.alive = False
+        self._sender.close()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
         try:
             self.sock.close()
         except Exception:
@@ -6425,16 +6526,16 @@ class WebSocketCallbackManager(object):
 
     def broadcast(self, event):
         dead = []
+        frame = None
         with self._lock:
             clients = list(self._clients)
         for client in clients:
             if not client.alive or not client.matches(event):
                 continue
             try:
-                client.send_json({
-                    "type": "callback",
-                    "event": event,
-                })
+                if frame is None:
+                    frame = client._frame(web_json_bytes({"type": "callback", "event": event}))
+                client.send_frame(frame)
             except Exception:
                 dead.append(client)
         for client in dead:
@@ -6481,17 +6582,21 @@ class WebSocketQuoteManager(object):
                 safe_print("websocket quotes empty callback failed: %s" % e)
 
     def broadcast(self, event):
+        return self.broadcast_encoded(event)
+
+    def broadcast_encoded(self, event, encoded=None):
         dead = []
+        frame = None
         with self._lock:
             clients = list(self._clients)
         for client in clients:
             if not client.alive or not client.matches(event):
                 continue
             try:
-                client.send_json({
-                    "type": "quote",
-                    "event": event,
-                })
+                if frame is None:
+                    raw = encoded if encoded is not None else web_json_bytes({"type": "quote", "event": event})
+                    frame = client._frame(raw)
+                client.send_frame(frame)
             except Exception:
                 dead.append(client)
         for client in dead:
@@ -6506,12 +6611,16 @@ WS_QUOTES = WebSocketQuoteManager()
 
 
 class QuoteSubscriptionStore(object):
-    def __init__(self, max_events=1000):
+    def __init__(self, max_events=1000, diagnostic=False, manager=None):
+        self.diagnostic = diagnostic
+        self.manager = manager or WS_QUOTES
+        self._pending_diagnostics = {}
         self.max_events = int(max_events)
         self._lock = threading.RLock()
         self._subscribe_lock = threading.Lock()
         self._subscriptions = {}
-        self._events = []
+        self._events = QuoteHistory(self.max_events, int(os.environ.get("CFQUANT_WEB_QUOTE_HISTORY_BYTES", 64 * 1024 * 1024)))
+        self._history_error = ""
         self._seq = 0
         self._callback_registered = False
         self._whole_subscribe_id = None
@@ -6527,9 +6636,18 @@ class QuoteSubscriptionStore(object):
 
     def close(self):
         with self._lock:
+            self._cancel_idle_release_locked()
+            self._events.clear()
+            self._pending_diagnostics.clear()
+            diagnostic_ids = list(self._subscriptions) if self.diagnostic else []
             if self._callback_registered:
                 CLIENTS.remove_callback("quote", self._on_quote)
                 self._callback_registered = False
+        for subscribe_id in diagnostic_ids:
+            try:
+                self.unsubscribe({"subscribe_id": subscribe_id, "timeout": 2.0})
+            except Exception as error:
+                safe_print("quote diagnostic cleanup failed id=%s error=%s" % (subscribe_id, error))
 
     def subscribe_whole(self, body):
         with self._subscribe_lock:
@@ -6552,7 +6670,7 @@ class QuoteSubscriptionStore(object):
                     and (not body.get("bridge_id") or normalize_bridge_id(body["bridge_id"]) == row.get("bridge_id"))
                     and (not requested_channel or requested_channel == row.get("channel"))
                 )
-                if not same_request or WS_QUOTES.count() <= 0:
+                if not same_request or self.manager.count() <= 0:
                     replace_id = existing_id
                     existing_id = None
                 else:
@@ -6570,7 +6688,7 @@ class QuoteSubscriptionStore(object):
                         "account_id": row.get("account_id") or "",
                         "account_type": row.get("account_type") or "",
                         "account_key": row.get("account_key") or "",
-                        "kind": "whole_quote",
+                        "kind": "whole_quote_latency" if self.diagnostic else "whole_quote",
                         "markets": row.get("markets", markets),
                         "already_subscribed": True,
                         "event_count": row.get("event_count", 0),
@@ -6580,14 +6698,25 @@ class QuoteSubscriptionStore(object):
                 self._clear_events_locked(None)
         if replace_id is not None:
             self.unsubscribe({"subscribe_id": replace_id, "timeout": timeout})
-        route = data_provider_request(
-            "xtdata.subscribe_whole_quote",
-            {"code_list": markets},
-            requested_channel=requested_channel,
-            default_channel="normal",
-            timeout=timeout,
-            bridge_id=body.get("bridge_id"),
-        )
+        callback_event = "quote:%s" % new_id("latency") if self.diagnostic else None
+        params = {"code_list": markets}
+        if callback_event:
+            params["callback_event"] = callback_event
+            with self._lock:
+                self._pending_diagnostics[callback_event] = None
+        try:
+            route = data_provider_request(
+                "xtdata.subscribe_whole_quote_latency" if self.diagnostic else "xtdata.subscribe_whole_quote",
+                params,
+                requested_channel=requested_channel,
+                default_channel="normal",
+                timeout=timeout,
+                bridge_id=body.get("bridge_id"),
+            )
+        except BaseException:
+            with self._lock:
+                self._pending_diagnostics.pop(callback_event, None)
+            raise
         result = route["result"]
         bridge_id = route["bridge_id"]
         channel = route["channel"]
@@ -6595,13 +6724,14 @@ class QuoteSubscriptionStore(object):
         with self._lock:
             self._subscriptions[subscribe_id] = {
                 "subscribe_id": subscribe_id,
+                "callback_event": callback_event,
                 "bridge_id": bridge_id,
                 "channel": channel,
                 "mode": route["mode"],
                 "account_id": route.get("data_provider") or "",
                 "account_type": route.get("data_provider_account_type") or "",
                 "account_key": route.get("data_provider_account_key") or "",
-                "kind": "whole_quote",
+                "kind": "whole_quote_latency" if self.diagnostic else "whole_quote",
                 "markets": markets,
                 "created_at": time.time(),
                 "event_count": 0,
@@ -6612,6 +6742,9 @@ class QuoteSubscriptionStore(object):
             self._whole_subscribed_at = time.time()
             self._clear_events_locked(subscribe_id)
             self._schedule_idle_release_locked()
+            pending = self._pending_diagnostics.pop(callback_event, None)
+        if pending is not None:
+            self._on_quote(*pending)
         return {
             "subscribe_id": subscribe_id,
             "bridge_id": bridge_id,
@@ -6619,7 +6752,7 @@ class QuoteSubscriptionStore(object):
             "account_id": route.get("data_provider") or "",
             "account_type": route.get("data_provider_account_type") or "",
             "account_key": route.get("data_provider_account_key") or "",
-            "kind": "whole_quote",
+            "kind": "whole_quote_latency" if self.diagnostic else "whole_quote",
             "markets": markets,
             "already_subscribed": False,
             "publish_existing": bool(result.get("publish_existing")) if isinstance(result, dict) else False,
@@ -6666,7 +6799,7 @@ class QuoteSubscriptionStore(object):
             subscribe_id = self._whole_subscribe_id
             if not subscribe_id or subscribe_id not in self._subscriptions:
                 return {"released": False, "reason": "no whole quote subscription"}
-            if WS_QUOTES.count() > 0:
+            if self.manager.count() > 0:
                 return {"released": False, "reason": "websocket clients still connected"}
             age = time.time() - (self._whole_subscribed_at or self._subscriptions[subscribe_id].get("created_at", 0))
             if grace_seconds and age < grace_seconds:
@@ -6726,14 +6859,9 @@ class QuoteSubscriptionStore(object):
             self._cancel_idle_release_locked()
 
     def _clear_events_locked(self, subscribe_id=None):
-        if subscribe_id:
-            subscribe_id = str(subscribe_id)
-            self._events = [
-                row for row in self._events
-                if str(row.get("subscribe_id") or "") != subscribe_id
-            ]
-        else:
-            self._events = []
+        self._history_error = ""
+        self._events.clear(str(subscribe_id) if subscribe_id else None)
+        if not subscribe_id:
             self._seq = 0
 
     def _schedule_idle_release_locked(self):
@@ -6761,10 +6889,9 @@ class QuoteSubscriptionStore(object):
     def latest(self, since=0, limit=200, subscribe_id=None):
         subscribe_id = str(subscribe_id or "").strip()
         with self._lock:
-            rows = [row for row in self._events if row.get("seq", 0) > since]
-            if subscribe_id:
-                rows = [row for row in rows if str(row.get("subscribe_id") or "") == subscribe_id]
-            return rows[-int(limit):]
+            if self._history_error:
+                raise OSError("quote history unavailable: %s" % self._history_error)
+            return self._events.latest(since, limit, subscribe_id)
 
     def status(self):
         with self._lock:
@@ -6772,27 +6899,62 @@ class QuoteSubscriptionStore(object):
                 "subscriptions": list(self._subscriptions.values()),
                 "whole_subscribe_id": self._whole_subscribe_id,
                 "event_count": len(self._events),
-                "websocket_clients": WS_QUOTES.count(),
+                "history": self._events.status(),
+                "history_error": self._history_error,
+                "websocket_clients": self.manager.count(),
             }
 
-    def _on_quote(self, data):
+    def _on_quote(self, data, received_at_ms=None):
+        received_at_ms = time.time() * 1000.0 if received_at_ms is None else received_at_ms
+        payload = data.get("data") if isinstance(data, dict) else None
+        diagnostic = isinstance(payload, dict) and payload.get("schema") == QUOTE_LATENCY_SCHEMA
+        if diagnostic != self.diagnostic:
+            return
         event = self._normalize_event(data)
         with self._lock:
+            if self.diagnostic and event.get("event") in self._pending_diagnostics:
+                # QMT may publish synchronously while subscribe is still running.
+                # Keep one latest frame and its original callback-entry timestamp.
+                self._pending_diagnostics[event["event"]] = (data, received_at_ms)
+                return
             subscribe_id = str(event.get("subscribe_id") or "")
             if subscribe_id and subscribe_id not in self._subscriptions:
                 return
             if not subscribe_id and not self._subscriptions:
                 return
+            if self.diagnostic:
+                row = self._subscriptions.get(subscribe_id) or {}
+                if event.get("event") != row.get("callback_event"):
+                    return
+                report = latency_report(payload, received_at_ms)
+                event["latency"] = report
+                # Preserve the complete batch. Only the browser's DOM is paged;
+                # all symbols and their original fields remain available for export.
+                event["data"] = payload["quotes"]
+                event["code_count"] = report["code_count"]
             self._seq += 1
             event["seq"] = self._seq
-            event["received_at"] = time.time()
+            event["received_at"] = received_at_ms / 1000.0
             if subscribe_id and subscribe_id in self._subscriptions:
                 self._subscriptions[subscribe_id]["event_count"] = self._subscriptions[subscribe_id].get("event_count", 0) + 1
                 self._subscriptions[subscribe_id]["last_event_at"] = event["received_at"]
-            self._events.append(event)
-            if len(self._events) > self.max_events:
-                self._events = self._events[-self.max_events:]
-        WS_QUOTES.broadcast(event)
+            envelope = {"type": "quote", "event": event}
+            if isinstance(event.get("meta"), dict) and event["meta"].get("quote_json_plain") is True:
+                # The wire decoder already produced JSON-compatible quote data.
+                # Avoid another walk over every symbol; unusual additions still
+                # take web_json_bytes' compatibility fallback.
+                envelope = JsonReadyResponse(envelope)
+            encoded = web_json_bytes(envelope)
+            if not self._history_error:
+                try:
+                    self._events.append(event, encoded)
+                except Exception as error:
+                    self._history_error = str(error)
+                    safe_print("quote history failed; live delivery continues: %s" % error)
+        if hasattr(self.manager, "broadcast_encoded"):
+            self.manager.broadcast_encoded(event, encoded)
+        else:
+            self.manager.broadcast(event)
         self.release_idle_whole_subscription(reason="no websocket clients during quote", grace_seconds=8)
 
     def _normalize_event(self, data):
@@ -6823,6 +6985,10 @@ class QuoteSubscriptionStore(object):
 
 
 QUOTES = QuoteSubscriptionStore()
+WS_LATENCY_QUOTES = WebSocketQuoteManager()
+LATENCY_QUOTES = QuoteSubscriptionStore(max_events=2, diagnostic=True, manager=WS_LATENCY_QUOTES)
+WS_LATENCY_QUOTES.on_empty = lambda: LATENCY_QUOTES.release_idle_whole_subscription(
+    reason="no diagnostic websocket clients", grace_seconds=0)
 
 
 def _release_quote_subscription_on_empty():
@@ -7354,12 +7520,25 @@ WEB_CONFIG = WebRuntimeConfig(WEB_CONFIG_FILE)
 UPDATER = None
 
 
+class JsonReadyResponse(dict):
+    """Internal marker: the payload has already passed Web JSON conversion."""
+
+
+def web_json_bytes(payload):
+    if isinstance(payload, JsonReadyResponse):
+        try:
+            return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError):
+            pass  # A caller may have added an unconverted value after ok().
+    return json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
 def ok(data=None):
     started = time.perf_counter()
     converted = to_jsonable(data)
     if isinstance(converted, dict) and isinstance(converted.get("timing"), dict):
         converted["timing"].setdefault("web", {})["result_convert_ms"] = round((time.perf_counter() - started) * 1000, 3)
-    return {"ok": True, "data": converted}
+    return JsonReadyResponse(ok=True, data=converted)
 
 
 def fail(error, status=400):
@@ -11917,6 +12096,9 @@ def lttx_status():
     running = bool(processes) or port_open
     managed_pids = [row["pid"] for row in processes if is_lttx_managed_process(row)]
     now = time.time()
+    executor = LTTX_WEB_ROUTE._executor
+    with CLIENTS._lock:
+        rpc_clients = list(CLIENTS._clients.items())
     return {
         "host": LTTX_HOST,
         "port": LTTX_PORT,
@@ -11929,6 +12111,8 @@ def lttx_status():
         "entry": os.path.abspath(LTTX_ENTRY),
         "purpose": "cfquant Python 库自动发现与 Web 统一路由入口",
         "stop_policy": "Web 重启和定时重启保留 LTtx；完整退出 cfquant 时停止 LTtx",
+        "request_queue": executor.status() if executor is not None else {"queued_requests": 0, "active_keys": 0},
+        "callback_queues": {mode: client.callback_status() for mode, client in rpc_clients if hasattr(client, "callback_status")},
         "checked_at": now,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
     }
@@ -16113,7 +16297,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/ws/callbacks":
             self._handle_ws_callbacks(parsed)
-        elif parsed.path == "/ws/quotes":
+        elif parsed.path in ("/ws/quotes", "/ws/diagnostics/quotes"):
             self._handle_ws_quotes(parsed)
         elif parsed.path.startswith("/media/"):
             self._serve_runtime_media(parsed.path)
@@ -16295,6 +16479,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(result))
                 if reload_requested:
                     schedule_web_reload(self.server, result["reload"])
+            elif parsed.path == "/api/diagnostics/quotes/subscribe":
+                self._write_json(ok(LATENCY_QUOTES.subscribe_whole(body)))
+            elif parsed.path == "/api/diagnostics/quotes/unsubscribe":
+                self._write_json(ok(LATENCY_QUOTES.unsubscribe(body)))
             elif parsed.path == "/api/quotes/whole/subscribe":
                 self._write_json(ok(subscribe_whole_quote(body)))
             elif parsed.path == "/api/quotes/subscribe":
@@ -16778,6 +16966,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 )
                 version_info["system_info"] = project_system_info(version_info)
                 self._write_json(ok(version_info))
+            elif parsed.path == "/api/diagnostics/quotes/status":
+                self._write_json(ok(LATENCY_QUOTES.status()))
+            elif parsed.path == "/api/diagnostics/quotes/latest":
+                self._write_json(ok({"events": LATENCY_QUOTES.latest(
+                    since=int((query.get("since") or ["0"])[0]),
+                    limit=max(1, min(120, int((query.get("limit") or ["20"])[0]))),
+                    subscribe_id=(query.get("subscribe_id") or [""])[0])}))
             elif parsed.path == "/api/quotes/status":
                 self._write_json(ok(quote_status()))
             elif parsed.path == "/api/quotes/latest":
@@ -16980,7 +17175,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 if opcode == 0x8:
                     break
                 if opcode == 0x9:
-                    self._send_ws_control(0xA, payload)
+                    self._send_ws_control(0xA, payload, client=client)
         except Exception as e:
             safe_print("websocket callbacks closed: %s" % e)
         finally:
@@ -16988,6 +17183,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self.close_connection = True
 
     def _handle_ws_quotes(self, parsed):
+        diagnostic = parsed.path == "/ws/diagnostics/quotes"
+        manager = WS_LATENCY_QUOTES if diagnostic else WS_QUOTES
+        store = LATENCY_QUOTES if diagnostic else QUOTES
         if not self._authorized(parsed):
             self.send_response(401)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -17012,19 +17210,22 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         subscribe_id = (query.get("subscribe_id") or [""])[0]
         client = WebSocketQuoteClient(self.request, subscribe_id=subscribe_id)
-        WS_QUOTES.add(client)
+        manager.add(client)
         safe_print(
             "websocket quotes connected subscribe_id=%s clients=%s"
-            % (subscribe_id or "*", WS_QUOTES.count())
+            % (subscribe_id or "*", manager.count())
         )
         try:
             client.send_json({
                 "type": "hello",
                 "channel": "quotes",
                 "subscribe_id": subscribe_id,
-                "clients": WS_QUOTES.count(),
-                "status": QUOTES.status(),
+                "clients": manager.count(),
+                "status": store.status(),
             })
+            if diagnostic:
+                for event in store.latest(limit=1, subscribe_id=subscribe_id):
+                    client.send_json({"type": "quote", "event": event})
             self.request.settimeout(30)
             while client.alive:
                 frame = self._read_ws_frame()
@@ -17034,11 +17235,11 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 if opcode == 0x8:
                     break
                 if opcode == 0x9:
-                    self._send_ws_control(0xA, payload)
+                    self._send_ws_control(0xA, payload, client=client)
         except Exception as e:
             safe_print("websocket quotes closed: %s" % e)
         finally:
-            WS_QUOTES.remove(client)
+            manager.remove(client)
             self.close_connection = True
 
     def _read_ws_frame(self):
@@ -17090,13 +17291,17 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             remaining -= len(chunk)
         return b"".join(chunks)
 
-    def _send_ws_control(self, opcode, payload=b""):
+    def _send_ws_control(self, opcode, payload=b"", client=None):
         payload = payload or b""
         length = len(payload)
         if length > 125:
             payload = payload[:125]
             length = 125
-        self.request.sendall(bytes([0x80 | opcode, length]) + payload)
+        frame = bytes([0x80 | opcode, length]) + payload
+        if client is not None:
+            client.send_frame(frame)
+        else:
+            self.request.sendall(frame)
 
     def _serve_static(self, path):
         try:
@@ -17153,11 +17358,14 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             safe_print("client disconnected while writing media response: %s" % e)
 
     def _write_json(self, payload, status=200, extra_headers=None):
-        raw = json.dumps(to_jsonable(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        started = time.perf_counter()
+        raw = web_json_bytes(payload)
+        encoded_ms = (time.perf_counter() - started) * 1000
         try:
             self.send_response(status)
             self._send_cors_headers()
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Server-Timing", "web_json;dur=%.3f" % encoded_ms)
             for key, value in extra_headers or []:
                 self.send_header(str(key), str(value))
             self.send_header("Content-Length", str(len(raw)))
@@ -17372,6 +17580,7 @@ def main(argv=None):
         ACCOUNT_CACHE.close()
         CALLBACKS.close()
         QUOTES.close()
+        LATENCY_QUOTES.close()
         LTTX_WEB_ROUTE.close()
         CLIENTS.close()
         server.server_close()

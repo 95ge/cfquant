@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
+import atexit
 import queue
 import socket
 import threading
@@ -17,6 +18,19 @@ class CfquantError(RuntimeError):
 
 class CfquantTimeout(TimeoutError):
     pass
+
+
+def _wait_response(q, timeout):
+    """Keep long Windows waits interruptible without delaying incoming data."""
+    if timeout < 0 or threading.current_thread() is not threading.main_thread():
+        return q.get(timeout=timeout)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return q.get(timeout=min(.2, max(0, deadline - time.monotonic())))
+        except queue.Empty:
+            if time.monotonic() >= deadline:
+                raise
 
 
 PIPE_TRANSPORTS = ("pipe", "ctypes", "named_pipe", "named-pipe")
@@ -115,8 +129,9 @@ class LTtxRpcClient(object):
         self._lock = threading.RLock()
         self._pending_lock = threading.RLock()
         self._started = False
+        self._closed = False
         self._recv_thread = None
-        self._event_dispatcher = CallbackDispatcher(self._dispatch_event)
+        self._event_dispatcher = CallbackDispatcher(self._dispatch_event, self._callback_buffer_failed)
 
     def start(self):
         with self._lock:
@@ -125,18 +140,36 @@ class LTtxRpcClient(object):
                 return
             txl = self._load_txl()
             self._tx = txl(self.host, self.port, self.token)
-            self._tx.start_tx()
-            self._tx.start_txg(self.client_id)
+            try:
+                result = self._tx.start_tx()
+                if isinstance(result, dict) and result.get("code", 0) != 0:
+                    raise CfquantError(result.get("msg") or "LTtx connection failed")
+                self._tx.start_txg(self.client_id)
+                if not getattr(self._tx, "run_on", True):
+                    raise CfquantError("cfquant client closed during connection startup")
+            except BaseException:
+                self.close()
+                raise
             self._started = True
+            self._closed = False
             generation = self._event_dispatcher.start()
             self._recv_thread = threading.Thread(target=self._recv_loop, args=(self._tx, generation))
             self._recv_thread.daemon = True
             self._recv_thread.start()
 
     def close(self):
+        # start() owns _lock while connecting/retrying. Cancel the underlying
+        # transport first so a close from another thread can acquire that lock.
+        starting_tx = self._tx if not self._started else None
+        if starting_tx is not None:
+            try:
+                starting_tx.close()
+            except Exception:
+                pass
         with self._lock:
             self._event_dispatcher.stop()
             self._started = False
+            self._closed = True
             tx = self._tx
             self._tx = None
             if tx is not None:
@@ -144,10 +177,11 @@ class LTtxRpcClient(object):
                     tx.Q.put(None)
                 except Exception:
                     pass
-                try:
-                    tx.close()
-                except Exception:
-                    pass
+                if tx is not starting_tx:
+                    try:
+                        tx.close()
+                    except Exception:
+                        pass
             with self._pending_lock:
                 for q in list(self._pending.values()):
                     try:
@@ -176,7 +210,7 @@ class LTtxRpcClient(object):
                     self._pending[request_id] = q
                 self._push("request", raw, request_channel or self.request_channel)
             try:
-                msg = q.get(timeout=effective_timeout)
+                msg = _wait_response(q, effective_timeout)
             except queue.Empty:
                 raise CfquantTimeout("cfquant request timeout: %s" % action)
             timing.received(msg)
@@ -184,6 +218,9 @@ class LTtxRpcClient(object):
                 err = msg.get("error") or {}
                 raise CfquantError(err.get("message") or str(err))
             return timing.decode(msg.get("result"), decode_value)
+        except (KeyboardInterrupt, SystemExit):
+            self.close()
+            raise
         finally:
             timing.finish()
             with self._pending_lock:
@@ -213,6 +250,7 @@ class LTtxRpcClient(object):
                 raw = tx.Q.get()
                 if raw is None:
                     break
+                parse_started = time.perf_counter()
                 msg = loads_message(raw)
                 if not msg:
                     continue
@@ -221,12 +259,17 @@ class LTtxRpcClient(object):
                         return
                     msg_type = msg.get("type")
                     if msg_type == "response":
+                        msg["_client_parse_ms"] = round((time.perf_counter() - parse_started) * 1000, 3)
                         with self._pending_lock:
                             q = self._pending.pop(msg.get("id"), None)
                         if q:
                             q.put(msg)
                     elif msg_type == "event":
-                        self._event_dispatcher.submit(generation, msg)
+                        try:
+                            self._event_dispatcher.submit(generation, msg, raw=raw)
+                        except Exception as error:
+                            self._callback_buffer_failed(error)
+                            return
             except Exception:
                 time.sleep(0.05)
                 if not self._started:
@@ -237,6 +280,23 @@ class LTtxRpcClient(object):
 
     def _dispatch_event(self, msg):
         dispatch_callbacks(self._callbacks, msg, self._event_dispatcher.is_current_callback)
+
+    def callback_status(self):
+        return self._event_dispatcher.status()
+
+    def _callback_buffer_failed(self, error, generation=None):
+        with self._lock:
+            if generation is not None and not self._event_dispatcher.is_generation(generation):
+                return
+            with self._pending_lock:
+                pending = list(self._pending.values())
+                self._pending.clear()
+            for waiter in pending:
+                try:
+                    waiter.put_nowait({"ok": False, "error": {"message": "cfquant callback buffering failed: %s" % error}})
+                except queue.Full:
+                    pass
+            self.close()
 
     def _push(self, key, payload, channel):
         tx = self._tx
@@ -348,6 +408,18 @@ def get_client():
                 client_id=cfg.get("client_id"),
             )
         return _default_client
+
+
+def close_client():
+    """Close the default market-data client without creating a connection."""
+    global _default_client
+    with _client_lock:
+        client, _default_client = _default_client, None
+    if client is not None:
+        client.close()
+
+
+atexit.register(close_client)
 
 
 def configure(**kwargs):

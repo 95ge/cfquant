@@ -17,10 +17,49 @@ import datetime
 import sys
 import subprocess
 import importlib
+import atexit
+import weakref
 import pandas as pd
 
 
 DEFAULT_PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple"
+_STOP = object()
+_clients = weakref.WeakSet()
+
+
+def _close_clients():
+    deadline = time.monotonic() + 2.0
+    for client in list(_clients):
+        try:
+            client.close(timeout=max(0, deadline - time.monotonic()))
+        except Exception:
+            pass
+
+
+atexit.register(_close_clients)
+
+
+class _ReceiveQueue:
+    """Keep Queue semantics while allowing the main thread to handle SIGINT."""
+    def __init__(self, queue_type):
+        self._queue = queue_type()
+
+    def __getattr__(self, name):
+        return getattr(self._queue, name)
+
+    def get(self, block=True, timeout=None):
+        if not block or threading.current_thread() is not threading.main_thread():
+            return self._queue.get(block=block, timeout=timeout)
+        if timeout is not None and timeout <= 0:
+            return self._queue.get(block=block, timeout=timeout)
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            remaining = .2 if deadline is None else min(.2, max(0, deadline - time.monotonic()))
+            try:
+                return self._queue.get(timeout=remaining)
+            except queue.Empty:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise
 
 
 def _pip_index_args():
@@ -58,6 +97,11 @@ class txl:
         
         '''                
         self.run_on = True
+        self._stop_event = threading.Event()
+        self._lifecycle_lock = threading.RLock()
+        self._threads = set()
+        self._connecting_sockets = set()
+        self._log_thread = None
         self.orjson_on = None
         self.channel_list = False
         self.sys_print_on = show
@@ -104,6 +148,7 @@ class txl:
         msg = '通信系统V%s加载成功,Have fun!当前版本更新于%s'%(self.__version__,self.__version__msg)
         self.sys_print(msg)
         self.server2 = False#判断服务器是不是新版本,看是否要用批量发送
+        _clients.add(self)
         self.start()
         self.td_df = pd.DataFrame()#存放交易日期数据，如果没有调用则不会产生数据
         self.pre_TradeDay = {'now_date':''}#存放前一个交易日
@@ -112,7 +157,9 @@ class txl:
         '''
         启动对应的组件
         '''
-        threading.Thread(target = self.__main_log).start()   
+        with self._lifecycle_lock:
+            if self._log_thread is None or not self._log_thread.is_alive():
+                self._log_thread = self.__start_thread(self.__main_log, ())
     
     
     def auto_import(self,package_name, import_name=None):        
@@ -128,7 +175,7 @@ class txl:
                 ] + _pip_index_args(), **_hidden_subprocess_kwargs())
                 self.orjson_on = True
                 return importlib.import_module(import_name)            
-            except:
+            except Exception:
                 self.sys_price('TxLink自动安装orjson模块失败，采用json模块，若要体验高性能，请手动pip install orjson后重试')
                 import json
                 self.orjson_on = False
@@ -164,12 +211,12 @@ class txl:
             self.orjson_on = False
         if sys.version_info >= (3, 7):
             msg = 'python版本大于3.7，采用SimpleQueue进行数据传输'
-            self.Q = queue.SimpleQueue()            
+            self.Q = _ReceiveQueue(queue.SimpleQueue)
             self.tx_que = queue.SimpleQueue()
             self.save_log(msg)
         else:
             msg = 'python版本大于3.7，采用Queue进行数据传输'
-            self.Q = queue.Queue()
+            self.Q = _ReceiveQueue(queue.Queue)
             self.tx_que = queue.Queue()
             self.save_log(msg)
             
@@ -210,6 +257,8 @@ class txl:
     
 
     def save_log(self,msg,):
+        if self._stop_event.is_set():
+            return
         try:
             self.log_que.put_nowait((self.id, str(msg)[:8192]))
         except queue.Full:
@@ -218,21 +267,34 @@ class txl:
 
     def __main_log(self):
         self.clean_log()
-        while self.run_on:
+        while True:
             try:
-                data = str(self.log_que.get())+'\n'
-                if self.log_que.qsize() > 100:         
-                    self.clean_log()
-                    for i in range(100):
-                        try:
-                            data += str(self.log_que.get_nowait()) + '\n'
-                        except queue.Empty:
-                            break
+                item = self.log_que.get(timeout=.2)
+            except queue.Empty:
+                if self._stop_event.is_set():
+                    return
+                continue
+            if item is _STOP:
+                return
+            lines = [str(item) + '\n']
+            finished = False
+            for i in range(100):
+                try:
+                    item = self.log_que.get_nowait()
+                except queue.Empty:
+                    break
+                if item is _STOP:
+                    finished = True
+                    break
+                lines.append(str(item) + '\n')
+            try:
                 with open(os.path.join(self.log_dir, '%s.log'%(self.get_nowdate())),'a+',encoding='utf-8') as f:
-                    f.write(data)
-            except:#过滤掉日志记录出错
+                    f.write(''.join(lines))
+            except Exception:#过滤掉日志记录出错
                 #直接跳过日志记录，不影响主程序
                 pass
+            if finished:
+                return
 
     def check_version(self,):
         '''
@@ -464,99 +526,68 @@ class txl:
             self.sys_print((code,msg))
             return code,msg
     
-    def start_tx(self,mode=None):
-        '''
-        - 开启数据推送功能，开启后可以使用get,put,push等函数
-        - 如果要订阅数据，通过start_txg进行开启订阅，即可收到对应的数据
-        '''
-        if not self.run_on:
-            msg = '识别到此前已经close过txl，重新运行self.run_on'
-            self.sys_print(msg,show_force=True)
-            self.run_on = True
-        if not mode:
-            self.tx_running = True
-        while self.run_on:
+    def start_tx(self, mode=None):
+        """Start the primary connection. A closed instance cannot reconnect."""
+        return self._connect_sender(plus=False, mode=mode)
+
+    def _new_connection(self):
+        with self._lifecycle_lock:
+            if self._stop_event.is_set():
+                raise OSError('txl is closed')
+            client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client.settimeout(2.0)
+            client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192 * 100)
+            client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._connecting_sockets.add(client)
+            return client
+
+    def _connect_sender(self, plus=False, mode=None):
+        attr = '_txl__tx_plus' if plus else '_txl__tx'
+        while not self._stop_event.is_set():
+            client = None
+            adopted = False
             try:
-                msg = 'start_tx正在连接(%s,%s)LTtx服务器,请稍后'%(self.ip,self.port)
-                self.sys_print(msg,show_force=True)
-                if self.__tx == False:
-                    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-                    client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192*100)
-                    # 设置立即发送（关闭 Nagle 算法，降低延迟）
-                    client.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                    client.connect((self.ip,self.port))                    
-                    tem_dict = {'con_type':'put_mode','tocken':self.tocken,
-                                'local_ip':self.local_ip,
-                                'current_file':self.current_file,'current_dir':self.current_dir,                                
-                                }
-                    self.sys_print(tem_dict)
-                    client.sendall(json.dumps(tem_dict).encode('utf-8'))
-                    if self.recv_msg_start_tx(client):
-                        self.__tx = client
-                        t0 = threading.Thread(target=self.main_tx_que)
-                        t0.start()
-                        thp0 = threading.Thread(target = self.start_tx_hearbeat)
-                        thp0.start()
-                        msg = 'start_tx连接成功,have fun'
-                        self.sys_print(msg,show_force=True)
+                if getattr(self, attr):
+                    return {'code': -1, 'msg': 'connection already started'}
+                client = self._new_connection()
+                client.connect((self.ip, self.port))
+                hello = {'con_type': 'plus_mode' if plus else 'put_mode',
+                         'tocken': self.tocken, 'local_ip': self.local_ip,
+                         'current_file': self.current_file, 'current_dir': self.current_dir}
+                client.sendall(json.dumps(hello).encode('utf-8'))
+                if not self.recv_msg_start_tx(client):
+                    raise OSError('LTtx handshake rejected')
+                client.settimeout(None)
+                with self._lifecycle_lock:
+                    if self._stop_event.is_set():
                         break
+                    if getattr(self, attr):
+                        return {'code': -1, 'msg': 'connection already started'}
+                    setattr(self, attr, client)
+                    adopted = True
+                    if plus:
+                        self.__start_thread(self.main_tx_que_plus, (client, self.tx_que_plus))
+                        self.__start_thread(self.start_tx_hearbeat_plus, (client,))
                     else:
-                        self.close_connection(self.__tx)
-                        self.__tx = False 
-                else:
-                    code = -1
-                    msg = '请勿重复连接tx'
-                    result = {'code':code,'msg':msg}
-                    return result
-            except Exception as e:
-                msg = '服务端未启动,将在1秒后继续尝试start_tx,%s'%(e)
-                self.sys_print(msg,show_force=True)
-                time.sleep(1)
-    
-    def start_plus(self,):
-        '''
-        开启高性能式，该模式打开后可以使用push_plus函数，推送数据的延迟和效率会更高
-        '''
-        if not self.run_on:
-            msg = '识别到此前已经close过txl，重新运行self.run_on'
-            self.sys_print(msg,show_force=True)
-        while self.run_on:
-            try:
-                msg = (self.get_nowtime(),'start_flash正在连接(%s,%s)LTtx服务器,请稍后'%(self.ip,self.port))
-                self.sys_print(msg)
-                if self.__tx_plus == False:
-                    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-                    client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192*100)
-                    client.connect((self.ip,self.port))
-                    self.__tx_plus = client
-                    tem_dict = {'con_type':'plus_mode','tocken':self.tocken,
-                                'local_ip':self.local_ip,
-                                'current_file':self.current_file,'current_dir':self.current_dir,
-                                }
-                    self.__tx_plus.sendall(json.dumps(tem_dict).encode('utf-8'))
-                    if self.recv_msg_start_tx(client):
-                        t0 = threading.Thread(target=self.main_tx_que_plus)
-                        t0.start()
-                        thp0 = threading.Thread(target = self.start_tx_hearbeat_plus)
-                        thp0.start()
-                        break
-                    else:
-                        self.close_connection(self.__tx_plus)
-                        self.__tx_plus = False 
-                else:
-                    code = -1
-                    msg = '请勿重复连接'
-                    result = {'code':code,'msg':msg}
-                    self.sys_print(result)
-                    return result
-                
-            except Exception as e:
-                if type(e) == ConnectionRefusedError:
-                    msg = (self.get_nowtime(),'服务端未启动,将在1秒后继续尝试start_plus')
-                    self.sys_print(msg)
-                msg = (self.get_nowtime(),str(e))
-                self.sys_print(msg)
-                time.sleep(1)
+                        self.tx_running = not bool(mode)
+                        self.__start_thread(self.main_tx_que, (client, self.tx_que))
+                        self.__start_thread(self.start_tx_hearbeat, (client,))
+                return
+            except Exception as error:
+                if not self._stop_event.is_set():
+                    self.sys_print('LTtx connection failed; retrying: %s' % error)
+            finally:
+                if client is not None:
+                    with self._lifecycle_lock:
+                        self._connecting_sockets.discard(client)
+                    if not adopted:
+                        self.close_connection(client)
+            self._stop_event.wait(1)
+        return {'code': -1, 'msg': 'txl is closed; create a new instance'}
+
+    def start_plus(self):
+        """Start the optional Plus sender."""
+        return self._connect_sender(plus=True)
 
     def start_txg(self,channel_list,pwd=''):
         '''
@@ -595,7 +626,7 @@ class txl:
                 if type(e) == ConnectionRefusedError:
                     msg = (self.get_nowtime(),'服务端未启动,将在1秒后继续尝试start_txg')
                     self.sys_print(msg)
-                    time.sleep(1)
+                    self._stop_event.wait(1)
         
     def __re_start_txg(self,channel_list,pwd=''):
         '''
@@ -626,63 +657,49 @@ class txl:
                 if type(e) == ConnectionRefusedError:
                     msg = (self.get_nowtime(),'服务端未启动,将在1秒后继续尝试start_txg')
                     self.sys_print(msg)
-                    time.sleep(1)
+                    self._stop_event.wait(1)
     
     
-    def __connect_txg(self,who,pwd=''):
-        '''
-        连接txg
-        '''
-        while self.run_on:            
-            if who in self.txg_dict and self.txg_dict[who]['txg_running']:
-                self.sys_print((self.get_nowtime(),'订阅频道%s失败，该频道已经存在'%(who)))
-                return
+    def __connect_txg(self, who, pwd=''):
+        while not self._stop_event.is_set():
+            client = None
+            adopted = False
             try:
-                msg = '正在订阅%s频道'%(who)
-                self.sys_print(msg)
-                client = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
-                client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024*1024*100)
-                self.txg_running = True
-                client.connect((self.ip,self.port,))
-                self.channel_pwd = pwd
-                tem_dict = {'con_type':'push_mode','who':who,'pwd':pwd,'tocken':self.tocken,
-                            'client_version':2,
-                            'local_ip':self.local_ip,
-                            'current_file':self.current_file,'current_dir':self.current_dir,
-                            }                
-                client.send(json.dumps(tem_dict).encode('utf-8'))
-                if self.recv_msg_start_txg(client,timeout=1) == True:                           
-                    if who not in self.txg_dict:
-                        self.txg = client
-                        self.txg_dict[who] = {'con':client,'txg_running':True}
-                        msg = 'start_txg连接成功，订阅频道%s'%(who)
-                        self.sys_print(msg,show_force=True)
-                        self.__start_thread(target = self.recv_msg_broadcast, args = (who,client,pwd))
-                        self.__start_thread(target = self.main_broadcast_heartbeat,args=(client, who, pwd))
+                with self._lifecycle_lock:
+                    if (self.txg_dict.get(who) or {}).get('txg_running'):
+                        return
+                client = self._new_connection()
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024 * 100)
+                client.connect((self.ip, self.port))
+                hello = {'con_type': 'push_mode', 'who': who, 'pwd': pwd, 'tocken': self.tocken,
+                         'client_version': 2, 'local_ip': self.local_ip,
+                         'current_file': self.current_file, 'current_dir': self.current_dir}
+                client.sendall(json.dumps(hello).encode('utf-8'))
+                if not self.recv_msg_start_txg(client, timeout=1):
+                    return
+                with self._lifecycle_lock:
+                    if self._stop_event.is_set():
                         break
-                    else:
-                        if not self.txg_dict[who]['txg_running']:
-                            self.txg = client
-                            msg = 'start_txg连接成功，订阅频道%s'%(who)
-                            self.txg_dict[who]['con'] = client
-                            self.txg_dict[who]['txg_running'] = True
-                            self.sys_print(msg,show_force=True)
-                            self.__start_thread(target = self.recv_msg_broadcast, args = (who,client,pwd))
-                            self.__start_thread(target = self.main_broadcast_heartbeat,args=(client, who, pwd))
-                            break
-                        else:
-                            msg = '由于%s已经存在，本次连接主动断开'%(who)
-                            self.sys_print(msg)
-                            self.close_connection(client,name=msg)
-                            break
-                else:
-                    msg = (who,'start_txg连接失败，没有收到正常的数据,可能是认证不通过,请确认您的token是否正确')
-                    self.sys_print(msg)
-                    break
-            except Exception as e:
-                msg = '在订阅%s连接txg时服务器出错了>>>>>%s,将在1秒后重试'%(who,e)
-                self.sys_print(msg,show_force=1)
-                time.sleep(1)
+                    if (self.txg_dict.get(who) or {}).get('txg_running'):
+                        return
+                    self.channel_pwd = pwd
+                    self.txg_running = True
+                    self.txg = client
+                    self.txg_dict[who] = {'con': client, 'txg_running': True}
+                    adopted = True
+                    self.__start_thread(self.recv_msg_broadcast, (who, client, pwd))
+                    self.__start_thread(self.main_broadcast_heartbeat, (client, who, pwd))
+                return
+            except Exception as error:
+                if not self._stop_event.is_set():
+                    self.sys_print('LTtx subscription failed; retrying: %s' % error)
+            finally:
+                if client is not None:
+                    with self._lifecycle_lock:
+                        self._connecting_sockets.discard(client)
+                    if not adopted:
+                        self.close_connection(client, name='txg')
+            self._stop_event.wait(1)
             
 
     def reconnect_callback(self,dict_data,callback=None):
@@ -767,22 +784,26 @@ class txl:
         None.
 
         '''
-        if not self.__ZMQ:
-            context = zmq.Context()
+        with self._lifecycle_lock:
+            if self._stop_event.is_set():
+                raise RuntimeError('txl is closed')
+            if not self.__ZMQ:
+                context = zmq.Context()
             
-            # 创建发布者套接字并连接到代理
-            socket = context.socket(zmq.PUB)
-            socket.setsockopt(zmq.RCVHWM, 1000000)
-            socket.setsockopt(zmq.SNDHWM, 1000000)
-            socket.connect('tcp://%s:%s'%(self.ip,pub_port))
-            socket.send_string('test dsfadsafdsafsda')
-            self.__ZMQ = socket
-            print(self.get_nowtime(),'zmq connect ok')
-        else:
-            # code = -1
-            msg = 'start_MQ已经连接,请不要重复连接'
-            msg = (self.get_nowtime(),msg)
-            self.sys_print(msg)
+                # 创建发布者套接字并连接到代理
+                socket = context.socket(zmq.PUB)
+                socket.setsockopt(zmq.RCVHWM, 1000000)
+                socket.setsockopt(zmq.SNDHWM, 1000000)
+                socket.setsockopt(zmq.LINGER, 0)
+                socket.connect('tcp://%s:%s'%(self.ip,pub_port))
+                socket.send_string('test dsfadsafdsafsda')
+                self.__ZMQ = socket
+                print(self.get_nowtime(),'zmq connect ok')
+            else:
+                # code = -1
+                msg = 'start_MQ已经连接,请不要重复连接'
+                msg = (self.get_nowtime(),msg)
+                self.sys_print(msg)
 
         
     
@@ -803,55 +824,79 @@ class txl:
 
         '''
         import zmq
-        if not self.__ZMQ_broadcast:
-            context = zmq.Context()
+        with self._lifecycle_lock:
+            if self._stop_event.is_set():
+                raise RuntimeError('txl is closed')
+            if not self.__ZMQ_broadcast:
+                context = zmq.Context()
 
-            # 创建订阅者套接字并连接到代理
-            socket = context.socket(zmq.SUB)
-            socket.setsockopt(zmq.RCVHWM, 1000000)
-            socket.setsockopt(zmq.SNDHWM, 1000000)
-            socket.connect("tcp://%s:%s"%(self.ip,sub_port))
-            self.zmq_channel_list = channel_list.split('@')
-            for channel in self.zmq_channel_list:
-                if len(channel) > 0:
-                    # 订阅特定主题
-                    socket.setsockopt_string(zmq.SUBSCRIBE, channel)
-            self.__ZMQ_broadcast = socket
-            threading.Thread(target = self.main_recv_msg_from_zmq).start()
-        else:
-            # code = -1
-            msg = 'MQ_broadcast已经连接,请不要重复连接'
-            print(self.get_nowtime(),msg)
+                # 创建订阅者套接字并连接到代理
+                socket = context.socket(zmq.SUB)
+                socket.setsockopt(zmq.RCVHWM, 1000000)
+                socket.setsockopt(zmq.SNDHWM, 1000000)
+                socket.setsockopt(zmq.RCVTIMEO, 200)
+                socket.setsockopt(zmq.LINGER, 0)
+                socket.connect("tcp://%s:%s"%(self.ip,sub_port))
+                self.zmq_channel_list = channel_list.split('@')
+                for channel in self.zmq_channel_list:
+                    if len(channel) > 0:
+                        # 订阅特定主题
+                        socket.setsockopt_string(zmq.SUBSCRIBE, channel)
+                self.__ZMQ_broadcast = socket
+                self.__start_thread(self.main_recv_msg_from_zmq, ())
+            else:
+                # code = -1
+                msg = 'MQ_broadcast已经连接,请不要重复连接'
+                print(self.get_nowtime(),msg)
     
     def main_recv_msg_from_zmq(self):
-        print(self.get_nowtime(),'开始从ZMQ中接收数据')
-        while self.run_on:
-            data = self.__ZMQ_broadcast.recv_string().split('|',1)
-            if data[0] in self.zmq_channel_list:
-                self.Q.put(data[1])
-    
-    def start_tx_hearbeat(self):
-        while self.run_on:
-            if self.__tx:
-                self.push('heartbeat','1','heartbeat0')
-                time.sleep(self.timeout)
-            else:
-                break
+        import zmq
+        subscriber = self.__ZMQ_broadcast
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    data = subscriber.recv_string().split('|', 1)
+                except zmq.Again:
+                    continue
+                if len(data) == 2 and data[0] in self.zmq_channel_list:
+                    self.Q.put(data[1])
+        finally:
+            # ZMQ sockets must be closed by their receiving worker, not while
+            # another thread is inside recv(). Its timeout bounds shutdown.
+            subscriber.close(linger=0)
+            subscriber.context.term()
+            self.__ZMQ_broadcast = None
 
-    def start_tx_hearbeat_plus(self):
-        msg = ('start_tx_plus的heartbeat子线程启动')
-        self.sys_print(msg)
-        while self.run_on:
-            if self.__tx_plus:
-                self.push_plus('heartbeat','t','test22')
-                time.sleep(2)
-            else:
-                break
+    def start_tx_hearbeat(self, client=None):
+        client = self.__tx if client is None else client
+        while not self._stop_event.is_set() and client and self.__tx is client:
+            self.push('heartbeat', '1', 'heartbeat0')
+            self._stop_event.wait(self.timeout)
+
+    def start_tx_hearbeat_plus(self, client=None):
+        client = self.__tx_plus if client is None else client
+        while not self._stop_event.is_set() and client and self.__tx_plus is client:
+            self.push_plus('heartbeat', 't', 'test22')
+            self._stop_event.wait(2)
             
-    def __start_thread(self,target,args):
-        thp1 = threading.Thread(target=target,args=args)
-        # thp1.setDaemon(True)
-        thp1.start()        
+    def __start_thread(self, target, args):
+        def run():
+            try:
+                target(*args)
+            except Exception:
+                # Socket/queue operations can race with explicit shutdown.
+                if not self._stop_event.is_set():
+                    raise
+            finally:
+                with self._lifecycle_lock:
+                    self._threads.discard(threading.current_thread())
+        with self._lifecycle_lock:
+            if self._stop_event.is_set():
+                return None
+            thread = threading.Thread(target=run, name='cfquant-tx-' + target.__name__, daemon=True)
+            self._threads.add(thread)
+            thread.start()
+            return thread
       
     
     def recv_msg_start_tx(self,client):
@@ -980,7 +1025,7 @@ class txl:
                 send_data = {'func':'put','value':(key,data)}
                 msg = self.json.dumps(send_data)
                 self.send_data(self.__tx,msg)
-        except:
+        except Exception:
             msg = 'Error:和服务端失去连接，即将重连'
             self.sys_print(msg,show_force=1)
             self.__tx = False
@@ -997,7 +1042,7 @@ class txl:
                 send_data = {'func':'put_dataframe','value':(key,json.dumps(df.to_dict(orient='records')))}
                 msg = self.json.dumps(send_data)
                 self.send_data(self.__tx,msg)
-        except:
+        except Exception:
             msg = 'Error:put_df时和服务端失去连接，即将重连'
             self.sys_print(msg,show_force=1)
             self.__tx = False
@@ -1032,7 +1077,7 @@ class txl:
                 send_data = {'func':'list_append','value':(var,data)}
                 msg = self.json.dumps(send_data)
                 self.send_data(self.__tx,msg)
-        except:
+        except Exception:
             msg = 'Error:list_append和服务端失去连接，即将重连'
             self.sys_print(msg,show_force=1)
             self.__tx = False
@@ -1065,7 +1110,7 @@ class txl:
                 send_data = {'func':'list_remove','value':(var,data)}
                 msg = self.json.dumps(send_data)
                 self.send_data(self.__tx,msg)
-        except:
+        except Exception:
             msg = 'Error:list_remove时和服务端失去连接，即将重连'
             self.sys_print(msg,show_force=1)
             self.__tx = False
@@ -1098,7 +1143,7 @@ class txl:
                 send_data = {'func':'list_pop','value':(var,data)}
                 msg = self.json.dumps(send_data)
                 self.send_data(self.__tx,msg)
-        except:
+        except Exception:
             msg = 'Error:listpop和服务端失去连接，即将重连'
             self.sys_print(msg,show_force=1)
             self.__tx = False
@@ -1133,7 +1178,7 @@ class txl:
                 send_data = {'func':'dict_change','value':(var,key,value)}
                 msg = self.json.dumps(send_data)
                 self.send_data(self.__tx,msg)
-        except:
+        except Exception:
             msg = 'Error:dict_change和服务端失去连接，即将重连'
             self.sys_print(msg,show_force=1)
             self.__tx = False
@@ -1221,11 +1266,15 @@ class txl:
         return dict_data
     
     def send_data(self,client, msg):
+        if self._stop_event.is_set():
+            raise RuntimeError('txl is closed')
         if not self.orjson_on:
             msg = msg.encode('utf-8')
         self.tx_que.put(msg)
     
     def send_data_plus(self,client, msg):
+        if self._stop_event.is_set():
+            raise RuntimeError('txl is closed')
         self.tx_que_plus.put(msg)
     
     def d_push(self,key,data,who):
@@ -1239,44 +1288,55 @@ class txl:
         try:
             self.__tx.sendall(struct_bytes)
             self.__tx.sendall(msg)
-        except:
+        except Exception:
             if self.__tx == False:
                 raise OSError('当前start_tx未执行，请先执行start_tx()')
             else:
                 raise OSError('网络不可达，请稍后重试')
     
-    def main_tx_que(self):
-        while self.run_on:
+    def main_tx_que(self, client=None, outgoing=None):
+        client = self.__tx if client is None else client
+        outgoing = self.tx_que if outgoing is None else outgoing
+        while not self._stop_event.is_set():
+            msg = outgoing.get()
+            if msg is _STOP or self._stop_event.is_set() or self.__tx is not client:
+                return
             try:
-                msg = self.tx_que.get()                
-                data_len = len(msg)
-                struct_bytes = struct.pack('Q', data_len)
-                self.__tx.sendall(struct_bytes)
-                self.__tx.sendall(msg)
-            except Exception as e:
-                if self.run_on:
-                    msg = 'start_tx在发送数据时出错了,开始重连>>>>%s'%(e)
-                    self.sys_print(msg,show_force=True)
+                client.sendall(struct.pack('Q', len(msg)))
+                client.sendall(msg)
+            except Exception as error:
+                self.close_connection(client)
+                with self._lifecycle_lock:
+                    if self.__tx is not client:
+                        return
                     self.__tx = False
-                    self.close_tx()
-                    self.start_tx()      
-                    time.sleep(2)
-                break
+                if not self._stop_event.is_set():
+                    self.sys_print('LTtx send failed; reconnecting: %s' % error)
+                    self.start_tx()
+                return
             
-    def main_tx_que_plus(self):
-        while self.run_on:
+    def main_tx_que_plus(self, client=None, outgoing=None):
+        client = self.__tx_plus if client is None else client
+        outgoing = self.tx_que_plus if outgoing is None else outgoing
+        while not self._stop_event.is_set():
+            old_msg = outgoing.get()
+            if old_msg is _STOP or self._stop_event.is_set() or self.__tx_plus is not client:
+                return
             try:
-                old_msg = self.tx_que_plus.get()
-                msg=old_msg.encode('utf-8')
-                data_len = len(msg)
-                struct_bytes = struct.pack('Q', data_len)
-                self.__tx_plus.sendall(struct_bytes)
-                self.__tx_plus.sendall(msg)
-            except:
-                self.__tx_plus = False
-                self.start_plus()
-                self.tx_que_plus.put(old_msg)
-                break
+                msg = old_msg.encode('utf-8')
+                client.sendall(struct.pack('Q', len(msg)))
+                client.sendall(msg)
+            except Exception:
+                self.close_connection(client)
+                with self._lifecycle_lock:
+                    if self.__tx_plus is not client:
+                        return
+                    self.__tx_plus = False
+                if not self._stop_event.is_set():
+                    self.start_plus()
+                    if not self._stop_event.is_set():
+                        self.tx_que_plus.put(old_msg)
+                return
     
     def recv_msg_broadcast(self,who,client,pwd):
         while self.run_on:
@@ -1289,7 +1349,7 @@ class txl:
             except Exception as e:
                 try:
                     self.close_connection(client,name='txg')         
-                except:
+                except Exception:
                     pass
                 break
         #         try:
@@ -1314,21 +1374,24 @@ class txl:
         #     self.sys_print("内部错误导致txg断开，即将重连")
         #     self.__connect_txg(who=who,pwd=pwd)
         # self.sys_print('我已全部退出')
-    def main_broadcast_heartbeat(self,client,who,pwd):
-        while self.run_on:
+    def main_broadcast_heartbeat(self, client, who, pwd):
+        while not self._stop_event.is_set():
+            row = self.txg_dict.get(who) or {}
+            if row.get('con') is not client or not row.get('txg_running'):
+                return
             try:
-                msg = b'1'
-                client.sendall(msg)                
-            except Exception as e:
-                msg = 'txg心跳失败，开始重连>>>>%s'%(e)
-                self.txg_dict[who]['txg_running'] = False
-                self.sys_print(msg)
-                break
-            time.sleep(1)
-        print('退出心跳------')
-        if who in self.txg_dict and not self.txg_dict[who]['txg_running']:
-            self.__connect_txg(who,pwd=pwd)
-        print('我全退出了')
+                client.sendall(b'1')
+            except Exception:
+                with self._lifecycle_lock:
+                    row = self.txg_dict.get(who) or {}
+                    if row.get('con') is not client or not row.get('txg_running'):
+                        return
+                    row['txg_running'] = False
+                self.close_connection(client, name='txg')
+                if not self._stop_event.is_set():
+                    self.__connect_txg(who, pwd=pwd)
+                return
+            self._stop_event.wait(1)
     
     
     def create_channel(self,num=30):
@@ -1351,84 +1414,82 @@ class txl:
             str1 = str1 + s[random.randint(0,35)]
         return str1 
     
-    def close_connection(self,client,name='tx'):
+    def close_connection(self, client, name='tx'):
+        if not client:
+            return
         try:
-            # 强制停止读写操作，确保 recv 不再阻塞
             client.shutdown(socket.SHUT_RDWR)
-        except socket.error as e:
-            self.sys_print('关闭socket出错了>>>>,类型为:%s'%(name),e)
+        except OSError:
+            pass
         finally:
-            client.close()
+            try:
+                client.close()
+            except OSError:
+                pass
 
     def close_tx(self):
-        self.tx_running = False
-        if self.__tx == False:
-            code = -1
-            msg = '当前tx未连接'
-        else:
-            if self.txg_running:
-                self.close_txg()
-            if type(self.__tx) != bool:
-                self.close_connection(self.__tx)            
-            self.__tx = False
-            self.tx_que.put('')
-            code = 0
-            msg = 'tx关闭成功,txg也关闭成功'   
-        result = {'code':code,'msg':msg}
-        return result
-    
-    def close_tx_plus(self,):
-        '''
-        关闭push_plus功能
+        with self._lifecycle_lock:
+            client, self.__tx = self.__tx, False
+            self.tx_running = False
+            outgoing = self.tx_que
+            self.tx_que = type(outgoing)()
+        outgoing.put(_STOP)
+        self.close_connection(client)
+        self.close_txg()
+        return {'code': 0 if client else -1, 'msg': 'tx closed'}
 
-        Returns
-        -------
-        None.
+    def close_tx_plus(self):
+        with self._lifecycle_lock:
+            client, self.__tx_plus = self.__tx_plus, False
+            outgoing = self.tx_que_plus
+            self.tx_que_plus = type(outgoing)()
+        outgoing.put(_STOP)
+        self.close_connection(client)
+        return {'code': 0 if client else -1, 'msg': 'tx_plus closed'}
 
-        '''
-        if self.__tx_plus == False:
-            code = -1
-            msg = '当前tx_plus功能未开启'
-            result = {'code':code,'msg':msg}
-            self.sys_print(result)
-            return result
-        else:
-            self.close_connection(self.__tx_plus)
-            self.__tx_plus = False
-            
-            code = 0
-            msg = 'tx_plus关闭成功'
-            result = {'code':code,'msg':msg}
-            self.sys_print(result)
-            return result
-    
-    def close(self,):
-        '''
-        关闭所有的连接对象，该函数会直接关闭
-        '''
-        if self.run_on:
+    def close(self, timeout=1.0):
+        """Stop this instance permanently; wake waiters and join within one budget."""
+        deadline = time.monotonic() + max(0, timeout)
+        with self._lifecycle_lock:
+            first_close = not self._stop_event.is_set()
             self.run_on = False
+            self._stop_event.set()
+            threads = list(self._threads)
+            sockets = list(self._connecting_sockets)
+        if first_close:
+            # Closing first prevents a failed send/heartbeat from reconnecting.
+            self.Q.put(None)
             self.close_tx()
-            self.close_txg()
             self.close_tx_plus()
-            msg = '手动关闭所有连接,将在1秒后退出'
-            self.sys_print(msg,show_force=True)            
-            time.sleep(1)
+            for client in sockets:
+                self.close_connection(client)
+            try:
+                self.log_que.put_nowait(_STOP)
+            except queue.Full:
+                # The logger drains the bounded queue, then observes stop_event.
+                pass
+            if self.__ZMQ is not None:
+                publisher, self.__ZMQ = self.__ZMQ, None
+                publisher.close(linger=0)
+                publisher.context.term()
+        # Do not hold lifecycle locks or join the worker calling close().
+        for thread in threads:
+            if thread is not threading.current_thread():
+                thread.join(max(0, deadline - time.monotonic()))
+        _clients.discard(self)
     
         
     
     def close_txg(self):
-        self.txg_running = False
-        self.sys_print(self.tx_running,self.__tx)
-        for who in list(self.txg_dict.keys()):
-            self.__close_txg(who)   
-        if not self.tx_running:
-            self.close_tx()
-            self.sys_print('关闭跟随启动的tx')
-                   
-        self.txg_dict = {}
-        result = {'code':0,'msg':'所有txg关闭成功','value':{}}
-        return result
+        with self._lifecycle_lock:
+            rows, self.txg_dict = self.txg_dict, {}
+            self.txg_running = False
+            self.txg = False
+            for row in rows.values():
+                row['txg_running'] = False
+        for row in rows.values():
+            self.close_connection(row['con'], name='txg')
+        return {'code': 0, 'msg': 'subscriptions closed', 'value': {}}
     
     def get_nowdate(self,):
         '''
@@ -1777,7 +1838,7 @@ class txl:
         '''
         try:
             os.makedirs(file_name, exist_ok=True)
-        except:
+        except Exception:
             pass
         
     @staticmethod
@@ -1879,18 +1940,21 @@ if __name__=='__main__':
         打印收到的数据，实际处理时不需要用这个，只是为了测试用
         '''
         while True:
-            data = tx1.Q.get().split('|')
+            message = tx1.Q.get()
+            if message is None:
+                return
+            data = message.split('|')
             print(data)
             try:
                 dict_count['count'] = int(data[0].split('_')[-1])
-            except:
+            except Exception:
                 pass
             try:
                 yanchi = round((time.time() - float(data[1])) * 1000,9)
                 print('数据延迟>>>%s ms'%(yanchi))
-            except:
+            except Exception:
                 pass
-    threading.Thread(target = show).start()
+    threading.Thread(target=show, daemon=True).start()
    
 
     #延迟测试    
@@ -1916,7 +1980,5 @@ if __name__=='__main__':
     print('接收%s万条time.time()数据用时>>>>>>>>>%s秒'%(send_len/10000,recv_use_time))
     # while 1:
     #     time.sleep(1)
-
-
 
 

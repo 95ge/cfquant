@@ -82,8 +82,8 @@ window.CFQUANT_PYTHON_API = {
       "originalReturns": "",
       "title": "订阅全推行情",
       "source": "https://dict.thinktrader.net/nativeApi/xtdata.html#%E8%AE%A2%E9%98%85%E5%85%A8%E6%8E%A8%E8%A1%8C%E6%83%85",
-      "example": "from cfquant import xtdata\n\ndef on_quote(data):\n    print(data)\n\nseq = xtdata.subscribe_whole_quote([\"600000.SH\", \"000001.SZ\"], callback=on_quote)\nif seq is None or int(seq) <= 0:\n    raise RuntimeError(\"Quote subscription failed\")\ntry:\n    xtdata.run()\nexcept KeyboardInterrupt:\n    pass\nfinally:\n    xtdata.unsubscribe_quote(seq)",
-      "originalExample": "from xtquant import xtdata\n\ndef on_quote(data):\n    print(data)\n\nseq = xtdata.subscribe_whole_quote([\"600000.SH\", \"000001.SZ\"], callback=on_quote)\nif seq is None or int(seq) <= 0:\n    raise RuntimeError(\"Quote subscription failed\")\ntry:\n    xtdata.run()\nexcept KeyboardInterrupt:\n    pass\nfinally:\n    xtdata.unsubscribe_quote(seq)",
+      "example": "from cfquant import xtdata\n\ndef on_quote(data):\n    print(data)\n\nseq = xtdata.subscribe_whole_quote([\"SH\", \"SZ\", \"BJ\"], callback=on_quote)\nif seq is None or int(seq) <= 0:\n    raise RuntimeError(\"Quote subscription failed\")\ntry:\n    xtdata.run()\nexcept KeyboardInterrupt:\n    pass\nfinally:\n    xtdata.unsubscribe_quote(seq)",
+      "originalExample": "from xtquant import xtdata\n\ndef on_quote(data):\n    print(data)\n\nseq = xtdata.subscribe_whole_quote([\"SH\", \"SZ\", \"BJ\"], callback=on_quote)\nif seq is None or int(seq) <= 0:\n    raise RuntimeError(\"Quote subscription failed\")\ntry:\n    xtdata.run()\nexcept KeyboardInterrupt:\n    pass\nfinally:\n    xtdata.unsubscribe_quote(seq)",
       "usage": "示例运行前需完成 Web 账号绑定，并在大 QMT 中启动对应桥策略。 行情变化通过 on_quote 到达；退出时按订阅号清理订阅。",
       "resultHelp": "返回订阅号。行情变化由回调接收，非交易时间没有变化时可能没有推送。"
     },

@@ -13,8 +13,10 @@ import re
 from pathlib import Path
 try:
     from tools.sync_qmt_fileless import updated_source as update_fileless_source
+    from tools.sync_qmt_latency import updated_source as update_latency_source
 except ImportError:
     from sync_qmt_fileless import updated_source as update_fileless_source
+    from sync_qmt_latency import updated_source as update_latency_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -279,11 +281,24 @@ _LITE_CREDIT_FIELD_ALIASES = {
 
 
 def _patch_source(source, core):
+    protocol = (ROOT / "cfquant" / "protocol.py").read_text(encoding="utf-8")
+    for node in ast.parse(protocol).body:
+        if isinstance(node, ast.FunctionDef) and node.name in ("_quote_json_default", "pack_quote_latency_event", "pack_whole_quote_event"):
+            replacement = "".join(protocol.splitlines(True)[node.lineno - 1:node.end_lineno])
+            existing = next((item for item in ast.parse(source).body
+                             if isinstance(item, ast.FunctionDef) and item.name == node.name), None)
+            if existing:
+                lines = source.splitlines(True)
+                lines[existing.lineno - 1:existing.end_lineno] = [replacement]
+                source = "".join(lines)
+            else:
+                source = _ensure_top_level(source, "def %s(" % node.name, replacement)
     # The generated scripts are checked in as standalone files.  Normalize
     # this import before inserting it so running the synchronizer repeatedly
-    # is stable even after an interrupted or older run.
+    # is stable even after an interrupted or older run. Anchor on json, since
+    # the fileless synchronizer removes the obsolete io import.
     source = re.sub(r"(?m)^import inspect\n", "", source)
-    source = source.replace("import io\n", "import io\nimport inspect\n", 1)
+    source = source.replace("import json\n", "import inspect\nimport json\n", 1)
     source = _ensure_top_level(
         source,
         "def market_data_result_needs_fallback(",
@@ -379,7 +394,7 @@ LITE_OBJECT_QUERY_METHODS = {
         source = _replace_method(source, "TxTradeBridge", name, _method_source(core, "TxTradeBridge", name)) if "    def %s(" % name in source else _insert_method(source, _method_source(core, "TxTradeBridge", name))
 
     normal = (ROOT / "cfquant" / "normal_bridge.py").read_text(encoding="utf-8")
-    for name in ("_send_response", "_send_error"):
+    for name in ("_send_response", "_send_error", "_dispatch", "_subscribe_native_quote", "_subscribe_internal_whole_quote"):
         source = _replace_method(source, "NormalQmtBridge", name, _method_source(normal, "NormalQmtBridge", name))
 
     xtdata_dispatch = _method_source(core, "TxTradeBridge", "_dispatch_xtdata_compat")
@@ -515,7 +530,7 @@ LITE_OBJECT_QUERY_METHODS = {
         '            rows = self._call_trade_detail_data(func, account_id, account_type.lower(), detail_type.lower()) or []',
     )
     ast.parse(source, feature_version=(3, 6))
-    return source
+    return update_latency_source(source)
 
 
 def main():

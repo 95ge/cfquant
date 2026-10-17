@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261014_04">
+  <link rel="stylesheet" href="/styles.css?v=web_20261017_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -847,6 +847,23 @@
                       <button id="quoteStopBtn" type="button">停止推送</button>
                     </div>
                   </div>
+                  <div data-quote-latency class="metric-note hidden">
+                    <p id="quoteLatencySummary">等待全推数据</p>
+                    <p>行情到 QMT = QMT 回调入口时间 − 原行情时间；行情到程序以 Web 服务接收回调为终点，不包含网页传输与渲染。同一条行情：行情到程序 = 行情到 QMT + QMT 准备 + cfquant 内部。QMT 编码是 cfquant 内部的一部分，内部还包含通道传输、接收解码和回调排队；外部统计在接收后计算，不计入上述延迟。跨机器需同步系统时钟，负值保留。旧快照会拉大行情时间差。统计覆盖本批全部有效时间，不随筛选或分页改变。</p>
+                  </div>
+                  <div data-quote-latency class="quote-latency-controls hidden">
+                    <label>代码筛选<input id="quoteLatencyFilter" type="search" placeholder="输入代码或市场后缀" autocomplete="off"></label>
+                    <label>排序<select id="quoteLatencySort"><option value="code">代码升序</option><option value="qmtQuoteLatency">行情到 QMT 降序</option><option value="quoteLatency">行情到程序降序</option><option value="price">最新价降序</option></select></label>
+                    <label>每页<select id="quoteLatencyPageSize"><option value="100">100 条</option><option value="500">500 条</option><option value="1000">1000 条</option></select></label>
+                    <button id="quoteLatencyPause" type="button" disabled>暂停刷新</button>
+                    <button id="quoteLatencyExportJson" type="button" disabled>导出整批 JSON</button>
+                    <button id="quoteLatencyExportCsv" type="button" disabled>导出筛选结果 CSV</button>
+                    <div class="quote-latency-pagination">
+                      <button id="quoteLatencyPrev" type="button" disabled>上一页</button>
+                      <span id="quoteLatencyPageInfo" class="metric-note" aria-live="polite">等待数据</span>
+                      <button id="quoteLatencyNext" type="button" disabled>下一页</button>
+                    </div>
+                  </div>
                   <div class="table-wrap quote-live-table">
                     <table>
                       <thead>
@@ -856,6 +873,10 @@
                           <th class="num">涨跌幅</th>
                           <th class="num">成交量</th>
                           <th>时间</th>
+                          <th class="num hidden" data-quote-latency>行情到 QMT</th>
+                          <th class="num hidden" data-quote-latency>行情到程序</th>
+                          <th class="num hidden" data-quote-latency>cfquant 内部</th>
+                          <th class="num hidden" data-quote-latency>QMT 准备</th>
                         </tr>
                       </thead>
                       <tbody id="quoteLiveBody"></tbody>
@@ -3240,11 +3261,11 @@ else:
   </div>
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
-  <script src="/python-api-data.js?v=20260925_trading_dates_01"></script>
+  <script src="/python-api-data.js?v=20261017_whole_quote_markets_01"></script>
   <script src="/cftrader-api-data.js?v=20260911_02"></script>
   <script src="/api-tester.js?v=20260916_apikey_01"></script>
-  <script src="/python-api.js?v=20260925_trading_dates_01"></script>
+  <script src="/python-api.js?v=20261017_whole_quote_markets_01"></script>
   <script src="/docs.js?v=20260925_data_docs_01"></script>
-  <script src="/app.js?v=web_20261014_04"></script>
+  <script src="/app.js?v=web_20261017_01"></script>
 </body>
 </html>

@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import json
 import os
+import sys
 import threading
 import time
+from .flow_control import OrderedSender
 
 from .pipe_transport import (
     DEFAULT_PIPE_NAME,
@@ -34,6 +36,7 @@ class CfquantPipeHub(object):
     def __init__(self, pipe_name=None, show=True, default_request_channel="cfquant.normal.request"):
         self.pipe_name = normalize_pipe_name(pipe_name or DEFAULT_PIPE_NAME)
         self.show = show
+        self.verbose_rpc = str(os.environ.get("CFQUANT_PIPE_HUB_VERBOSE_RPC", "0")).lower() in ("1", "true", "yes", "on")
         self.default_request_channel = default_request_channel
         self.running = False
         self.listener = None
@@ -63,11 +66,21 @@ class CfquantPipeHub(object):
         self.qmt_heartbeat_timeout_seconds = float(os.environ.get("CFQUANT_PIPE_HUB_QMT_HEARTBEAT_TIMEOUT", "30"))
         self.maintenance_interval_seconds = float(os.environ.get("CFQUANT_PIPE_HUB_MAINTENANCE_INTERVAL", "2"))
         self.maintenance_thread = None
+        self._senders = {}
+        self._senders_lock = threading.RLock()
+        self.send_max_bytes = int(os.environ.get("CFQUANT_PIPE_SEND_MAX_BYTES", 128 * 1024 * 1024))
+        self.send_timeout = float(os.environ.get("CFQUANT_PIPE_SEND_TIMEOUT", "15"))
+        self._status_dirty = threading.Event()
+        self._status_stop = threading.Event()
+        self._status_thread = None
+        self.status_interval = max(.05, float(os.environ.get("CFQUANT_PIPE_STATUS_INTERVAL", ".25")))
 
     def start(self):
         if self.running:
             return self
         self.running = True
+        self._status_stop.clear()
+        self._status_thread = None
         self._log("pipe hub started pipe=%s" % self.pipe_name)
         self._start_maintenance()
         self._write_status()
@@ -94,13 +107,21 @@ class CfquantPipeHub(object):
 
     def close(self):
         self.running = False
+        self._status_stop.set()
+        self._status_dirty.set()
+        with self._senders_lock:
+            senders = list(self._senders.values())
+            sender_conns = list(self._senders)
+            self._senders.clear()
+        for sender in senders:
+            sender.close()
         try:
             if self.listener is not None:
                 self.listener.close()
         except Exception:
             pass
         with self.qmt_lock:
-            conns = list(self.qmt_rx_by_channel.values()) + list(self.qmt_tx_by_channel.values())
+            conns = sender_conns + list(self.qmt_rx_by_channel.values()) + list(self.qmt_tx_by_channel.values())
             self.qmt_rx_by_channel.clear()
             self.qmt_tx_by_channel.clear()
             self.qmt_channel_by_conn.clear()
@@ -118,7 +139,9 @@ class CfquantPipeHub(object):
                 conn.close()
             except Exception:
                 pass
-        self._write_status()
+        if self._status_thread is not None and self._status_thread is not threading.current_thread():
+            self._status_thread.join(1)
+        self._persist_status()
 
     def _client_loop(self, conn):
         role = "api"
@@ -372,6 +395,18 @@ class CfquantPipeHub(object):
         self._touch_qmt_conn(conn, envelope)
         qmt_received_at = time.perf_counter()
         raw = envelope.get("payload")
+        # New QMT publishers explicitly identify already encoded events. The
+        # original payload is forwarded unchanged; legacy publishers still parse.
+        if (envelope.get("event_passthrough") is True and envelope.get("key") == "event"
+                and isinstance(raw, str) and raw.startswith("cfquant:") and envelope.get("channel")):
+            with self.state_lock:
+                target = self.client_by_id.get(envelope["channel"])
+            if target is not None:
+                try:
+                    self._send_delivery(target, raw)
+                except Exception:
+                    self._drop_conn(target)
+            return
         msg = loads_message(raw)
         target = None
         status_changed = False
@@ -460,12 +495,23 @@ class CfquantPipeHub(object):
             self._drop_conn(conn)
 
     def _send_delivery(self, conn, payload, request_channel=None, client_id=None):
-        conn.write_frame(dumps_pipe_message({
+        envelope = {
             "type": "delivery",
             "payload": payload,
             "request_channel": request_channel,
             "client_id": client_id,
-        }))
+        }
+        with self._senders_lock:
+            sender = self._senders.get(conn)
+            if sender is None:
+                def failed(error):
+                    self._log("pipe delivery failed: %s" % error)
+                    self._drop_conn(conn)
+                    conn.close()
+                sender = OrderedSender(lambda item: conn.write_frame(dumps_pipe_message(item)),
+                                       failed, max_bytes=self.send_max_bytes)
+                self._senders[conn] = sender
+        sender.submit(envelope, size=sys.getsizeof(payload or "") + 1024)
 
     def _qmt_rx_conn(self, request_channel):
         with self.qmt_lock:
@@ -611,6 +657,11 @@ class CfquantPipeHub(object):
                         pending,
                         "QMT pipe bridge disconnected for channel=%s" % pending.get("request_channel"),
                     ))
+        with self._senders_lock:
+            for closed in [conn] + close_qmt_conns + close_peers:
+                sender = self._senders.pop(closed, None)
+                if sender is not None:
+                    sender.close()
         for qmt_conn in close_qmt_conns:
             try:
                 qmt_conn.close()
@@ -733,6 +784,8 @@ class CfquantPipeHub(object):
         return len(expired)
 
     def _log(self, msg):
+        if not self.verbose_rpc and msg.startswith(("pipe forwarded request", "pipe got qmt response")):
+            return
         if self.show:
             print("%s %s" % (self._timestamp_ms(), msg), flush=True)
 
@@ -747,7 +800,10 @@ class CfquantPipeHub(object):
         return (end - start) * 1000.0
 
     def status(self):
-        return self._status_snapshot()
+        result = self._status_snapshot()
+        with self._senders_lock:
+            result["send_queues"] = [sender.status() for sender in self._senders.values()]
+        return result
 
     def _public_qmt_meta(self, meta, now=None, now_mono=None):
         if not meta:
@@ -852,15 +908,52 @@ class CfquantPipeHub(object):
         }
 
     def _write_status(self):
+        self._status_dirty.set()
+        with self._senders_lock:
+            if self.running and self._status_thread is None:
+                self._status_thread = threading.Thread(target=self._status_loop, name="cfquant-hub-status")
+                self._status_thread.daemon = True
+                self._status_thread.start()
+
+    def _status_loop(self):
+        while not self._status_stop.is_set():
+            self._status_dirty.wait(self.status_interval)
+            if self._status_stop.is_set():
+                break
+            if self._status_dirty.is_set():
+                self._status_dirty.clear()
+                self._persist_status()
+            with self._senders_lock:
+                senders = list(self._senders.items())
+            for conn, sender in senders:
+                if self.send_timeout > 0 and sender.status()["oldest_age_ms"] > self.send_timeout * 1000:
+                    self._log("pipe recipient send backlog timed out")
+                    self._drop_conn(conn)
+                    conn.close()
+            self._status_stop.wait(self.status_interval)
+
+    def _persist_status(self):
+        temporary = None
         try:
             data = self._status_snapshot()
+            with self._senders_lock:
+                data["send_queues"] = [sender.status() for sender in self._senders.values()]
             status_dir = os.path.dirname(self.status_file)
             if status_dir:
                 os.makedirs(status_dir, exist_ok=True)
-            with open(self.status_file, "w", encoding="utf-8") as f:
+            temporary = self.status_file + ".%s.%s.tmp" % (os.getpid(), threading.get_ident())
+            with open(temporary, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+            if data["running"] == self.running:
+                os.replace(temporary, self.status_file)
         except Exception:
             pass
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
 
 def run_pipe_hub(pipe_name=None, show=True, default_request_channel="cfquant.normal.request"):
