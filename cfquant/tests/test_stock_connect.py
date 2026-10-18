@@ -186,7 +186,7 @@ def test_web_forwards_account_without_a_share_route(routing, kind, market, numbe
 
 def test_same_fund_account_has_separate_bindings(web_config):
     _, config = web_config
-    rows = [config.save_account_config('TEST_ONLY', account_type=kind, bridge_id='test',
+    rows = [config.save_account_config('TEST_ONLY', qmt_auto_login={"enabled": False}, account_type=kind, bridge_id='test',
                                        qmt_strategy={'enabled': False}) for kind, _, _ in CASES]
     assert rows[0]['account_key'] != rows[1]['account_key']
     assert len(config.account_configs()) == 2

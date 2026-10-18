@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfquant"
-version = "0.2.53"
+version = "0.2.54"
 description = "QMT local bridge and xtquant-compatible Python client."
 license = {text = "MIT"}
 readme = "README.md"
@@ -18,6 +18,8 @@ dependencies = [
   "tabulate",
   "pandas-market-calendars",
   "importlib-resources>=5",
+  "frida>=17.0,<18; sys_platform == 'win32'",
+  "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +41,7 @@ include = ["cfquant*", "LTtx*", "web_dashboard*", "qmt_scripts*"]
 namespaces = true
 
 [tool.setuptools.package-data]
+"cfquant" = ["qmt_component_agent.js"]
 "cfquant.tests" = ["*.md"]
 "LTtx.tx" = ["Config.txt"]
 "web_dashboard" = [

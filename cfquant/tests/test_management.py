@@ -11,6 +11,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from cfquant.management import ManagementError, RuntimeManager
+from cfquant.tests.test_qmt_strategy_web import login_credentials
 
 
 @pytest.fixture
@@ -60,16 +61,20 @@ def service(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('auto_start', [True, False])
-def test_initialize_and_repeat_binding_over_http(service, tmp_path, auto_start):
+def test_initialize_and_repeat_binding_over_http(service, tmp_path, auto_start, login_credentials):
     runtime = service.runtime
     kwargs = dict(account_type='CREDIT', auto_start_qmt=auto_start, live=False)
+    if auto_start:
+        kwargs['qmt_auto_login'] = dict(login_credentials)
     result = runtime.initialize('TEST_ONLY', str(tmp_path / 'qmt'), **kwargs)
     assert result['initialized']
     assert result['setup']['setup_required'] is False
-    assert service.launches == [{'enabled': auto_start}]
+    assert service.launches == [dict(login_credentials, enabled=True) if auto_start else {'enabled': False}]
     binding = result['account']
     assert binding['qmt_strategy']['autorun'] is True
     assert binding['qmt_strategy']['live'] is False
+    if auto_start:
+        kwargs['qmt_auto_login'].pop('password')
     assert runtime.initialize('TEST_ONLY', str(tmp_path / 'qmt'), **kwargs)['unchanged']
     assert len(service.launches) == 1
     assert len(runtime.accounts.list()) == 1

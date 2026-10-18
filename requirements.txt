@@ -10,3 +10,5 @@ pytz
 tabulate
 pandas_market_calendars
 importlib-resources>=5
+frida>=17.0,<18; sys_platform == 'win32'
+pywin32>=306; sys_platform == 'win32'

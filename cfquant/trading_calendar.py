@@ -97,3 +97,11 @@ def get_trading_dates(market, start_time="", end_time="", count=-1):
             break
     dates = [day for chunk in reversed(chunks) for day in chunk]
     return dates[-int(count):] if count > 0 else dates
+
+
+def is_trading_day(day, market="SH"):
+    """Check a session date, including future dates within recorded holidays."""
+    name, first_day = _MARKETS[market]
+    date = _parse_date(day.strftime("%Y%m%d"))
+    _check_coverage(_get_calendar(name), name, date)
+    return date >= _parse_date(first_day) and int(date.timestamp() * 1000) in _year_dates(name, date.year)

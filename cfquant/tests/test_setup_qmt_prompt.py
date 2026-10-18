@@ -51,6 +51,7 @@ def test_first_setup_qmt_confirmation(page, frontend_url, action, mode):
     page.route("**/api/setup/initialize", initialize)
     page.locator('#setupAccountId').fill('AUDIT_ACCOUNT')
     page.locator('#setupQmtDir').fill(directory)
+    page.locator('#setupQmtAutoLogin').uncheck()
     page.locator('#setupMode').select_option(mode)
     if mode == 'lttx':
         page.locator('#setupQmtTradeDir').fill(directory + 'Trade')

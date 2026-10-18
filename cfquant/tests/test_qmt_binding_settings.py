@@ -19,7 +19,7 @@ def config(tmp_path):
 
 
 def save(config, account='TEST', **changes):
-    args = dict(account_id=account, qmt_strategy={'enabled': False})
+    args = dict(account_id=account, qmt_strategy={'enabled': False}, qmt_auto_login={'enabled': False})
     args.update(changes)
     return config.save_account_config(**args)
 
@@ -65,7 +65,7 @@ def test_saved_binding_settings_reach_generated_lite_package(web_deployment, mon
     row['mode'] = 'lite'
     # Exercise real identity writers with only the temporary QMT directories.
     monkeypatch.setattr(module, 'write_qmt_bridge_identity', REAL_IDENTITY_WRITER)
-    result = module.save_account_runtime_config({
+    result = module.save_account_runtime_config({"qmt_auto_login": {"enabled": False},
         **{key: row[key] for key in ('account_id', 'account_type', 'bridge_id', 'qmt_dir', 'mode')},
         'qmt_runtime': {'timer_interval_ms': 5, 'log_enabled': False},
     })

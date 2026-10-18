@@ -932,7 +932,7 @@ def test_save_account_runtime_config_parses_string_disabled(monkeypatch, tmp_pat
     monkeypatch.setattr(web, "CALLBACKS", SimpleNamespace(refresh_channels=lambda channels: None))
     monkeypatch.setattr(web, "callback_channels", lambda: [])
 
-    result = web.save_account_runtime_config({
+    result = web.save_account_runtime_config({"qmt_auto_login": {"enabled": False},
         "account_id": "77557115",
         "account_type": "stock",
         "enabled": "false",

@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261017_01';
+const FRONTEND_VERSION = 'web_20261019_01';
 
 const state = {
   accountId: '',
@@ -327,7 +327,7 @@ function transportModeRequestScope(mode) {
 }
 
 const QMT_MARKET_LABELS = { SH: '上海', SZ: '深圳' };
-const QMT_LOGIN_REMINDER = '国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码，然后等待自动登录完成。所有 QMT 都要先完成 Python 库下载。';
+const QMT_LOGIN_REMINDER = '项目会先结束对应目录的旧进程，确认退出后重新启动并自动登录 QMT。清空登录框中的旧账号和密码，填入绑定中保存的账号和密码再登录。计划重启仅在 A 股交易日执行，默认北京时间 09:00。请先完成 QMT 内的 Python 库下载。';
 
 function qmtDeploymentTargets(values = {}) {
   const marketRouting = values.marketRoutingEnabled !== undefined
@@ -376,7 +376,7 @@ function normalizeQmtDeploymentTargets(values = {}) {
 
 function defaultQmtAutoLoginSettings(value = undefined) {
   return value === undefined || value === null
-    ? { enabled: true, restart_times: [] }
+    ? { enabled: true, restart_times: ['09:00'] }
     : normalizeQmtAutoLoginSettings(value);
 }
 
@@ -431,10 +431,12 @@ function qmtStartupInstruction(values = {}) {
   const strategy = values.qmt_strategy || {};
   const autoLogin = values.qmt_auto_login || {};
   if (values.enabled === false) return '账号绑定已停用；需要使用时，请启用绑定并保存。';
-  const actionableWaiting = targets.some((target) => ['waiting_exit', 'waiting_import', 'waiting_import_save', 'waiting_start', 'waiting_manual_start', 'waiting_account'].includes(target.state));
+  const needsAction = (target) => ['waiting_exit', 'waiting_import', 'waiting_import_save', 'waiting_start', 'waiting_manual_start', 'waiting_account'].includes(target.state)
+    && !(target.state === 'waiting_start' && qmtAutoLoginGuideEnabled(autoLogin));
+  const actionableWaiting = targets.some(needsAction);
   if (actionableWaiting) {
     const detail = targets
-      .filter((target) => ['waiting_exit', 'waiting_import', 'waiting_import_save', 'waiting_start', 'waiting_manual_start', 'waiting_account'].includes(target.state))
+      .filter(needsAction)
       .map((target) => strategyDeployTargetDetail(target))
       .join('；');
     return detail || '部署正在等待 QMT 完成下一步操作，请查看绑定状态中的处理建议。';
@@ -457,7 +459,7 @@ function qmtStartupInstruction(values = {}) {
   } else if (targets.length && targets.every((target) => target.state === 'running')) {
     message = '托管策略已在线，可以查看账号状态或测试接口。';
   } else if (qmtAutoLoginGuideEnabled(autoLogin)) {
-    message = '已勾选自动启动 QMT，请按下方登录前提完成 QMT 登录。';
+    message = '已勾选自动启动 QMT，项目将自动完成登录；可在下方查看结果。';
   } else {
     message = '请重启对应 QMT 并登录，使绑定配置生效。';
   }
@@ -1295,16 +1297,18 @@ function normalizeQmtRestartTimes(value) {
 
 function normalizeQmtAutoLoginSettings(value = {}) {
   if (!value || typeof value !== 'object') {
-    return { enabled: !!value, restart_times: [] };
+    return { enabled: !!value, restart_times: value ? ['09:00'] : [] };
   }
   return {
-    enabled: configBool(value.enabled, false),
-    restart_times: normalizeQmtRestartTimes(value.restart_times || value.restartTimes || value.restart_time || value.restartTime || []),
+    enabled: configBool(value.enabled, true),
+    restart_times: normalizeQmtRestartTimes(value.restart_times ?? value.restartTimes ?? value.restart_time ?? value.restartTime ?? ['09:00']),
+    login_account: String(value.login_account || ''),
+    password_saved: !!value.password_saved,
   };
 }
 
 function qmtAutoLoginGuideEnabled(autoLogin) {
-  return !!normalizeQmtAutoLoginSettings(autoLogin).enabled;
+  return !!autoLogin && !!normalizeQmtAutoLoginSettings(autoLogin).enabled;
 }
 
 function bindingQmtAutoLoginStatusHtml(autoLogin) {
@@ -1323,8 +1327,8 @@ function bindingQmtAutoLoginStatusHtml(autoLogin) {
     ...processPids,
   ].map((value) => Number(value || 0)).filter((value, index, list) => value > 0 && list.indexOf(value) === index);
   const status = autoLogin.error ? 'error' : (pidValues.length ? 'success' : 'warn');
-  const label = autoLogin.error
-    ? '配置失败'
+  const label = autoLogin.login_succeeded ? '已登录' : autoLogin.login_state === 'logging_in' ? '正在登录' : autoLogin.error
+    ? (autoLogin.login_state ? '登录失败' : '配置失败')
     : (autoLogin.restarted ? '已重启' : (autoLogin.started ? '已启动' : (pidValues.length ? '已运行' : '已启用')));
   rows.push(`<div class="binding-qmt-status-row is-${status}">
     <strong>运行状态</strong>
@@ -1342,7 +1346,7 @@ function bindingQmtAutoLoginStatusHtml(autoLogin) {
     </div>`);
   }
   rows.push(`<div class="binding-qmt-status-row is-info">
-    <strong>每日重启</strong><span>${esc(restartTimes.length ? restartTimes.join(' / ') : '未设置')}</span>
+    <strong>交易日重启</strong><span>${esc(restartTimes.length ? `${restartTimes.join(' / ')}（北京时间）` : '未设置')}</span>
   </div>`);
   return rows.join('');
 }
@@ -2723,6 +2727,7 @@ function bindingQmtAutoLoginSettingsEnabled() {
 function syncBindingQmtAutoLoginSettingsVisibility() {
   const panel = $('bindingQmtAutoLoginSettings');
   if (panel) panel.classList.toggle('hidden', !bindingQmtAutoLoginSettingsEnabled());
+  syncQmtLoginCredentialFields('binding');
 }
 
 function addBindingQmtRestartTime(value = '') {
@@ -2757,10 +2762,149 @@ function readBindingQmtRestartTimes(form = $('bindingForm')) {
 
 function readBindingQmtAutoLoginSettings(form = $('bindingForm')) {
   const enabled = !!(form && form.qmt_auto_login && form.qmt_auto_login.checked);
-  return {
+  const result = {
     enabled,
     restart_times: enabled ? readBindingQmtRestartTimes(form) : [],
   };
+  const account = form.qmt_login_account ? form.qmt_login_account.value.trim() : '';
+  if (account || form.dataset.qmtLoginAccount) result.login_account = account;
+  const password = enteredQmtLoginPassword('binding');
+  if (enabled && password) result.password = password;
+  return result;
+}
+
+function fillBindingQmtLoginCredentials(settings = {}) {
+  const form = $('bindingForm');
+  if (!form) return;
+  form.dataset.qmtLoginAccount = settings.login_account || '';
+  fillQmtLoginCredentials('binding', settings, form.qmt_dir ? form.qmt_dir.value : '', form.dataset.accountKey);
+}
+
+function fillQmtLoginCredentials(prefix, settings = {}, directory = '', accountKey = '') {
+  const account = $(`${prefix}QmtLoginAccount`);
+  const password = $(`${prefix}QmtLoginPassword`);
+  if (account) account.value = settings.login_account || '';
+  if (password) {
+    resetQmtLoginPassword(prefix);
+    password.dataset.saved = settings.password_saved ? 'true' : 'false';
+    password.dataset.savedAccount = settings.login_account || '';
+    password.dataset.savedDirectory = directory;
+    password.dataset.savedAccountKey = accountKey || '';
+  }
+  syncQmtLoginCredentialFields(prefix);
+}
+
+function canReuseQmtLoginPassword(prefix, account, directory) {
+  const input = $(`${prefix}QmtLoginPassword`);
+  return !!(input && input.dataset.saved === 'true' && account
+    && account === input.dataset.savedAccount && directory
+    && qmtDirsAreSame(directory, input.dataset.savedDirectory));
+}
+
+function syncQmtLoginCredentialFields(prefix) {
+  const enabled = !!($(`${prefix}QmtAutoLogin`) && $(`${prefix}QmtAutoLogin`).checked);
+  const account = $(`${prefix}QmtLoginAccount`);
+  const password = $(`${prefix}QmtLoginPassword`);
+  const directory = $(`${prefix}QmtDir`);
+  const saved = canReuseQmtLoginPassword(prefix, account ? account.value.trim() : '', directory ? directory.value : '');
+  if (account) {
+    account.disabled = !enabled;
+    account.setAttribute('aria-required', String(enabled));
+  }
+  if (password) {
+    password.disabled = !enabled;
+    password.setAttribute('aria-required', String(enabled && !saved));
+    password.placeholder = saved ? '留空保留已保存的密码' : '开启自动重启时必填，本机加密保存';
+  }
+  const hint = $(`${prefix}QmtPasswordStatus`);
+  if (hint) hint.textContent = saved
+    ? '已保存加密密码，可点击查看；账号和目录不变时可留空，填写新密码则替换。'
+    : '开启自动重启必须填写登录账号和密码；密码加密保存，默认隐藏。';
+  syncQmtPasswordToggle(prefix);
+}
+
+function enteredQmtLoginPassword(prefix) {
+  const input = $(`${prefix}QmtLoginPassword`);
+  return input && input.dataset.revealedSaved !== 'true' ? input.value : '';
+}
+
+function resetQmtLoginPassword(prefix) {
+  const input = $(`${prefix}QmtLoginPassword`);
+  if (!input) return;
+  input._qmtRevealGeneration = (input._qmtRevealGeneration || 0) + 1;
+  input.dataset.revealedSaved = 'false';
+  input.dataset.loading = 'false';
+  input.value = '';
+  input.type = 'password';
+  syncQmtPasswordToggle(prefix);
+}
+
+function syncQmtPasswordToggle(prefix) {
+  const input = $(`${prefix}QmtLoginPassword`);
+  const button = $(`${prefix}QmtPasswordToggle`);
+  if (!input || !button) return;
+  const account = $(`${prefix}QmtLoginAccount`);
+  const directory = $(`${prefix}QmtDir`);
+  const saved = canReuseQmtLoginPassword(prefix, account ? account.value.trim() : '', directory ? directory.value : '');
+  button.disabled = input.dataset.loading === 'true' || (!input.value && !saved);
+  button.textContent = input.dataset.loading === 'true' ? '读取中…'
+    : input.type === 'text' ? '隐藏密码' : !input.value && saved ? '查看已保存密码' : '显示密码';
+  button.setAttribute('aria-pressed', String(input.type === 'text'));
+}
+
+async function toggleQmtLoginPassword(prefix) {
+  const input = $(`${prefix}QmtLoginPassword`);
+  if (!input || input.dataset.loading === 'true') return;
+  if (input.type === 'text') {
+    if (input.dataset.revealedSaved === 'true') resetQmtLoginPassword(prefix);
+    else input.type = 'password';
+  } else if (input.value) {
+    input.type = 'text';
+  } else {
+    const account = $(`${prefix}QmtLoginAccount`).value.trim();
+    const directory = $(`${prefix}QmtDir`).value;
+    if (!canReuseQmtLoginPassword(prefix, account, directory)) return;
+    const generation = input._qmtRevealGeneration;
+    input.dataset.loading = 'true';
+    syncQmtPasswordToggle(prefix);
+    try {
+      const data = await api('/api/account-config/qmt-password', {
+        method: 'POST', cache: 'no-store',
+        body: JSON.stringify({account_key: input.dataset.savedAccountKey, login_account: account, qmt_dir: directory}),
+      });
+      // An old response must never repopulate a closed/reopened or edited form.
+      if (generation !== input._qmtRevealGeneration) return;
+      if ($(`${prefix}QmtLoginAccount`).value.trim() !== account
+          || !qmtDirsAreSame($(`${prefix}QmtDir`).value, directory)) return;
+      if (!data.password) throw new Error('该绑定尚未保存 QMT 登录密码。');
+      input.value = data.password;
+      input.dataset.revealedSaved = 'true';
+      input.type = 'text';
+    } catch (error) {
+      if (generation !== input._qmtRevealGeneration) return;
+      const hint = $(`${prefix}QmtPasswordStatus`);
+      if (hint) hint.textContent = error.message || '读取密码失败，请重新填写并保存。';
+    } finally {
+      if (generation === input._qmtRevealGeneration) input.dataset.loading = 'false';
+      syncQmtPasswordToggle(prefix);
+    }
+  }
+  syncQmtPasswordToggle(prefix);
+}
+
+function qmtLoginValidationError(prefix, settings, directory) {
+  if (!settings.enabled) return '';
+  const account = String(settings.login_account || '').trim();
+  let field = '', message = '';
+  if (!directory) {
+    field = 'QmtDir'; message = '开启 QMT 自动重启时必须填写 QMT 目录。';
+  } else if (!account) {
+    field = 'QmtLoginAccount'; message = '开启 QMT 自动重启时必须填写 QMT 登录账号。';
+  } else if (!enteredQmtLoginPassword(prefix) && !canReuseQmtLoginPassword(prefix, account, directory)) {
+    field = 'QmtLoginPassword'; message = '开启 QMT 自动重启时必须填写 QMT 登录密码；更换账号或目录后请重新填写密码。';
+  }
+  if (field && $(`${prefix}${field}`)) $(`${prefix}${field}`).focus();
+  return message;
 }
 
 function editableInstallDependencyWarning(install) {
@@ -5339,6 +5483,7 @@ function showSetupOverlay(message = '') {
   }
   if ($('setupQmtAutoLogin')) {
     $('setupQmtAutoLogin').checked = defaultQmtAutoLoginSettings(defaultConfig && defaultConfig.account_id ? defaultConfig.qmt_auto_login : undefined).enabled;
+    fillQmtLoginCredentials('setup', (defaultConfig || {}).qmt_auto_login || {}, qmtDirInput ? qmtDirInput.value : '', (defaultConfig || {}).account_key);
   }
   fillQmtStrategySettings('setup', defaultConfig && defaultConfig.account_id ? (defaultConfig.qmt_strategy || { enabled: false }) : undefined);
   syncAdvancedQmtDirField('setupQmtTradeDir', modeInput && modeInput.value);
@@ -5384,6 +5529,7 @@ function updateSetupSteps(activeStep) {
 }
 
 function hideSetupOverlay() {
+  resetQmtLoginPassword('setup');
   const overlay = $('setupOverlay');
   if (overlay) overlay.classList.add('hidden');
 }
@@ -5413,7 +5559,14 @@ async function submitSetupForm(event) {
     if (input) input.focus();
     return;
   }
-  body.qmt_auto_login = { enabled: !!($('setupQmtAutoLogin') && $('setupQmtAutoLogin').checked), restart_times: [] };
+  body.qmt_auto_login = { enabled: !!($('setupQmtAutoLogin') && $('setupQmtAutoLogin').checked), restart_times: ['09:00'] };
+  if ($('setupQmtLoginAccount') && $('setupQmtLoginAccount').value.trim()) body.qmt_auto_login.login_account = $('setupQmtLoginAccount').value.trim();
+  if (body.qmt_auto_login.enabled && enteredQmtLoginPassword('setup')) body.qmt_auto_login.password = enteredQmtLoginPassword('setup');
+  const qmtLoginError = qmtLoginValidationError('setup', body.qmt_auto_login, body.qmt_dir);
+  if (qmtLoginError) {
+    if (status) status.textContent = qmtLoginError;
+    return;
+  }
   if (adminRequired) {
     const adminUsername = $('setupAdminUsername') ? $('setupAdminUsername').value.trim() : '';
     const adminPassword = $('setupAdminPassword') ? $('setupAdminPassword').value : '';
@@ -5486,6 +5639,11 @@ async function submitSetupForm(event) {
       method: 'POST',
       body: JSON.stringify(body),
     });
+    if (body.qmt_auto_login.password && !(data.account && data.account.qmt_auto_login && data.account.qmt_auto_login.password_saved)) {
+      throw new Error('当前后端未保存 QMT 登录密码，请重启项目后重新保存。');
+    }
+    delete body.qmt_auto_login.password;
+    resetQmtLoginPassword('setup');
     updateSetupSteps('qmt');
     state.setup = data.setup || null;
     state.accountPairs = data.account_pairs || {};
@@ -5533,6 +5691,8 @@ async function submitSetupForm(event) {
     log('初始化配置保存失败', { error: error.message });
   } finally {
     delete form.dataset.saving;
+    if (body.qmt_auto_login) delete body.qmt_auto_login.password;
+    resetQmtLoginPassword('setup');
     if (submitButton) submitButton.disabled = false;
   }
 }
@@ -9364,6 +9524,11 @@ async function saveCurrentAccountPair() {
   const enabled = !(form && form.enabled && !form.enabled.checked);
   const qmtAutoLoginSettings = readBindingQmtAutoLoginSettings(form);
   const qmtAutoLogin = qmtAutoLoginSettings.enabled;
+  const qmtLoginError = qmtLoginValidationError('binding', qmtAutoLoginSettings, qmtDir);
+  if (qmtLoginError) {
+    setBindingNotice(qmtLoginError, 'error', { autoHide: false });
+    return;
+  }
   const marketRoutingEnabled = !!(form && form.market_routing_enabled && form.market_routing_enabled.checked);
   const marketBridges = {
     SH: {
@@ -9408,6 +9573,9 @@ async function saveCurrentAccountPair() {
       market_routing_enabled: marketRoutingEnabled,
       market_bridges: marketBridges,
     });
+    if (qmtAutoLoginSettings.password && !(data.account && data.account.qmt_auto_login && data.account.qmt_auto_login.password_saved)) {
+      throw new Error('当前后端未保存 QMT 登录密码，请重启项目后重新保存。');
+    }
     state.accountPairs = data.account_pairs || {};
     state.accountConfigs = data.account_configs || state.accountConfigs;
     state.setup = data.setup || state.setup;
@@ -9478,6 +9646,8 @@ async function saveCurrentAccountPair() {
     setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
     log('账号配置保存失败', { error: error.message });
   } finally {
+    delete qmtAutoLoginSettings.password;
+    resetQmtLoginPassword('binding');
     setBindingSaveBusy(false);
   }
 }
@@ -9579,6 +9749,7 @@ function syncBindingForm() {
     const settings = defaultQmtAutoLoginSettings(config ? config.qmt_auto_login : undefined);
     form.qmt_auto_login.checked = settings.enabled;
     renderBindingQmtRestartTimes(settings.restart_times);
+    fillBindingQmtLoginCredentials(settings);
     syncBindingQmtAutoLoginSettingsVisibility();
   }
 }
@@ -9587,6 +9758,7 @@ function closeBindingDialog() {
   const overlay = $('bindingDialogOverlay');
   if (!overlay) return;
   closeHelpTooltips();
+  resetQmtLoginPassword('binding');
   overlay.classList.add('hidden');
   overlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('binding-dialog-open');
@@ -9620,6 +9792,7 @@ function fillBindingForm(values = {}) {
     const settings = defaultQmtAutoLoginSettings(values.qmtAutoLogin);
     form.qmt_auto_login.checked = settings.enabled;
     renderBindingQmtRestartTimes(settings.restart_times);
+    fillBindingQmtLoginCredentials(settings);
     syncBindingQmtAutoLoginSettingsVisibility();
   }
 }
@@ -9951,6 +10124,11 @@ async function submitBindingForm(event) {
   const enabled = !(form.enabled && !form.enabled.checked);
   const qmtAutoLoginSettings = readBindingQmtAutoLoginSettings(form);
   const qmtAutoLogin = qmtAutoLoginSettings.enabled;
+  const qmtLoginError = qmtLoginValidationError('binding', qmtAutoLoginSettings, qmtDir);
+  if (qmtLoginError) {
+    setBindingNotice(qmtLoginError, 'error', { autoHide: false });
+    return;
+  }
   if (enabled && normalizeTransportMode(mode) === 'lttx') {
     if (!qmtDir || !qmtTradeDir) {
       setBindingNotice('高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error', { autoHide: false });
@@ -10020,6 +10198,9 @@ async function submitBindingForm(event) {
       qmt_runtime: normalizeTransportMode(mode) === 'lttx' ? undefined : qmtRuntime,
     });
     const responseAccount = data.account && typeof data.account === 'object' ? data.account : {};
+    if (qmtAutoLoginSettings.password && !(responseAccount.qmt_auto_login && responseAccount.qmt_auto_login.password_saved)) {
+      throw new Error('当前后端未保存 QMT 登录密码，请重启项目后重新保存。');
+    }
     if (normalizeTransportMode(mode) !== 'lttx' && qmtRuntime
         && (!responseAccount.qmt_runtime
           || responseAccount.qmt_runtime.timer_interval_ms !== qmtRuntime.timer_interval_ms
@@ -10117,6 +10298,8 @@ async function submitBindingForm(event) {
     setBindingNotice(`保存失败：${error.message}`, 'error', { autoHide: false });
     log('账号配置保存失败', { error: error.message });
   } finally {
+    delete qmtAutoLoginSettings.password;
+    resetQmtLoginPassword('binding');
     setBindingSaveBusy(false);
   }
 }
@@ -10226,6 +10409,12 @@ async function refreshBindingStatuses() {
     log('绑定状态批量接口不可用，已使用兼容查询', { error: error.message });
   }
   state.bindingStatusSnapshot = snapshot;
+  const guideKey = state.bindingQmtGuideValues && state.bindingQmtGuideValues.account_key;
+  const loginStatus = (snapshot.bindings || []).find(row => row.account_key === guideKey);
+  if (loginStatus && loginStatus.qmt_auto_login && loginStatus.qmt_auto_login.state) {
+    state.bindingQmtGuideAutoLogin = { ...(state.bindingQmtGuideAutoLogin || {}), ...loginStatus.qmt_auto_login };
+    renderBindingQmtAutoLoginStatus(state.bindingQmtGuideAutoLogin);
+  }
   saveAccountConfigCache();
   const statusByKey = new Map();
   const statusByIdentity = new Map();
@@ -10417,6 +10606,8 @@ function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
     ? [`主桥 ${mainBridgeLabel}`, ...configuredMarketLines.map((row) => row.text)]
     : [`普通${normalOnline ? '在线' : '离线'}`, `极速${tradeOnline ? '在线' : '离线'}`]));
   if (stale && enabled) connectionLines = ['上次状态，后台刷新中', ...connectionLines];
+  const loginSession = strategySnapshot && strategySnapshot.qmt_auto_login;
+  if (enabled && loginSession && loginSession.message) connectionLines.push(loginSession.message);
   const connectionHtml = connectionLines
     .map((line) => `<small class="binding-cell-note binding-status-line">${esc(line)}</small>`)
     .join('');
@@ -12837,6 +13028,7 @@ function onboardingValues() {
   };
   values.qmt_auto_login = defaultQmtAutoLoginSettings(config && config.account_id ? config.qmt_auto_login : undefined);
   if ($('onboardingQmtAutoLogin')) values.qmt_auto_login.enabled = $('onboardingQmtAutoLogin').checked;
+  if ($('onboardingQmtLoginAccount')) values.qmt_auto_login.login_account = $('onboardingQmtLoginAccount').value.trim();
   return values;
 }
 
@@ -13119,6 +13311,7 @@ function syncOnboardingWizard(options = {}) {
   if (shouldFill) fillQmtStrategySettings('onboarding', config.account_id ? (config.qmt_strategy || { enabled: false }) : undefined);
   if (shouldFill && $('onboardingQmtAutoLogin')) {
     $('onboardingQmtAutoLogin').checked = defaultQmtAutoLoginSettings(config && config.account_id ? config.qmt_auto_login : undefined).enabled;
+    fillQmtLoginCredentials('onboarding', config.qmt_auto_login || {}, qmtInput ? qmtInput.value : '', config.account_key);
   }
   syncAdvancedQmtDirField('onboardingQmtTradeDir', modeInput && modeInput.value);
   fillOnboardingQmtTradeDirFromSaved();
@@ -13140,6 +13333,11 @@ function syncOnboardingWizard(options = {}) {
 async function saveOnboardingConfig(event) {
   if (event) event.preventDefault();
   const values = onboardingValues();
+  const qmtLoginError = qmtLoginValidationError('onboarding', values.qmt_auto_login, values.qmt_dir);
+  if (qmtLoginError) {
+    setOnboardingStatus('onboardingConfigStatus', qmtLoginError, 'error');
+    return;
+  }
   if (values.python_environment && values.python_environment.mode === 'custom' && !values.python_environment.python_executable) {
     setOnboardingStatus('onboardingConfigStatus', '请输入指定 Python 解释器路径', 'error');
     const input = $('onboardingPythonExecutable');
@@ -13182,10 +13380,17 @@ async function saveOnboardingConfig(event) {
     if (!await ensureBindingQmtStopped(processTargets)) return;
   }
   setOnboardingStatus('onboardingConfigStatus', '正在保存账号配置...', 'busy');
+  if (values.qmt_auto_login.enabled && enteredQmtLoginPassword('onboarding')) {
+    values.qmt_auto_login.password = enteredQmtLoginPassword('onboarding');
+  }
   try {
     const data = state.setup && state.setup.setup_required
       ? await api('/api/setup/initialize', { method: 'POST', body: JSON.stringify(values) })
       : await saveAccountConfigRequest(values);
+    if (values.qmt_auto_login.password && !(data.account && data.account.qmt_auto_login && data.account.qmt_auto_login.password_saved)) {
+      throw new Error('当前后端未保存 QMT 登录密码，请重启项目后重新保存。');
+    }
+    delete values.qmt_auto_login.password;
     state.accountPairs = data.account_pairs || {};
     state.accountConfigs = data.account_configs || state.accountConfigs;
     state.setup = data.setup || state.setup;
@@ -13231,6 +13436,9 @@ async function saveOnboardingConfig(event) {
   } catch (error) {
     setOnboardingStatus('onboardingConfigStatus', `保存失败：${error.message}`, 'error');
     log('新手引导账号配置保存失败', { error: error.message });
+  } finally {
+    delete values.qmt_auto_login.password;
+    resetQmtLoginPassword('onboarding');
   }
 }
 
@@ -13749,6 +13957,7 @@ function showOnboardingModal(options = {}) {
 }
 
 function hideOnboardingModal(options = {}) {
+  resetQmtLoginPassword('onboarding');
   if (state.onboardingBindingFlowActive && !options.force) {
     setOnboardingStatus(
       'onboardingBridgeStatus',
@@ -14167,8 +14376,31 @@ async function boot() {
     }
   });
   const bindingQmtAutoLogin = $('bindingQmtAutoLogin');
+  for (const prefix of ['setup', 'onboarding', 'binding']) {
+    const password = $(`${prefix}QmtLoginPassword`);
+    const toggle = $(`${prefix}QmtPasswordToggle`);
+    if (toggle) toggle.addEventListener('click', () => toggleQmtLoginPassword(prefix));
+    if (password) password.addEventListener('input', () => {
+      password._qmtRevealGeneration = (password._qmtRevealGeneration || 0) + 1;
+      password.dataset.revealedSaved = 'false';
+      password.dataset.loading = 'false';
+      syncQmtPasswordToggle(prefix);
+    });
+    for (const suffix of ['QmtAutoLogin', 'QmtLoginAccount', 'QmtDir']) {
+      const input = $(`${prefix}${suffix}`);
+      if (input) {
+        const changed = () => {
+          if (password && (password.dataset.revealedSaved === 'true' || password.dataset.loading === 'true')) resetQmtLoginPassword(prefix);
+          syncQmtLoginCredentialFields(prefix);
+        };
+        input.addEventListener('input', changed);
+        input.addEventListener('change', changed);
+      }
+    }
+  }
   if (bindingQmtAutoLogin) {
     bindingQmtAutoLogin.addEventListener('change', () => {
+      if (bindingQmtAutoLogin.checked && !readBindingQmtRestartTimes().length) renderBindingQmtRestartTimes(['09:00']);
       syncBindingQmtAutoLoginSettingsVisibility();
     });
   }

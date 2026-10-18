@@ -44,6 +44,7 @@ def assert_lite_package(manager, root):
 def web_deployment(deployment, tmp_path, monkeypatch):
     import cfquant_web_server as web
     manager, row, infos, running, root = deployment
+    row['qmt_auto_login'] = {'enabled': False}
     config = web.WebRuntimeConfig(str(tmp_path / "web.json"), str(tmp_path / "web.db"))
     config._data["account_configs"] = {row["account_key"]: row}
     monkeypatch.setattr(web, "WEB_CONFIG", config)

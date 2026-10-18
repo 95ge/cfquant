@@ -172,6 +172,8 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
     page.locator(f'#{entry}AccountId').fill('900010001595')
     page.locator(f'#{entry}AccountType').select_option('CREDIT')
     page.locator(f'#{entry}QmtDir').fill('D:/GUOJIN-QMT-FAKE/bin.x64')
+    page.locator(f'#{entry}QmtLoginAccount').fill('fixture-login')
+    page.locator(f'#{entry}QmtLoginPassword').fill('synthetic-secret')
     expect(page.locator(f'#{entry}QmtAutoLogin')).to_be_checked()
     expect(page.locator(f'#{entry}StrategyAutorun')).to_be_checked()
     saved = []
@@ -183,6 +185,8 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
         row = {name: payload[name] for name in (
             'account_id', 'account_type', 'mode', 'qmt_dir', 'qmt_strategy', 'qmt_auto_login')}
         row.update(account_key=key, bridge_id='default')
+        row['qmt_auto_login'] = dict(row['qmt_auto_login'], password_saved=True)
+        row['qmt_auto_login'].pop('password', None)
         data = {'account': row, 'account_configs': {key: row}, 'account_pairs': {},
             'bridges': {'default': {'name': 'default'}},
             'setup': {'setup_required': False, 'default_account_key': key,
@@ -206,8 +210,8 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
         assert 'admin_username' not in saved[0]
         assert 'admin_password' not in saved[0]
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('等待自动登录完成')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('请手动输入密码登录')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动登录 QMT')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('绑定中保存的账号和密码')
     assert not any(path == '/api/qmt-scripts/source' for _, path in requests)
     expect(page.locator('#copyBindingQmtGuideBtn, #onboardingCopyQmtScriptBtn, #copyBindingQmtScriptBtn')).to_have_count(0)
     assert page.locator('.binding-qmt-guide-dialog').evaluate('(el) => el.scrollWidth <= el.clientWidth')
@@ -347,18 +351,22 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     page.locator('#bindingDisplayName').fill('国金证券')
     expect(page.locator('#bindingQmtAutoLogin')).to_be_checked()
     expect(page.locator('#bindingQmtAutoLoginSettings')).to_be_visible()
-    page.locator('#addBindingQmtRestartTimeBtn').click()
+    expect(page.locator('.binding-qmt-restart-time').nth(0)).to_have_value('09:00')
     page.locator('.binding-qmt-restart-time').nth(0).fill('06:30')
     page.locator('#addBindingQmtRestartTimeBtn').click()
     page.locator('.binding-qmt-restart-time').nth(1).fill('12:05')
     page.locator('#bindingAccountId').fill('8885060548')
     page.locator('#bindingQmtDir').fill('D:\\国金证券QMT交易端\\bin.x64')
+    page.locator('#bindingQmtLoginAccount').fill('fixture-login')
+    page.locator('#bindingQmtLoginPassword').fill('synthetic-secret')
     saved = []
     def respond(route):
         payload = route.request.post_data_json
         saved.append(payload)
         key = 'default:STOCK:8885060548'
         row = dict(payload, account_key=key, bridge_id='default')
+        row['qmt_auto_login'] = dict(row['qmt_auto_login'], password_saved=True)
+        row['qmt_auto_login'].pop('password', None)
         route.fulfill(json={'ok': True, 'data': {'account': row, 'account_configs': {key: row},
             'account_pairs': {}, 'bridges': {'default': {'name': 'default'}},
             'qmt_core_deploy': {'results': [], 'summary': {'message': ''}},
@@ -371,9 +379,10 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     expect(page.locator('#bindingQmtAutoLoginPanel')).to_be_visible()
     expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('1234')
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('国金 QMT：请手动输入密码登录')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('非国金 QMT')
-    assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05']}
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动登录 QMT')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('A 股交易日')
+    assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05'],
+                                        'login_account': 'fixture-login', 'password': 'synthetic-secret'}
     assert saved[0]['qmt_dir'].endswith('\\bin.x64')
     assert errors == []
 

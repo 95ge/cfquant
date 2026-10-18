@@ -1140,6 +1140,25 @@ body.binding-dialog-open {
   transform: translateY(0);
 }
 
+.qmt-password-input {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.qmt-password-input input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+}
+
+.qmt-password-input button {
+  flex: none;
+  white-space: nowrap;
+  padding-inline: 10px;
+}
+
 .qmt-login-prerequisite {
   display: grid;
   gap: 10px;

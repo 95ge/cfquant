@@ -583,7 +583,7 @@ MANAGEMENT_STARTED_AT = time.time()
 MANAGEMENT_READY = False
 MANAGEMENT_API_PATHS = frozenset({
     "/api/management/status", "/api/management/restart", "/api/management/stop",
-    "/api/setup/initialize", "/api/account-config", "/api/account-config/delete",
+    "/api/setup/initialize", "/api/account-config", "/api/account-config/delete", "/api/account-config/qmt-password",
     "/api/bindings/status", "/api/project-updates/status", "/api/project-updates/official",
     "/api/project-updates/github", "/api/project-updates/rollback", "/api/project-updates/ensure-latest",
     "/api/version", "/api/config",
@@ -1745,6 +1745,9 @@ def normalize_qmt_auto_login_restart_times(value):
 def normalize_qmt_auto_login_settings(value=None, existing=None):
     existing = existing if isinstance(existing, dict) else {}
     default_enabled = parse_config_bool(existing.get("enabled"), True)
+    default_times = existing.get("restart_times", ["09:00"])
+    if not default_enabled and not default_times:
+        default_times = ["09:00"]
     if value is None:
         value = existing
     if isinstance(value, dict):
@@ -1758,20 +1761,43 @@ def normalize_qmt_auto_login_settings(value=None, existing=None):
         elif "restartTime" in value:
             restart_source = value.get("restartTime")
         else:
-            restart_source = existing.get("restart_times") or []
+            restart_source = default_times if enabled else existing.get("restart_times", [])
     else:
         enabled = parse_config_bool(value, default_enabled)
-        restart_source = existing.get("restart_times") or []
-    return {
+        restart_source = default_times if enabled else existing.get("restart_times", [])
+    result = {
         "enabled": bool(enabled),
         "restart_times": normalize_qmt_auto_login_restart_times(restart_source),
     }
+    source = value if isinstance(value, dict) else {}
+    if "login_account" in source or "login_account" in existing:
+        result["login_account"] = str(source.get("login_account", existing.get("login_account", "")) or "").strip()
+        result["password_saved"] = parse_config_bool(source.get("password_saved", existing.get("password_saved")), False)
+    return result
 
 
 def account_config_is_enabled(config):
     if not isinstance(config, dict):
         return True
     return parse_config_bool(config.get("enabled"), True)
+
+
+def validate_qmt_auto_login_credentials(config_path, qmt_dir, settings, password=None):
+    """Validate before stopping QMT or changing configuration; never trust a saved flag."""
+    from cfquant.qmt_credentials import QmtCredentialStore
+    enabled = settings.get("enabled", False)
+    login_account = settings.get("login_account", "")
+    if enabled or password:
+        if not qmt_dir:
+            raise ValueError("开启 QMT 自动重启时必须填写 QMT 目录")
+        if not login_account:
+            raise ValueError("开启 QMT 自动重启时必须填写 QMT 登录账号")
+    if password is not None and (not isinstance(password, str) or len(password) > 1024):
+        raise ValueError("QMT 登录密码必须是长度不超过 1024 的字符串")
+    saved = QmtCredentialStore(config_path).has(qmt_dir, login_account) if login_account else False
+    if enabled and not password and not saved:
+        raise ValueError("开启 QMT 自动重启时必须填写 QMT 登录密码；更换账号或目录后请重新填写密码")
+    return saved
 
 
 def normalize_market_code(value):
@@ -2708,6 +2734,19 @@ class WebRuntimeConfig(object):
             self._save_locked()
         return self.python_environment_info()
 
+    def validate_account_auto_login(self, body):
+        """Use the same binding lookup as save before any process/config mutations."""
+        account_id = str(body.get("account_id") or DEFAULT_ACCOUNT_ID).strip()
+        account_type = normalize_account_type(body.get("account_type") or "STOCK")
+        qmt_dir = normalize_optional_path(body.get("qmt_dir") or body.get("python_dir"))
+        request = body.get("qmt_auto_login")
+        with self._lock:
+            bridge_id = self._account_bridge_id_locked(account_id, account_type, body.get("bridge_id"), qmt_dir)
+            existing = self._data.get("account_configs", {}).get(account_key_for(account_id, account_type, bridge_id)) or {}
+            settings = normalize_qmt_auto_login_settings(request, existing=existing.get("qmt_auto_login"))
+            password = request.get("password") if isinstance(request, dict) else None
+            validate_qmt_auto_login_credentials(self.path, qmt_dir, settings, password)
+
     def save_account_config(
         self,
         account_id,
@@ -2805,6 +2844,14 @@ class WebRuntimeConfig(object):
                     occupied.update(route.get("bridge_id") for route in (other.get("market_bridges") or {}).values())
                     if requested_channels.intersection(occupied):
                         raise ValueError("自动导入的市场入口需要独立 bridge_id，请清空市场 bridge_id 后重试")
+            supplied_password = qmt_auto_login.get("password") if isinstance(qmt_auto_login, dict) else None
+            password_saved = validate_qmt_auto_login_credentials(self.path, qmt_dir, auto_login_settings, supplied_password)
+            if supplied_password:
+                from cfquant.qmt_credentials import QmtCredentialStore
+                QmtCredentialStore(self.path).save(qmt_dir, auto_login_settings["login_account"], supplied_password)
+                password_saved = True
+            if "login_account" in auto_login_settings:
+                auto_login_settings["password_saved"] = password_saved
             if bridge_id not in self.bridges():
                 self._data.setdefault("bridges", {})[bridge_id] = self._bridge_row(
                     bridge_id,
@@ -5264,6 +5311,7 @@ def binding_status_snapshot():
         except Exception as error:
             rows.append(dict(entry, error=str(error)))
         rows[-1]["qmt_strategy_deploy"] = QMT_STRATEGIES.status(entry["account_key"])
+        rows[-1]["qmt_auto_login"] = _qmt_auto_login_saved_session(entry)
     now = time.time()
     return {
         "bindings": rows,
@@ -10831,7 +10879,7 @@ def _qmt_auto_login_write_capture_script(paths):
     return path
 
 
-def _qmt_auto_login_processes(bin_dir):
+def _qmt_auto_login_processes(bin_dir, strict=False):
     paths = _qmt_auto_login_paths(bin_dir)
     exe_key = os.path.normcase(os.path.abspath(paths["exe_path"]))
     rows = []
@@ -10848,14 +10896,16 @@ def _qmt_auto_login_processes(bin_dir):
                     "name": process.info.get("name") or "XtItClient.exe",
                     "executable_path": exe,
                 })
-            except (
-                getattr(psutil, "NoSuchProcess", Exception),
-                getattr(psutil, "AccessDenied", Exception),
-                getattr(psutil, "ZombieProcess", Exception),
-            ):
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
                 continue
             except Exception:
+                if strict:
+                    raise RuntimeError("无法确认对应 QMT 的进程状态，请检查进程访问权限；已停止启动") from None
                 continue
+    elif strict:
+        raise RuntimeError("缺少 psutil，无法确认旧 QMT 是否退出；已停止启动")
+    if strict:
+        return rows
     if rows:
         return rows
     script = r"""
@@ -11136,24 +11186,13 @@ def _qmt_auto_login_start_xtitclient(paths, use_link=False):
 
 
 def _qmt_auto_login_stop_xtitclient(row, paths, session=None):
-    session = session if isinstance(session, dict) else {}
-    pids = []
-    for key in ("launch_pid", "restart_pid", "pid"):
-        try:
-            pid = int(session.get(key) or 0)
-        except Exception:
-            pid = 0
-        if pid > 0 and pid not in pids and _qmt_auto_login_pid_matches(pid, paths["bin_dir"]):
-            pids.append(pid)
-    for process in _qmt_auto_login_processes(paths["bin_dir"]):
-        try:
-            pid = int(process.get("pid") or 0)
-        except Exception:
-            pid = 0
-        if pid > 0 and pid not in pids:
-            pids.append(pid)
+    # Enumerate live executable paths instead of trusting PIDs from old sessions.
+    pids = [int(process["pid"]) for process in _qmt_auto_login_processes(paths["bin_dir"], strict=True)]
     results = []
     for pid in pids:
+        # A process may have exited between enumeration and termination.
+        if not any(int(process["pid"]) == pid for process in _qmt_auto_login_processes(paths["bin_dir"], strict=True)):
+            continue
         completed = subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"] if os.name == "nt" else ["kill", "-TERM", str(pid)],
             stdout=subprocess.PIPE,
@@ -11170,9 +11209,12 @@ def _qmt_auto_login_stop_xtitclient(row, paths, session=None):
             "stdout": (completed.stdout or "").strip(),
             "stderr": (completed.stderr or "").strip(),
         })
-    if pids:
-        time.sleep(1.0)
-    return {"requested_pids": pids, "results": results}
+    deadline = time.monotonic() + 8.0
+    while _qmt_auto_login_processes(paths["bin_dir"], strict=True):
+        if time.monotonic() >= deadline:
+            raise RuntimeError("旧 QMT 进程未完全退出，已停止重启，请检查进程权限")
+        time.sleep(0.2)
+    return {"requested_pids": pids, "results": results, "exit_confirmed": True}
 
 
 def _qmt_auto_login_copy_current_link(paths):
@@ -11337,7 +11379,80 @@ def qmt_auto_login_complete_for_account(row):
     return result
 
 
-QMT_AUTO_LOGIN_REMINDER = "国金 QMT：请手动输入密码登录，登录后在 QMT 内完成相应初始化设置。非国金 QMT：请在登录界面勾选自动登录和记住密码，然后等待自动登录完成。所有 QMT 都要先完成 Python 库下载。"
+QMT_AUTO_LOGIN_REMINDER = "项目先结束对应目录的旧 QMT 进程，确认退出后重新启动；清空登录框中的旧账号和密码，填入绑定中保存的账号和密码再登录。计划重启仅在 A 股交易日执行，默认北京时间 09:00。请先完成 QMT 内的 Python 库下载。"
+QMT_COMPONENT_JOBS = {}
+
+
+def _qmt_component_job_key(directory):
+    from cfquant.qmt_credentials import directory_key
+    return directory_key(directory)
+
+
+def _qmt_component_login_preflight(paths, settings):
+    from cfquant.qmt_component_login import verify_environment
+    from cfquant.qmt_credentials import QmtCredentialStore
+    validate_qmt_auto_login_credentials(WEB_CONFIG.path, paths["bin_dir"], dict(settings, enabled=True))
+    if not QmtCredentialStore(WEB_CONFIG.path).password(paths["bin_dir"], settings.get("login_account", "")):
+        raise ValueError("请在绑定中重新保存 QMT 登录密码后启用自动重启")
+    verify_environment(paths["bin_dir"])
+
+
+def _qmt_component_login_worker(row, paths, pid, config_path):
+    from cfquant.qmt_component_login import login_running_qmt
+    from cfquant.qmt_credentials import QmtCredentialStore
+    settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+    account = settings.get("login_account", "")
+    try:
+        result = login_running_qmt(
+            paths["bin_dir"], account,
+            lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
+            expected_pid=pid,
+        )
+        outcome = result["outcome"]
+        descriptions = {
+            "logged_in": "QMT 已自动登录，等待已配置的策略连接",
+            "already_logged_in": "QMT 已登录，等待已配置的策略连接",
+            "password_required": "请在绑定设置中填写 QMT 登录账号和密码",
+            "credential_error": "QMT 密码被拒绝，请修改绑定中保存的密码",
+            "network_error": "QMT 服务器连接失败，下个交易日仍会按计划重新启动登录",
+            "challenge": "QMT 需要验证码或其他人工验证",
+            "timeout": "QMT 登录超时，下个交易日仍会按计划重新启动登录",
+            "startup_timeout": "QMT 登录界面未就绪，请检查客户端启动状态",
+            "login_not_ready": "QMT 正在登录或登录按钮尚未就绪",
+        }
+        message = descriptions.get(outcome, "QMT 自动登录未完成")
+        updates = {"state": "logged_in" if result.get("login_succeeded") else "login_failed",
+                   "login_state": outcome, "login_succeeded": bool(result.get("login_succeeded")),
+                   "login_attempts": result.get("attempts", []), "message": message,
+                   "error": "" if result.get("login_succeeded") else message}
+    except Exception:
+        # Native exceptions and credential providers must never echo supplied data.
+        updates = {"state": "login_failed", "login_state": "component_error", "login_succeeded": False,
+                   "error": "QMT 组件登录失败，请检查客户端版本、登录账号及自动登录依赖",
+                   "message": "QMT 组件登录失败，请检查客户端版本、登录账号及自动登录依赖"}
+    # Do not let a stale worker overwrite a later process's state.
+    with QMT_AUTO_LOGIN_LOCK:
+        key = _qmt_component_job_key(paths["bin_dir"])
+        if QMT_COMPONENT_JOBS.get(key) is not threading.current_thread():
+            return
+        session = _qmt_auto_login_saved_session(row)
+        if session.get("pid") == pid:
+            _qmt_auto_login_update_session(row, updates)
+        QMT_COMPONENT_JOBS.pop(key, None)
+
+
+def _qmt_queue_component_login(row, paths, pid):
+    key = _qmt_component_job_key(paths["bin_dir"])
+    job = QMT_COMPONENT_JOBS.get(key)
+    if job and job.is_alive():
+        return False
+    worker = threading.Thread(target=_qmt_component_login_worker,
+                              args=(dict(row), dict(paths), pid, WEB_CONFIG.path),
+                              name="qmt-component-login-%s" % pid, daemon=True)
+    worker.qmt_pid = pid
+    QMT_COMPONENT_JOBS[key] = worker
+    worker.start()
+    return True
 
 
 def _qmt_auto_login_first_pid(processes, launch=None):
@@ -11413,14 +11528,28 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
     try:
         with QMT_AUTO_LOGIN_LOCK:
             paths = _qmt_auto_login_paths(qmt_dir)
+            _qmt_component_login_preflight(paths, settings)
+            key = _qmt_component_job_key(paths["bin_dir"])
+            running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+            job = QMT_COMPONENT_JOBS.get(key)
+            if (not restart and job and job.is_alive()
+                    and any(process["pid"] == getattr(job, "qmt_pid", None) for process in running)):
+                result.update(configured=True, login_state="logging_in", message="该 QMT 正在启动登录，请等待本次操作完成")
+                return result
+            # Every new login task uses a fresh process, including a failed
+            # terminal left behind when the web service was stopped.
+            restart = bool(restart or running)
+            QMT_COMPONENT_JOBS.pop(key, None)
             stop = None
             if restart:
                 stop = _qmt_auto_login_stop_xtitclient(row, paths, session=_qmt_auto_login_saved_session(row))
-            running = _qmt_auto_login_processes(paths["bin_dir"])
+            running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+            if restart and running:
+                raise RuntimeError("旧 QMT 进程未完全退出，已停止重启，避免重复启动")
             launch = None
             if not running:
                 launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
-                running = _qmt_auto_login_processes(paths["bin_dir"])
+                running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
             pid = _qmt_auto_login_first_pid(running, launch)
             started = bool(launch)
             result.update({
@@ -11438,7 +11567,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             })
             if restart:
                 result["message"] = (
-                    "已按计划重启 QMT，PID: %s" % pid
+                    "已结束旧进程并重新启动 QMT，PID: %s" % pid
                     if pid else "已执行计划重启，但暂未获取到 QMT 进程 PID"
                 )
             elif started:
@@ -11453,7 +11582,9 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 )
             _qmt_auto_login_update_session(row, {
                 "enabled": True,
-                "state": "restarted" if restart else "running",
+                "state": "logging_in",
+                "login_state": "logging_in",
+                "login_succeeded": False,
                 "qmt_dir": qmt_dir,
                 "bin_dir": paths["bin_dir"],
                 "exe_path": paths["exe_path"],
@@ -11466,6 +11597,10 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "message": result["message"],
                 "error": "",
             })
+            login_row = dict(row, qmt_auto_login=settings)
+            if pid:
+                result["login_state"] = "logging_in"
+                _qmt_queue_component_login(login_row, paths, pid)
     except Exception as error:
         result.update({
             "configured": False,
@@ -11495,7 +11630,6 @@ class QmtAutoLoginRestartScheduler:
         self.interval = float(interval or 20.0)
         self._stop = threading.Event()
         self._thread = None
-        self._fired = {}
         self._lock = threading.Lock()
 
     def start(self):
@@ -11523,9 +11657,15 @@ class QmtAutoLoginRestartScheduler:
             return []
         if WEB_CONFIG is None:
             return []
-        now = now or time.localtime()
+        if now is None:
+            import datetime
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).timetuple()
         current_day = time.strftime("%Y-%m-%d", now)
-        current_time = time.strftime("%H:%M", now)
+        import datetime
+        from cfquant.trading_calendar import is_trading_day
+        day = datetime.date(now.tm_year, now.tm_mon, now.tm_mday)
+        if not is_trading_day(day):
+            return []
         configs = WEB_CONFIG.account_configs()
         results = []
         with self._lock:
@@ -11533,16 +11673,29 @@ class QmtAutoLoginRestartScheduler:
                 if not isinstance(row, dict) or not account_config_is_enabled(row):
                     continue
                 settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
-                if not settings["enabled"] or current_time not in settings["restart_times"]:
+                if not settings["enabled"] or not row.get("qmt_dir"):
                     continue
-                account_key = _qmt_auto_login_session_key(row)
-                fired_key = "%s|%s|%s" % (account_key, current_day, current_time)
-                if self._fired.get(fired_key):
-                    continue
-                self._fired[fired_key] = time.time()
-                results.append(qmt_auto_login_restart_for_account(row, settings, reason="scheduled:%s" % current_time))
-            cutoff = time.time() - 86400 * 3
-            self._fired = {key: value for key, value in self._fired.items() if value >= cutoff}
+                # Catch up a delayed poll or web restart for ten minutes, never midday.
+                minute = now.tm_hour * 60 + now.tm_min
+                slots = [slot for slot in settings["restart_times"]
+                         if 0 <= minute - (int(slot[:2]) * 60 + int(slot[3:])) <= 10]
+                for slot in slots:
+                    directory = _qmt_component_job_key(row["qmt_dir"])
+                    fired_key = "%s|%s|%s" % (directory, current_day, slot)
+                    with QMT_AUTO_LOGIN_LOCK:
+                        state = _qmt_auto_login_read_state_locked()
+                        fired = state.setdefault("scheduled_runs", {})
+                        if fired_key in fired:
+                            continue
+                        fired[fired_key] = time.time()
+                        cutoff = time.time() - 86400 * 7
+                        state["scheduled_runs"] = {key: value for key, value in fired.items() if value >= cutoff}
+                        _qmt_auto_login_write_state_locked(state)
+                    try:
+                        result = qmt_auto_login_restart_for_account(row, settings, reason="scheduled:%s" % slot)
+                    except Exception:
+                        result = {"error": "计划重启失败，下个交易日将重新执行", "account_key": _qmt_auto_login_session_key(row)}
+                    results.append(result)
         return results
 
 
@@ -11562,7 +11715,7 @@ def start_configured_qmt_on_web_startup():
         if policy is False or (policy is None and not settings["enabled"]):
             continue
         qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
-        key = os.path.normcase(os.path.abspath(qmt_dir)) if qmt_dir else ""
+        key = _qmt_component_job_key(qmt_dir) if qmt_dir else ""
         if key and key in seen_dirs:
             continue
         if key:
@@ -14203,6 +14356,7 @@ def ensure_account_runtime(mode):
 @serialized_account_configuration
 def save_account_runtime_config(body):
     body = body or {}
+    WEB_CONFIG.validate_account_auto_login(body)
     # Check every configured QMT instance before writing config files or injecting strategies.
     qmt_process_preflight(body=body)
     account_id = str(body.get("account_id") or "").strip()
@@ -14300,6 +14454,22 @@ def complete_qmt_auto_login(body):
     return qmt_auto_login_restart_for_account(row, row.get("qmt_auto_login"), reason="manual")
 
 
+def reveal_account_qmt_password(body):
+    """Explicit authenticated reveal for a saved binding, separate from public config."""
+    from cfquant.qmt_credentials import QmtCredentialStore, directory_key
+    row = account_config_for_request(body)
+    settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+    account = settings.get("login_account", "")
+    directory = row.get("qmt_dir", "")
+    if (not directory or not account or account != str(body.get("login_account") or "").strip()
+            or not body.get("qmt_dir") or directory_key(directory) != directory_key(body["qmt_dir"])):
+        raise ValueError("登录账号或 QMT 目录已改变，请先保存对应密码")
+    password = QmtCredentialStore(WEB_CONFIG.path).password(directory, account)
+    if not password:
+        raise ValueError("该绑定尚未保存 QMT 登录密码，请重新填写并保存")
+    return {"password": password}
+
+
 @serialized_account_configuration
 def update_account_qmt_core(body):
     row = account_config_for_request(body)
@@ -14376,6 +14546,7 @@ def delete_account_runtime_config(body):
 @serialized_account_configuration
 def initialize_web_setup(body):
     body = body or {}
+    WEB_CONFIG.validate_account_auto_login(body)
     qmt_process_preflight(body=body)
     python_environment = body.get("python_environment")
     if isinstance(python_environment, dict):
@@ -16544,6 +16715,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     threading.Thread(target=self.server.shutdown, daemon=True).start()
             elif parsed.path == "/api/account-config":
                 self._write_json(ok(save_account_runtime_config(body)))
+            elif parsed.path == "/api/account-config/qmt-password":
+                self._write_json(ok(reveal_account_qmt_password(body)),
+                                 extra_headers=[("Cache-Control", "no-store"), ("Pragma", "no-cache")])
             elif parsed.path == "/api/qmt/processes/stop":
                 self._write_json(ok(stop_qmt_processes_for_request(body)))
             elif parsed.path == "/api/qmt/processes/start":
