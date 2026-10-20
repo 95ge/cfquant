@@ -1411,6 +1411,28 @@ body.binding-dialog-open {
   padding: 2px 0;
 }
 
+.qmt-dependency-status {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warn) 8%, var(--panel));
+  color: var(--text);
+}
+
+.qmt-dependency-status p { margin: 5px 0; }
+.qmt-dependency-status pre {
+  margin: 8px 0;
+  padding: 8px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12px;
+}
+.qmt-dependency-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+.qmt-dependency-actions [data-qmt-dependency-feedback] { color: var(--muted); }
+
 .version-badge-latest {
   padding-top: 7px;
   border-top: 1px solid rgba(139, 158, 180, 0.18);

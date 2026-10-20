@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import threading
 
+from .qmt_dependencies import QmtDependencyError, import_login_module
+
 _LOCK = threading.RLock()
 
 
@@ -17,12 +19,12 @@ def directory_key(directory):
 
 
 def _protect(value, entropy):
-    import win32crypt
+    win32crypt = import_login_module("win32crypt")
     return win32crypt.CryptProtectData(value, "CFQuant QMT login", entropy, None, None, 1)
 
 
 def _unprotect(value, entropy):
-    import win32crypt
+    win32crypt = import_login_module("win32crypt")
     return win32crypt.CryptUnprotectData(value, entropy, None, None, 1)[1]
 
 
@@ -50,6 +52,8 @@ class QmtCredentialStore:
         key = directory_key(directory)
         try:
             encrypted = _protect(password.encode("utf-8"), key.encode("ascii"))
+        except QmtDependencyError:
+            raise
         except Exception:
             raise RuntimeError("无法使用当前 Windows 用户加密 QMT 密码，请检查 pywin32 安装") from None
         with _LOCK:
@@ -68,5 +72,7 @@ class QmtCredentialStore:
             return ""
         try:
             return _unprotect(base64.b64decode(entry["secret"]), key.encode("ascii")).decode("utf-8")
+        except QmtDependencyError:
+            raise
         except Exception:
             raise RuntimeError("无法解密 QMT 密码，请使用保存密码时的 Windows 用户运行，或重新保存密码") from None

@@ -19,6 +19,7 @@ from pathlib import Path
 from cfquant.diagnostics import latency_report, SCHEMA as QUOTE_LATENCY_SCHEMA
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
+from cfquant.qmt_dependencies import check_login_dependencies, report_startup_dependencies
 import posixpath
 import queue
 import re
@@ -11607,6 +11608,11 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             "error": str(error),
             "message": "QMT 自动启动配置失败: %s" % error,
         })
+        from cfquant.qmt_dependencies import QmtDependencyError
+        if isinstance(error, QmtDependencyError):
+            result["dependency_error"] = True
+            result["message"] = "自动登录组件不可用，请手动启动并登录 QMT；绑定保存状态请以配置结果为准。"
+            result["dependencies"] = check_login_dependencies(refresh=True)
         _qmt_auto_login_update_session(row, {
             "enabled": True,
             "state": "error",
@@ -11614,6 +11620,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             "restart_times": list(settings["restart_times"]),
             "error": str(error),
             "message": result["message"],
+            "dependency_error": result.get("dependency_error", False),
+            "dependencies": result.get("dependencies"),
         })
     return result
 
@@ -15103,6 +15111,7 @@ def management_status():
         "core_version": current_core_version(),
         "web_version": WEB_VERSION,
         "auto_start_qmt": management_qmt_start_policy(),
+        "qmt_login_dependencies": check_login_dependencies(),
         "setup": WEB_CONFIG.setup_info(),
         "account_configs": WEB_CONFIG.account_configs(),
         "lttx_host": LTTX_HOST,
@@ -17025,6 +17034,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         try:
             if parsed.path == "/api/health":
                 self._write_json(ok({"status": "ok"}))
+            elif parsed.path == "/api/qmt-auto-login/dependencies":
+                self._write_json(ok(check_login_dependencies(refresh=parse_bool(query.get("refresh", ["0"])[0]))))
             elif parsed.path == "/api/management/status":
                 self._write_json(ok(management_status()))
             elif parsed.path == "/api/internal/runtime-route":
@@ -17061,6 +17072,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     "user_profile": user_profile_response(),
                     "transport": WEB_CONFIG.transport_info(),
                     "python_environment": WEB_CONFIG.python_environment_info(),
+                    "qmt_login_dependencies": check_login_dependencies(),
                     "pipe_hub": PIPE_HUB.status(),
                     "log_cleanup": log_cleanup_info(),
                     "qmt_log_language": qmt_log_language_info(),
@@ -17702,6 +17714,7 @@ def main(argv=None):
             "cfquant web port %s is already occupied by another process; stop it or set CFQUANT_WEB_PORT"
             % args.port
         )
+    report_startup_dependencies()
     ensure_lttx_started("Web 启动预启动")
     # Older updater processes only copied raw entries. Refresh managed sources
     # before auto-login so QMT imports the selected mode's current package.

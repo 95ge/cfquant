@@ -173,3 +173,27 @@ def test_login_result_is_visible_in_status_panel(page, frontend_url):
     assert '已登录' in result['success']
     assert '请修改保存的密码' in result['failure']
     assert errors == []
+
+
+def test_dependency_failure_shows_repair_command_and_manual_login_action(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    saved_binding(page)
+    page.evaluate("""() => {
+      state.qmtLoginDependencies = null;
+      renderQmtDependencyStatus({
+        supported: true, ok: false, python_executable: 'C:/Python311/python.exe',
+        environment: 'python', python_version: '3.11.9',
+        checks: [{name: 'win32api', ok: false, error: 'DLL load failed while importing win32api'}],
+        repair_commands: ["& 'C:/Python311/python.exe' -m pip install --force-reinstall pywin32"],
+        repair_note: '先停止 CFQuant 后执行。',
+        message: 'QMT 自动登录组件不可用（win32api）。',
+      });
+    }""")
+    panel = page.locator('#bindingQmtDependencies')
+    expect(panel).to_be_visible()
+    expect(panel).to_contain_text('win32api')
+    expect(panel).to_contain_text('C:/Python311/python.exe')
+    expect(panel.locator('[data-qmt-dependency-action="manual"]')).to_have_count(1)
+    panel.locator('[data-qmt-dependency-action="manual"]').click()
+    expect(page.locator('#bindingQmtAutoLogin')).not_to_be_checked()
+    assert errors == []

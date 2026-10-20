@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261019_01';
+const FRONTEND_VERSION = 'web_20261020_01';
 
 const state = {
   accountId: '',
@@ -45,6 +45,7 @@ const state = {
   accountConfigs: {},
   setup: null,
   pythonEnvironment: null,
+  qmtLoginDependencies: null,
   accountRouteMode: null,
   accountRouteFallback: false,
   envBridges: {},
@@ -1311,6 +1312,72 @@ function qmtAutoLoginGuideEnabled(autoLogin) {
   return !!autoLogin && !!normalizeQmtAutoLoginSettings(autoLogin).enabled;
 }
 
+function qmtDependencyStatusHtml(report, prefix = '') {
+  if (!report) return '';
+  const failures = (report.checks || []).filter(item => !item.ok);
+  const commands = report.repair_commands || [];
+  const enabled = prefix && $(`${prefix}QmtAutoLogin`)?.checked;
+  return `<p role="status"><strong>${esc(report.message || '自动登录组件检测未完成')}</strong></p>
+    <details><summary>检测详情与修复方法</summary>
+      <p>当前 Web 服务 Python：<code>${esc(report.python_executable || '')}</code></p>
+      <p>${esc([report.environment, report.python_version, report.packages?.pywin32 && `pywin32 ${report.packages.pywin32}`, report.packages?.frida && `Frida ${report.packages.frida}`].filter(Boolean).join(' · '))}</p>
+      ${failures.map(item => `<p><code>${esc(item.name)}</code>：${esc(item.error || '')}</p>`).join('')}
+      ${report.error ? `<p>${esc(report.error)}</p>` : ''}
+      ${commands.length ? `<p>${esc(report.repair_note || '')}</p><pre>${esc(commands.join('\n'))}</pre>
+        <button type="button" data-qmt-dependency-action="copy">复制修复命令</button>` : ''}
+    </details>
+    <div class="qmt-dependency-actions">
+      <button type="button" data-qmt-dependency-action="refresh">重新检测</button>
+      ${enabled ? `<button type="button" data-qmt-dependency-action="manual" data-prefix="${esc(prefix)}">改为手动登录</button>` : ''}
+      <span data-qmt-dependency-feedback role="status"></span>
+    </div>`;
+}
+
+function renderQmtDependencyStatus(report = state.qmtLoginDependencies) {
+  state.qmtLoginDependencies = report || null;
+  for (const prefix of ['setup', 'onboarding', 'binding', 'settings']) {
+    const panel = $(`${prefix}QmtDependencies`);
+    if (!panel) continue;
+    const visible = !!report && report.supported && (prefix === 'settings' || report.ok === false);
+    panel.classList.toggle('hidden', !visible);
+    panel.innerHTML = visible ? qmtDependencyStatusHtml(report, prefix === 'settings' ? '' : prefix) : '';
+  }
+}
+
+async function handleQmtDependencyAction(event) {
+  const button = event.target.closest('[data-qmt-dependency-action]');
+  if (!button) return;
+  const panel = button.closest('.qmt-dependency-status');
+  const feedback = panel?.querySelector('[data-qmt-dependency-feedback]');
+  const action = button.dataset.qmtDependencyAction;
+  if (action === 'manual') {
+    const prefix = button.dataset.prefix;
+    const checkbox = $(`${prefix}QmtAutoLogin`);
+    if (checkbox) {
+      checkbox.checked = false;
+      resetQmtLoginPassword(prefix);
+      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+      const updated = panel.querySelector('[data-qmt-dependency-feedback]');
+      if (updated) updated.textContent = '已选择手动登录，保存配置后生效。';
+    }
+    return;
+  }
+  button.disabled = true;
+  try {
+    if (action === 'copy') {
+      await copyTextWithFallback((state.qmtLoginDependencies?.repair_commands || []).join('\n'));
+      if (feedback) feedback.textContent = '已复制，请在运行 CFQuant 的电脑上执行。';
+    } else if (action === 'refresh') {
+      if (feedback) feedback.textContent = '正在检测…';
+      renderQmtDependencyStatus(await api('/api/qmt-auto-login/dependencies?refresh=1'));
+    }
+  } catch (error) {
+    if (feedback) feedback.textContent = `操作失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function bindingQmtAutoLoginStatusHtml(autoLogin) {
   if (!qmtAutoLoginGuideEnabled(autoLogin)) return '';
   const rows = [];
@@ -1328,7 +1395,7 @@ function bindingQmtAutoLoginStatusHtml(autoLogin) {
   ].map((value) => Number(value || 0)).filter((value, index, list) => value > 0 && list.indexOf(value) === index);
   const status = autoLogin.error ? 'error' : (pidValues.length ? 'success' : 'warn');
   const label = autoLogin.login_succeeded ? '已登录' : autoLogin.login_state === 'logging_in' ? '正在登录' : autoLogin.error
-    ? (autoLogin.login_state ? '登录失败' : '配置失败')
+    ? (autoLogin.dependency_error ? '组件不可用' : (autoLogin.login_state ? '登录失败' : '自动启动失败'))
     : (autoLogin.restarted ? '已重启' : (autoLogin.started ? '已启动' : (pidValues.length ? '已运行' : '已启用')));
   rows.push(`<div class="binding-qmt-status-row is-${status}">
     <strong>运行状态</strong>
@@ -2821,6 +2888,7 @@ function syncQmtLoginCredentialFields(prefix) {
     ? '已保存加密密码，可点击查看；账号和目录不变时可留空，填写新密码则替换。'
     : '开启自动重启必须填写登录账号和密码；密码加密保存，默认隐藏。';
   syncQmtPasswordToggle(prefix);
+  renderQmtDependencyStatus();
 }
 
 function enteredQmtLoginPassword(prefix) {
@@ -2894,6 +2962,9 @@ async function toggleQmtLoginPassword(prefix) {
 
 function qmtLoginValidationError(prefix, settings, directory) {
   if (!settings.enabled) return '';
+  if (state.qmtLoginDependencies?.ok === false) {
+    return '自动登录组件不可用，请先修复并重新检测，或点击“改为手动登录”后保存。';
+  }
   const account = String(settings.login_account || '').trim();
   let field = '', message = '';
   if (!directory) {
@@ -10887,6 +10958,7 @@ async function refreshLttxStatus(options = {}) {
 
 async function loadConfigLegacy() {
   const data = await api('/api/config');
+  renderQmtDependencyStatus(data.qmt_login_dependencies);
   state.defaultAccountId = data.default_account_id || '';
   state.defaultAccountType = normalizeAccountType(data.default_account_type || (data.setup && data.setup.default_account_type) || 'STOCK');
   state.defaultAccountKey = data.default_account_key || (data.setup && data.setup.default_account_key) || '';
@@ -10948,6 +11020,7 @@ async function loadConfigLegacy() {
 
 async function loadConfig() {
   const data = await api('/api/config');
+  renderQmtDependencyStatus(data.qmt_login_dependencies);
   state.defaultAccountId = data.default_account_id || '';
   state.defaultAccountType = normalizeAccountType(data.default_account_type || (data.setup && data.setup.default_account_type) || 'STOCK');
   state.defaultAccountKey = data.default_account_key || (data.setup && data.setup.default_account_key) || '';
@@ -14375,6 +14448,9 @@ async function boot() {
       });
     }
   });
+  for (const prefix of ['setup', 'onboarding', 'binding', 'settings']) {
+    $(`${prefix}QmtDependencies`)?.addEventListener('click', handleQmtDependencyAction);
+  }
   const bindingQmtAutoLogin = $('bindingQmtAutoLogin');
   for (const prefix of ['setup', 'onboarding', 'binding']) {
     const password = $(`${prefix}QmtLoginPassword`);

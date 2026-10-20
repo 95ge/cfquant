@@ -18,9 +18,12 @@ class QmtNotReady(RuntimeError):
 
 def verify_environment(directory):
     """Validate dependencies and native ABI before stopping a running terminal."""
-    import frida  # noqa: F401
-    import win32api
-    import win32crypt  # noqa: F401
+    try:
+        from .qmt_dependencies import LOGIN_MODULES, import_login_module
+    except ImportError:
+        from qmt_dependencies import LOGIN_MODULES, import_login_module
+    modules = {name: import_login_module(name) for name in LOGIN_MODULES}
+    win32api = modules["win32api"]
     directory = Path(directory)
     for module in ("Qt5Core.dll", "Qt5Widgets.dll"):
         version = win32api.GetFileVersionInfo(str(directory / module), "\\")
@@ -83,12 +86,16 @@ def select_binding(config_path, name):
 
 class QtLoginBackend:
     def __init__(self, directory, timeout=40, expected_pid=None):
-        import frida
+        try:
+            from .qmt_dependencies import import_login_module
+        except ImportError:
+            from qmt_dependencies import import_login_module
         import psutil
-        import win32api
-        import win32event
-        import win32gui
-        import win32process
+        frida = import_login_module("frida")
+        win32api = import_login_module("win32api")
+        win32event = import_login_module("win32event")
+        win32gui = import_login_module("win32gui")
+        win32process = import_login_module("win32process")
         self.gui, self.process = win32gui, win32process
         self.timeout = timeout
         self.hwnd = None
@@ -232,8 +239,12 @@ class QtLoginBackend:
         self.failure_hwnd = None
 
     def close(self):
-        import win32api
-        import win32event
+        try:
+            from .qmt_dependencies import import_login_module
+        except ImportError:
+            from qmt_dependencies import import_login_module
+        win32api = import_login_module("win32api")
+        win32event = import_login_module("win32event")
         try:
             if self.session:
                 self.session.detach()

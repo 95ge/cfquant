@@ -9,6 +9,11 @@ import sys
 import tempfile
 from pathlib import Path
 
+if __package__:
+    from .qmt_dependencies import report_startup_dependencies
+else:
+    from qmt_dependencies import report_startup_dependencies
+
 
 PACKAGE_NAME = "cfquant"
 
@@ -503,6 +508,7 @@ def ensure_cfquant_installed(project_root, python_exe=None):
     print("cfquant installed=%s project=%s" % (installed or "missing", expected))
     if installed == expected:
         print("Package versions match; skip installation.")
+        report_startup_dependencies(python_exe)
         return 0
 
     command = editable_install_args(project_root, python_exe)
@@ -526,6 +532,7 @@ def ensure_cfquant_installed(project_root, python_exe=None):
         print("[ERROR] Installed cfquant version does not match the project after installation.", file=sys.stderr)
         return 1
     print("%s package is installed." % PACKAGE_NAME)
+    report_startup_dependencies(python_exe)
     return 0
 
 

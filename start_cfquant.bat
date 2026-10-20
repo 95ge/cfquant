@@ -35,7 +35,10 @@ set "CFQUANT_CONFIG_PYTHON="
 rem If PATH does not contain Python (common with Anaconda/Miniconda), probe
 rem standard Conda installations before reporting that Python is unavailable.
 set "CFQUANT_START_ROOT=%~dp0"
+"%PYTHON_EXE%" --version >nul 2>nul
+if errorlevel 1 (
 for /f "usebackq delims=" %%P in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$root=$env:CFQUANT_START_ROOT; $candidates=@(); if ($env:CONDA_PREFIX) {$candidates += (Join-Path $env:CONDA_PREFIX 'python.exe')}; $bases=@($env:USERPROFILE,$env:LOCALAPPDATA,$env:PROGRAMDATA); $names=@('anaconda3','miniconda3','mambaforge','miniforge3','Anaconda3','Miniconda3'); foreach ($base in $bases) { if ($base) { foreach ($name in $names) {$candidates += (Join-Path (Join-Path $base $name) 'python.exe')}}}; $envFiles=@((Join-Path $env:USERPROFILE '.conda\environments.txt'),(Join-Path $env:USERPROFILE 'anaconda3\conda-meta\history')); foreach ($file in $envFiles) {if (Test-Path -LiteralPath $file) {foreach ($line in (Get-Content -LiteralPath $file -ErrorAction SilentlyContinue)) {if ($line -and (Test-Path -LiteralPath $line -PathType Container)) {$candidates += (Join-Path $line 'python.exe')}}}}; $candidates += (Join-Path $root '.venv\Scripts\python.exe'); foreach ($candidate in ($candidates | Select-Object -Unique)) {if (Test-Path -LiteralPath $candidate -PathType Leaf) {Write-Output $candidate; break}}"`) do if exist "%%P" set "PYTHON_EXE=%%P"
+)
 set "CFQUANT_START_ROOT="
 if defined CFQUANT_PYTHON_EXE if exist "%CFQUANT_PYTHON_EXE%" set "PYTHON_EXE=%CFQUANT_PYTHON_EXE%"
 call :log "selected python executable=%PYTHON_EXE%"
