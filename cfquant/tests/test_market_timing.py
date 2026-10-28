@@ -19,7 +19,7 @@ from cfquant.pipe_client import PipeRpcClient
 ROOT = Path(__file__).resolve().parents[2]
 LITE_PATHS = sorted((ROOT / "qmt_scripts").rglob("CFQUANT_LITE*.py"))
 TIMED_METHODS = {"_dispatch", "_handle_raw", "_dispatch_timed_market_data", "_timed_market_call",
-                 "_legacy_market_result", "_get_market_data", "_get_market_data_ex"}
+                 "_legacy_market_result", "_get_market_data", "_get_market_data_ex", "_dispatch_timed_account_query"}
 
 
 class Clock:

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261020_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20261028_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -402,6 +402,7 @@
               <div><span>总市值</span><strong>--</strong></div>
               <div><span>持仓盈亏</span><strong>--</strong></div>
             </div>
+            <div class="account-refresh-note" data-account-refresh-section="asset" role="status" hidden></div>
           </div>
 
           <div class="panel span-4 view-panel view-overview view-status home-status-panel">
@@ -464,6 +465,7 @@
               <h2>持仓</h2>
               <span id="positionCount" class="metric-note"></span>
             </div>
+            <div class="account-refresh-note" data-account-refresh-section="positions" role="status" hidden></div>
             <div class="table-wrap">
               <table>
                 <thead>
@@ -490,6 +492,7 @@
                 <button id="cancelSelectedBtn">撤选中</button>
               </div>
             </div>
+            <div class="account-refresh-note" data-account-refresh-section="orders" role="status" hidden></div>
             <div class="table-wrap compact-table">
               <table>
                 <thead>
@@ -603,6 +606,7 @@
               </div>
             </div>
             <div class="tab-pane active" data-pane="positions">
+              <div class="account-refresh-note" data-account-refresh-section="positions" role="status" hidden></div>
               <div class="table-wrap">
                 <table>
                   <thead>
@@ -621,6 +625,7 @@
               </div>
             </div>
             <div class="tab-pane" data-pane="orders">
+              <div class="account-refresh-note" data-account-refresh-section="orders" role="status" hidden></div>
               <div class="table-wrap">
                 <table>
                   <thead>
@@ -643,6 +648,7 @@
               </div>
             </div>
             <div class="tab-pane" data-pane="trades">
+              <div class="account-refresh-note" data-account-refresh-section="trades" role="status" hidden></div>
               <div class="table-wrap">
                 <table>
                   <thead>
@@ -694,7 +700,7 @@
           <div class="panel span-12 view-panel view-bindings bindings-panel">
             <div class="panel-head bindings-head">
               <h2>绑定列表</h2>
-              <span class="metric-note">账号 / 通道 / QMT 目录</span>
+              <span class="metric-note">在线状态每 5 秒自动更新</span>
             </div>
             <div class="table-wrap binding-table-wrap">
               <table class="binding-table">
@@ -718,8 +724,13 @@
 
           <div class="panel span-12 view-panel view-bindings binding-verify-panel">
             <div class="panel-head">
-              <h2>绑定验证</h2>
-              <span id="pairVerifyNote" class="metric-note"></span>
+              <h2>账号数据</h2>
+              <span class="metric-note">每 5 秒自动更新</span>
+            </div>
+            <div class="binding-account-toolbar">
+              <label for="bindingAccountSelect">查看账号</label>
+              <select id="bindingAccountSelect" disabled><option value="">暂无绑定账号</option></select>
+              <span id="pairVerifyNote" class="metric-note" role="status"></span>
             </div>
             <div class="verify-grid">
               <div>
@@ -3284,6 +3295,6 @@ else:
   <script src="/api-tester.js?v=20260916_apikey_01"></script>
   <script src="/python-api.js?v=20261017_whole_quote_markets_01"></script>
   <script src="/docs.js?v=20260925_data_docs_01"></script>
-  <script src="/app.js?v=web_20261020_01"></script>
+  <script src="/app.js?v=web_20261028_01"></script>
 </body>
 </html>

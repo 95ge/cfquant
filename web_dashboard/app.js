@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261020_01';
+const FRONTEND_VERSION = 'web_20261028_01';
 
 const state = {
   accountId: '',
@@ -118,9 +118,13 @@ const state = {
   lastLogRepeat: 0,
   statusRefreshInFlight: false,
   callbackRefreshInFlight: false,
-  bindingStatusRefreshInFlight: false,
+  bindingStatusRefreshInFlight: null,
   bindingStatusRetryTimer: null,
   bindingStatusSnapshot: null,
+  bindingAccountKey: '',
+  bindingAccountIdentity: '',
+  bindingAccountRevision: 0,
+  bindingAccountRefresh: null,
   bindingVerifyBusyKey: '',
   bindingActionBusyKey: '',
   bindingActionBusyType: '',
@@ -1572,6 +1576,7 @@ const LOG_ENTRY_LIMIT = 180;
 const LOG_REPEAT_WINDOW_MS = 5000;
 const STATUS_REFRESH_INTERVAL_MS = 30000;
 const ACCOUNT_CACHE_POLL_INTERVAL_MS = 15000;
+const BINDING_POLL_INTERVAL_MS = 5000;
 const ONBOARDING_BRIDGE_POLL_MS = 3000;
 const CALLBACK_POLL_INTERVAL_MS = 3000;
 const ORDER_SNAPSHOT_LIMIT = 500;
@@ -8374,14 +8379,7 @@ function setView(view) {
   }
   if (state.appStarted && view === 'bindings') {
     renderCachedBindingStatuses();
-    if (!state.bindingStatusRefreshInFlight) {
-      state.bindingStatusRefreshInFlight = true;
-      refreshBindingStatuses()
-        .catch((error) => log('绑定状态刷新失败', { error: error.message }))
-        .finally(() => {
-          state.bindingStatusRefreshInFlight = false;
-        });
-    }
+    refreshVisibleBindings();
   }
   if (state.appStarted && view === 'callbacks') {
     connectOrderCallbackSocket();
@@ -9511,6 +9509,7 @@ function renderAccountPairs() {
 }
 
 function renderBindingEmptyRows() {
+  syncBindingAccountSelection();
   const body = $('bindingStatusBody');
   const overviewBody = $('overviewBindingBody');
   if (body) {
@@ -9529,10 +9528,19 @@ function renderBindingEmptyRows() {
 }
 
 function renderBindingRows(rows) {
+  const revision = state.bindingAccountRevision;
+  syncBindingAccountSelection();
+  if (revision !== state.bindingAccountRevision && state.appStarted && shouldPollBindingStatuses()) {
+    refreshBindingAccount();
+  }
   const body = $('bindingStatusBody');
   const overviewBody = $('overviewBindingBody');
   if (body) {
-    body.innerHTML = rows.map(({ item, status, error, pending, stale }) => bindingStatusRowHtml(item, status, error, true, { pending, stale })).join('');
+    const html = rows.map(({ item, status, error, pending, stale }) => bindingStatusRowHtml(item, status, error, true, { pending, stale })).join('');
+    if (body.dataset.renderedHtml !== html) {
+      body.innerHTML = html;
+      body.dataset.renderedHtml = html;
+    }
     if ($('bindingCount')) $('bindingCount').textContent = `${rows.length} 个绑定`;
   }
   if (overviewBody) {
@@ -10462,7 +10470,15 @@ async function savePythonEnvironmentFromUi(event) {
   }
 }
 
-async function refreshBindingStatuses() {
+function refreshBindingStatuses() {
+  if (state.bindingStatusRefreshInFlight) return state.bindingStatusRefreshInFlight;
+  state.bindingStatusRefreshInFlight = loadBindingStatuses().finally(() => {
+    state.bindingStatusRefreshInFlight = null;
+  });
+  return state.bindingStatusRefreshInFlight;
+}
+
+async function loadBindingStatuses() {
   const entries = bindingEntriesFromState();
   if (!entries.length) {
     renderBindingEmptyRows();
@@ -10499,7 +10515,13 @@ async function refreshBindingStatuses() {
     if (accountKey) statusByKey.set(accountKey, row);
     if (identity) statusByIdentity.set(identity, row);
   });
-  const rows = entries.map((item) => {
+  // Bindings may have been edited or removed while the request was pending.
+  const currentEntries = bindingEntriesFromState();
+  if (!currentEntries.length) {
+    renderBindingEmptyRows();
+    return;
+  }
+  const rows = currentEntries.map((item) => {
     const identity = [
       String(item.bridgeId || '').trim(),
       normalizeAccountType(item.accountType || 'STOCK'),
@@ -10562,6 +10584,11 @@ function bindingVerifyKey(accountId, bridgeId, accountType = 'STOCK', accountKey
     normalizeAccountType(accountType),
     String(accountId || '').trim(),
   ].join('|');
+}
+
+function bindingAccountChannel(item) {
+  const mode = item && item.config && item.config.mode;
+  return isCtypesTransportMode(mode || 'ctypes') ? 'normal' : 'trade';
 }
 
 function updateBindingVerifyButtons() {
@@ -10737,6 +10764,12 @@ async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey
     return;
   }
   if (state.bindingVerifyBusyKey) return;
+  const item = bindingEntriesFromState().find((entry) => accountKey
+    ? entry.accountKey === accountKey
+    : entry.accountId === accountId && entry.accountType === accountType && (!bridgeId || entry.bridgeId === bridgeId));
+  if (item) state.bindingAccountKey = item.accountKey;
+  syncBindingAccountSelection();
+  const revision = ++state.bindingAccountRevision;
   setBindingVerifyBusy(accountId, bridgeId, accountType, accountKey, true);
   const note = $('pairVerifyNote');
   if (note) note.textContent = `正在验证 ${accountId}...`;
@@ -10748,20 +10781,88 @@ async function verifyPair(accountId, bridgeId, accountType = 'STOCK', accountKey
         account_type: accountType,
         account_key: accountKey,
         bridge_id: bridgeId || bridgeIdForAccount(accountId, accountType),
-        channel: selectedChannel(),
+        channel: bindingAccountChannel(item),
         force: 1,
       }),
     });
-    renderPairVerification(data);
-    if (note) note.textContent = `验证完成：${accountId}`;
+    if (revision === state.bindingAccountRevision) renderBindingAccountResult(data.account, accountId);
     log('账号验证完成', { account_id: accountId, account_type: accountType });
   } catch (error) {
-    renderPairVerification(null);
-    if (note) note.textContent = `验证失败：${error.message}`;
+    if (revision === state.bindingAccountRevision && note) note.textContent = `验证失败：${error.message}；等待自动重试，已显示的数据可能过期`;
     log('账号验证失败', { account_id: accountId, account_type: accountType, error: error.message });
   } finally {
     setBindingVerifyBusy(accountId, bridgeId, accountType, accountKey, false);
   }
+}
+
+function syncBindingAccountSelection() {
+  const entries = bindingEntriesFromState();
+  const item = entries.find((entry) => entry.accountKey === state.bindingAccountKey) || entries[0] || null;
+  state.bindingAccountKey = item ? item.accountKey : '';
+  const select = $('bindingAccountSelect');
+  if (select) {
+    const html = entries.map((entry) => `<option value="${esc(entry.accountKey)}">${esc([
+      entry.displayName, entry.accountId, accountTypeLabel(entry.accountType), entry.bridgeId,
+      accountConfigEnabled(entry.config) ? '' : '已禁用',
+    ].filter(Boolean).join(' / '))}</option>`).join('') || '<option value="">暂无绑定账号</option>';
+    if (select.dataset.renderedHtml !== html) {
+      select.innerHTML = html;
+      select.dataset.renderedHtml = html;
+    }
+    select.value = state.bindingAccountKey;
+    select.disabled = !item;
+  }
+  const identity = item ? `${bindingVerifyKey(item.accountId, item.bridgeId, item.accountType, item.accountKey)}|${accountConfigEnabled(item.config)}` : '';
+  if (identity !== state.bindingAccountIdentity) {
+    state.bindingAccountIdentity = identity;
+    state.bindingAccountRevision += 1;
+    renderPairVerification(null);
+    $('pairVerifyNote').textContent = !item ? '暂无绑定账号' : (accountConfigEnabled(item.config)
+      ? `正在读取 ${item.accountId}…` : `${item.accountId} 已禁用`);
+  }
+  return item;
+}
+
+function renderBindingAccountResult(account, accountId) {
+  renderPairVerification({ account });
+  const sections = ['asset', 'positions'].map((name) => (account || {})[name]);
+  const failed = sections.some((section) => section && !section.warming_up && (section.ok === false || section.refresh_ok === false || section.stale));
+  const pending = sections.some((section) => !section || section.warming_up);
+  const checkedAt = account && account.cache && account.cache.checked_at_text;
+  $('pairVerifyNote').textContent = failed
+    ? `${accountId} 刷新失败；已显示的数据可能过期，等待自动重试`
+    : (pending ? `${accountId} 数据正在加载，5 秒后自动更新` : `${accountId} · 更新于 ${checkedAt || nowText()}`);
+}
+
+function refreshBindingAccount() {
+  const item = syncBindingAccountSelection();
+  if (!item || !accountConfigEnabled(item.config)) return Promise.resolve();
+  const revision = state.bindingAccountRevision;
+  const verifyKey = bindingVerifyKey(item.accountId, item.bridgeId, item.accountType, item.accountKey);
+  if (state.bindingVerifyBusyKey === verifyKey) return Promise.resolve();
+  if (state.bindingAccountRefresh && state.bindingAccountRefresh.revision === revision) {
+    return state.bindingAccountRefresh.promise;
+  }
+  const params = new URLSearchParams({
+    account_id: item.accountId, account_type: item.accountType,
+    account_key: item.accountKey, bridge_id: item.bridgeId,
+    channel: bindingAccountChannel(item), sections: 'asset,positions',
+  });
+  const request = { revision, promise: null };
+  request.promise = api(`/api/account?${params.toString()}`)
+    .then((data) => {
+      if (revision === state.bindingAccountRevision) renderBindingAccountResult(data, item.accountId);
+    })
+    .catch((error) => {
+      if (revision === state.bindingAccountRevision) {
+        $('pairVerifyNote').textContent = `${item.accountId} 刷新失败：${error.message}；等待自动重试，已显示的数据可能过期`;
+      }
+    })
+    .finally(() => {
+      if (state.bindingAccountRefresh === request) state.bindingAccountRefresh = null;
+    });
+  state.bindingAccountRefresh = request;
+  return request.promise;
 }
 
 function renderPairVerification(payload) {
@@ -10793,7 +10894,12 @@ function renderPairVerification(payload) {
       <td class="num">${money(row.market_value ?? row.m_dInstrumentValue)}</td>
     </tr>`;
   }).join('');
-  $('pairPositionsBody').innerHTML = html || '<tr><td colspan="5">无持仓数据</td></tr>';
+  const positionsBody = $('pairPositionsBody');
+  const content = html || '<tr><td colspan="5">无持仓数据</td></tr>';
+  if (positionsBody.dataset.renderedHtml !== content) {
+    positionsBody.innerHTML = content;
+    positionsBody.dataset.renderedHtml = content;
+  }
 }
 
 function setStatus(id, online, detail) {
@@ -11088,14 +11194,8 @@ async function startAuthenticatedApp() {
   if (state.appStarted) return;
   state.appStarted = true;
   renderApiDocs();
-  if (!state.bindingStatusRefreshInFlight) {
-    state.bindingStatusRefreshInFlight = true;
-    refreshBindingStatuses()
-      .catch((error) => log('绑定状态初始化失败', { error: error.message }))
-      .finally(() => {
-        state.bindingStatusRefreshInFlight = false;
-      });
-  }
+  refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
+  refreshVisibleBindings();
   refreshStatus().catch((error) => log('状态初始化失败', { error: error.message }));
   refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态初始化失败', { error: error.message }));
   refreshProjectUpdateStatus({ remote: false, log: false }).catch((error) => log('Web 项目更新状态初始化失败', { error: error.message }));
@@ -12583,17 +12683,70 @@ function renderTrades(section) {
   }
 }
 
+const accountRefreshStates = new Map();
+
+function accountFailureSignature(section) {
+  // Cache age and HTTP read time change on every poll; the failed query does not.
+  const children = Object.entries(section.market_results || {}).sort(([a], [b]) => a.localeCompare(b))
+    .map(([market, row]) => [market, row.checked_at, row.error]);
+  return JSON.stringify([section.checked_at, section.error, section.partial_errors, children]);
+}
+
+function renderAccountSection(name, section, identity) {
+  const labels = { asset: '资产', positions: '持仓', orders: '委托', trades: '成交' };
+  const renderers = { asset: renderAsset, positions: renderPositions, orders: renderOrders, trades: renderTrades };
+  const hasData = !!section.ok || (section.stale === true && section.has_data === true);
+  const failed = !section.ok || section.refresh_ok === false || !!(section.partial_errors || []).length;
+  renderers[name](hasData ? section : {});
+  if (!hasData && name !== 'asset') {
+    const bodies = { positions: ['positionsBody', 'tradePositionsBody'], orders: ['ordersBody', 'tradeOrdersBody'], trades: ['tradeTradesBody'] };
+    const columns = { positions: 7, orders: 11, trades: 6 };
+    for (const id of bodies[name]) {
+      const node = $(id);
+      if (node) node.innerHTML = `<tr><td colspan="${columns[name]}">查询未成功，暂无可用数据</td></tr>`;
+    }
+    const counter = $(name === 'positions' ? 'positionCount' : name === 'orders' ? 'orderCount' : '');
+    if (counter) counter.textContent = '--';
+  }
+  let notice = '';
+  if (failed) {
+    if (section.stale && hasData) {
+      notice = `刷新失败，数据已过期；最近完整查询：${section.data_checked_at_text || '时间未知'}。`;
+    } else if (hasData) {
+      notice = '部分来源刷新失败，当前数据可能不完整。';
+    } else {
+      notice = section.warming_up ? '正在获取数据。' : '查询失败，暂无可用数据。';
+    }
+    if (section.next_retry_at) notice += ` 下次尝试：${new Date(section.next_retry_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })}。`;
+  }
+  document.querySelectorAll(`[data-account-refresh-section="${name}"]`).forEach(node => {
+    node.textContent = notice;
+    node.hidden = !notice;
+  });
+  const key = JSON.stringify([identity, name]);
+  const previous = accountRefreshStates.get(key);
+  const signature = accountFailureSignature(section);
+  if (failed && !section.warming_up && (!previous || !previous.failed || previous.signature !== signature)) {
+    log(`${labels[name]}查询失败`, section);
+  } else if (!failed && previous && previous.failed) {
+    log(`${labels[name]}查询已恢复`, { account_key: section.account_key || identity[0], checked_at: section.checked_at });
+  }
+  accountRefreshStates.set(key, { failed: failed && !section.warming_up, signature });
+  if (accountRefreshStates.size > 500) accountRefreshStates.delete(accountRefreshStates.keys().next().value);
+}
+
 async function refreshAccount(sections = 'asset,positions', options = {}) {
   const accountId = selectedAccount();
   const accountType = selectedAccountType();
   const accountKey = selectedAccountKey();
   const channel = selectedChannel();
+  const bridgeId = selectedBridge();
   if (!accountId) {
     log('账号为空');
     return;
   }
   const params = new URLSearchParams();
-  params.set('bridge_id', selectedBridge());
+  params.set('bridge_id', bridgeId);
   params.set('account_id', accountId);
   params.set('account_type', accountType);
   if (accountKey) params.set('account_key', accountKey);
@@ -12602,22 +12755,10 @@ async function refreshAccount(sections = 'asset,positions', options = {}) {
   if (options.force) params.set('force', '1');
   if (options.subscribe === false) params.set('subscribe', '0');
   const data = await api(`/api/account?${params.toString()}`);
-  if (selectedAccount() !== accountId || selectedAccountType() !== accountType || selectedAccountKey() !== accountKey) return;
-  if (data.asset) {
-    if (data.asset.ok) renderAsset(data.asset);
-    else log('资产查询失败', data.asset);
-  }
-  if (data.positions) {
-    if (data.positions.ok) renderPositions(data.positions);
-    else log('持仓查询失败', data.positions);
-  }
-  if (data.orders) {
-    if (data.orders.ok) renderOrders(data.orders);
-    else log('委托查询失败', data.orders);
-  }
-  if (data.trades) {
-    if (data.trades.ok) renderTrades(data.trades);
-    else log('成交查询失败', data.trades);
+  if (selectedAccount() !== accountId || selectedAccountType() !== accountType || selectedAccountKey() !== accountKey
+      || selectedBridge() !== bridgeId || selectedChannel() !== channel) return;
+  for (const name of ['asset', 'positions', 'orders', 'trades']) {
+    if (data[name]) renderAccountSection(name, data[name], [accountKey || accountId, accountType, bridgeId, channel]);
   }
   $('lastRefresh').textContent = data.cache && data.cache.checked_at_text ? data.cache.checked_at_text : nowText();
 }
@@ -14316,10 +14457,20 @@ function shouldPollBindingStatuses() {
   return visiblePage() && state.currentView === 'bindings';
 }
 
+async function refreshVisibleBindings() {
+  if (!state.appStarted || !shouldPollBindingStatuses()) return;
+  await Promise.all([
+    refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message })),
+    refreshBindingAccount(),
+  ]);
+}
+
 function startTimers() {
   if (state.statusTimer) return;
   setInterval(refreshVisibleAccountCache, ACCOUNT_CACHE_POLL_INTERVAL_MS);
   document.addEventListener('visibilitychange', refreshVisibleAccountCache);
+  setInterval(refreshVisibleBindings, BINDING_POLL_INTERVAL_MS);
+  document.addEventListener('visibilitychange', refreshVisibleBindings);
   setInterval(() => {
     $('clock').textContent = nowText();
   }, 1000);
@@ -14330,14 +14481,6 @@ function startTimers() {
         .catch((error) => log('状态定时刷新失败', { error: error.message }))
         .finally(() => {
           state.statusRefreshInFlight = false;
-        });
-    }
-    if (shouldPollBindingStatuses() && !state.bindingStatusRefreshInFlight) {
-      state.bindingStatusRefreshInFlight = true;
-      refreshBindingStatuses()
-        .catch((error) => log('绑定状态定时刷新失败', { error: error.message }))
-        .finally(() => {
-          state.bindingStatusRefreshInFlight = false;
         });
     }
   }, STATUS_REFRESH_INTERVAL_MS);
@@ -14552,6 +14695,10 @@ async function boot() {
   if (refreshBindingsBtn) {
     refreshBindingsBtn.addEventListener('click', () => refreshBindingStatuses().catch((error) => log('绑定状态刷新失败', { error: error.message })));
   }
+  $('bindingAccountSelect').addEventListener('change', (event) => {
+    state.bindingAccountKey = event.target.value;
+    refreshBindingAccount();
+  });
   $('bindingStatusBody').addEventListener('click', (event) => {
     const button = event.target.closest('button[data-binding-action]');
     if (!button) return;

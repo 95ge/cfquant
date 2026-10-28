@@ -370,13 +370,13 @@ class TxTradeBridge(object):
         if action == "xttrader.unsubscribe":
             return self._unsubscribe_account(params, msg)
         if action == "xttrader.query_stock_positions":
-            return self._query_trade_detail(params, "position")
+            return self._dispatch_timed_account_query(action, params, msg, "position")
         if action == "xttrader.query_stock_orders":
-            return self._query_trade_detail(params, "order")
+            return self._dispatch_timed_account_query(action, params, msg, "order")
         if action == "xttrader.query_stock_trades":
-            return self._query_trade_detail(params, "deal")
+            return self._dispatch_timed_account_query(action, params, msg, "deal")
         if action == "xttrader.query_stock_asset":
-            return self._query_trade_detail(params, "account")
+            return self._dispatch_timed_account_query(action, params, msg, "account")
         if action == "xttrader.order_stock":
             return self._order_stock(params, msg)
         if action == "xttrader.order_stock_batch":
@@ -651,10 +651,15 @@ class TxTradeBridge(object):
             "accounts": self._query_trade_detail(params, "account"),
         }
 
-    def _query_trade_detail(self, params, detail_type):
+    def _query_trade_detail(self, params, detail_type, timing=None):
         func = self._get_callable("get_trade_detail_data")
         if not func:
             raise NotImplementedError("get_trade_detail_data not found")
+        if timing is not None:
+            native_func = func
+            def timed_detail(*args):
+                return self._timed_market_call(timing, "get_trade_detail_data", native_func, *args)
+            func = timed_detail
         account = params.get("account") or {}
         account_id = account.get("account_id") or params.get("account_id") or self.account_id
         if not account_id:
@@ -2475,6 +2480,25 @@ class TxTradeBridge(object):
             ((params,), {}),
         ])
         return self._call_variants(func, variants)
+
+    def _dispatch_timed_account_query(self, action, params, msg, detail_type):
+        started = time.perf_counter()
+        received = msg.get("_received_monotonic")
+        timing = {
+            "available": True,
+            "queue_ms": round(max(0.0, started - received) * 1000, 3) if received is not None else None,
+            "dispatch_at": time.time(), "native_ms": 0.0, "native_calls": [],
+        }
+        msg["_response_meta"] = {"timing": {"qmt": timing}}
+        # Log before calling native code too: a blocked call never reaches finally.
+        self._log("account_query_start action=%s id=%s queue_ms=%s" % (action, msg.get("id"), timing["queue_ms"]))
+        try:
+            return self._query_trade_detail(params, detail_type, timing=timing)
+        finally:
+            timing["execute_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            timing["finished_at"] = time.time()
+            self._log("account_query_done action=%s id=%s queue_ms=%s native_ms=%.3f execute_ms=%.3f" % (
+                action, msg.get("id"), timing["queue_ms"], timing["native_ms"], timing["execute_ms"]))
 
     def _dispatch_timed_market_data(self, action, params, msg):
         started = time.perf_counter()

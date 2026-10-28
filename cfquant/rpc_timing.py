@@ -7,11 +7,21 @@ class RpcTiming(object):
         self.output = output
         self.started = time.perf_counter()
         self.received_at = None
+        self.sent_at = None
         if output is not None:
             output.update({
                 "request_id": request_id,
+                "started_at": time.time(),
                 "qmt": {"available": False, "reason": "no_response"},
                 "rpc": {"response_received": False},
+            })
+
+    def sent(self):
+        self.sent_at = time.perf_counter()
+        if self.output is not None:
+            self.output["rpc"].update({
+                "sent_at": time.time(),
+                "connect_send_ms": round((self.sent_at - self.started) * 1000, 3),
             })
 
     def received(self, message):
@@ -19,11 +29,14 @@ class RpcTiming(object):
         if self.output is None:
             return
         self.output["rpc"].update({
+            "received_at": time.time(),
             "response_received": True,
             "response_ok": bool(message.get("ok")),
             "wait_ms": round((self.received_at - self.started) * 1000, 3),
             "json_decode_ms": message.get("_client_parse_ms"),
         })
+        if self.sent_at is not None:
+            self.output["rpc"]["response_wait_ms"] = round((self.received_at - self.sent_at) * 1000, 3)
         meta = message.get("meta") or {}
         qmt = (meta.get("timing") or {}).get("qmt")
         self.output["qmt"] = dict(qmt) if isinstance(qmt, dict) else {
@@ -44,3 +57,5 @@ class RpcTiming(object):
             self.output["rpc"]["total_ms"] = elapsed
             if self.received_at is None:
                 self.output["rpc"]["wait_ms"] = elapsed
+                if self.sent_at is not None:
+                    self.output["rpc"]["response_wait_ms"] = round((time.perf_counter() - self.sent_at) * 1000, 3)

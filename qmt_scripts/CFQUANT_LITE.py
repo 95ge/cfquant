@@ -494,6 +494,8 @@ def batch_cancel_result_rows(cancels, seqs=None):
 def batch_result(account, batch_id, asynchronous, results, operation="order"):
     counts = {name: sum(row["status"] == name for row in results)
               for name in ("submitted", "failed", "unknown", "skipped")}
+    counts["rejected"] = sum(row.get("dispatched") is False for row in results)
+    counts["retryable"] = sum(row.get("safe_to_retry") is True for row in results)
     return dict(counts, batch_id=batch_id, account=account, asynchronous=asynchronous,
                 operation=operation, execution="qmt", total=len(results), attempted=len(results) - counts["skipped"],
                 ok=counts["submitted"] == len(results), results=results)
@@ -502,6 +504,19 @@ def batch_result(account, batch_id, asynchronous, results, operation="order"):
 def batch_unknown(rows, error):
     for row in rows:
         row.update(status="unknown", ok=None, error=str(error) or type(error).__name__)
+
+
+def batch_rejected(rows, error):
+    """Mark a rejection known to happen before QMT dispatch."""
+    details = getattr(error, "error_details", None)
+    details = details if isinstance(details, dict) else {}
+    message = str(error) or type(error).__name__
+    for row in rows:
+        row.update(status="failed", ok=False, error=message, dispatched=False,
+                   safe_to_retry=details.get("safe_to_retry") is True,
+                   retry_when=details.get("retry_when", ""),
+                   error_code=details.get("code", ""),
+                   error_stage=details.get("stage", "before_dispatch"))
 
 
 def validate_batch_response(result, params, asynchronous):
@@ -700,7 +715,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.55"
+CORE_VERSION = "0.2.56"
 LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -1418,10 +1433,11 @@ def encode_error(error):
         return None
     if isinstance(error, dict):
         return error
-    return {
-        "type": type(error).__name__,
-        "message": str(error),
-    }
+    details = getattr(error, "error_details", None)
+    result = dict(details) if isinstance(details, dict) else {}
+    result.setdefault("type", type(error).__name__)
+    result["message"] = str(error)
+    return result
 
 
 def encode_value(value):
@@ -2339,6 +2355,25 @@ class TxTradeBridge(object):
                 % (action, request_id, client_id, (time.time() - received_at) * 1000)
             )
 
+    def _dispatch_timed_account_query(self, action, params, msg, detail_type):
+        started = time.perf_counter()
+        received = msg.get("_received_monotonic")
+        timing = {
+            "available": True,
+            "queue_ms": round(max(0.0, started - received) * 1000, 3) if received is not None else None,
+            "dispatch_at": time.time(), "native_ms": 0.0, "native_calls": [],
+        }
+        msg["_response_meta"] = {"timing": {"qmt": timing}}
+        # Log before calling native code too: a blocked call never reaches finally.
+        self._log("account_query_start action=%s id=%s queue_ms=%s" % (action, msg.get("id"), timing["queue_ms"]))
+        try:
+            return self._query_trade_detail(params, detail_type, timing=timing)
+        finally:
+            timing["execute_ms"] = round((time.perf_counter() - started) * 1000, 3)
+            timing["finished_at"] = time.time()
+            self._log("account_query_done action=%s id=%s queue_ms=%s native_ms=%.3f execute_ms=%.3f" % (
+                action, msg.get("id"), timing["queue_ms"], timing["native_ms"], timing["execute_ms"]))
+
     def _dispatch(self, action, params, msg):
         if action in ("xtdata.get_market_data", "xtdata.get_market_data_ex", "xtdata.get_full_tick"):
             return self._dispatch_timed_market_data(action, params, msg)
@@ -2374,13 +2409,13 @@ class TxTradeBridge(object):
         if action == "xttrader.unsubscribe":
             return self._unsubscribe_account(params, msg)
         if action == "xttrader.query_stock_positions":
-            return self._query_trade_detail(params, "position")
+            return self._dispatch_timed_account_query(action, params, msg, "position")
         if action == "xttrader.query_stock_orders":
-            return self._query_trade_detail(params, "order")
+            return self._dispatch_timed_account_query(action, params, msg, "order")
         if action == "xttrader.query_stock_trades":
-            return self._query_trade_detail(params, "deal")
+            return self._dispatch_timed_account_query(action, params, msg, "deal")
         if action == "xttrader.query_stock_asset":
-            return self._query_trade_detail(params, "account")
+            return self._dispatch_timed_account_query(action, params, msg, "account")
         if action == "xttrader.order_stock":
             return self._order_stock(params, msg)
         if action == "xttrader.order_stock_batch":
@@ -2580,10 +2615,15 @@ class TxTradeBridge(object):
             "accounts": self._query_trade_detail(params, "account"),
         }
 
-    def _query_trade_detail(self, params, detail_type):
+    def _query_trade_detail(self, params, detail_type, timing=None):
         func = self._get_callable("get_trade_detail_data")
         if not func:
             raise NotImplementedError("get_trade_detail_data not found")
+        if timing is not None:
+            native_func = func
+            def timed_detail(*args):
+                return self._timed_market_call(timing, "get_trade_detail_data", native_func, *args)
+            func = timed_detail
         account = params.get("account") or {}
         account_id = account.get("account_id") or params.get("account_id") or self.account_id
         if not account_id:
@@ -6256,6 +6296,7 @@ class NormalQmtBridge(TxTradeBridge):
             if not active:
                 return
             msg = active[0][0]
+            dispatch_started = time.perf_counter()
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
             with self.coalesce_lock:
                 entry = self.coalesced_requests.pop(coalesce_key, None)
@@ -6266,6 +6307,15 @@ class NormalQmtBridge(TxTradeBridge):
             encoded_result = encode_response_result(result)
             while response_waiters:
                 waiter_msg, _ = response_waiters[0]
+                if msg.get("_response_meta") and str(msg.get("action", "")).startswith("xttrader.query_stock_"):
+                    # Coalesced readers share execution, but each keeps its own ID
+                    # and queue delay (including readers arriving during execution).
+                    timing = dict(msg["_response_meta"]["timing"]["qmt"])
+                    received = waiter_msg.get("_received_monotonic")
+                    if received is not None:
+                        timing["queue_ms"] = round(max(0.0, dispatch_started - received) * 1000, 3)
+                    timing["coalesced_request_id"] = msg.get("id")
+                    waiter_msg["_response_meta"] = {"timing": {"qmt": timing}}
                 self._send_response(waiter_msg, result, encoded_result=encoded_result)
                 response_waiters.pop(0)
             self._log(
@@ -6283,6 +6333,13 @@ class NormalQmtBridge(TxTradeBridge):
                 % (source, msg.get("action"), msg.get("id"), len(waiters), e)
             )
             for waiter_msg, _ in waiters:
+                if msg.get("_response_meta") and str(msg.get("action", "")).startswith("xttrader.query_stock_"):
+                    timing = dict(msg["_response_meta"]["timing"]["qmt"])
+                    received = waiter_msg.get("_received_monotonic")
+                    if received is not None:
+                        timing["queue_ms"] = round(max(0.0, dispatch_started - received) * 1000, 3)
+                    timing["coalesced_request_id"] = msg.get("id")
+                    waiter_msg["_response_meta"] = {"timing": {"qmt": timing}}
                 self._send_error(waiter_msg, e)
 
 
@@ -6329,6 +6386,13 @@ class NormalQmtBridge(TxTradeBridge):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
+        if (not msg.get("_response_meta") and str(msg.get("action", "")).startswith("xttrader.query_stock_")
+                and str(error) == "read-only request expired before QMT execution"):
+            received = msg.get("_received_monotonic")
+            msg["_response_meta"] = {"timing": {"qmt": {
+                "available": True, "executed": False, "native_ms": 0.0, "execute_ms": 0.0,
+                "queue_ms": round((time.perf_counter() - received) * 1000, 3) if received is not None else None,
+            }}}
         self._log(
             "normal bridge send_error action=%s id=%s client_id=%s error=%s"
             % (msg.get("action"), msg.get("id"), client_id, error)
@@ -7899,11 +7963,23 @@ import os as _cq_os
 import sys as _cq_sys
 import threading as _cq_threading
 import time as _cq_time
+import uuid as _cq_uuid
+
+
+class ManagedStrategyError(RuntimeError):
+    """A rejection made before entering any QMT business dispatcher."""
+
+    def __init__(self, message, code, runtime_instance_id, retry_when=""):
+        super(ManagedStrategyError, self).__init__(message)
+        self.error_details = dict(code=code, stage="before_dispatch", dispatched=False,
+                                  safe_to_retry=bool(retry_when), retry_when=retry_when,
+                                  runtime_instance_id=runtime_instance_id)
 
 
 class ManagedPipeRuntime(object):
     def __init__(self, descriptor=None):
         self.descriptor = dict(descriptor or {})
+        self.runtime_instance_id = _cq_uuid.uuid4().hex
         self.active = False
         self.approved = False
         self.revoked = False
@@ -7943,7 +8019,8 @@ class ManagedPipeRuntime(object):
         state = "error" if self.failure else ("stopped" if not self.active or self.revoked
                                               else ("running" if ready and self.approved else "loaded"))
         return dict(self.descriptor, state=state, error=self.failure,
-                    pid=_cq_os.getpid(), updated_at=_cq_time.time())
+                    pid=_cq_os.getpid(), updated_at=_cq_time.time(),
+                    runtime_instance_id=self.runtime_instance_id)
 
     def control(self, desired):
         if desired.get("runtime_key") != self.descriptor.get("runtime_key"):
@@ -7972,9 +8049,18 @@ class ManagedPipeRuntime(object):
                 return self.control(params or {})
             if action == "cfquant.status":
                 return function(action, params, msg)
-            if not self.approved:
-                raise RuntimeError("Managed strategy is awaiting account mode confirmation from cfquant Web.")
-            return dispatch_request(action, params, msg)
+            with self.mutex:
+                if not self.active or self.revoked:
+                    raise ManagedStrategyError("The account's cfquant strategy mode has changed.",
+                                               "STRATEGY_MODE_CHANGED", self.runtime_instance_id)
+                if not self.approved:
+                    raise ManagedStrategyError(
+                        "Managed strategy is awaiting account mode confirmation from cfquant Web.",
+                        "ACCOUNT_MODE_UNCONFIRMED", self.runtime_instance_id, "account_ready")
+            result = dispatch_request(action, params, msg)
+            if action == "cfquant.ping" and isinstance(result, dict):
+                result = dict(result, managed_runtime=self.status())
+            return result
         return guarded
 
     def wrap(self, function, reject=False):
@@ -7983,7 +8069,8 @@ class ManagedPipeRuntime(object):
             with self.mutex:
                 if not self.active or self.revoked:
                     if reject:
-                        raise RuntimeError("The account's cfquant strategy mode has changed.")
+                        raise ManagedStrategyError("The account's cfquant strategy mode has changed.",
+                                                   "STRATEGY_MODE_CHANGED", self.runtime_instance_id)
                     return None
                 self.calls += 1
             try:

@@ -8,7 +8,7 @@ import atexit
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from .client import create_rpc_client
+from .client import CfquantError, CfquantTimeout, create_rpc_client
 from .config import get_config
 from .channels import channels_for_bridge, normalize_bridge_id
 from .protocol import new_id
@@ -361,6 +361,14 @@ class XtQuantTrader(object):
         self.last_connect_stage = ""
         self._registered_events = set()
         self._subscribed_accounts = {}
+        self._subscription_lock = threading.RLock()
+        self._subscription_stop = threading.Event()
+        self._subscription_thread = None
+        self._subscription_client = None
+        self._subscription_errors = {}
+        self._subscription_interval = 2.0
+        self._subscription_timeout = 2.0
+        self._last_session_rebuild = 0.0
         self._pending_async_orders = []
         self._pending_async_orders_lock = threading.RLock()
         self._completed_async_order_seqs = {}
@@ -387,11 +395,18 @@ class XtQuantTrader(object):
         self._get_client().start()
         self._register_trader_events()
         if self.account is not None and _subscription_key(self.account) not in self._subscribed_accounts:
-            self.subscribe(self.account)
+            result = self.subscribe(self.account)
+            if result is False or (isinstance(result, (int, float)) and result < 0):
+                raise CfquantError("account subscription rejected: %s" % result,
+                                   details={"code": "ACCOUNT_SUBSCRIPTION_REJECTED",
+                                            "stage": "session_init", "dispatched": False})
+        with self._subscription_lock:
+            self._start_subscription_recovery()
         self.connected = True
 
     def stop(self):
         self._stop_query_workers()
+        self._stop_subscription_recovery()
         was_connected = self.connected
         self.connected = False
         for payload in list(self._subscribed_accounts.values()):
@@ -406,6 +421,7 @@ class XtQuantTrader(object):
             except Exception:
                 pass
         self._subscribed_accounts.clear()
+        self._subscription_errors.clear()
         with self._query_lock:
             clients = list(self._clients.values())
             self._client = None
@@ -423,19 +439,30 @@ class XtQuantTrader(object):
         self.last_connect_error = ""
         self.last_connect_error_type = ""
         self.last_connect_stage = "start"
-        try:
-            self.start()
-            self.last_connect_stage = "ping"
-            self._trade_request("cfquant.ping", timeout=3)
-            self.connected = True
-            self.last_connect_stage = ""
-            self._emit_noarg_callback("on_connected")
-            return 0
-        except Exception as error:
-            self.last_connect_error = str(error) or repr(error)
-            self.last_connect_error_type = type(error).__name__
-            self.connected = False
-            return -1
+        error = None
+        for attempt in range(2):
+            try:
+                if attempt:
+                    self.last_connect_stage = "rebuild"
+                    self._rebuild_connection()
+                    self.last_connect_stage = "start"
+                self.start()
+                self.last_connect_stage = "ping"
+                result = self._trade_request("cfquant.ping", timeout=3)
+                if result is False or (isinstance(result, (int, float)) and result < 0):
+                    raise CfquantError("cfquant ping rejected: %s" % result,
+                                       details={"code": "SESSION_NOT_READY",
+                                                "stage": "ping", "dispatched": False})
+                self.connected = True
+                self.last_connect_stage = ""
+                self._emit_noarg_callback("on_connected")
+                return 0
+            except Exception as caught:
+                error = caught
+                self.connected = False
+        self.last_connect_error = str(error) or repr(error)
+        self.last_connect_error_type = type(error).__name__ if error is not None else "RuntimeError"
+        return -1
 
     def disconnect(self):
         self.stop()
@@ -448,20 +475,151 @@ class XtQuantTrader(object):
     def subscribe(self, account):
         account = self._resolve_account(account)
         payload = _account_payload(account)
-        result = self._trade_request("xttrader.subscribe", {
-            "account": payload,
-        })
-        self._subscribed_accounts[_subscription_key_from_payload(payload)] = payload
-        return result
+        with self._subscription_lock:
+            result = self._trade_request("xttrader.subscribe", {
+                "account": payload,
+            })
+            if result is not False and not (isinstance(result, (int, float)) and result < 0):
+                key = _subscription_key_from_payload(payload)
+                self._subscribed_accounts[key] = payload
+                self._subscription_errors.pop(key, None)
+                self._start_subscription_recovery()
+            return result
 
     def unsubscribe(self, account):
         account = self._resolve_account(account)
         payload = _account_payload(account)
-        result = self._trade_request("xttrader.unsubscribe", {
-            "account": payload,
-        })
-        self._subscribed_accounts.pop(_subscription_key_from_payload(payload), None)
-        return result
+        with self._subscription_lock:
+            # Serialize with renewal and forget intent even if QMT is offline.
+            # A later recovery must not undo an explicit unsubscribe.
+            key = _subscription_key_from_payload(payload)
+            self._subscribed_accounts.pop(key, None)
+            self._subscription_errors.pop(key, None)
+            return self._trade_request("xttrader.unsubscribe", {
+                "account": payload,
+            })
+
+    def _start_subscription_recovery(self):
+        # Called under _subscription_lock. Keep the original RPC clients and
+        # handlers so reconnecting cannot duplicate user callback delivery.
+        if not self._subscribed_accounts:
+            return
+        if self._subscription_thread is not None and self._subscription_thread.is_alive():
+            return
+        self._subscription_stop = threading.Event()
+        self._subscription_thread = threading.Thread(
+            target=self._recover_subscriptions, args=(self._subscription_stop,),
+            name="cfquant-account-subscriptions", daemon=True,
+        )
+        self._subscription_thread.start()
+
+    def _rebuild_connection(self):
+        """Replace a stale transport while preserving desired subscriptions.
+
+        Rebuilding is only used by connect/session recovery. It never replays
+        orders or cancels; account subscriptions are idempotent registrations.
+        """
+        self._stop_subscription_recovery()
+        with self._subscription_lock:
+            payloads = [dict(payload) for payload in self._subscribed_accounts.values()]
+            clients = list(self._clients.values())
+            self._clients.clear()
+            self._client = None
+            self._registered_events.clear()
+            self._subscribed_accounts.clear()
+        for client in clients:
+            try:
+                client.close()
+            except Exception:
+                pass
+        with self._query_lock:
+            self._queries_stopped = False
+        try:
+            for payload in payloads:
+                result = self.subscribe(payload)
+                if result is False or (isinstance(result, (int, float)) and result < 0):
+                    raise CfquantError("account subscription rejected after session rebuild: %s" % result,
+                                       details={"code": "ACCOUNT_SUBSCRIPTION_REJECTED",
+                                                "stage": "session_rebuild", "dispatched": False})
+        except Exception:
+            # Keep the desired subscription set so the background recovery
+            # worker can retry after a temporary QMT/transport outage.
+            with self._subscription_lock:
+                for payload in payloads:
+                    self._subscribed_accounts.setdefault(
+                        _subscription_key_from_payload(payload), payload)
+            raise
+
+    def _recover_subscriptions(self, stop):
+        # QMT/Web can restart without disconnecting the user's Hub/LTtx socket.
+        # Renew the idempotent account subscription, not just a transport ping.
+        # This never retries orders/cancels or replays historical events.
+        while not stop.wait(self._subscription_interval):
+            with self._subscription_lock:
+                keys = list(self._subscribed_accounts)
+            for key in keys:
+                rebuild = False
+                with self._subscription_lock:
+                    if stop.is_set():
+                        return
+                    payload = self._subscribed_accounts.get(key)
+                    if payload is None:
+                        continue
+                    try:
+                        bridge_id = _bridge_id_from_params({"account": payload}) or self.bridge_id
+                        self._register_trader_events(bridge_id)
+                        client = self._get_client(bridge_id)
+                        self._subscription_client = client
+                        if stop.is_set():
+                            return
+                        result = client.request("xttrader.subscribe", {"account": dict(payload)},
+                                                timeout=self._subscription_timeout)
+                        if result is False or (isinstance(result, (int, float)) and result < 0):
+                            raise CfquantError(
+                                "account subscription rejected: %s" % result,
+                                details={"code": "ACCOUNT_SUBSCRIPTION_REJECTED",
+                                         "stage": "subscription_recovery", "dispatched": False})
+                        self._subscription_errors.pop(key, None)
+                    except Exception as error:
+                        if not stop.is_set():
+                            detail = "%s: %s" % (type(error).__name__, error)
+                            if self._subscription_errors.get(key) != detail:
+                                logging.getLogger(__name__).warning(
+                                    "account callback subscription recovery failed account=%s: %s", key, detail)
+                            self._subscription_errors[key] = detail
+                        details = getattr(error, "error_details", None)
+                        # A business rejection belongs to this account and
+                        # must not tear down healthy subscriptions for other
+                        # accounts. Rebuild only for transport/session faults.
+                        code = details.get("code") if isinstance(details, dict) else ""
+                        text = str(error).lower()
+                        rebuild = (isinstance(error, (OSError, CfquantTimeout))
+                                   or code == "SESSION_NOT_READY"
+                                   or "connection closed" in text
+                                   or "transport" in text)
+                    finally:
+                        self._subscription_client = None
+                if rebuild and time.monotonic() - self._last_session_rebuild >= 5.0:
+                    self._last_session_rebuild = time.monotonic()
+                    try:
+                        self._rebuild_connection()
+                    except Exception as error:
+                        logging.getLogger(__name__).warning(
+                            "trade session rebuild failed account=%s: %s", key, error)
+
+    def _stop_subscription_recovery(self):
+        worker = self._subscription_thread
+        if worker is None or worker is threading.current_thread():
+            return
+        self._subscription_stop.set()
+        # LTtx can be retrying its connection handshake. Interrupt that work
+        # before waiting, without taking the lock held by the renewal RPC.
+        while worker.is_alive():
+            client = self._subscription_client
+            if client is not None:
+                client.close()
+            worker.join(0.05)
+        self._subscription_thread = None
 
     def set_timeout(self, timeout=0):
         self.timeout = timeout

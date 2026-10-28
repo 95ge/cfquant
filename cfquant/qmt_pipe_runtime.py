@@ -5,11 +5,23 @@ import os as _cq_os
 import sys as _cq_sys
 import threading as _cq_threading
 import time as _cq_time
+import uuid as _cq_uuid
+
+
+class ManagedStrategyError(RuntimeError):
+    """A rejection made before entering any QMT business dispatcher."""
+
+    def __init__(self, message, code, runtime_instance_id, retry_when=""):
+        super(ManagedStrategyError, self).__init__(message)
+        self.error_details = dict(code=code, stage="before_dispatch", dispatched=False,
+                                  safe_to_retry=bool(retry_when), retry_when=retry_when,
+                                  runtime_instance_id=runtime_instance_id)
 
 
 class ManagedPipeRuntime(object):
     def __init__(self, descriptor=None):
         self.descriptor = dict(descriptor or {})
+        self.runtime_instance_id = _cq_uuid.uuid4().hex
         self.active = False
         self.approved = False
         self.revoked = False
@@ -49,7 +61,8 @@ class ManagedPipeRuntime(object):
         state = "error" if self.failure else ("stopped" if not self.active or self.revoked
                                               else ("running" if ready and self.approved else "loaded"))
         return dict(self.descriptor, state=state, error=self.failure,
-                    pid=_cq_os.getpid(), updated_at=_cq_time.time())
+                    pid=_cq_os.getpid(), updated_at=_cq_time.time(),
+                    runtime_instance_id=self.runtime_instance_id)
 
     def control(self, desired):
         if desired.get("runtime_key") != self.descriptor.get("runtime_key"):
@@ -78,9 +91,18 @@ class ManagedPipeRuntime(object):
                 return self.control(params or {})
             if action == "cfquant.status":
                 return function(action, params, msg)
-            if not self.approved:
-                raise RuntimeError("Managed strategy is awaiting account mode confirmation from cfquant Web.")
-            return dispatch_request(action, params, msg)
+            with self.mutex:
+                if not self.active or self.revoked:
+                    raise ManagedStrategyError("The account's cfquant strategy mode has changed.",
+                                               "STRATEGY_MODE_CHANGED", self.runtime_instance_id)
+                if not self.approved:
+                    raise ManagedStrategyError(
+                        "Managed strategy is awaiting account mode confirmation from cfquant Web.",
+                        "ACCOUNT_MODE_UNCONFIRMED", self.runtime_instance_id, "account_ready")
+            result = dispatch_request(action, params, msg)
+            if action == "cfquant.ping" and isinstance(result, dict):
+                result = dict(result, managed_runtime=self.status())
+            return result
         return guarded
 
     def wrap(self, function, reject=False):
@@ -89,7 +111,8 @@ class ManagedPipeRuntime(object):
             with self.mutex:
                 if not self.active or self.revoked:
                     if reject:
-                        raise RuntimeError("The account's cfquant strategy mode has changed.")
+                        raise ManagedStrategyError("The account's cfquant strategy mode has changed.",
+                                                   "STRATEGY_MODE_CHANGED", self.runtime_instance_id)
                     return None
                 self.calls += 1
             try:

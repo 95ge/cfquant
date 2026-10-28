@@ -3404,6 +3404,16 @@ th.num .sort-header {
   line-height: 1.5;
 }
 
+.account-refresh-note {
+  padding: 10px 14px;
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.account-refresh-note[hidden] { display: none; }
+
 .runtime-status-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6379,6 +6389,25 @@ body[data-view="bindings"] .binding-verify-panel {
   grid-column: 1 / -1;
   grid-row: auto;
   order: 4;
+}
+
+.binding-account-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.binding-account-toolbar select {
+  flex: 1 1 240px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.binding-account-toolbar .metric-note {
+  overflow-wrap: anywhere;
 }
 
 body[data-view="trade"] .trade-ticket {

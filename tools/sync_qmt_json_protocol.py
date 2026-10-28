@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FUNCTIONS = {"normalize_json_value", "dumps_message", "loads_message", "pack_request", "pack_response",
              "_encode_dataframe", "decode_value", "dataframe_numeric_rows",
              "_quote_json_default", "pack_quote_latency_event", "pack_whole_quote_event",
-             "encode_response_result", "is_readonly_request", "request_expired"}
+             "encode_response_result", "encode_error", "is_readonly_request", "request_expired"}
 
 
 def main():

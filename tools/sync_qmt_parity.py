@@ -14,9 +14,11 @@ from pathlib import Path
 try:
     from tools.sync_qmt_fileless import updated_source as update_fileless_source
     from tools.sync_qmt_latency import updated_source as update_latency_source
+    from tools.sync_qmt_account_timing import updated_source as update_account_timing_source
 except ImportError:
     from sync_qmt_fileless import updated_source as update_fileless_source
     from sync_qmt_latency import updated_source as update_latency_source
+    from sync_qmt_account_timing import updated_source as update_account_timing_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -530,7 +532,7 @@ LITE_OBJECT_QUERY_METHODS = {
         '            rows = self._call_trade_detail_data(func, account_id, account_type.lower(), detail_type.lower()) or []',
     )
     ast.parse(source, feature_version=(3, 6))
-    return update_latency_source(source)
+    return update_account_timing_source(update_latency_source(source))
 
 
 def main():

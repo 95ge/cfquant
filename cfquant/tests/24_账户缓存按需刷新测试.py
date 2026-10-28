@@ -321,3 +321,153 @@ def test_event_store_updates_cache_before_broadcast_without_rpc(environment, mon
     web.CallbackEventStore(channels=["fake"])._append(event(data={"available": 88}))
     assert seen == [88]
     assert len(environment.calls) == 1
+
+
+def fail_queries(environment, monkeypatch):
+    calls = []
+
+    def query(bridge_id, channel, account_id, sections, **kwargs):
+        calls.append((list(sections), kwargs.get("timeout")))
+        return {name: {"ok": False, "error": "cfquant pipe request timeout: query", "latency_ms": 5001,
+                       "request_timings": [{"request_id": "failed-%s" % len(calls)}]} for name in sections}
+
+    monkeypatch.setattr(web, "query_account_live", query)
+    return calls
+
+
+def test_refresh_failure_preserves_success_without_claiming_it_is_fresh(environment, monkeypatch):
+    cache = environment.cache
+    first = get(cache)
+    calls = fail_queries(environment, monkeypatch)
+    environment.clock[0] += 30
+    cache._refresh_subscriptions()
+    result = get(cache)
+    for name in ("asset", "positions"):
+        row = result[name]
+        assert row["ok"] is False and row["refresh_ok"] is False
+        assert row["stale"] is True and row["has_data"] is True
+        assert row["data"] == first[name]["data"]
+        assert row["data_checked_at"] == first[name]["checked_at"]
+        assert row["checked_at"] == environment.clock[0]
+        assert row["request_timings"][0]["request_id"] == "failed-1"
+    environment.clock[0] += 1
+    repeated = get(cache)
+    assert repeated["asset"]["checked_at"] == result["asset"]["checked_at"]
+    assert repeated["asset"]["cache_age_ms"] > result["asset"]["cache_age_ms"]
+    assert len(calls) == 1
+
+
+def test_first_failure_has_no_invented_balance_or_positions(environment, monkeypatch):
+    calls = fail_queries(environment, monkeypatch)
+    result = get(environment.cache)
+    for name in ("asset", "positions"):
+        assert result[name]["has_data"] is False and result[name]["stale"] is False
+        assert "data" not in result[name]
+    for _ in range(10):
+        get(environment.cache)
+    assert len(calls) == 1
+
+
+def test_failed_queries_back_off_despite_readers_and_callbacks_then_reset(environment, monkeypatch):
+    cache = environment.cache
+    get(cache)
+    calls = fail_queries(environment, monkeypatch)
+    get(cache, force=True)
+    for delay in (5, 15, 60, 60):
+        before = len(calls)
+        for _ in range(delay - 1):
+            environment.clock[0] += 1
+            cache.update_from_event(event("on_stock_trade", {"order_id": environment.clock[0]}))
+            get(cache)
+            cache._refresh_subscriptions()
+        assert len(calls) == before
+        environment.clock[0] += 1
+        cache._refresh_subscriptions()
+        assert len(calls) == before + 1
+    assert all(timeout == 5 for _, timeout in calls[1:])
+    monkeypatch.setattr(web, "query_account_live", environment.query)
+    result = get(cache, force=True)
+    assert result["asset"]["ok"] is True and result["asset"]["stale"] is False
+    assert "error" not in result["asset"] and not cache._refresh_failures
+    before = len(environment.calls)
+    environment.clock[0] += 29
+    cache._refresh_subscriptions()
+    assert len(environment.calls) == before
+    environment.clock[0] += 1
+    cache._refresh_subscriptions()
+    assert len(environment.calls) == before + 1
+
+
+def test_inactive_or_disabled_accounts_stop_retrying(environment, monkeypatch):
+    calls = fail_queries(environment, monkeypatch)
+    get(environment.cache)
+    environment.clock[0] += 91
+    environment.cache._refresh_subscriptions()
+    assert len(calls) == 1 and not environment.cache._refresh_failures
+    get(environment.cache)
+    monkeypatch.setattr(web, "enabled_account_configs", lambda: {})
+    environment.cache.prime_configured_accounts()
+    environment.clock[0] += 5
+    environment.cache._refresh_subscriptions()
+    assert len(calls) == 2 and not environment.cache._refresh_failures
+
+
+def test_callback_during_failed_query_keeps_delta_and_failure(environment, monkeypatch):
+    cache = environment.cache
+    get(cache)
+
+    def query(*args, **kwargs):
+        cache.update_from_event(event(data={"available": 77}))
+        return {"asset": {"ok": False, "error": "timeout"}}
+
+    monkeypatch.setattr(web, "query_account_live", query)
+    row = get(cache, ["asset"], force=True)["asset"]
+    assert row["data"][0]["available"] == 77
+    assert row["stale"] and not row["ok"]
+
+
+def test_concurrent_failed_readers_share_one_attempt_and_retry_deadline(environment, monkeypatch):
+    cache = environment.cache
+    entered, release = threading.Event(), threading.Event()
+    attempts, results, errors = [], [], []
+
+    def query(*args, **kwargs):
+        attempts.append(True)
+        entered.set()
+        assert release.wait(3)
+        return {"asset": {"ok": False, "error": "timeout"}}
+
+    def read():
+        try:
+            results.append(get(cache, ["asset"]))
+        except Exception as error:
+            errors.append(error)
+
+    monkeypatch.setattr(web, "query_account_live", query)
+    threads = [threading.Thread(target=read) for _ in range(3)]
+    try:
+        threads[0].start()
+        assert entered.wait(3)
+        for thread in threads[1:]:
+            thread.start()
+        cache._refresh_subscriptions()
+    finally:
+        release.set()
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(4)
+    assert not errors and len(results) == 3 and len(attempts) == 1
+    assert {r["asset"]["next_retry_at"] for r in results} == {1005}
+
+
+def test_market_aggregation_preserves_stale_data_and_failure(environment, monkeypatch):
+    cache = environment.cache
+    get(cache)
+    fail_queries(environment, monkeypatch)
+    failed = get(cache, force=True)
+    child = dict(failed, market="SZ")
+    child["positions"]["data"] = [child["positions"]["data"][0]]
+    for section in ("asset", "positions"):
+        row = web.merge_market_account_section(section, [child], web.time.perf_counter())
+        assert row["ok"] is False and row["stale"] is True and row["has_data"] is True
+        assert row["data"] and row["data_checked_at_text"]

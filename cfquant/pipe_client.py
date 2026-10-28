@@ -48,18 +48,24 @@ class PipeRpcClient(object):
             if self._started:
                 self._started = False
                 self._close_conns_locked()
-            self._rx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
-            self._rx_conn.write_frame(dumps_pipe_message({
-                "type": "hello",
-                "role": "api_rx",
-                "client_id": self.client_id,
-            }))
-            self._tx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
-            self._tx_conn.write_frame(dumps_pipe_message({
-                "type": "hello",
-                "role": "api_tx",
-                "client_id": self.client_id,
-            }))
+            try:
+                self._rx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
+                self._rx_conn.write_frame(dumps_pipe_message({
+                    "type": "hello",
+                    "role": "api_rx",
+                    "client_id": self.client_id,
+                }))
+                self._tx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
+                self._tx_conn.write_frame(dumps_pipe_message({
+                    "type": "hello",
+                    "role": "api_tx",
+                    "client_id": self.client_id,
+                }))
+            except BaseException:
+                # A retry must not orphan the receive pipe when opening or
+                # registering the send pipe failed halfway through startup.
+                self.close()
+                raise
             self._started = True
             self._closed = False
             generation = self._event_dispatcher.start()
@@ -95,6 +101,7 @@ class PipeRpcClient(object):
                     self._pending[request_id] = q
                 try:
                     self._send_request(raw, request_channel or self.request_channel)
+                    timing.sent()
                 except Exception:
                     self.close()
                     raise
@@ -111,7 +118,7 @@ class PipeRpcClient(object):
                 err = msg.get("error") or {}
                 from .client import CfquantError
 
-                raise CfquantError(err.get("message") or str(err))
+                raise CfquantError(err.get("message") or str(err), details=err)
             return timing.decode(msg.get("result"), decode_value)
         except (KeyboardInterrupt, SystemExit):
             self.close()

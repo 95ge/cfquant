@@ -238,6 +238,9 @@ def test_python_api_search_status_examples_and_deep_links(page, frontend_url, tm
     group_toggle = page.locator('[data-python-groups-toggle]')
     group_count = page.locator('.python-nav-group').count()
     assert group_count > 0
+    expect(group_toggle).to_have_text('全部展开')
+    expect(page.locator('.python-nav-group[open]')).to_have_count(0)
+    group_toggle.click()
     expect(group_toggle).to_have_text('全部收起')
     expect(page.locator('.python-nav-group[open]')).to_have_count(group_count)
     group_toggle.click()

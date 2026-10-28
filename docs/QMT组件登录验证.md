@@ -24,7 +24,7 @@
 
 本机验证依赖：Python 环境中的 Frida 17.16.4、pywin32 306、psutil 5.9.8。Frida 和 pywin32 现已作为 Windows 依赖加入项目。
 
-项目启动时会用实际运行 Web 服务的 Python 解释器检查 `frida`、`win32api`、`win32crypt`、`win32event`、`win32gui` 和 `win32process` 是否可以导入。检查只读取环境，不会在每次启动时强制重装；版本已满足但 DLL 已损坏或与旧文件冲突时也会明确报告。网页的“自动登录组件检测”会显示解释器路径、失败模块和修复命令，可复制到同一台电脑的 PowerShell 执行。Conda 环境使用生成的 `conda install --prefix ... --force-reinstall` 命令；普通全局 Python 环境会附带 `pywin32_postinstall`，虚拟环境不运行该脚本。依赖异常时可以选择改为手动启动并登录 QMT，绑定配置仍可继续使用。
+项目启动时会用实际运行 Web 服务的 Python 解释器检查 `frida`、`win32api`、`win32crypt`、`win32event`、`win32gui` 和 `win32process` 是否可以导入。检查只读取环境，不会在每次启动时强制重装；版本已满足但 DLL 已损坏或与旧文件冲突时也会明确报告。网页的“自动登录组件检测”会显示解释器路径、环境类型、失败模块和修复命令，可复制到同一台电脑的 PowerShell 执行。Conda 环境使用绑定当前前缀的 `conda install --prefix ... --force-reinstall` 命令；venv 和普通 Python 环境都使用探测到的解释器执行 `python -m pip`，只有普通 Python 环境会附带 `pywin32_postinstall`，venv 不运行该脚本。依赖异常时可以选择改为手动启动并登录 QMT，绑定配置仍可继续使用。
 
 先启动对应 QMT，然后从项目目录执行：
 

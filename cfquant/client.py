@@ -13,7 +13,16 @@ from .rpc_timing import RpcTiming
 
 
 class CfquantError(RuntimeError):
-    pass
+    """RPC failure retaining the server's structured rejection details."""
+
+    def __init__(self, message="", details=None):
+        super(CfquantError, self).__init__(message)
+        self.error_details = dict(details) if isinstance(details, dict) else {}
+        self.code = self.error_details.get("code", "")
+        self.stage = self.error_details.get("stage", "")
+        self.dispatched = self.error_details.get("dispatched")
+        self.safe_to_retry = self.error_details.get("safe_to_retry", False) is True
+        self.retry_when = self.error_details.get("retry_when", "")
 
 
 class CfquantTimeout(TimeoutError):
@@ -209,6 +218,7 @@ class LTtxRpcClient(object):
                 with self._pending_lock:
                     self._pending[request_id] = q
                 self._push("request", raw, request_channel or self.request_channel)
+                timing.sent()
             try:
                 msg = _wait_response(q, effective_timeout)
             except queue.Empty:
@@ -216,7 +226,7 @@ class LTtxRpcClient(object):
             timing.received(msg)
             if not msg.get("ok"):
                 err = msg.get("error") or {}
-                raise CfquantError(err.get("message") or str(err))
+                raise CfquantError(err.get("message") or str(err), details=err)
             return timing.decode(msg.get("result"), decode_value)
         except (KeyboardInterrupt, SystemExit):
             self.close()

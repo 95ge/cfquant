@@ -197,6 +197,8 @@ def batch_cancel_result_rows(cancels, seqs=None):
 def batch_result(account, batch_id, asynchronous, results, operation="order"):
     counts = {name: sum(row["status"] == name for row in results)
               for name in ("submitted", "failed", "unknown", "skipped")}
+    counts["rejected"] = sum(row.get("dispatched") is False for row in results)
+    counts["retryable"] = sum(row.get("safe_to_retry") is True for row in results)
     return dict(counts, batch_id=batch_id, account=account, asynchronous=asynchronous,
                 operation=operation, execution="qmt", total=len(results), attempted=len(results) - counts["skipped"],
                 ok=counts["submitted"] == len(results), results=results)
@@ -205,6 +207,19 @@ def batch_result(account, batch_id, asynchronous, results, operation="order"):
 def batch_unknown(rows, error):
     for row in rows:
         row.update(status="unknown", ok=None, error=str(error) or type(error).__name__)
+
+
+def batch_rejected(rows, error):
+    """Mark a rejection known to happen before QMT dispatch."""
+    details = getattr(error, "error_details", None)
+    details = details if isinstance(details, dict) else {}
+    message = str(error) or type(error).__name__
+    for row in rows:
+        row.update(status="failed", ok=False, error=message, dispatched=False,
+                   safe_to_retry=details.get("safe_to_retry") is True,
+                   retry_when=details.get("retry_when", ""),
+                   error_code=details.get("code", ""),
+                   error_stage=details.get("stage", "before_dispatch"))
 
 
 def validate_batch_response(result, params, asynchronous):

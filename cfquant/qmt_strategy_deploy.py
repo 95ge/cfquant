@@ -5,6 +5,7 @@ import copy
 import hashlib
 import io
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,9 @@ import uuid
 from xml.dom import minidom
 
 from .qmt_strategy_package import build_package
+
+
+logger = logging.getLogger(__name__)
 
 
 SCRIPTS = {"ctypes": "CFQUANT_CTYPE_ALL_LOWLAT.py", "lite": "CFQUANT_LITE.py",
@@ -579,7 +583,10 @@ class QmtStrategyManager:
             fields = ("root", "state", "message", "error", "mode", "updated_at", "backup")
             result = {"enabled": any(job.get("enabled") for job in jobs),
                     "targets": [dict({k: job.get(k, "") for k in fields},
-                                     strategies=[r["name"] for r in job.get("roles", [])]) for job in jobs]}
+                                     strategies=[r["name"] for r in job.get("roles", [])],
+                                     control_sync=[dict(r.get("control_sync") or {}, role=r["role"],
+                                                        strategy=r["name"])
+                                                   for r in job.get("roles", [])]) for job in jobs]}
             if account_key in self.errors:
                 detail = str(self.errors[account_key] or "策略部署失败")
                 result.update(error=detail, message="账号已保存，策略部署失败: " + detail)
@@ -737,6 +744,8 @@ class QmtStrategyManager:
     def _sync_pipe_runtime(self, job):
         if self.runtime_request is None:
             return
+        from .channels import channels_for_bridge
+
         desired = self._desired(job)
         for role in job.get("retired_roles", []):
             try:
@@ -744,16 +753,34 @@ class QmtStrategyManager:
             except Exception:
                 pass
         for role in job["roles"]:
+            identity = role["identity"]
+            sync = role.setdefault("control_sync", {})
+            previous_error = sync.get("last_error", "")
+            sync.update(last_attempt_at=time.time(), pipe_name=identity.get("pipe_name"),
+                        request_channel=((identity.get("channels") or {}).get("normal")
+                                         or identity.get("normal_channel")
+                                         or channels_for_bridge(identity.get("bridge_id"))["normal"]))
             try:
-                report = self.runtime_request(role["identity"], desired)
-                if (isinstance(report, dict) and report.get("runtime_key") == desired["runtime_key"]
-                        and report.get("role") == role["role"]):
-                    # Only the external manager writes status files.
-                    _write_json(role["runtime_status_path"], report)
-            except Exception:
+                report = self.runtime_request(identity, desired)
+                if (not isinstance(report, dict) or report.get("runtime_key") != desired["runtime_key"]
+                        or report.get("role") != role["role"]):
+                    raise ValueError("Managed strategy control response scope mismatch")
+                # Success records an acknowledged control, not necessarily a
+                # ready bridge: QMT may still be binding its trading context.
+                sync.update(last_success_at=time.time(), state=report.get("state"),
+                            pid=report.get("pid"), generation=report.get("generation"), last_error="")
+                # Only the external manager writes status files.
+                _write_json(role["runtime_status_path"], report)
+            except Exception as error:
                 # A stopped/not-yet-imported strategy has no Pipe endpoint.
-                # Existing reports expire normally in _observe_runtime.
-                pass
+                # Retry next cycle, but retain diagnostics instead of hiding
+                # why a restarted strategy is still awaiting confirmation.
+                detail = "%s: %s" % (type(error).__name__, str(error))
+                sync["last_error"] = detail
+                if detail != previous_error:
+                    logger.warning("QMT strategy control sync failed account=%s role=%s pipe=%s channel=%s: %s",
+                                   job["account_key"], role["role"], sync["pipe_name"],
+                                   sync["request_channel"], detail)
 
     @staticmethod
     def _role_endpoint(role):
@@ -793,19 +820,14 @@ class QmtStrategyManager:
                 before = copy.deepcopy(job)
                 if job.get("state") == "disabled":
                     continue
-                if job.get("enabled") and self._prepare_generation_transition(job):
-                    # A strategy can report an older generation after this
-                    # process starts. Publish the transition before QMT
-                    # launches the old container again.
-                    self._control(job)
-                if job.get("state") == "error":
-                    if not job.get("control_generation") and not _generation_values(
-                            job.get("accepted_generations")):
-                        continue
-                    retry_count = int(job.get("deploy_retry_count") or 0)
-                    if retry_count >= 5 or time.time() < float(job.get("deploy_retry_after") or 0):
-                        continue
                 try:
+                    transition = job.get("enabled") and self._prepare_generation_transition(job)
+                    # A QMT restart loses its in-memory approval. Keep sending
+                    # the selected mode even if offline deployment failed,
+                    # its retries are exhausted, or its files are unavailable.
+                    self._sync_pipe_runtime(job)
+                    if transition:
+                        self._control(job)
                     self._advance(job)
                 except Exception as error:
                     retry_count = int(job.get("deploy_retry_count") or 0) + 1
@@ -827,11 +849,20 @@ class QmtStrategyManager:
                 self._save()
 
     def _advance(self, job):
-        root = qmt_root(job["root"], validate=True)
+        root = qmt_root(job["root"])
         if self.process_checker(root):
-            self._sync_pipe_runtime(job)
             self._observe_runtime(job)
             return
+        # Retry limits apply to offline deployment, never to mode confirmation
+        # or observing a strategy that has come back online.
+        if job.get("state") == "error":
+            retry_count = int(job.get("deploy_retry_count") or 0)
+            if (not retry_count and not job.get("control_generation")
+                    and not _generation_values(job.get("accepted_generations"))):
+                return
+            if retry_count >= 5 or time.time() < float(job.get("deploy_retry_after") or 0):
+                return
+        root = qmt_root(root, validate=True)
         job["retired_roles"] = []
         if (job.get("state") in ("configured", "running", "waiting_start", "waiting_manual_start")
                 and all(role.get("imported") for role in job["roles"])):

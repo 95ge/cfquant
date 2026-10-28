@@ -452,6 +452,35 @@ def test_runtime_progress_requires_a_fresh_matching_generation(deployment):
     assert role["imported"] is False
 
 
+def test_offline_deployment_retries_without_a_generation_transition(deployment):
+    manager, row, infos, running, root = deployment
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    job = next(iter(manager.jobs.values()))
+    config = root / "config" / "indexUserConfig.xml"
+    original = config.read_bytes()
+    config.unlink()
+
+    manager.process_once()
+    assert job["state"] == "error"
+    assert job["deploy_retry_count"] == 1
+    assert not job.get("control_generation")
+    assert not job.get("accepted_generations")
+
+    config.write_bytes(original)
+    job["deploy_retry_after"] = time.time() + 3600
+    manager.process_once()
+    assert job["state"] == "error"
+    assert job["deploy_retry_count"] == 1
+
+    job["deploy_retry_after"] = 0
+    manager.process_once()
+    assert job["state"] == "configured"
+    assert "deploy_retry_count" not in job
+    assert config.read_bytes() == original
+
+
 @pytest.mark.parametrize("mode", ["ctypes", "lite", "lttx"])
 def test_all_managed_entry_variants_compile_without_executing(mode, deployment):
     manager, row, infos, running, root = deployment

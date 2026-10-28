@@ -837,6 +837,7 @@ class NormalQmtBridge(TxTradeBridge):
             if not active:
                 return
             msg = active[0][0]
+            dispatch_started = time.perf_counter()
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
             with self.coalesce_lock:
                 entry = self.coalesced_requests.pop(coalesce_key, None)
@@ -847,6 +848,15 @@ class NormalQmtBridge(TxTradeBridge):
             encoded_result = encode_response_result(result)
             while response_waiters:
                 waiter_msg, _ = response_waiters[0]
+                if msg.get("_response_meta") and str(msg.get("action", "")).startswith("xttrader.query_stock_"):
+                    # Coalesced readers share execution, but each keeps its own ID
+                    # and queue delay (including readers arriving during execution).
+                    timing = dict(msg["_response_meta"]["timing"]["qmt"])
+                    received = waiter_msg.get("_received_monotonic")
+                    if received is not None:
+                        timing["queue_ms"] = round(max(0.0, dispatch_started - received) * 1000, 3)
+                    timing["coalesced_request_id"] = msg.get("id")
+                    waiter_msg["_response_meta"] = {"timing": {"qmt": timing}}
                 self._send_response(waiter_msg, result, encoded_result=encoded_result)
                 response_waiters.pop(0)
             self._log(
@@ -864,6 +874,13 @@ class NormalQmtBridge(TxTradeBridge):
                 % (source, msg.get("action"), msg.get("id"), len(waiters), e)
             )
             for waiter_msg, _ in waiters:
+                if msg.get("_response_meta") and str(msg.get("action", "")).startswith("xttrader.query_stock_"):
+                    timing = dict(msg["_response_meta"]["timing"]["qmt"])
+                    received = waiter_msg.get("_received_monotonic")
+                    if received is not None:
+                        timing["queue_ms"] = round(max(0.0, dispatch_started - received) * 1000, 3)
+                    timing["coalesced_request_id"] = msg.get("id")
+                    waiter_msg["_response_meta"] = {"timing": {"qmt": timing}}
                 self._send_error(waiter_msg, e)
 
     def _on_whole_quote(self, data):
@@ -908,6 +925,13 @@ class NormalQmtBridge(TxTradeBridge):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
+        if (not msg.get("_response_meta") and str(msg.get("action", "")).startswith("xttrader.query_stock_")
+                and str(error) == "read-only request expired before QMT execution"):
+            received = msg.get("_received_monotonic")
+            msg["_response_meta"] = {"timing": {"qmt": {
+                "available": True, "executed": False, "native_ms": 0.0, "execute_ms": 0.0,
+                "queue_ms": round((time.perf_counter() - received) * 1000, 3) if received is not None else None,
+            }}}
         self._log(
             "normal bridge send_error action=%s id=%s client_id=%s error=%s"
             % (msg.get("action"), msg.get("id"), client_id, error)

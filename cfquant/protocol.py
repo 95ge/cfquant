@@ -215,10 +215,11 @@ def encode_error(error):
         return None
     if isinstance(error, dict):
         return error
-    return {
-        "type": type(error).__name__,
-        "message": str(error),
-    }
+    details = getattr(error, "error_details", None)
+    result = dict(details) if isinstance(details, dict) else {}
+    result.setdefault("type", type(error).__name__)
+    result["message"] = str(error)
+    return result
 
 
 def encode_value(value):

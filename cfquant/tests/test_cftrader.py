@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from cfquant import cftrader, xtconstant
-from cfquant.client import CfquantTimeout
+from cfquant.client import CfquantError, CfquantTimeout
 from cfquant.pipe_bridge import PipeTradeBridge, PipeNormalQmtBridge
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.protocol import decode_value, loads_message, pack_request, pack_response
@@ -557,6 +557,22 @@ def test_lost_batch_response_never_replays_and_late_callbacks_still_work(connect
                                                          order_remark=env.native_calls[index][9], order_id=7000 + index))
         assert [response.seq for response in env.responses] == [row['seq'] for row in result['results']]
         assert env.trader._pending_async_orders == []
+
+
+def test_pre_dispatch_mode_rejection_is_retryable_and_not_unknown(connected, monkeypatch):
+    env = connected
+    error = CfquantError(
+        'Managed strategy is awaiting account mode confirmation from cfquant Web.',
+        details={"code": "ACCOUNT_MODE_UNCONFIRMED", "stage": "before_dispatch",
+                 "dispatched": False, "safe_to_retry": True, "retry_when": "account_ready"},
+    )
+    monkeypatch.setattr(env.trader, '_trade_request', lambda *args, **kwargs: (_ for _ in ()).throw(error))
+    result = env.api.order_stock_batch_async(env.account, [order(), order()])
+    assert result['failed'] == result['rejected'] == result['retryable'] == 2
+    assert result['unknown'] == 0
+    assert result['error_code'] == 'ACCOUNT_MODE_UNCONFIRMED'
+    assert result['dispatched'] is False and result['safe_to_retry'] is True
+    assert env.trader._pending_async_orders == []
 
 
 @pytest.mark.parametrize('stop_on_error', [False, True])

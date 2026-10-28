@@ -13,7 +13,7 @@ LOGIN_MODULES = ("frida", "win32api", "win32crypt", "win32event", "win32gui", "w
 _LOCK = threading.Lock()
 _CACHE = {}
 _PROBE_CODE = r'''
-import importlib, importlib.metadata, json, pathlib, sys
+import importlib, importlib.metadata, json, os, pathlib, sys
 checks = []
 for name in MODULES:
     try:
@@ -28,10 +28,14 @@ for name in ('pywin32', 'frida'):
     except importlib.metadata.PackageNotFoundError:
         packages[name] = ''
 prefix = pathlib.Path(sys.prefix)
+base_prefix = pathlib.Path(getattr(sys, 'base_prefix', sys.prefix))
 conda = (prefix / 'conda-meta').is_dir()
+venv = not conda and prefix != base_prefix
+environment = 'conda' if conda else 'venv' if venv else 'python'
 print(json.dumps(dict(python_executable=sys.executable, python_version=sys.version.split()[0],
-    prefix=str(prefix), environment='conda' if conda else 'venv' if sys.prefix != sys.base_prefix else 'python',
+    prefix=str(prefix), base_prefix=str(base_prefix), environment=environment,
     global_python=sys.prefix == sys.base_prefix,
+    conda_executable=os.environ.get('CONDA_EXE', '') if conda else '',
     conda_pywin32=conda and bool(list((prefix / 'conda-meta').glob('pywin32-*.json'))),
     supported=sys.platform == 'win32', checks=checks, packages=packages), ensure_ascii=True))
 '''
@@ -55,23 +59,40 @@ def _finish_report(report):
         report["message"] = "QMT 自动登录组件不可用（%s）。可取消自动启动，保存配置后手动启动并登录 QMT。" % names
     commands = []
     python = "& " + _ps_quote(report["python_executable"])
+    environment = str(report.get("environment") or "").lower()
+    if environment not in {"conda", "venv", "python"}:
+        environment = "python" if report.get("global_python") else "venv"
     if report.get("supported") and failed:
         if any(item["name"].startswith("win32") for item in failed):
-            if report.get("conda_pywin32"):
-                commands.append("conda install --prefix %s --force-reinstall 'pywin32>=306'" % _ps_quote(report["prefix"]))
+            if environment == "conda" and report.get("conda_pywin32"):
+                conda = report.get("conda_executable") or "conda"
+                commands.append("& %s install --prefix %s --force-reinstall 'pywin32>=306'" % (
+                    _ps_quote(conda), _ps_quote(report["prefix"])))
             else:
-                commands.append(python + " -m pip install --no-cache-dir --force-reinstall 'pywin32>=306'")
-                if report.get("global_python"):
+                commands.append(python + " -m pip install --no-cache-dir --upgrade --force-reinstall 'pywin32>=306'")
+                if environment == "python":
                     commands.append(python + " -m pywin32_postinstall -install")
         if any(item["name"] == "frida" for item in failed):
-            commands.append(python + " -m pip install --no-cache-dir --force-reinstall 'frida>=17.0,<18'")
+            commands.append(python + " -m pip install --no-cache-dir --upgrade --force-reinstall 'frida>=17.0,<18'")
         commands.append(python + " -c " + _ps_quote("import " + ", ".join(LOGIN_MODULES) + "; print('QMT login components OK')"))
     report["repair_commands"] = commands
-    report["repair_note"] = (
-        "先停止 CFQuant，再在此电脑的 PowerShell 中执行；Conda 命令请使用 Anaconda PowerShell Prompt。"
-        "验证通过后重启 CFQuant，再重新检测。若仍报 DLL 错误，需要检查旧 DLL 残留；"
-        "虚拟环境中不要运行 pywin32_postinstall。"
-    )
+    if environment == "conda":
+        report["repair_note"] = (
+            "已检测到 Conda 环境。先停止 CFQuant，在已激活该环境的 Anaconda Prompt 或 PowerShell 中执行；"
+            "命令会绑定当前环境的前缀。验证通过后重启 CFQuant，再重新检测。"
+        )
+    elif environment == "venv":
+        report["repair_note"] = (
+            "已检测到 venv 虚拟环境。先停止 CFQuant，在普通 PowerShell 中执行下面的命令；"
+            "命令已绑定当前 venv 的 Python，不要切换到系统 Python，也不要运行 pywin32_postinstall。"
+            "验证通过后重启 CFQuant，再重新检测。"
+        )
+    else:
+        report["repair_note"] = (
+            "已检测到独立 Python 环境。先停止 CFQuant，在 PowerShell 中执行下面的命令；"
+            "命令已绑定当前 Python，安装完成后会执行 pywin32_postinstall。"
+            "验证通过后重启 CFQuant，再重新检测。"
+        )
     return report
 
 

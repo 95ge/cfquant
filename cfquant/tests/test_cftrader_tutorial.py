@@ -80,6 +80,7 @@ def test_cftrader_reference_search_examples_and_links(page, frontend_url, tmp_pa
     page.locator('#setupOverlay [data-open-tutorial]').click()
     page.locator('#tutorialReader [data-guide="python"]').click()
     python_directory(page)
+    page.locator('[data-python-groups-toggle]').click()
     page.locator('#pythonApiSearch').fill('cftrader')
     page.locator('#pythonApiFilter').select_option('extension')
     expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(6)
@@ -145,6 +146,7 @@ def test_web_api_catalog_shows_sdk_and_preserves_http_batch(page, frontend_url, 
     page.locator('.nav-item[data-view="api"]').click()
     expect(page.locator('[data-api-group="cftrader"]')).to_be_visible()
     expect(page.locator('#apiEndpointList [data-endpoint-id^="cftrader."]')).to_have_count(6)
+    page.locator('[data-api-group="cftrader"]').click()
     for method in ('order_stock_batch', 'order_stock_batch_async', 'cancel_order_stock_batch',
                    'cancel_order_stock_batch_async', 'order_stock', 'order_stock_async'):
         page.locator(f'[data-endpoint-id="cftrader.{method}"]').click()
@@ -164,6 +166,9 @@ def test_web_api_catalog_shows_sdk_and_preserves_http_batch(page, frontend_url, 
     page.locator('[data-api-sdk-tutorial]').click()
     expect(page.locator('.python-document-head h2')).to_have_text('order_stock_batch_async')
     page.locator('.nav-item[data-view="api"]').click()
+    group = page.locator('.api-group').filter(has=page.locator('[data-endpoint-id="batch_order"]'))
+    if group.locator('.api-group-head').get_attribute('aria-expanded') != 'true':
+        group.locator('.api-group-head').click()
     page.locator('[data-endpoint-id="batch_order"]').click()
     expect(page.locator('#apiRoute')).to_have_text('POST /api/orders/batch')
     expect(page.locator('#apiForm button[type="submit"]')).to_be_visible()

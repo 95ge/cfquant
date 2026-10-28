@@ -49,7 +49,7 @@ def test_project_update_notice_handles_editable_install(page, frontend_url):
             notice: document.querySelector('#projectUpdateNoticeBox').innerText,
         };
     }""")
-    assert result["title"] == "更新完成，请重启 QMT"
+    assert result["title"] == "更新完成，请登录 QMT"
     assert result["editableVersion"] == "9.9.9-test"
     assert "源码安装" in result["notice"]
     assert errors == []
@@ -103,6 +103,8 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
     expect(page.locator('#bindingStrategyRunMode')).to_have_value('1')
     page.locator('#bindingAccountId').fill('1000000001')
     page.locator('#bindingQmtDir').fill('D:\\QMT-FAKE')
+    page.locator('#bindingQmtLoginAccount').fill('fixture-login')
+    page.locator('#bindingQmtLoginPassword').fill('synthetic-secret')
     page.locator('#bindingMode').select_option('lite')
     page.locator('#bindingStrategyRunMode').select_option('1')
     page.locator('#bindingStrategySettings details summary').click()
@@ -116,6 +118,8 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
         saved.append(payload)
         key = 'bridge:STOCK:1000000001'
         row = dict(payload, account_key=key, bridge_id='bridge')
+        row['qmt_auto_login'] = dict(row['qmt_auto_login'], password_saved=True)
+        row['qmt_auto_login'].pop('password', None)
         route.fulfill(json={'ok': True, 'data': {'account': row, 'account_configs': {key: row},
             'account_pairs': {}, 'bridges': {'bridge': {'name': 'Test'}},
             'qmt_strategy_deploy': {'enabled': True, 'targets': [{
@@ -130,9 +134,9 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
         'stock': 'SH000300', 'account_keys': {'normal': '2____101____201____49____1000000001____',
                                             'trade': '', 'SH': '', 'SZ': ''}}
     expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
-    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('请正常退出')
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('请完全退出')
     expect(page.locator('#bindingQmtGuideOverlay [data-qmt-script-copy]')).to_have_count(0)
-    assert page.locator('body').inner_text().find('Waiting for QMT exit') >= 0
+    expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('部署文件暂未写入')
     page.route('**/api/status*', lambda route: route.fulfill(json={
         'ok': True,
         'data': {
@@ -272,7 +276,8 @@ def test_binding_dialog_help_tooltips_stay_in_viewport(page, frontend_url):
     auto_start_trigger = page.locator('#bindingQmtAutoLoginSettings .help-tooltip-trigger')
     auto_start_trigger.scroll_into_view_if_needed()
     auto_start_trigger.click()
-    expect(page.locator('#helpTooltipLayer')).to_contain_text('QMT 登录前提仍需在客户端内完成')
+    expect(page.locator('#helpTooltipLayer')).to_contain_text('按 A 股交易日历跳过周末和节假日')
+    expect(page.locator('#helpTooltipLayer')).to_contain_text('重新启动并自动登录')
     assert_help_tooltip_in_viewport(page)
     assert page.locator('#bindingDialogOverlay .binding-dialog').evaluate('(node) => node.scrollWidth <= node.clientWidth')
     assert errors == []
@@ -281,7 +286,8 @@ def test_binding_dialog_help_tooltips_stay_in_viewport(page, frontend_url):
 def test_startup_reminders_distinguish_pending_failure_disabled_and_manual_run(page, frontend_url):
     _, errors = open_app(page, frontend_url)
     cases = [
-        ({}, '请重启对应 QMT 并登录'),
+        ({}, '项目将自动完成登录'),
+        ({'qmt_auto_login': {'enabled': False}}, '请重启对应 QMT 并登录'),
         ({'enabled': False}, '账号绑定已停用'),
         ({'qmt_strategy': {'enabled': False}}, '自动导入并管理 QMT 策略未启用'),
         ({'qmt_strategy': {'enabled': True, 'autorun': False}}, '运行已导入的托管策略'),
@@ -292,7 +298,7 @@ def test_startup_reminders_distinguish_pending_failure_disabled_and_manual_run(p
         ({'qmt_auto_login': {'enabled': True},
           'qmt_strategy_deploy': {'targets': [{'state': 'waiting_exit'}]}}, '等待绑定列表显示模型配置完成'),
         ({'qmt_auto_login': {'enabled': True},
-          'qmt_strategy_deploy': {'targets': [{'state': 'waiting_import_save'}]}}, '请正常退出'),
+          'qmt_strategy_deploy': {'targets': [{'state': 'waiting_import_save'}]}}, '请退出 QMT'),
         ({'mode': 'lttx', 'qmt_dir': 'D:/QMT', 'qmt_trade_dir': 'D:/TRADE',
           'qmt_auto_login': {'enabled': True}}, '其他目录的 QMT 请分别启动并登录'),
     ]
@@ -566,6 +572,8 @@ def test_managed_market_routes_validate_directories_before_sending(page, fronten
     page.route('**/api/account-config', respond)
     page.locator('#bindingAccountId').fill('1000000001')
     page.locator('#bindingQmtDir').fill('D:/FAKE-QMT')
+    page.locator('#bindingQmtLoginAccount').fill('fixture-login')
+    page.locator('#bindingQmtLoginPassword').fill('synthetic-secret')
     page.locator('#bindingMarketRoutingEnabled').check()
     page.locator('#bindingForm button[type="submit"]').click()
     expect(page.locator('#bindingDialogOverlay')).to_be_visible()

@@ -108,7 +108,7 @@ _prepend_import_path(_LTTX_TX_DIR)
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
 from cfquant.batch_orders import (
     CFTRADER_BATCH_ACTIONS, CFTRADER_BATCH_CANCEL_ACTIONS, CFTRADER_BATCH_ORDER_ACTIONS,
-    batch_cancel_result_rows, batch_result, batch_result_rows, batch_unknown,
+    batch_cancel_result_rows, batch_rejected, batch_result, batch_result_rows, batch_unknown,
     prepare_batch_cancels, prepare_batch_orders, prepare_batch_cancel_request, prepare_batch_request,
     validate_batch_cancel_response, validate_batch_response,
 )
@@ -496,7 +496,7 @@ if DEFAULT_BRIDGE_ID not in ENV_BRIDGES:
     DEFAULT_BRIDGE_ID = next(iter(ENV_BRIDGES.keys()))
 CHANNELS = ENV_BRIDGES[DEFAULT_BRIDGE_ID]["channels"]
 CALLBACK_EVENT_CHANNEL = CHANNELS["callback"]
-STATUS_CHECK_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_INTERVAL", "15"))
+STATUS_CHECK_INTERVAL_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_INTERVAL", "5"))
 STATUS_PROBE_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_STATUS_PROBE_TIMEOUT", "8"))
 PIPE_HUB_STATUS_CACHE_SECONDS = float(os.environ.get("CFQUANT_WEB_PIPE_HUB_STATUS_CACHE_SECONDS", "2"))
 RUNTIME_REPORT_TTL_SECONDS = float(os.environ.get("CFQUANT_QMT_RUNTIME_REPORT_TTL", "75"))
@@ -513,7 +513,7 @@ QMT_AUTO_LOGIN_CAPTURE_SCRIPT_NAME = os.environ.get(
     "cfquant_capture_linkMini.bat",
 )
 QMT_AUTO_LOGIN_RESTART_ARG = os.environ.get("CFQUANT_QMT_AUTO_LOGIN_RESTART_ARG", "linkMini")
-ACCOUNT_CACHE_REFRESH_SECONDS = max(1.0, float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "30")))
+ACCOUNT_CACHE_REFRESH_SECONDS = max(1.0, float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_INTERVAL", "5")))
 ACCOUNT_CACHE_IDLE_SECONDS = max(1.0, float(os.environ.get("CFQUANT_WEB_ACCOUNT_CACHE_IDLE_SECONDS", "90")))
 ACCOUNT_CACHE_EVENT_REFRESH_SECONDS = 2.0
 ACCOUNT_QUERY_TIMEOUT_SECONDS = float(os.environ.get("CFQUANT_WEB_ACCOUNT_QUERY_TIMEOUT", "30"))
@@ -4298,6 +4298,7 @@ def is_pipe_client_closed_error(error):
 
 MARKET_TIMING_ACTIONS = frozenset(("xtdata.get_full_tick", "xtdata.get_market_data", "xtdata.get_market_data_ex"))
 _market_timing_attempts = ContextVar("market_timing_attempts", default=None)
+_account_timing_attempts = ContextVar("account_timing_attempts", default=None)
 
 
 class GlobalTxClient(object):
@@ -4335,7 +4336,9 @@ class GlobalTxClient(object):
             client = self._get_client(mode)
             request_options = {}
             timing_attempts = _market_timing_attempts.get()
-            if timing_attempts is not None and action in MARKET_TIMING_ACTIONS:
+            if action in ACCOUNT_ACTIONS.values():
+                timing_attempts = _account_timing_attempts.get()
+            if timing_attempts is not None and (action in MARKET_TIMING_ACTIONS or action in ACCOUNT_ACTIONS.values()):
                 response_meta = {"bridge_id": normalize_bridge_id(bridge_id), "channel": channel_key, "mode": mode}
                 timing_attempts.append(response_meta)
                 request_options["response_meta"] = response_meta
@@ -4569,10 +4572,17 @@ def account_request(
                     "error": str(error),
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 })
+                # The QMT managed-runtime gate rejected the request before
+                # dispatch. Preserve its structured, safe-to-retry outcome
+                # and do not hide it behind a transport fallback.
+                if getattr(error, "dispatched", None) is False:
+                    raise
     detail = "; ".join(
         "%s/%s: %s" % (row["mode"], row["channel"], row.get("error") or "")
         for row in attempts
     )
+    if getattr(last_error, "dispatched", None) is False:
+        raise last_error
     raise RuntimeError(
         "%s failed for account %s: %s" % (action, account_id or "--", detail or "no route attempted")
     )
@@ -4619,6 +4629,7 @@ def account_cftrader_batch_request(account_id, bridge_id, requested_channel, act
     routes = []
     deadline = time.monotonic() + timeout
     submit_ms = 0.0
+    request_error = None
     for market, indices in segments:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -4639,12 +4650,24 @@ def account_cftrader_batch_request(account_id, bridge_id, requested_channel, act
             for index, row in zip(indices, response["results"]):
                 combined[index] = dict(row, index=index)
         except Exception as error:
-            batch_unknown([combined[index] for index in indices], error)
+            request_error = error
+            rows = [combined[index] for index in indices]
+            if getattr(error, "dispatched", None) is False:
+                batch_rejected(rows, error)
+            else:
+                batch_unknown(rows, error)
             break
         if response["unknown"] or (params.get("stop_on_error", False) and response["failed"]):
             break
     result = batch_result(params["account"], params["batch_id"], asynchronous, combined, operation=operation)
     result["qmt_submit_ms"] = round(submit_ms, 3)
+    if request_error is not None:
+        result["request_error"] = str(request_error) or type(request_error).__name__
+        details = getattr(request_error, "error_details", None)
+        if isinstance(details, dict):
+            for key in ("code", "stage", "dispatched", "safe_to_retry", "retry_when", "runtime_instance_id"):
+                if key in details:
+                    result["error_" + key if key in ("code", "stage") else key] = details[key]
     meta = dict(routes[0]) if routes else {}
     return dict(meta, result=result, groups=routes)
 
@@ -7048,76 +7071,105 @@ WS_QUOTES.on_empty = _release_quote_subscription_on_empty
 
 
 class CallbackEventStore(object):
-    def __init__(self, channels=None, max_events=500):
-        self.channels = channels or callback_channels()
+    def __init__(self, channels=None, max_events=500, retry_interval=3.0):
+        # The global store is constructed before WEB_CONFIG. Resolve saved
+        # binding channels when starting, after configuration has been loaded.
+        self._follow_config = channels is None
+        self.channels = list(channels or [])
         self.max_events = int(max_events)
+        self._retry_interval = float(retry_interval)
         self._lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
+        self._listener_lock = threading.RLock()
         self._events = []
         self._seq = 0
         self._tx = None
         self._thread = None
+        self._retry_thread = None
+        self._stop_event = threading.Event()
+        self._retry_event = threading.Event()
         self._running = False
         self._pipe_clients = {}
+        self._pipe_errors = {}
         self._mode = None
 
-    def start(self):
-        if self._running:
-            return
-        self._mode = "mixed"
-        self._running = True
-        try:
+    def start(self, channels=None):
+        with self._lifecycle_lock:
+            if self._running:
+                self._retry_event.set()
+                return
+            if channels is not None:
+                self.channels = list(channels)
+            elif self._follow_config:
+                self.channels = callback_channels()
+            self.channels = list(dict.fromkeys(str(c or "").strip() for c in self.channels if str(c or "").strip()))
+            self._mode = "mixed"
+            self._running = True
+            self._stop_event = threading.Event()
+            self._retry_event = threading.Event()
             CLIENTS.add_callback("__event__", self._on_client_event)
-        except Exception as e:
-            safe_print("cfquant callback CLIENTS listener start failed: %s" % e)
-        try:
-            pipe_count = self._start_pipe_clients()
-            safe_print("cfquant callback pipe listeners started count=%s channels=%s" % (pipe_count, ",".join(self.channels)))
-        except Exception as e:
-            safe_print("cfquant callback pipe listeners start failed: %s" % e)
-        try:
-            lttx_count = self._start_lttx_client()
-            if lttx_count:
-                safe_print("cfquant callback LTtx listener started count=%s channels=%s" % (lttx_count, ",".join(self.channels)))
-        except Exception as e:
-            safe_print("cfquant callback LTtx listener start failed: %s" % e)
-        safe_print("cfquant callback listeners started in mixed mode")
+            self._retry_thread = threading.Thread(
+                target=self._maintain_pipe_listeners, args=(self._stop_event, self._retry_event),
+                name="cfquant-callback-reconnect", daemon=True,
+            )
+            # LTtx has its own blocking connection/retry code. Keep it separate
+            # so an unavailable LTtx service cannot stall Pipe listener repair.
+            self._thread = threading.Thread(
+                target=self._start_lttx_client, args=(self._stop_event, tuple(self.channels)),
+                name="cfquant-callback-lttx", daemon=True,
+            )
+            self._retry_thread.start()
+            self._thread.start()
+            safe_print("cfquant callback listeners started in mixed mode channels=%s" % ",".join(self.channels))
 
     def close(self):
-        self._running = False
-        try:
-            CLIENTS.remove_callback("__event__", self._on_client_event)
-        except Exception:
-            pass
-        for client in list(self._pipe_clients.values()):
+        with self._lifecycle_lock:
+            self._running = False
+            self._stop_event.set()
+            self._retry_event.set()
             try:
-                client.remove_callback("__event__", self._on_channel_event)
+                CLIENTS.remove_callback("__event__", self._on_client_event)
             except Exception:
                 pass
-            try:
-                client.remove_callback("__event__", self._on_client_event)
-            except Exception:
-                pass
-            try:
-                client.close()
-            except Exception:
-                pass
-        self._pipe_clients = {}
-        tx = self._tx
-        self._tx = None
-        if tx is not None:
-            try:
-                tx.close()
-            except Exception:
-                pass
+            with self._listener_lock:
+                for client in self._pipe_clients.values():
+                    client.remove_callback("__event__", self._on_channel_event)
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                self._pipe_clients = {}
+                self._pipe_errors = {}
+                tx, self._tx = self._tx, None
+            if tx is not None:
+                try:
+                    tx.close()
+                except Exception:
+                    pass
+            for thread in (self._retry_thread, self._thread):
+                if thread is not None and thread is not threading.current_thread():
+                    thread.join(timeout=3.0)
+            self._retry_thread = self._thread = None
 
     def refresh_channels(self, channels):
-        channels = channels or callback_channels()
-        mode = "mixed"
-        if channels == self.channels and self._running and mode == self._mode:
-            return
-        self.close()
-        self.channels = channels
-        self.start()
+        channels = channels if channels is not None else callback_channels()
+        channels = list(dict.fromkeys(str(c or "").strip() for c in channels if str(c or "").strip()))
+        with self._lifecycle_lock:
+            if channels == self.channels and self._running:
+                # Same configuration does not mean the connections are alive.
+                self._retry_event.set()
+                return
+            self.close()
+            self.start(channels=channels)
+
+    def _maintain_pipe_listeners(self, stop_event, retry_event):
+        while not stop_event.is_set():
+            retry_event.clear()
+            try:
+                self._start_pipe_clients(stop_event)
+            except Exception as error:
+                safe_print("cfquant callback listener recovery failed: %s" % error)
+            retry_event.wait(self._retry_interval)
 
     def attach_pipe_client(self, client):
         if client is None:
@@ -7189,17 +7241,21 @@ class CallbackEventStore(object):
                 ]
             return rows[-int(limit):]
 
-    def _loop(self):
-        while self._running:
+    def _loop(self, tx, stop_event):
+        while not stop_event.is_set() and getattr(tx, "run_on", True):
             try:
-                raw = self._tx.Q.get()
+                raw = tx.Q.get(timeout=0.5)
+                if stop_event.is_set():
+                    return
                 event = self._parse(raw)
                 if event:
                     self._append(event, source="channel")
+            except queue.Empty:
+                continue
             except Exception as e:
-                if self._running:
+                if not stop_event.is_set():
                     safe_print("callback listener error: %s" % e)
-                time.sleep(0.2)
+                stop_event.wait(0.2)
 
     def _parse(self, raw):
         if isinstance(raw, bytes):
@@ -7304,58 +7360,78 @@ class CallbackEventStore(object):
         event = self._normalize_channel_event(event)
         self._append(event, source="channel")
 
-    def _start_lttx_client(self):
-        channels = [str(channel or "").strip() for channel in self.channels]
-        channels = [channel for channel in channels if channel]
+    def _start_lttx_client(self, stop_event, channels):
         if not channels:
-            return 0
-        if not lttx_server_reachable():
-            safe_print("callback LTtx listener skipped: LTtx server is not reachable")
-            return 0
-        tx = txl(LTTX_HOST, LTTX_PORT, "LTtx", show=False)
-        tx.start_tx()
-        tx.start_txg("@".join(channels))
-        self._tx = tx
-        self._thread = threading.Thread(target=self._loop)
-        self._thread.daemon = True
-        self._thread.start()
-        return len(channels)
+            return
+        while not stop_event.is_set():
+            tx = None
+            try:
+                if lttx_server_reachable():
+                    tx = txl(LTTX_HOST, LTTX_PORT, "LTtx", show=False)
+                    with self._listener_lock:
+                        if stop_event.is_set():
+                            return
+                        self._tx = tx
+                    tx.start_tx()
+                    if stop_event.is_set():
+                        return
+                    tx.start_txg("@".join(channels))
+                    if not stop_event.is_set():
+                        safe_print("cfquant callback LTtx listener started count=%s channels=%s" % (len(channels), ",".join(channels)))
+                        self._loop(tx, stop_event)
+            except Exception as e:
+                if not stop_event.is_set():
+                    safe_print("cfquant callback LTtx listener start failed: %s" % e)
+            finally:
+                with self._listener_lock:
+                    if self._tx is tx:
+                        self._tx = None
+                if tx is not None:
+                    try:
+                        tx.close()
+                    except Exception:
+                        pass
+            stop_event.wait(self._retry_interval)
 
-    def _start_pipe_clients(self):
+    def _start_pipe_clients(self, stop_event):
         from cfquant.pipe_client import PipeRpcClient
 
         cfg = get_cfquant_config()
         pipe_name = os.environ.get("CFQUANT_PIPE_NAME") or cfg.get("pipe_name") or DEFAULT_PIPE_NAME
-        connect_timeout_ms = cfg.get("pipe_connect_timeout_ms")
+        # Bound a background connection attempt so shutdown is responsive even
+        # with many bindings whose PipeHub is not available yet.
+        connect_timeout_ms = min(int(cfg.get("pipe_connect_timeout_ms") or 3000), 1000)
         timeout = cfg.get("timeout")
-        started = 0
-        errors = []
         for channel in self.channels:
-            if not channel:
-                continue
-            client = PipeRpcClient(
-                pipe_name=pipe_name,
-                request_channel=channel,
-                timeout=timeout,
-                client_id=channel,
-                connect_timeout_ms=connect_timeout_ms,
-            )
-            try:
-                client.start()
-                client.add_callback("__event__", self._on_channel_event)
-                self._pipe_clients[channel] = client
-                started += 1
-            except Exception as e:
-                errors.append("%s: %s" % (channel, e))
+            with self._listener_lock:
+                if stop_event.is_set():
+                    return
+                client = self._pipe_clients.get(channel)
+                created = client is None
+                if created:
+                    client = PipeRpcClient(
+                        pipe_name=pipe_name, request_channel=channel, timeout=timeout,
+                        client_id=channel, connect_timeout_ms=connect_timeout_ms,
+                    )
+                    client.add_callback("__event__", self._on_channel_event)
                 try:
-                    client.close()
-                except Exception:
-                    pass
-                safe_print("callback pipe client start failed channel=%s error=%s" % (channel, e))
-        if started <= 0:
-            detail = "; ".join(errors)
-            raise RuntimeError("no callback pipe clients started%s" % (": " + detail if detail else ""))
-        return started
+                    # start() is idempotent for a live receiver, and reconnects
+                    # a disconnected receiver without re-registering callbacks.
+                    client.start()
+                    self._pipe_clients[channel] = client
+                    recovered = self._pipe_errors.pop(channel, None) is not None
+                    if created or recovered:
+                        safe_print("cfquant callback pipe listener ready channel=%s" % channel)
+                except Exception as e:
+                    self._pipe_clients.pop(channel, None)
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    detail = str(e)
+                    if self._pipe_errors.get(channel) != detail:
+                        safe_print("callback pipe client start failed channel=%s error=%s; will retry" % (channel, e))
+                    self._pipe_errors[channel] = detail
 
     def _event_account_id(self, event):
         return self.event_account_id_static(event)
@@ -8783,16 +8859,34 @@ class CfquantUpdater(object):
             result["error"] = "未配置 GitHub 仓库"
             return result
         errors = []
+
+        # Use GitHub's public HTTPS API first. A Windows ``git ls-remote``
+        # call can invoke Git Credential Manager and open a login dialog even
+        # though this check only needs public metadata.
+        api_result, api_error = self._github_api_version_info(repo_url, ref, now)
+        if api_result:
+            return api_result
+        if api_error:
+            errors.append("github api: %s" % api_error)
+
+        git_env = _noninteractive_git_env()
         for ref_name in self._remote_ref_candidates(ref):
             try:
                 completed = subprocess.run(
-                    ["git", "ls-remote", repo_url, ref_name],
+                    [
+                        "git",
+                        "-c", "credential.interactive=false",
+                        "-c", "credential.guiPrompt=false",
+                        "ls-remote", repo_url, ref_name,
+                    ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     timeout=UPDATE_REMOTE_TIMEOUT_SECONDS,
+                    stdin=subprocess.DEVNULL,
+                    env=git_env,
                     **_hidden_subprocess_kwargs()
                 )
                 output = (completed.stdout or "").strip()
@@ -8811,6 +8905,66 @@ class CfquantUpdater(object):
         if not result["commit"]:
             result["error"] = "; ".join(errors) or "未获取到远端版本"
         return result
+
+    def _github_api_version_info(self, repo_url, ref, now):
+        """Query a public GitHub commit without starting Git."""
+        parsed = urllib.parse.urlsplit(str(repo_url or "").strip())
+        host = (parsed.hostname or "").lower()
+        if host not in ("github.com", "www.github.com"):
+            return None, ""
+        path = (parsed.path or "").strip("/")
+        if path.lower().endswith(".git"):
+            path = path[:-4].rstrip("/")
+        parts = [urllib.parse.unquote(item) for item in path.split("/") if item]
+        if len(parts) != 2 or not all(parts):
+            return None, "GitHub repository URL is invalid"
+
+        api_ref = str(ref or "").strip()
+        if api_ref.endswith("^{}"):
+            api_ref = api_ref[:-3]
+        for prefix in ("refs/heads/", "refs/tags/"):
+            if api_ref.startswith(prefix):
+                api_ref = api_ref[len(prefix):]
+                break
+        api_ref = api_ref or "HEAD"
+        api_url = "https://api.github.com/repos/%s/%s/commits/%s" % (
+            urllib.parse.quote(parts[0], safe=""),
+            urllib.parse.quote(parts[1], safe=""),
+            urllib.parse.quote(api_ref, safe=""),
+        )
+        try:
+            request = urllib.request.Request(
+                api_url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "User-Agent": "cfquant-web/%s" % current_core_version(),
+                },
+                method="GET",
+            )
+            with urllib.request.urlopen(request, timeout=UPDATE_REMOTE_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read(1024 * 1024).decode("utf-8", errors="replace"))
+            commit = str(payload.get("sha") or "").strip()
+            if not commit:
+                return None, "GitHub API returned no commit"
+            return {
+                "repo_url": repo_url,
+                "ref": ref,
+                "remote_ref": ref or api_ref,
+                "version": "",
+                "commit": commit,
+                "short_commit": self._short_commit(commit),
+                "checked_at": now,
+                "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "cached": False,
+                "error": "",
+                "source": "github_api",
+                "site_url": normalize_official_site_url(),
+                "download_url": "",
+                "sha256": "",
+                "fallback_error": "",
+            }, ""
+        except Exception as e:
+            return None, str(e) or repr(e)
 
     def _remote_ref_candidates(self, ref):
         ref = str(ref or "").strip()
@@ -8845,6 +8999,8 @@ class CfquantUpdater(object):
                         encoding="utf-8",
                         errors="replace",
                         timeout=10,
+                        stdin=subprocess.DEVNULL,
+                        env=_noninteractive_git_env(),
                         **_hidden_subprocess_kwargs()
                     )
                     if completed.returncode == 0:
@@ -8863,7 +9019,12 @@ class CfquantUpdater(object):
 
     def _fetch_github(self, repo_url, ref, output_dir):
         errors = []
-        clone_cmd = ["git", "clone", "--depth", "1"]
+        clone_cmd = [
+            "git",
+            "-c", "credential.interactive=false",
+            "-c", "credential.guiPrompt=false",
+            "clone", "--depth", "1",
+        ]
         if ref:
             clone_cmd.extend(["--branch", ref])
         clone_cmd.extend([repo_url, output_dir])
@@ -8876,6 +9037,8 @@ class CfquantUpdater(object):
                 encoding="utf-8",
                 errors="replace",
                 timeout=120,
+                stdin=subprocess.DEVNULL,
+                env=_noninteractive_git_env(),
                 **_hidden_subprocess_kwargs()
             )
             if completed.returncode == 0:
@@ -8974,6 +9137,8 @@ class CfquantUpdater(object):
                 encoding="utf-8",
                 errors="replace",
                 timeout=10,
+                stdin=subprocess.DEVNULL,
+                env=_noninteractive_git_env(),
                 **_hidden_subprocess_kwargs()
             )
             if completed.returncode == 0:
@@ -12050,6 +12215,19 @@ def _hidden_subprocess_kwargs():
     return kwargs
 
 
+def _noninteractive_git_env():
+    """Disable terminal and GUI credential prompts for background Git calls."""
+    env = os.environ.copy()
+    env.update({
+        "GIT_TERMINAL_PROMPT": "0",
+        "GCM_INTERACTIVE": "Never",
+        "GCM_GUI_PROMPT": "0",
+        "GIT_ASKPASS": "",
+        "SSH_ASKPASS": "",
+    })
+    return env
+
+
 def run_powershell_json(script, timeout=3.0):
     if os.name != "nt":
         return []
@@ -12901,6 +13079,8 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
             result[section] = {"error": "unknown section: %s" % section}
             continue
         started = time.perf_counter()
+        timings = []
+        timing_token = _account_timing_attempts.set(timings)
         try:
             route = account_request(
                 account_id,
@@ -12937,6 +13117,19 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
                 "latency_ms": refresh_latency_ms,
                 "refresh_latency_ms": refresh_latency_ms,
             }
+        finally:
+            _account_timing_attempts.reset(timing_token)
+            row = result.get(section)
+            if row is not None:
+                row["checked_at"] = time.time()
+                row["checked_at_text"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row["checked_at"]))
+                row["request_timings"] = timings
+                safe_print("account_query_timing %s" % json.dumps({
+                    "bridge_id": bridge_id, "account_key": result["account_key"],
+                    "action": action, "ok": row.get("ok"),
+                    "elapsed_ms": row.get("refresh_latency_ms"),
+                    "error": row.get("error"), "attempts": timings,
+                }, ensure_ascii=True))
     return result
 
 
@@ -13019,7 +13212,9 @@ def merge_market_account_section(section, child_results, started_at):
         else:
             row = {"ok": False, "error": "missing section", "market": market, "bridge_id": bridge_id}
         market_results[market] = row
-        if account_section_ok(row):
+        if not account_section_ok(row):
+            errors.append("%s/%s: %s" % (market or "-", bridge_id or "-", market_section_error(row)))
+        if account_section_ok(row) or (row.get("stale") and row.get("has_data")):
             data = account_section_data(row)
             rows = None
             if section in MARKET_ACCOUNT_ROW_SECTIONS:
@@ -13029,7 +13224,6 @@ def merge_market_account_section(section, child_results, started_at):
                 market_counts[market] = len(data) if isinstance(data, list) else (1 if account_data_has_value(data) else 0)
             successes.append((market, bridge_id, row, rows))
         else:
-            errors.append("%s/%s: %s" % (market or "-", bridge_id or "-", market_section_error(row)))
             market_counts[market] = 0
 
     base = {
@@ -13041,7 +13235,7 @@ def merge_market_account_section(section, child_results, started_at):
     base["refresh_latency_ms"] = base["latency_ms"]
     if section == "asset":
         chosen = None
-        for item in successes:
+        for item in sorted(successes, key=lambda item: not account_section_ok(item[2])):
             if account_data_has_value(account_section_data(item[2])):
                 chosen = item
                 break
@@ -13058,7 +13252,7 @@ def merge_market_account_section(section, child_results, started_at):
         market, bridge_id, row, _rows = chosen
         result = dict(row)
         result.update(base)
-        result["ok"] = True
+        result["ok"] = bool(row.get("ok"))
         result["source_market"] = market
         result["source_bridge_id"] = bridge_id
         if errors:
@@ -13080,13 +13274,21 @@ def merge_market_account_section(section, child_results, started_at):
         })
         return base
     base.update({
-        "ok": True,
+        "ok": all(account_section_ok(row) for _market, _bridge, row, _rows in successes),
+        "has_data": True,
+        "stale": any(row.get("stale") for _market, _bridge, row, _rows in successes),
         "data": merged,
         "source_markets": [market for market, _bridge_id, _row, _rows in successes],
         "cached": all(isinstance(row, dict) and row.get("cached") for _market, _bridge_id, row, _rows in successes),
     })
     if errors:
         base["partial_errors"] = errors
+        if base.get("stale"):
+            base["error"] = "; ".join(errors)
+            base["refresh_ok"] = False
+            dates = [row.get("data_checked_at_text") or row.get("checked_at_text")
+                     for _market, _bridge, row, _rows in successes]
+            base["data_checked_at_text"] = min(date for date in dates if date) if any(dates) else ""
     return base
 
 
@@ -13257,6 +13459,9 @@ class AccountDataCache(object):
         self._versions = {}
         self._dirty = {}
         self._last_attempt = {}
+        # Failures never replace the last successful snapshot. Retry deadlines
+        # are monotonic and are independent of callbacks/page polling.
+        self._refresh_failures = {}
         self._event_fingerprints = {}
         self._thread = None
         self._running = False
@@ -13654,6 +13859,7 @@ class AccountDataCache(object):
                 section
                 for section in sections
                 if self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key) not in self._entries
+                and self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key) not in self._refresh_failures
             ]
 
     def _needs_refresh(self, bridge_id, channel, account_id, sections, account_type="STOCK", account_key=None):
@@ -13668,6 +13874,11 @@ class AccountDataCache(object):
             section_key = key + (section,)
             entry = self._entries.get(section_key)
             if now - self._last_attempt.get(section_key, -float("inf")) < ACCOUNT_CACHE_EVENT_REFRESH_SECONDS:
+                continue
+            failure = self._refresh_failures.get(section_key)
+            if failure:
+                if now >= failure["retry_monotonic"]:
+                    due.append(section)
                 continue
             if (not entry or time.time() - entry.get("checked_at", 0) >= self.interval
                     or self._dirty.get(section_key, float("inf")) <= now):
@@ -13718,19 +13929,28 @@ class AccountDataCache(object):
                 if row is None:
                     continue
                 cache_key = self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)
-                # A callback received during the RPC must not be overwritten by its older snapshot.
-                if versions is not None and versions[section] != self._versions.get(cache_key, 0):
-                    continue
-                if isinstance(row, dict) and not row.get("ok") and is_pipe_client_closed_error(row.get("error")):
-                    previous = self._entries.get(cache_key)
-                    if isinstance(previous, dict) and is_pipe_client_closed_error(previous.get("error")):
-                        self._entries.pop(cache_key, None)
-                    continue
                 stored = dict(row)
                 stored["checked_at"] = now
                 stored["checked_at_text"] = checked_at_text
                 stored["account_type"] = account_type
                 stored["account_key"] = account_key
+                if not stored.get("ok"):
+                    stored.pop("data", None)
+                    previous = self._refresh_failures.get(cache_key) or {}
+                    failures = previous.get("consecutive_failures", 0) + 1
+                    # Two short retries, then low-frequency probes while the
+                    # account remains subscribed. Never launch overlapping RPCs.
+                    delay = (5.0, 15.0)[failures - 1] if failures <= 2 else max(60.0, self.interval)
+                    self._refresh_failures[cache_key] = dict(
+                        stored, consecutive_failures=failures,
+                        retry_monotonic=time.monotonic() + delay,
+                        next_retry_at=now + delay, retry_delay_seconds=delay,
+                    )
+                    continue
+                self._refresh_failures.pop(cache_key, None)
+                # A callback received during the RPC must not be overwritten by its older snapshot.
+                if versions is not None and versions[section] != self._versions.get(cache_key, 0):
+                    continue
                 self._entries[cache_key] = stored
                 self._dirty.pop(cache_key, None)
 
@@ -13758,8 +13978,10 @@ class AccountDataCache(object):
         ages = []
         with self._lock:
             for section in sections:
-                entry = self._entries.get(self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key))
-                if not entry:
+                key = self._cache_key(bridge_id, channel, account_id, section, account_type=account_type, account_key=account_key)
+                entry = self._entries.get(key)
+                failure = self._refresh_failures.get(key)
+                if not entry and not failure:
                     result[section] = {
                         "ok": False,
                         "error": "account data cache is warming up",
@@ -13767,9 +13989,22 @@ class AccountDataCache(object):
                         "warming_up": True,
                     }
                     continue
-                age = max(0, now - entry.get("checked_at", now))
+                age = max(0, now - (entry or failure).get("checked_at", now))
                 ages.append(age)
-                row = dict(entry)
+                row = dict(entry or {})
+                if failure:
+                    row.update({name: value for name, value in failure.items() if name != "retry_monotonic"})
+                    row["has_data"] = bool(entry and entry.get("ok"))
+                    row["stale"] = row["has_data"]
+                    row["refresh_ok"] = False
+                    if row["has_data"]:
+                        row["data"] = entry.get("data")
+                        row["data_checked_at"] = entry.get("checked_at")
+                        row["data_checked_at_text"] = entry.get("checked_at_text")
+                else:
+                    row["has_data"] = bool(row.get("ok"))
+                    row["stale"] = False
+                    row["refresh_ok"] = True
                 row["cached"] = True
                 row.setdefault("refresh_latency_ms", row.get("latency_ms"))
                 row["cache_age_ms"] = round(age * 1000, 2)
@@ -13809,7 +14044,7 @@ class AccountDataCache(object):
                     combined.setdefault(key, set()).update(sections)
             # Reclaim inactive snapshots continuously, including before market open.
             # In-flight RPCs retain their version counters until completion.
-            for mapping in (self._entries, self._versions, self._dirty, self._last_attempt):
+            for mapping in (self._entries, self._versions, self._dirty, self._last_attempt, self._refresh_failures):
                 for section_key in list(mapping):
                     key = section_key[:-1]
                     if key not in self._refreshing and section_key[-1] not in combined.get(key, set()):
