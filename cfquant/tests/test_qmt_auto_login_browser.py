@@ -197,3 +197,90 @@ def test_dependency_failure_shows_repair_command_and_manual_login_action(page, f
     panel.locator('[data-qmt-dependency-action="manual"]').click()
     expect(page.locator('#bindingQmtAutoLogin')).not_to_be_checked()
     assert errors == []
+
+
+@pytest.mark.parametrize('entry', ['setup', 'onboarding', 'binding'])
+def test_client_login_option_disables_credentials_and_dependency_requirement(page, frontend_url, entry):
+    _, errors = open_app(page, frontend_url, setup_required=entry == 'setup')
+    if entry == 'binding':
+        open_binding(page)
+    elif entry == 'onboarding':
+        page.locator('#onboardingStartConfigBtn').click()
+    option = page.locator(f'#{entry}QmtAutoFillCredentials')
+    expect(option).to_be_checked()
+    page.locator(f'#{entry}QmtLoginPassword').fill('synthetic-unused')
+    page.locator(f'#{entry}QmtPasswordToggle').click()
+    page.evaluate("renderQmtDependencyStatus({ok:false, supported:true, message:'fixture unavailable'})")
+    option.uncheck()
+    expect(page.locator(f'#{entry}QmtAutoLogin')).to_be_checked()
+    expect(page.locator(f'#{entry}QmtLoginAccount')).to_be_disabled()
+    expect(page.locator(f'#{entry}QmtLoginPassword')).to_be_disabled()
+    expect(page.locator(f'#{entry}QmtPasswordToggle')).to_be_disabled()
+    expect(page.locator(f'#{entry}QmtDependencies')).not_to_be_visible()
+    expect(page.locator(f'#{entry}QmtPasswordStatus')).to_contain_text('仅记住密码')
+    assert page.evaluate("""prefix => qmtLoginValidationError(prefix,
+        {enabled:true, auto_fill_credentials:qmtAutoFillCredentials(prefix)}, 'D:/QMT-FAKE')""", entry) == ''
+    assert 'QMT 目录' in page.evaluate("""prefix => qmtLoginValidationError(prefix,
+        {enabled:true, auto_fill_credentials:qmtAutoFillCredentials(prefix)}, '')""", entry)
+    if entry == 'binding':
+        settings = page.evaluate('readBindingQmtAutoLoginSettings()')
+        assert settings['auto_fill_credentials'] is False and 'password' not in settings
+    elif entry == 'onboarding':
+        assert page.evaluate('onboardingValues().qmt_auto_login.auto_fill_credentials') is False
+    option.check()
+    expect(page.locator(f'#{entry}QmtLoginAccount')).to_be_enabled()
+    expect(page.locator(f'#{entry}QmtDependencies')).to_be_visible()
+    assert errors == []
+
+
+def test_binding_can_save_client_login_without_credentials_and_restore_selection(page, frontend_url, tmp_path):
+    _, errors = open_app(page, frontend_url)
+    open_binding(page)
+    page.locator('#bindingQmtLoginPassword').fill('synthetic-unused')
+    page.locator('#bindingQmtAutoFillCredentials').uncheck()
+    saved = []
+    def respond(route):
+        payload = route.request.post_data_json
+        saved.append(payload)
+        settings = payload['qmt_auto_login']
+        assert settings['enabled'] and settings['auto_fill_credentials'] is False
+        assert 'password' not in settings and 'login_account' not in settings
+        key = 'default:STOCK:fixture-fund'
+        row = dict(payload, account_key=key, bridge_id='default')
+        route.fulfill(json={'ok': True, 'data': {'account': row, 'account_configs': {key: row},
+            'account_pairs': {}, 'bridges': {}, 'qmt_auto_login': dict(settings, pid=1234,
+            login_state='client_login', message='由 QMT 自行登录')}})
+    page.route('**/api/account-config', respond)
+    page.locator('#bindingForm button[type="submit"]').click()
+    expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
+    expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('由 QMT 自行登录')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('已关闭自动输入')
+    assert len(saved) == 1
+    page.evaluate("closeBindingQmtGuide(); openBindingDialog({accountKey:'default:STOCK:fixture-fund'});")
+    expect(page.locator('#bindingQmtAutoFillCredentials')).not_to_be_checked()
+    expect(page.locator('#bindingQmtLoginAccount')).to_be_disabled()
+    expect(page.locator('.binding-qmt-restart-time')).to_have_value('09:00')
+    expect(page.locator('#bindingQmtLoginPassword')).to_have_value('')
+    page.locator('#bindingQmtAutoFillCredentials').scroll_into_view_if_needed()
+    page.screenshot(path=str(tmp_path / 'client-login-option.png'))
+    assert page.locator('#bindingQmtAutoLoginSettings').evaluate('el => el.scrollWidth <= el.clientWidth')
+    assert errors == []
+
+
+def test_disabling_fill_discards_pending_saved_password_reveal(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    saved_binding(page)
+    page.evaluate("""() => {
+      const original = window.fetch;
+      window.fetch = (url, options) => url === '/api/account-config/qmt-password'
+        ? new Promise(resolve => { window.finishReveal = () => resolve(new Response(JSON.stringify({ok:true, data:{password:'synthetic-late-secret'}}))); })
+        : original(url, options);
+    }""")
+    page.locator('#bindingQmtPasswordToggle').click()
+    expect(page.locator('#bindingQmtPasswordToggle')).to_have_text('读取中…')
+    page.locator('#bindingQmtAutoFillCredentials').uncheck()
+    page.evaluate('finishReveal()')
+    expect(page.locator('#bindingQmtLoginPassword')).to_have_value('')
+    expect(page.locator('#bindingQmtPasswordToggle')).to_be_disabled()
+    assert 'password' not in page.evaluate('readBindingQmtAutoLoginSettings()')
+    assert errors == []

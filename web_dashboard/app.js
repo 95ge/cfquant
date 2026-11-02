@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261028_01';
+const FRONTEND_VERSION = 'web_20261103_01';
 
 const state = {
   accountId: '',
@@ -332,7 +332,7 @@ function transportModeRequestScope(mode) {
 }
 
 const QMT_MARKET_LABELS = { SH: '上海', SZ: '深圳' };
-const QMT_LOGIN_REMINDER = '项目会先结束对应目录的旧进程，确认退出后重新启动并自动登录 QMT。清空登录框中的旧账号和密码，填入绑定中保存的账号和密码再登录。计划重启仅在 A 股交易日执行，默认北京时间 09:00。请先完成 QMT 内的 Python 库下载。';
+const QMT_LOGIN_REMINDER = '项目会先结束对应目录的旧进程，确认退出后重新启动 QMT。勾选“自动输入账号和密码”时，使用绑定中保存的信息登录；取消勾选后由 QMT 自行登录，项目不填写账号密码或点击登录。计划重启仅在 A 股交易日执行，默认北京时间 09:00。请先完成 QMT 内的 Python 库下载。';
 
 function qmtDeploymentTargets(values = {}) {
   const marketRouting = values.marketRoutingEnabled !== undefined
@@ -381,7 +381,7 @@ function normalizeQmtDeploymentTargets(values = {}) {
 
 function defaultQmtAutoLoginSettings(value = undefined) {
   return value === undefined || value === null
-    ? { enabled: true, restart_times: ['09:00'] }
+    ? { enabled: true, auto_fill_credentials: true, restart_times: ['09:00'] }
     : normalizeQmtAutoLoginSettings(value);
 }
 
@@ -464,7 +464,9 @@ function qmtStartupInstruction(values = {}) {
   } else if (targets.length && targets.every((target) => target.state === 'running')) {
     message = '托管策略已在线，可以查看账号状态或测试接口。';
   } else if (qmtAutoLoginGuideEnabled(autoLogin)) {
-    message = '已勾选自动启动 QMT，项目将自动完成登录；可在下方查看结果。';
+    message = normalizeQmtAutoLoginSettings(autoLogin).auto_fill_credentials
+      ? '已勾选自动启动 QMT，项目将自动完成登录；可在下方查看结果。'
+      : '已勾选自动启动 QMT，由 QMT 自行登录；项目不填写账号密码或点击登录。若仅记住密码，请手动点击登录。';
   } else {
     message = '请重启对应 QMT 并登录，使绑定配置生效。';
   }
@@ -1302,14 +1304,17 @@ function normalizeQmtRestartTimes(value) {
 
 function normalizeQmtAutoLoginSettings(value = {}) {
   if (!value || typeof value !== 'object') {
-    return { enabled: !!value, restart_times: value ? ['09:00'] : [] };
+    return { enabled: !!value, auto_fill_credentials: true, auto_update: false, restart_times: value ? ['09:00'] : [] };
   }
-  return {
+  const result = {
     enabled: configBool(value.enabled, true),
+    auto_fill_credentials: configBool(value.auto_fill_credentials, true),
     restart_times: normalizeQmtRestartTimes(value.restart_times ?? value.restartTimes ?? value.restart_time ?? value.restartTime ?? ['09:00']),
     login_account: String(value.login_account || ''),
     password_saved: !!value.password_saved,
   };
+  if (Object.prototype.hasOwnProperty.call(value, 'auto_update')) result.auto_update = configBool(value.auto_update, false);
+  return result;
 }
 
 function qmtAutoLoginGuideEnabled(autoLogin) {
@@ -1342,7 +1347,7 @@ function renderQmtDependencyStatus(report = state.qmtLoginDependencies) {
   for (const prefix of ['setup', 'onboarding', 'binding', 'settings']) {
     const panel = $(`${prefix}QmtDependencies`);
     if (!panel) continue;
-    const visible = !!report && report.supported && (prefix === 'settings' || report.ok === false);
+    const visible = !!report && report.supported && (prefix === 'settings' || (report.ok === false && qmtAutoFillCredentials(prefix)));
     panel.classList.toggle('hidden', !visible);
     panel.innerHTML = visible ? qmtDependencyStatusHtml(report, prefix === 'settings' ? '' : prefix) : '';
   }
@@ -1400,7 +1405,7 @@ function bindingQmtAutoLoginStatusHtml(autoLogin) {
   const status = autoLogin.error ? 'error' : (pidValues.length ? 'success' : 'warn');
   const label = autoLogin.login_succeeded ? '已登录' : autoLogin.login_state === 'logging_in' ? '正在登录' : autoLogin.error
     ? (autoLogin.dependency_error ? '组件不可用' : (autoLogin.login_state ? '登录失败' : '自动启动失败'))
-    : (autoLogin.restarted ? '已重启' : (autoLogin.started ? '已启动' : (pidValues.length ? '已运行' : '已启用')));
+    : (autoLogin.login_state === 'client_login' ? '由 QMT 自行登录' : (autoLogin.restarted ? '已重启' : (autoLogin.started ? '已启动' : (pidValues.length ? '已运行' : '已启用'))));
   rows.push(`<div class="binding-qmt-status-row is-${status}">
     <strong>运行状态</strong>
     <span><b>${esc(label)}</b>${autoLogin.message ? ` <small>${esc(autoLogin.message)}</small>` : ''}</span>
@@ -1560,7 +1565,8 @@ function showBindingQmtGuide(values, deploy, options = {}) {
   const dialog = overlay.querySelector('.binding-qmt-guide-dialog');
   if (dialog) dialog.scrollTop = 0;
   const loginReminder = $('bindingQmtLoginReminder');
-  if (loginReminder) loginReminder.textContent = QMT_LOGIN_REMINDER;
+  if (loginReminder) loginReminder.textContent = normalizeQmtAutoLoginSettings(values.qmt_auto_login).auto_fill_credentials
+    ? QMT_LOGIN_REMINDER : '已关闭自动输入账号和密码。项目只负责启动和定时重启，登录由 QMT 自己完成。请在 QMT 内开启自动登录；如果仅记住密码，仍需手动点击登录。在线情况以绑定连接状态为准。';
   document.body.classList.add('binding-dialog-open');
   renderBindingQmtAutoLoginStatus(state.bindingQmtGuideAutoLogin);
   window.setTimeout(() => {
@@ -2836,12 +2842,15 @@ function readBindingQmtAutoLoginSettings(form = $('bindingForm')) {
   const enabled = !!(form && form.qmt_auto_login && form.qmt_auto_login.checked);
   const result = {
     enabled,
+    auto_fill_credentials: qmtAutoFillCredentials('binding'),
     restart_times: enabled ? readBindingQmtRestartTimes(form) : [],
   };
+  const autoUpdate = $('bindingQmtAutoUpdate');
+  if (autoUpdate?.checked || autoUpdate?.dataset.configured === 'true') result.auto_update = !!autoUpdate.checked;
   const account = form.qmt_login_account ? form.qmt_login_account.value.trim() : '';
-  if (account || form.dataset.qmtLoginAccount) result.login_account = account;
+  if (result.auto_fill_credentials && (account || form.dataset.qmtLoginAccount)) result.login_account = account;
   const password = enteredQmtLoginPassword('binding');
-  if (enabled && password) result.password = password;
+  if (enabled && result.auto_fill_credentials && password) result.password = password;
   return result;
 }
 
@@ -2853,6 +2862,13 @@ function fillBindingQmtLoginCredentials(settings = {}) {
 }
 
 function fillQmtLoginCredentials(prefix, settings = {}, directory = '', accountKey = '') {
+  const autoFill = $(`${prefix}QmtAutoFillCredentials`);
+  if (autoFill) autoFill.checked = configBool(settings.auto_fill_credentials, true);
+  const autoUpdate = $(`${prefix}QmtAutoUpdate`);
+  if (autoUpdate) {
+    autoUpdate.checked = configBool(settings.auto_update, false);
+    autoUpdate.dataset.configured = Object.prototype.hasOwnProperty.call(settings, 'auto_update') ? 'true' : 'false';
+  }
   const account = $(`${prefix}QmtLoginAccount`);
   const password = $(`${prefix}QmtLoginPassword`);
   if (account) account.value = settings.login_account || '';
@@ -2873,8 +2889,17 @@ function canReuseQmtLoginPassword(prefix, account, directory) {
     && qmtDirsAreSame(directory, input.dataset.savedDirectory));
 }
 
+function qmtAutoFillCredentials(prefix) {
+  return $(`${prefix}QmtAutoFillCredentials`)?.checked !== false;
+}
+
 function syncQmtLoginCredentialFields(prefix) {
-  const enabled = !!($(`${prefix}QmtAutoLogin`) && $(`${prefix}QmtAutoLogin`).checked);
+  const autoStart = !!($(`${prefix}QmtAutoLogin`) && $(`${prefix}QmtAutoLogin`).checked);
+  const autoFill = $(`${prefix}QmtAutoFillCredentials`);
+  if (autoFill) autoFill.disabled = !autoStart;
+  const autoUpdate = $(`${prefix}QmtAutoUpdate`);
+  if (autoUpdate) autoUpdate.disabled = !autoStart;
+  const enabled = autoStart && qmtAutoFillCredentials(prefix);
   const account = $(`${prefix}QmtLoginAccount`);
   const password = $(`${prefix}QmtLoginPassword`);
   const directory = $(`${prefix}QmtDir`);
@@ -2886,12 +2911,14 @@ function syncQmtLoginCredentialFields(prefix) {
   if (password) {
     password.disabled = !enabled;
     password.setAttribute('aria-required', String(enabled && !saved));
-    password.placeholder = saved ? '留空保留已保存的密码' : '开启自动重启时必填，本机加密保存';
+    password.placeholder = saved ? '留空保留已保存的密码' : '自动输入时必填，本机加密保存';
   }
   const hint = $(`${prefix}QmtPasswordStatus`);
-  if (hint) hint.textContent = saved
+  if (hint) hint.textContent = !qmtAutoFillCredentials(prefix)
+    ? '已关闭自动输入，不需要填写登录账号和密码。请确认 QMT 自身能够自动登录；仅记住密码时仍需手动点击登录。'
+    : saved
     ? '已保存加密密码，可点击查看；账号和目录不变时可留空，填写新密码则替换。'
-    : '开启自动重启必须填写登录账号和密码；密码加密保存，默认隐藏。';
+    : '启用自动输入时必须填写登录账号和密码；密码加密保存，默认隐藏。';
   syncQmtPasswordToggle(prefix);
   renderQmtDependencyStatus();
 }
@@ -2919,7 +2946,7 @@ function syncQmtPasswordToggle(prefix) {
   const account = $(`${prefix}QmtLoginAccount`);
   const directory = $(`${prefix}QmtDir`);
   const saved = canReuseQmtLoginPassword(prefix, account ? account.value.trim() : '', directory ? directory.value : '');
-  button.disabled = input.dataset.loading === 'true' || (!input.value && !saved);
+  button.disabled = input.disabled || input.dataset.loading === 'true' || (!input.value && !saved);
   button.textContent = input.dataset.loading === 'true' ? '读取中…'
     : input.type === 'text' ? '隐藏密码' : !input.value && saved ? '查看已保存密码' : '显示密码';
   button.setAttribute('aria-pressed', String(input.type === 'text'));
@@ -2927,7 +2954,7 @@ function syncQmtPasswordToggle(prefix) {
 
 async function toggleQmtLoginPassword(prefix) {
   const input = $(`${prefix}QmtLoginPassword`);
-  if (!input || input.dataset.loading === 'true') return;
+  if (!input || input.disabled || input.dataset.loading === 'true') return;
   if (input.type === 'text') {
     if (input.dataset.revealedSaved === 'true') resetQmtLoginPassword(prefix);
     else input.type = 'password';
@@ -2967,6 +2994,11 @@ async function toggleQmtLoginPassword(prefix) {
 
 function qmtLoginValidationError(prefix, settings, directory) {
   if (!settings.enabled) return '';
+  if (configBool(settings.auto_fill_credentials, true) === false) {
+    if (directory) return '';
+    $(`${prefix}QmtDir`)?.focus();
+    return '开启 QMT 自动重启时必须填写 QMT 目录。';
+  }
   if (state.qmtLoginDependencies?.ok === false) {
     return '自动登录组件不可用，请先修复并重新检测，或点击“改为手动登录”后保存。';
   }
@@ -5635,9 +5667,13 @@ async function submitSetupForm(event) {
     if (input) input.focus();
     return;
   }
-  body.qmt_auto_login = { enabled: !!($('setupQmtAutoLogin') && $('setupQmtAutoLogin').checked), restart_times: ['09:00'] };
-  if ($('setupQmtLoginAccount') && $('setupQmtLoginAccount').value.trim()) body.qmt_auto_login.login_account = $('setupQmtLoginAccount').value.trim();
-  if (body.qmt_auto_login.enabled && enteredQmtLoginPassword('setup')) body.qmt_auto_login.password = enteredQmtLoginPassword('setup');
+  body.qmt_auto_login = { enabled: !!($('setupQmtAutoLogin') && $('setupQmtAutoLogin').checked), auto_fill_credentials: qmtAutoFillCredentials('setup'), restart_times: ['09:00'] };
+  const setupAutoUpdate = $('setupQmtAutoUpdate');
+  if (setupAutoUpdate?.checked || setupAutoUpdate?.dataset.configured === 'true') {
+    body.qmt_auto_login.auto_update = !!setupAutoUpdate.checked;
+  }
+  if (body.qmt_auto_login.auto_fill_credentials && $('setupQmtLoginAccount') && $('setupQmtLoginAccount').value.trim()) body.qmt_auto_login.login_account = $('setupQmtLoginAccount').value.trim();
+  if (body.qmt_auto_login.enabled && body.qmt_auto_login.auto_fill_credentials && enteredQmtLoginPassword('setup')) body.qmt_auto_login.password = enteredQmtLoginPassword('setup');
   const qmtLoginError = qmtLoginValidationError('setup', body.qmt_auto_login, body.qmt_dir);
   if (qmtLoginError) {
     if (status) status.textContent = qmtLoginError;
@@ -13242,7 +13278,12 @@ function onboardingValues() {
   };
   values.qmt_auto_login = defaultQmtAutoLoginSettings(config && config.account_id ? config.qmt_auto_login : undefined);
   if ($('onboardingQmtAutoLogin')) values.qmt_auto_login.enabled = $('onboardingQmtAutoLogin').checked;
-  if ($('onboardingQmtLoginAccount')) values.qmt_auto_login.login_account = $('onboardingQmtLoginAccount').value.trim();
+  values.qmt_auto_login.auto_fill_credentials = qmtAutoFillCredentials('onboarding');
+  const onboardingAutoUpdate = $('onboardingQmtAutoUpdate');
+  if (onboardingAutoUpdate?.checked || onboardingAutoUpdate?.dataset.configured === 'true') {
+    values.qmt_auto_login.auto_update = !!onboardingAutoUpdate.checked;
+  } else delete values.qmt_auto_login.auto_update;
+  if (values.qmt_auto_login.auto_fill_credentials && $('onboardingQmtLoginAccount')) values.qmt_auto_login.login_account = $('onboardingQmtLoginAccount').value.trim();
   return values;
 }
 
@@ -13594,7 +13635,7 @@ async function saveOnboardingConfig(event) {
     if (!await ensureBindingQmtStopped(processTargets)) return;
   }
   setOnboardingStatus('onboardingConfigStatus', '正在保存账号配置...', 'busy');
-  if (values.qmt_auto_login.enabled && enteredQmtLoginPassword('onboarding')) {
+  if (values.qmt_auto_login.enabled && values.qmt_auto_login.auto_fill_credentials && enteredQmtLoginPassword('onboarding')) {
     values.qmt_auto_login.password = enteredQmtLoginPassword('onboarding');
   }
   try {
@@ -14605,11 +14646,12 @@ async function boot() {
       password.dataset.loading = 'false';
       syncQmtPasswordToggle(prefix);
     });
-    for (const suffix of ['QmtAutoLogin', 'QmtLoginAccount', 'QmtDir']) {
+    for (const suffix of ['QmtAutoLogin', 'QmtAutoFillCredentials', 'QmtLoginAccount', 'QmtDir']) {
       const input = $(`${prefix}${suffix}`);
       if (input) {
         const changed = () => {
-          if (password && (password.dataset.revealedSaved === 'true' || password.dataset.loading === 'true')) resetQmtLoginPassword(prefix);
+          if (password && (password.dataset.revealedSaved === 'true' || password.dataset.loading === 'true'
+              || (suffix === 'QmtAutoFillCredentials' && !input.checked))) resetQmtLoginPassword(prefix);
           syncQmtLoginCredentialFields(prefix);
         };
         input.addEventListener('input', changed);

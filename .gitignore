@@ -85,6 +85,7 @@ official_site/temp/
 official_site/packages/*.zip
 official_site/packages/*.tar.gz
 official_site/**/*.env
+*.remote-key
 offcial_site/
 
 # Local Python package distribution workspace; do not upload to GitHub.
@@ -113,3 +114,9 @@ pic/
 公众号/
 
 tem_delete/
+
+# Per-deployment remote credentials, status and task journal.
+*.remote_management.secure.json
+*.remote_management.status.json
+*.remote_management*.lock
+*.remote_management*.sqlite3*

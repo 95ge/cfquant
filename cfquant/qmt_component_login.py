@@ -16,6 +16,10 @@ class QmtNotReady(RuntimeError):
     pass
 
 
+class QmtProcessExited(RuntimeError):
+    pass
+
+
 def verify_environment(directory):
     """Validate dependencies and native ABI before stopping a running terminal."""
     try:
@@ -37,8 +41,13 @@ def verify_environment(directory):
             raise RuntimeError("QMT 组件自动登录需要 64 位客户端")
 
 
-def auto_login(backend, password_provider):
-    """Replace existing password contents and submit the supplied credential once."""
+def auto_login(backend, password_provider, *, retry_not_ready=False, login_account=None,
+               should_cancel=lambda: False, on_wait=lambda phase: None):
+    """Wait through startup/update when managed, and submit the credential once.
+
+    Readiness retries never force a disabled button. After submission, a timeout
+    only renews observation: it is not evidence that another submission is safe.
+    """
     attempts = []
     password_requested = False
 
@@ -46,28 +55,59 @@ def auto_login(backend, password_provider):
         return {"outcome": outcome, "login_succeeded": outcome in ("logged_in", "already_logged_in"),
                 "attempts": attempts, "password_requested": password_requested}
 
-    if backend.already_logged_in():
-        return result("already_logged_in")
-    state = backend.state()
-    if state.get("busy"):
-        return result("login_not_ready")
-    if state.get("notice") in ("challenge", "network_error"):
-        return result(state["notice"])
-    if state.get("notice") == "credential_error":
-        backend.acknowledge_failure()
-    password_requested = True
-    password = password_provider()
-    if not password:
-        return result("password_required")
-    try:
-        backend.fill(password)
-    finally:
-        password = None
-    if not backend.state()["login_enabled"]:
-        return result("login_not_ready")
-    backend.submit()
-    attempts.append("provided")
-    return result(backend.wait_outcome())
+    while True:
+        if should_cancel():
+            return result("cancelled")
+        if backend.already_logged_in():
+            if login_account is not None:
+                backend.select_account(login_account)
+            return result("already_logged_in")
+        state = backend.state()
+        if state.get("notice") in ("challenge", "network_error"):
+            return result(state["notice"])
+        if not state.get("busy"):
+            if not password_requested or not state.get("has_password"):
+                if not password_requested:
+                    if state.get("notice") == "credential_error":
+                        backend.acknowledge_failure()
+                    if login_account is not None:
+                        backend.select_account(login_account, replace=True)
+                if should_cancel():
+                    return result("cancelled")
+                password_requested = True
+                password = password_provider()
+                if not password:
+                    return result("password_required")
+                try:
+                    backend.fill(password)
+                finally:
+                    password = None
+                state = backend.state()
+            if state.get("login_enabled") and not state.get("busy"):
+                if should_cancel():
+                    return result("cancelled")
+                try:
+                    backend.submit()
+                except QmtNotReady:
+                    # The button can become disabled between status and submit.
+                    pass
+                else:
+                    attempts.append("provided")
+                    break
+        if not retry_not_ready:
+            return result("login_not_ready")
+        on_wait("waiting_ready")
+        time.sleep(0.5)
+
+    on_wait("logging_in")
+    while True:
+        if should_cancel():
+            return result("cancelled")
+        outcome = backend.wait_outcome()
+        if outcome != "timeout" or not retry_not_ready:
+            return result(outcome)
+        on_wait("logging_in")
+        time.sleep(0.5)
 
 
 def select_binding(config_path, name):
@@ -104,6 +144,7 @@ class QtLoginBackend:
         self.session = None
         self.mutex = None
         self.messages = []
+        self.should_cancel = lambda: False
         self.foreground_before = win32gui.GetForegroundWindow()
         expected = (directory / "XtItClient.exe").resolve()
         matches = []
@@ -114,6 +155,8 @@ class QtLoginBackend:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
         if not matches:
+            if expected_pid is not None and not psutil.pid_exists(expected_pid):
+                raise QmtProcessExited("QMT process exited")
             raise QmtNotReady("QMT process is not ready")
         if len(matches) != 1:
             raise RuntimeError("Expected exactly one running QMT for this binding directory")
@@ -167,11 +210,18 @@ class QtLoginBackend:
         return result
 
     def already_logged_in(self):
+        if self.session.is_detached:
+            raise QmtProcessExited("QMT automation session detached")
+        if not self.existing_main or self.hwnd is not None:
+            for hwnd in self.windows():
+                if self.api.status(str(hwnd))["result"].get("is_main"):
+                    self.existing_main, self.main_hwnd, self.hwnd = True, hwnd, None
+                    break
         return self.existing_main and self.hwnd is None
 
     def state(self):
         state = self.api.status(str(self.hwnd))["result"]
-        if not state.get("is_login") or not self.identity or state.get("login_identity") != self.identity:
+        if not state.get("is_login") or state.get("login_identity") != self.identity:
             raise RuntimeError("Login window or selected account changed; stopping")
         state.pop("login_identity", None)
         for hwnd in self.windows():
@@ -197,8 +247,9 @@ class QtLoginBackend:
     def submit(self):
         state = self.state()
         if not state["has_password"] or not state["login_enabled"]:
-            raise RuntimeError("Login is not ready")
-        self.api.submit(str(self.hwnd))
+            raise QmtNotReady("Login is not ready")
+        if not self.api.submit(str(self.hwnd))["result"]["submitted"]:
+            raise QmtNotReady("Login is not ready")
 
     def fill(self, password):
         self.state()
@@ -207,6 +258,10 @@ class QtLoginBackend:
     def wait_outcome(self):
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
+            if self.should_cancel():
+                return "cancelled"
+            if self.session.is_detached:
+                raise QmtProcessExited("QMT automation session detached")
             windows = self.windows()
             for hwnd in windows:
                 caption = self.gui.GetWindowText(hwnd)
@@ -291,28 +346,41 @@ def main():
 
 
 def login_running_qmt(directory, login_account="", password_provider=lambda: "", expected_pid=None,
-                      startup_timeout=60, timeout=40):
-    """Wait for a freshly launched QMT, then execute one bounded login flow."""
-    deadline = time.monotonic() + startup_timeout
+                      startup_timeout=60, timeout=40, *, should_cancel=lambda: False,
+                      on_wait=lambda phase: None, before_poll=lambda: None):
+    """Wait for QMT startup/updates and observe login until success or rejection.
+
+    The web worker uses startup_timeout=None to wait while its process is alive.
+    Cancellation stops waiting when that worker is disabled or superseded.
+    """
+    cancelled = should_cancel
+    def should_cancel():
+        if cancelled():
+            return True
+        before_poll()
+        return cancelled()
+
+    deadline = None if startup_timeout is None else time.monotonic() + startup_timeout
+    backend = None
     while True:
+        if should_cancel():
+            return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
         try:
             backend = QtLoginBackend(Path(directory), timeout, expected_pid=expected_pid)
             break
+        except QmtProcessExited:
+            return {"outcome": "process_exited", "login_succeeded": False, "attempts": []}
         except QmtNotReady:
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 return {"outcome": "startup_timeout", "login_succeeded": False, "attempts": []}
+            on_wait("waiting_ready")
             time.sleep(0.5)
     try:
-        if not backend.already_logged_in() and backend.state().get("busy"):
-            outcome = backend.wait_outcome()
-            if outcome == "logged_in":
-                # Reopen only the automation session to verify the resulting user.
-                backend.close()
-                backend = QtLoginBackend(Path(directory), timeout, expected_pid=expected_pid)
-            elif outcome != "credential_error":
-                return {"outcome": outcome, "login_succeeded": False, "attempts": []}
-        backend.select_account(login_account, replace=True)
-        return auto_login(backend, password_provider)
+        backend.should_cancel = should_cancel
+        return auto_login(backend, password_provider, retry_not_ready=True, login_account=login_account,
+                          should_cancel=should_cancel, on_wait=on_wait)
+    except QmtProcessExited:
+        return {"outcome": "process_exited", "login_succeeded": False, "attempts": []}
     finally:
         backend.close()
 

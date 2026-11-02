@@ -115,10 +115,19 @@ function noticeKind(rows) {
 }
 
 function submit(root) {
+  const rows = walk(root);
+  const edits = rows.filter(row => row.echo_mode === 2 && row.visible && row.enabled);
+  // Check on the GUI thread as well: an update can disable the button after
+  // Python has inspected it. A declined submission is safe to retry later.
+  if (edits.length !== 1 || !hasText(ptr(edits[0].address)) ||
+      !rows.some(row => row.visible && row.enabled && /^登\s*录(?:[（(]\d+[)）])?$/.test(row.label || ''))) {
+    return {submitted: false};
+  }
   passwordEditor(root);
   const login = fn(Process.getModuleByName('LoginDialog.dll'),
     '?slot_loginClicked@CLoginDialog@TC@@QEAAXXZ', 'void', ['pointer']);
   login(root);
+  return {submitted: true};
 }
 
 function loginIdentity(root) {
@@ -190,7 +199,7 @@ rpc.exports = {
       const edits = rows.filter(row => row.echo_mode === 2 && row.visible);
       if (edits.length > 1) throw new Error('Multiple password editors are visible');
       return {is_login: true, has_password: edits.length === 1 && hasText(ptr(edits[0].address)),
-        busy: edits.length === 0, login_identity: loginIdentity(root), notice: noticeKind(rows),
+        busy: edits.length === 0 || !edits[0].enabled, login_identity: loginIdentity(root), notice: noticeKind(rows),
         login_enabled: rows.some(row => row.visible && row.enabled && /^登\s*录(?:[（(]\d+[)）])?$/.test(row.label || ''))};
     });
   },
@@ -210,7 +219,7 @@ rpc.exports = {
       return {acknowledged: true};
     });
   },
-  submit(hwnd) { return onGui(hwnd, () => { submit(getRoot(hwnd)); return {submitted: true}; }); },
+  submit(hwnd) { return onGui(hwnd, () => submit(getRoot(hwnd))); },
   close(hwnd) { return onGui(hwnd, () => ({closed: closeWidget(getRoot(hwnd))})); },
   clicklabel(hwnd, text) {
     return onGui(hwnd, () => {

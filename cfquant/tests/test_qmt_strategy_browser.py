@@ -214,8 +214,8 @@ def test_initialization_saves_credit_account_and_shows_login_reminder(page, fron
         assert 'admin_username' not in saved[0]
         assert 'admin_password' not in saved[0]
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动登录 QMT')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('绑定中保存的账号和密码')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动输入账号和密码')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('使用绑定中保存的信息登录')
     assert not any(path == '/api/qmt-scripts/source' for _, path in requests)
     expect(page.locator('#copyBindingQmtGuideBtn, #onboardingCopyQmtScriptBtn, #copyBindingQmtScriptBtn')).to_have_count(0)
     assert page.locator('.binding-qmt-guide-dialog').evaluate('(el) => el.scrollWidth <= el.clientWidth')
@@ -277,7 +277,7 @@ def test_binding_dialog_help_tooltips_stay_in_viewport(page, frontend_url):
     auto_start_trigger.scroll_into_view_if_needed()
     auto_start_trigger.click()
     expect(page.locator('#helpTooltipLayer')).to_contain_text('按 A 股交易日历跳过周末和节假日')
-    expect(page.locator('#helpTooltipLayer')).to_contain_text('重新启动并自动登录')
+    expect(page.locator('#helpTooltipLayer')).to_contain_text('重新启动并按所选方式登录')
     assert_help_tooltip_in_viewport(page)
     assert page.locator('#bindingDialogOverlay .binding-dialog').evaluate('(node) => node.scrollWidth <= node.clientWidth')
     assert errors == []
@@ -287,6 +287,7 @@ def test_startup_reminders_distinguish_pending_failure_disabled_and_manual_run(p
     _, errors = open_app(page, frontend_url)
     cases = [
         ({}, '项目将自动完成登录'),
+        ({'qmt_auto_login': {'enabled': True, 'auto_fill_credentials': False}}, '由 QMT 自行登录'),
         ({'qmt_auto_login': {'enabled': False}}, '请重启对应 QMT 并登录'),
         ({'enabled': False}, '账号绑定已停用'),
         ({'qmt_strategy': {'enabled': False}}, '自动导入并管理 QMT 策略未启用'),
@@ -385,10 +386,10 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     expect(page.locator('#bindingQmtAutoLoginPanel')).to_be_visible()
     expect(page.locator('#bindingQmtAutoLoginStatus')).to_contain_text('1234')
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('已勾选自动启动 QMT')
-    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动登录 QMT')
+    expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动输入账号和密码')
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('A 股交易日')
     assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05'],
-                                        'login_account': 'fixture-login', 'password': 'synthetic-secret'}
+                                        'login_account': 'fixture-login', 'password': 'synthetic-secret', 'auto_fill_credentials': True}
     assert saved[0]['qmt_dir'].endswith('\\bin.x64')
     assert errors == []
 

@@ -188,6 +188,8 @@ runtime = RuntimeManager(
 
 ## 其他语言调用 HTTP 接口
 
+可选官网接入使用 `runtime.remote.configure(api_key=..., permissions=...)` 和 `runtime.remote.status()`。用户需先在官网创建部署和项目 API Key，本地不接受官网账号密码，也不创建项目。接入与三类操作权限默认关闭，多套部署分别配置。完整示例和权限说明见 [官网远程管理使用说明](官网远程管理使用说明.md)。
+
 服务启动后，非 Python 项目也可调用以下接口。请求体使用 UTF-8 JSON；响应格式为 `{"ok": true, "data": ...}`，错误包含 `error`，部分错误附带 `code`。
 
 | 方法 | 路径 | 用途 |

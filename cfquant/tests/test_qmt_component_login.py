@@ -155,6 +155,8 @@ def test_managed_login_resets_account_and_clears_password_even_for_same_user(pre
     from cfquant.qmt_component_login import QtLoginBackend
     calls = []
     backend = QtLoginBackend.__new__(QtLoginBackend)
+    backend.session = SimpleNamespace(is_detached=False)
+    backend.windows = lambda: []
     backend.existing_main = False
     backend.hwnd = 123
     backend.identity = previous_account
@@ -163,3 +165,183 @@ def test_managed_login_resets_account_and_clears_password_even_for_same_user(pre
     backend.select_account('fixture-user', replace=True)
     assert calls == [('account', ('123', 'fixture-user', True)), ('password', ('123', '', False))]
     assert backend.identity == 'fixture-user'
+
+
+@pytest.fixture
+def login_clock(monkeypatch):
+    from types import SimpleNamespace
+    import cfquant.qmt_component_login as component
+    clock = SimpleNamespace(now=0.0)
+    def sleep(seconds):
+        clock.now += seconds
+        assert clock.now < 300, "login retry did not finish"
+    monkeypatch.setattr(component, "time", SimpleNamespace(monotonic=lambda: clock.now, sleep=sleep))
+    return clock
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_managed_login_waits_for_update_longer_than_previous_timeouts(monkeypatch, tmp_path, login_clock, busy):
+    import cfquant.qmt_component_login as component
+    terminal = Terminal(saved=False)
+    def state():
+        updating = login_clock.now < 125
+        return dict(has_password=terminal.saved, busy=busy and updating,
+                    login_enabled=terminal.saved and not updating)
+    terminal.state = state
+    accounts = []
+    def select(account, replace=False):
+        assert not state()["busy"]
+        accounts.append((account, replace))
+    terminal.select_account = select
+    closed = []
+    terminal.close = lambda: closed.append(True)
+    monkeypatch.setattr(component, "QtLoginBackend", lambda *a, **kw: terminal)
+    result = component.login_running_qmt(tmp_path, "fixture-user", lambda: "synthetic-fixture")
+    assert result["login_succeeded"] and login_clock.now == 125
+    assert accounts == [("fixture-user", True)]
+    assert terminal.calls == ["fill", "submit", "wait"]
+    assert closed == [True]
+
+
+def test_button_disabled_between_status_and_submit_is_retried(login_clock):
+    from cfquant.qmt_component_login import QmtNotReady
+    terminal = Terminal()
+    def submit():
+        if login_clock.now < 2:
+            raise QmtNotReady("button became disabled")
+        terminal.calls.append("submit")
+    terminal.submit = submit
+    result = auto_login(terminal, lambda: "synthetic-fixture", retry_not_ready=True)
+    assert result["login_succeeded"] and login_clock.now == 2
+    assert terminal.calls == ["fill", "submit", "wait"]
+
+
+def test_slow_login_keeps_observing_without_another_submission(login_clock):
+    terminal = Terminal(outcomes=("timeout", "timeout", "logged_in"))
+    result = auto_login(terminal, lambda: "synthetic-fixture", retry_not_ready=True)
+    assert result["login_succeeded"]
+    assert terminal.calls == ["fill", "submit", "wait", "wait", "wait"]
+
+
+def test_password_cleared_by_update_is_refilled_before_submission(login_clock):
+    terminal = Terminal(saved=False)
+    def state():
+        if login_clock.now == 1:
+            terminal.saved = False
+        return dict(has_password=terminal.saved, busy=login_clock.now == 1,
+                    login_enabled=terminal.saved and login_clock.now >= 2)
+    terminal.state = state
+    result = auto_login(terminal, lambda: "synthetic-fixture", retry_not_ready=True)
+    assert result["login_succeeded"]
+    assert terminal.calls == ["fill", "fill", "submit", "wait"]
+
+
+@pytest.mark.parametrize("outcome", ["credential_error", "challenge", "network_error"])
+def test_managed_retries_stop_on_actionable_rejection(login_clock, outcome):
+    terminal = Terminal(outcomes=(outcome,))
+    result = auto_login(terminal, lambda: "synthetic-fixture", retry_not_ready=True)
+    assert result["outcome"] == outcome
+    assert terminal.calls == ["fill", "submit", "wait"]
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_waiting_for_update_can_be_cancelled(login_clock, busy):
+    terminal = Terminal(busy=busy)
+    terminal.state = lambda: dict(has_password=terminal.saved, busy=busy, login_enabled=False)
+    result = auto_login(terminal, lambda: "synthetic-fixture", retry_not_ready=True,
+                        should_cancel=lambda: login_clock.now >= 2)
+    assert result["outcome"] == "cancelled" and result["attempts"] == []
+    assert "submit" not in terminal.calls
+    assert result["password_requested"] is not busy
+
+
+def test_managed_startup_can_wait_beyond_one_minute(monkeypatch, tmp_path, login_clock):
+    import cfquant.qmt_component_login as component
+    terminal = Terminal()
+    terminal.select_account = lambda *a, **kw: None
+    terminal.close = lambda: None
+    def attach(*a, **kw):
+        if login_clock.now < 125:
+            raise component.QmtNotReady("loading modules")
+        return terminal
+    monkeypatch.setattr(component, "QtLoginBackend", attach)
+    result = component.login_running_qmt(tmp_path, password_provider=lambda: "synthetic-fixture", startup_timeout=None)
+    assert result["login_succeeded"] and login_clock.now == 125
+
+
+@pytest.mark.parametrize("outcome", ["startup_timeout", "cancelled", "process_exited"])
+def test_startup_stops_on_deadline_cancellation_or_process_exit(monkeypatch, tmp_path, login_clock, outcome):
+    import cfquant.qmt_component_login as component
+    def attach(*a, **kw):
+        if outcome == "process_exited" and login_clock.now >= 2:
+            raise component.QmtProcessExited("process exited")
+        raise component.QmtNotReady("loading modules")
+    monkeypatch.setattr(component, "QtLoginBackend", attach)
+    result = component.login_running_qmt(
+        tmp_path, password_provider=no_password, startup_timeout=2 if outcome == "startup_timeout" else None,
+        should_cancel=lambda: outcome == "cancelled" and login_clock.now >= 2)
+    assert result["outcome"] == outcome and result["attempts"] == []
+
+
+def test_native_submission_declined_on_gui_thread_is_retryable():
+    from types import SimpleNamespace
+    from cfquant.qmt_component_login import QtLoginBackend, QmtNotReady
+    backend = QtLoginBackend.__new__(QtLoginBackend)
+    backend.hwnd = 123
+    backend.state = lambda: dict(has_password=True, login_enabled=True)
+    backend.api = SimpleNamespace(submit=lambda hwnd: {"result": {"submitted": False}})
+    with pytest.raises(QmtNotReady):
+        backend.submit()
+
+
+def test_login_completing_while_waiting_still_verifies_configured_account(login_clock):
+    terminal = Terminal(busy=True)
+    terminal.already_logged_in = lambda: login_clock.now >= 2
+    selected = []
+    terminal.select_account = lambda account: selected.append(account)
+    result = auto_login(terminal, no_password, retry_not_ready=True, login_account="fixture-user")
+    assert result["outcome"] == "already_logged_in"
+    assert selected == ["fixture-user"]
+    assert terminal.calls == []
+
+
+def test_backend_detects_new_main_window_and_rejects_wrong_account():
+    from types import SimpleNamespace
+    from cfquant.qmt_component_login import QtLoginBackend
+    backend = QtLoginBackend.__new__(QtLoginBackend)
+    backend.session = SimpleNamespace(is_detached=False)
+    backend.existing_main, backend.main_hwnd, backend.hwnd = False, None, 123
+    backend.windows = lambda: [456]
+    backend.api = SimpleNamespace(status=lambda hwnd: {"result": {"is_main": True}})
+    backend.gui = SimpleNamespace(GetWindowText=lambda hwnd: "other-user - QMT")
+    assert backend.already_logged_in()
+    with pytest.raises(RuntimeError):
+        backend.select_account("fixture-user")
+
+
+def test_native_outcome_wait_can_be_cancelled_before_timeout(login_clock):
+    from types import SimpleNamespace
+    from cfquant.qmt_component_login import QtLoginBackend
+    backend = QtLoginBackend.__new__(QtLoginBackend)
+    backend.timeout = 40
+    backend.session = SimpleNamespace(is_detached=False)
+    backend.windows = lambda: []
+    backend.should_cancel = lambda: login_clock.now >= 2
+    assert backend.wait_outcome() == "cancelled"
+    assert login_clock.now == 2
+
+
+def test_process_exit_during_readiness_wait_closes_backend(monkeypatch, tmp_path, login_clock):
+    import cfquant.qmt_component_login as component
+    terminal = Terminal(busy=True)
+    def check_main():
+        if login_clock.now >= 2:
+            raise component.QmtProcessExited("process exited")
+        return False
+    terminal.already_logged_in = check_main
+    closed = []
+    terminal.close = lambda: closed.append(True)
+    monkeypatch.setattr(component, "QtLoginBackend", lambda *a, **kw: terminal)
+    result = component.login_running_qmt(tmp_path, password_provider=no_password)
+    assert result["outcome"] == "process_exited"
+    assert closed == [True] and terminal.calls == []

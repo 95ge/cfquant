@@ -16,6 +16,7 @@ else:
 
 
 PACKAGE_NAME = "cfquant"
+TOMLI_REQUIREMENT = "tomli>=1.1.0"
 
 
 def _hidden_subprocess_kwargs():
@@ -115,6 +116,21 @@ def requirements_install_args(project_root, python_exe=None):
     ]
     command.extend(pip_index_args())
     command.extend(["-r", "requirements.txt"])
+    return command
+
+
+def tomli_install_args(project_root=None, python_exe=None):
+    """Build the bootstrap command needed before parsing TOML on old Python."""
+    command = [
+        python_exe or sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--no-input",
+    ]
+    command.extend(pip_index_args())
+    command.append(TOMLI_REQUIREMENT)
     return command
 
 
@@ -478,7 +494,12 @@ def project_package_version(project_root):
     try:
         import tomllib
     except ImportError:
-        from pip._vendor import tomli as tomllib
+        try:
+            import tomli as tomllib
+        except ImportError:
+            # Keep compatibility with pip versions that vendor tomli while
+            # preferring the project's explicit conditional dependency.
+            from pip._vendor import tomli as tomllib
     with (Path(project_root) / "pyproject.toml").open("rb") as stream:
         return str(tomllib.load(stream)["project"]["version"])
 
@@ -503,7 +524,24 @@ def ensure_cfquant_installed(project_root, python_exe=None):
         return 2
 
     python_exe = python_exe or sys.executable
-    expected = project_package_version(project_root)
+    try:
+        expected = project_package_version(project_root)
+    except ImportError:
+        # project_package_version runs before the project itself is installed.
+        # Bootstrap tomli here so a clean Python 3.8-3.10 environment can still
+        # complete its first startup without requiring a manual pip command.
+        print("TOML parser unavailable; installing %s before startup check." % TOMLI_REQUIREMENT)
+        bootstrap = run(tomli_install_args(project_root, python_exe), project_root)
+        if bootstrap.returncode != 0:
+            print("[ERROR] Could not install %s; cannot read pyproject.toml." % TOMLI_REQUIREMENT,
+                  file=sys.stderr)
+            return bootstrap.returncode
+        try:
+            expected = project_package_version(project_root)
+        except ImportError:
+            print("[ERROR] %s is still unavailable after bootstrap installation." % TOMLI_REQUIREMENT,
+                  file=sys.stderr)
+            return 1
     installed = installed_package_version(python_exe)
     print("cfquant installed=%s project=%s" % (installed or "missing", expected))
     if installed == expected:

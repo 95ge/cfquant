@@ -20,6 +20,7 @@ from cfquant.diagnostics import latency_report, SCHEMA as QUOTE_LATENCY_SCHEMA
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
 from cfquant.qmt_dependencies import check_login_dependencies, report_startup_dependencies
+from cfquant import remote_management as remote_agent_module
 import posixpath
 import queue
 import re
@@ -587,7 +588,7 @@ MANAGEMENT_API_PATHS = frozenset({
     "/api/setup/initialize", "/api/account-config", "/api/account-config/delete", "/api/account-config/qmt-password",
     "/api/bindings/status", "/api/project-updates/status", "/api/project-updates/official",
     "/api/project-updates/github", "/api/project-updates/rollback", "/api/project-updates/ensure-latest",
-    "/api/version", "/api/config",
+    "/api/version", "/api/config", "/api/remote-management",
 })
 WEB_RESTART_LOCK = threading.RLock()
 WEB_RELOAD_WAIT_HOST_ENV = "CFQUANT_WEB_RELOAD_WAIT_HOST"
@@ -1771,6 +1772,13 @@ def normalize_qmt_auto_login_settings(value=None, existing=None):
         "restart_times": normalize_qmt_auto_login_restart_times(restart_source),
     }
     source = value if isinstance(value, dict) else {}
+    result["auto_fill_credentials"] = parse_config_bool(
+        source.get("auto_fill_credentials"), parse_config_bool(existing.get("auto_fill_credentials"), True)
+    )
+    if "auto_update" in source or "auto_update" in existing:
+        result["auto_update"] = parse_config_bool(
+            source.get("auto_update"), parse_config_bool(existing.get("auto_update"), False)
+        )
     if "login_account" in source or "login_account" in existing:
         result["login_account"] = str(source.get("login_account", existing.get("login_account", "")) or "").strip()
         result["password_saved"] = parse_config_bool(source.get("password_saved", existing.get("password_saved")), False)
@@ -1788,6 +1796,11 @@ def validate_qmt_auto_login_credentials(config_path, qmt_dir, settings, password
     from cfquant.qmt_credentials import QmtCredentialStore
     enabled = settings.get("enabled", False)
     login_account = settings.get("login_account", "")
+    if enabled and not qmt_dir:
+        raise ValueError("开启 QMT 自动重启时必须填写 QMT 目录")
+    if not parse_config_bool(settings.get("auto_fill_credentials"), True):
+        # QMT handles its own login. Never require or decrypt its credentials.
+        return QmtCredentialStore(config_path).has(qmt_dir, login_account) if login_account else False
     if enabled or password:
         if not qmt_dir:
             raise ValueError("开启 QMT 自动重启时必须填写 QMT 目录")
@@ -2847,7 +2860,7 @@ class WebRuntimeConfig(object):
                         raise ValueError("自动导入的市场入口需要独立 bridge_id，请清空市场 bridge_id 后重试")
             supplied_password = qmt_auto_login.get("password") if isinstance(qmt_auto_login, dict) else None
             password_saved = validate_qmt_auto_login_credentials(self.path, qmt_dir, auto_login_settings, supplied_password)
-            if supplied_password:
+            if supplied_password and auto_login_settings["auto_fill_credentials"]:
                 from cfquant.qmt_credentials import QmtCredentialStore
                 QmtCredentialStore(self.path).save(qmt_dir, auto_login_settings["login_account"], supplied_password)
                 password_saved = True
@@ -5460,6 +5473,7 @@ class PipeHubManager(object):
             env.setdefault("CFQUANT_LOG_DIR", LOG_DIR)
             env.setdefault("CFQUANT_LOG_RETENTION_DAYS", str(LOG_RETENTION_DAYS))
             env.setdefault("CFQUANT_PIPE_HUB_STATUS_FILE", PIPE_HUB_STATUS_FILE)
+            env.setdefault("CFQUANT_RUNTIME_DIR", RUNTIME_DIR)
             stdout = open(PIPE_HUB_STDOUT_LOG, "a", encoding="utf-8", buffering=1)
             stderr = open(PIPE_HUB_STDERR_LOG, "a", encoding="utf-8", buffering=1)
             try:
@@ -10429,7 +10443,15 @@ def serialized_account_configuration(function):
     @wraps(function)
     def serialized(*args, **kwargs):
         with ACCOUNT_CONFIGURATION_LOCK:
-            return function(*args, **kwargs)
+            try:
+                return function(*args, **kwargs)
+            finally:
+                if MANAGEMENT_READY:
+                    try:
+                        from cfquant.remote_adapter import register_runtime
+                        register_runtime(sys.modules[__name__])
+                    except Exception:
+                        safe_print("cfquant remote resource registry refresh failed")
     return serialized
 
 
@@ -11555,6 +11577,8 @@ def _qmt_component_job_key(directory):
 
 
 def _qmt_component_login_preflight(paths, settings):
+    if not parse_config_bool(settings.get("auto_fill_credentials"), True):
+        return
     from cfquant.qmt_component_login import verify_environment
     from cfquant.qmt_credentials import QmtCredentialStore
     validate_qmt_auto_login_credentials(WEB_CONFIG.path, paths["bin_dir"], dict(settings, enabled=True))
@@ -11566,14 +11590,83 @@ def _qmt_component_login_preflight(paths, settings):
 def _qmt_component_login_worker(row, paths, pid, config_path):
     from cfquant.qmt_component_login import login_running_qmt
     from cfquant.qmt_credentials import QmtCredentialStore
+    from cfquant.qmt_update import manage_qmt_startup
     settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+    # Legacy saved bindings lack the field; their default is still “否”, but
+    # the native watcher must run when a real XtItClient is present so that the
+    # updater's No/install prompts cannot block login. Test doubles without a
+    # client executable keep the established direct-login path.
+    update_configured = bool(settings.get("auto_update", False) or (
+        (settings["auto_fill_credentials"] or "auto_update" in settings) and
+        Path(paths["bin_dir"]).joinpath("XtItClient.exe").is_file()
+    ))
+    if not settings["auto_fill_credentials"] and not update_configured:
+        return
     account = settings.get("login_account", "")
+    key = _qmt_component_job_key(paths["bin_dir"])
+    last_phase = None
+
+    def should_cancel():
+        with QMT_AUTO_LOGIN_LOCK:
+            if QMT_COMPONENT_JOBS.get(key) is not threading.current_thread():
+                return True
+            session = _qmt_auto_login_saved_session(row)
+            return (session.get("pid") != pid or session.get("enabled") is False
+                    or parse_config_bool(session.get("auto_fill_credentials"), settings["auto_fill_credentials"]) != settings["auto_fill_credentials"]
+                    or parse_config_bool(session.get("auto_update"), settings.get("auto_update", False)) != settings.get("auto_update", False))
+
+    def on_pid(new_pid):
+        nonlocal pid
+        with QMT_AUTO_LOGIN_LOCK:
+            if should_cancel():
+                return
+            pid = new_pid
+            threading.current_thread().qmt_pid = pid
+            _qmt_auto_login_update_session(row, {"pid": pid, "restart_pid": pid})
+
+    def on_wait(phase):
+        nonlocal last_phase
+        with QMT_AUTO_LOGIN_LOCK:
+            if phase == last_phase or should_cancel():
+                return
+            last_phase = phase
+            message = {
+                "waiting_ready": "等待 QMT 完成启动、版本检查或更新，登录按钮可用后将自动重试",
+                "logging_in": "已提交 QMT 登录，正在等待登录成功",
+                "update_skipped": "已按配置选择不立即升级，继续等待 QMT 登录",
+                "update_downloading": "已同意 QMT 更新，正在等待客户端下载升级包",
+                "update_installing": "QMT 正在安装更新，安装完成后将自动重启",
+                "update_restarting": "QMT 安装完成，正在等待安装程序退出并重启客户端",
+                "update_background": "已拒绝立即升级，正在监测客户端后台下载及后续提示",
+            }.get(phase, "正在处理 QMT 启动")
+            _qmt_auto_login_update_session(row, {
+                "state": "logging_in", "login_state": "logging_in", "login_phase": phase,
+                "login_succeeded": False, "message": message, "error": "",
+            })
+
     try:
-        result = login_running_qmt(
-            paths["bin_dir"], account,
-            lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
-            expected_pid=pid,
-        )
+        def login(current_pid, before_poll):
+            return login_running_qmt(
+                paths["bin_dir"], account,
+                lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
+                expected_pid=current_pid, startup_timeout=None, should_cancel=should_cancel,
+                on_wait=on_wait, before_poll=before_poll,
+            )
+        if update_configured:
+            result = manage_qmt_startup(
+                paths["bin_dir"], pid, login if settings["auto_fill_credentials"] else None,
+                auto_update=settings.get("auto_update", False), should_cancel=should_cancel, on_wait=on_wait, on_pid=on_pid,
+            )
+        else:
+            # Keep the established login path for test doubles and clients
+            # without a real executable. A real binding uses the native watcher
+            # above even when its default policy is to decline updates.
+            result = login_running_qmt(
+                paths["bin_dir"], account,
+                lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
+                expected_pid=pid, startup_timeout=None, should_cancel=should_cancel,
+                on_wait=on_wait,
+            ) if settings["auto_fill_credentials"] else {"outcome": "client_login", "login_succeeded": False, "attempts": []}
         outcome = result["outcome"]
         descriptions = {
             "logged_in": "QMT 已自动登录，等待已配置的策略连接",
@@ -11585,24 +11678,33 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
             "timeout": "QMT 登录超时，下个交易日仍会按计划重新启动登录",
             "startup_timeout": "QMT 登录界面未就绪，请检查客户端启动状态",
             "login_not_ready": "QMT 正在登录或登录按钮尚未就绪",
+            "process_exited": "QMT 已退出，自动登录已停止，请重新启动该绑定 QMT",
+            "client_login": "由 QMT 自行登录，未自动填写账号密码或点击登录；连接状态以策略回连为准",
+            "update_manual_required": "QMT 出现尚未适配的更新或安装提示，请手动处理后重启此绑定",
+            "update_timeout": "QMT 更新等待超过 30 分钟，请检查下载或安装进度",
+            "update_incomplete": "QMT 更新程序已退出，但未确认安装完成，请检查后重启此绑定",
+            "update_restart_failed": "QMT 更新完成，但旧进程未退出，请检查后重启此绑定",
+            "update_restart_limit": "QMT 更新后重复提示升级，已停止自动重启，请检查客户端版本",
+            "update_dialog_changed": "QMT 更新窗口发生变化，已停止自动操作，请检查客户端",
+            "update_command_failed": "QMT 更新窗口未响应，请检查客户端后重试",
+            "update_process_changed": "QMT 更新进程与绑定不一致，已停止自动操作",
         }
         message = descriptions.get(outcome, "QMT 自动登录未完成")
-        updates = {"state": "logged_in" if result.get("login_succeeded") else "login_failed",
-                   "login_state": outcome, "login_succeeded": bool(result.get("login_succeeded")),
+        updates = {"state": "logged_in" if result.get("login_succeeded") else "client_login" if outcome == "client_login" else "login_failed",
+                   "login_state": outcome, "login_phase": "", "login_succeeded": bool(result.get("login_succeeded")),
                    "login_attempts": result.get("attempts", []), "message": message,
-                   "error": "" if result.get("login_succeeded") else message}
+                   "update_count": result.get("update_count", 0),
+                   "error": "" if result.get("login_succeeded") or outcome == "client_login" else message}
     except Exception:
         # Native exceptions and credential providers must never echo supplied data.
-        updates = {"state": "login_failed", "login_state": "component_error", "login_succeeded": False,
+        updates = {"state": "login_failed", "login_state": "component_error", "login_phase": "", "login_succeeded": False,
                    "error": "QMT 组件登录失败，请检查客户端版本、登录账号及自动登录依赖",
                    "message": "QMT 组件登录失败，请检查客户端版本、登录账号及自动登录依赖"}
     # Do not let a stale worker overwrite a later process's state.
     with QMT_AUTO_LOGIN_LOCK:
-        key = _qmt_component_job_key(paths["bin_dir"])
         if QMT_COMPONENT_JOBS.get(key) is not threading.current_thread():
             return
-        session = _qmt_auto_login_saved_session(row)
-        if session.get("pid") == pid:
+        if not should_cancel():
             _qmt_auto_login_update_session(row, updates)
         QMT_COMPONENT_JOBS.pop(key, None)
 
@@ -11648,6 +11750,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
     qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
     result = {
         "enabled": bool(settings["enabled"]),
+        "auto_fill_credentials": settings["auto_fill_credentials"],
+        "auto_update": settings.get("auto_update", False),
         "configured": False,
         "started": False,
         "restarted": False,
@@ -11661,6 +11765,12 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
         "reminder": QMT_AUTO_LOGIN_REMINDER,
         "message": "",
     }
+    if not settings["auto_fill_credentials"]:
+        result["reminder"] = "已关闭自动输入账号和密码。请在 QMT 内开启自动登录；仅记住密码的客户端仍需手动点击登录。在线情况以绑定连接状态为准。"
+        if qmt_dir:
+            # Cancel an existing login even when deployment defers this launch.
+            with QMT_AUTO_LOGIN_LOCK:
+                QMT_COMPONENT_JOBS.pop(_qmt_component_job_key(qmt_dir), None)
     if not settings["enabled"]:
         result["message"] = "QMT 自动启动未启用"
         _qmt_auto_login_update_session(row, {
@@ -11694,11 +11804,12 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
     try:
         with QMT_AUTO_LOGIN_LOCK:
             paths = _qmt_auto_login_paths(qmt_dir)
-            _qmt_component_login_preflight(paths, settings)
+            if settings["auto_fill_credentials"]:
+                _qmt_component_login_preflight(paths, settings)
             key = _qmt_component_job_key(paths["bin_dir"])
             running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
             job = QMT_COMPONENT_JOBS.get(key)
-            if (not restart and job and job.is_alive()
+            if (settings["auto_fill_credentials"] and not restart and job and job.is_alive()
                     and any(process["pid"] == getattr(job, "qmt_pid", None) for process in running)):
                 result.update(configured=True, login_state="logging_in", message="该 QMT 正在启动登录，请等待本次操作完成")
                 return result
@@ -11746,11 +11857,21 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                     "已检测到绑定目录 QMT 正在运行，PID: %s" % pid
                     if pid else "已检测绑定目录 QMT 进程，但暂未获取到 PID"
                 )
+            login_state = "logging_in" if settings["auto_fill_credentials"] else "client_login"
+            if not settings["auto_fill_credentials"]:
+                result["message"] += "；由 QMT 自行登录，未自动填写账号密码或点击登录；若仅记住密码，请手动登录"
+            result["login_state"] = login_state
             _qmt_auto_login_update_session(row, {
                 "enabled": True,
-                "state": "logging_in",
-                "login_state": "logging_in",
+                "auto_fill_credentials": settings["auto_fill_credentials"],
+                "auto_update": settings.get("auto_update", False),
+                "state": login_state,
+                "login_state": login_state,
+                "login_phase": "",
                 "login_succeeded": False,
+                "login_attempts": [],
+                "dependency_error": False,
+                "dependencies": None,
                 "qmt_dir": qmt_dir,
                 "bin_dir": paths["bin_dir"],
                 "exe_path": paths["exe_path"],
@@ -11764,8 +11885,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "error": "",
             })
             login_row = dict(row, qmt_auto_login=settings)
-            if pid:
-                result["login_state"] = "logging_in"
+            if pid and (settings["auto_fill_credentials"] or "auto_update" in settings):
                 _qmt_queue_component_login(login_row, paths, pid)
     except Exception as error:
         result.update({
@@ -15334,6 +15454,19 @@ def management_qmt_start_policy():
     return None
 
 
+def remote_management_info(include_secret=False):
+    return remote_agent_module.local_info(WEB_CONFIG.path)
+
+
+def start_remote_management_agent():
+    return remote_agent_module.ensure_agent(WEB_CONFIG.path)
+
+
+def save_remote_management_config(body):
+    from cfquant.remote_adapter import configure
+    return configure(sys.modules[__name__], body)
+
+
 def management_status():
     return {
         "api_version": 1,
@@ -15346,6 +15479,7 @@ def management_status():
         "core_version": current_core_version(),
         "web_version": WEB_VERSION,
         "auto_start_qmt": management_qmt_start_policy(),
+        "remote_management": remote_management_info(include_secret=False),
         "qmt_login_dependencies": check_login_dependencies(),
         "setup": WEB_CONFIG.setup_info(),
         "account_configs": WEB_CONFIG.account_configs(),
@@ -16705,12 +16839,46 @@ def download_financial_data(body):
 class CfquantWebHandler(BaseHTTPRequestHandler):
     server_version = WEB_VERSION
 
+    def _handle_remote_agent(self, parsed):
+        from cfquant.remote_adapter import LOCAL_PATHS, handle
+        try:
+            operation = parsed.path.removeprefix("/api/remote-agent/")
+            if operation not in LOCAL_PATHS:
+                raise remote_agent_module.RemoteError("not_found", "接口不存在")
+            config = remote_agent_module.Config(WEB_CONFIG.path).read()
+            token = self.headers.get("X-CFQuant-Agent-Key") or ""
+            if (not is_loopback_host(self.client_address[0]) or not token or not config.get("local_token")
+                    or not secrets.compare_digest(token, config["local_token"])):
+                self._write_json({"ok": False, "code": "authentication_failed", "error": "代理认证失败"}, status=401)
+                return
+            if self.headers.get("Origin") or int(self.headers.get("Content-Length") or 0) > 64000:
+                raise remote_agent_module.RemoteError("invalid_request", "代理请求无效")
+            if self.command != "POST" and operation != "snapshot":
+                raise remote_agent_module.RemoteError("method_not_allowed", "此操作需要 POST")
+            body = self._read_json_body() if self.command == "POST" else {}
+            if not isinstance(body, dict):
+                raise remote_agent_module.RemoteError("invalid_input", "参数格式无效")
+            with ACCOUNT_CONFIGURATION_LOCK:
+                result = handle(sys.modules[__name__], operation, body)
+            self._write_json(ok(result))
+            if operation == "service-stop":
+                global WEB_RESTART_REQUEST
+                with WEB_RESTART_LOCK:
+                    WEB_RESTART_REQUEST = None
+                threading.Thread(target=self.server.shutdown, daemon=True).start()
+        except remote_agent_module.RemoteError as error:
+            self._write_json({"ok": False, "code": error.code, "error": str(error)}, status=409)
+        except Exception:
+            self._write_json({"ok": False, "code": "local_operation_failed", "error": "本地操作失败，请检查服务状态"}, status=400)
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         if not self._request_allowed():
             self._write_json(fail("request host is not allowed", 403), status=403)
             return
-        if parsed.path == "/ws/callbacks":
+        if parsed.path.startswith("/api/remote-agent/"):
+            self._handle_remote_agent(parsed)
+        elif parsed.path == "/ws/callbacks":
             self._handle_ws_callbacks(parsed)
         elif parsed.path in ("/ws/quotes", "/ws/diagnostics/quotes"):
             self._handle_ws_quotes(parsed)
@@ -16742,6 +16910,9 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if not parsed.path.startswith("/api/"):
             self._write_json(fail("not found", 404), status=404)
             return
+        if parsed.path.startswith("/api/remote-agent/"):
+            self._handle_remote_agent(parsed)
+            return
         if parsed.path == "/api/web-auth/login":
             try:
                 body = self._read_json_body()
@@ -16764,6 +16935,19 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             return
         if not self._authorized(parsed):
             self._write_json(fail("invalid credentials", 401), status=401)
+            return
+        if parsed.path == "/api/remote-management":
+            try:
+                origin = self.headers.get("Origin")
+                if ((origin and urllib.parse.urlparse(origin).netloc != self.headers.get("Host"))
+                        or self.headers.get("Sec-Fetch-Site") == "cross-site"
+                        or int(self.headers.get("Content-Length") or 0) > 16000):
+                    raise remote_agent_module.RemoteError("invalid_request", "接入配置请求无效")
+                self._write_json(ok(save_remote_management_config(self._read_json_body())))
+            except remote_agent_module.RemoteError as error:
+                self._write_json({"ok": False, "code": error.code, "error": str(error)}, status=400)
+            except Exception:
+                self._write_json({"ok": False, "code": "configure_failed", "error": "接入配置失败，请检查官网连接与本地依赖"}, status=400)
             return
         if parsed.path == "/api/user-profile/avatar":
             self._handle_avatar_upload(parsed)
@@ -17108,6 +17292,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             return False
 
     def _authorized(self, parsed):
+        if parsed.path == "/api/remote-management" and not is_loopback_host(self.client_address[0]):
+            return self._has_access_token(parsed)
         if parsed.path.startswith("/api/management/") or parsed.path == "/api/project-updates/ensure-latest":
             return self._has_access_token(parsed)
         if os.environ.get("CFQUANT_MANAGEMENT_TOKEN_FILE") and parsed.path in MANAGEMENT_API_PATHS:
@@ -17273,6 +17459,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(check_login_dependencies(refresh=parse_bool(query.get("refresh", ["0"])[0]))))
             elif parsed.path == "/api/management/status":
                 self._write_json(ok(management_status()))
+            elif parsed.path == "/api/remote-management":
+                self._write_json(ok(remote_management_info(include_secret=False)))
             elif parsed.path == "/api/internal/runtime-route":
                 self._write_json(ok(internal_runtime_route_info()))
             elif parsed.path == "/api/config":
@@ -17953,10 +18141,11 @@ def main(argv=None):
     ensure_lttx_started("Web 启动预启动")
     # Older updater processes only copied raw entries. Refresh managed sources
     # before auto-login so QMT imports the selected mode's current package.
-    for result in refresh_bound_qmt_strategies():
-        if result.get("error"):
-            safe_print("cfquant managed QMT strategy refresh failed: %s" % result["error"])
-    start_configured_qmt_on_web_startup()
+    if os.environ.pop("CFQUANT_REMOTE_PRESERVE_QMT", "") != "1":
+        for result in refresh_bound_qmt_strategies():
+            if result.get("error"):
+                safe_print("cfquant managed QMT strategy refresh failed: %s" % result["error"])
+        start_configured_qmt_on_web_startup()
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     try:
         internal_api_key()
@@ -17989,6 +18178,13 @@ def main(argv=None):
     CALLBACKS.start()
     QUOTES.start()
     LOG_CLEANUP.start()
+    try:
+        from cfquant.remote_adapter import register_runtime, refresh_launch_settings
+        register_runtime(sys.modules[__name__])
+        refresh_launch_settings(sys.modules[__name__])
+        start_remote_management_agent()
+    except Exception:
+        safe_print("cfquant remote agent unavailable; local service continues")
     safe_print("cfquant web dashboard listening on http://%s:%s" % (args.host, args.port))
     MANAGEMENT_READY = True
     try:

@@ -97,7 +97,42 @@ def test_requirements_uses_tsinghua_mirror():
     assert "pycryptodome>=3.20" in requirements
     assert "Crypto.Cipher" in requirements
     assert "importlib-resources>=5" in requirements
-    assert "python_version" not in requirements
+    assert 'tomli>=1.1.0; python_version < "3.11"' in requirements
+
+
+def test_tomli_bootstrap_uses_project_pip_mirror(tmp_path):
+    command = _editable_install.tomli_install_args(tmp_path, python_exe="python")
+
+    assert command[:4] == ["python", "-m", "pip", "install"]
+    assert command[command.index("--index-url") + 1] == _editable_install.DEFAULT_PIP_INDEX_URL
+    assert command[-1] == _editable_install.TOMLI_REQUIREMENT
+
+
+def test_startup_bootstraps_tomli_before_version_check(monkeypatch, tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = 'cfquant'\nversion = '0.2.56'\n",
+        encoding="utf-8",
+    )
+    version_calls = iter([ImportError("tomli missing"), "0.2.56"])
+    bootstrap_calls = []
+
+    def fake_project_version(_project_root):
+        value = next(version_calls)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def fake_run(args, cwd, quiet=False, clear_pythonpath=False):
+        bootstrap_calls.append((args, cwd))
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(_editable_install, "project_package_version", fake_project_version)
+    monkeypatch.setattr(_editable_install, "run", fake_run)
+    monkeypatch.setattr(_editable_install, "installed_package_version", lambda _exe: "0.2.56")
+    monkeypatch.setattr(_editable_install, "report_startup_dependencies", lambda _exe: None)
+
+    assert _editable_install.ensure_cfquant_installed(tmp_path, "python") == 0
+    assert bootstrap_calls[0][0][-1] == _editable_install.TOMLI_REQUIREMENT
 
 
 def test_run_command_is_a_serve_alias(capsys):

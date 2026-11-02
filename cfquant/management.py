@@ -100,6 +100,7 @@ class RuntimeManager:
         self._process = None
         self.accounts = AccountManager(self)
         self.updates = UpdateManager(self)
+        self.remote = RemoteManager(self)
         # Local service requests should never be sent to an HTTP proxy.
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -335,6 +336,21 @@ class RuntimeManager:
         info = self.status()
         from . import configure
         configure(host=info["lttx_host"], port=info["lttx_port"], transport="web_lttx")
+
+
+class RemoteManager:
+    """Opt-in connection using a project API key created on the official site."""
+
+    def __init__(self, runtime):
+        self.runtime = runtime
+
+    def status(self):
+        return self.runtime._request("GET", "/api/remote-management")
+
+    def configure(self, *, enabled=True, api_key=None, permissions=None):
+        body = {"enabled": bool(enabled)}
+        body.update({k: v for k, v in {"api_key": api_key, "permissions": permissions}.items() if v is not None})
+        return self.runtime._request("POST", "/api/remote-management", body)
 
 
 class AccountManager:

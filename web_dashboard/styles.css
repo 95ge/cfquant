@@ -1411,6 +1411,10 @@ body.binding-dialog-open {
   padding: 2px 0;
 }
 
+.qmt-dependency-status.hidden {
+  display: none;
+}
+
 .qmt-dependency-status {
   margin-top: 10px;
   padding: 12px 14px;
