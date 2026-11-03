@@ -15,6 +15,7 @@ from .level2 import L2_THOUSAND_SUBSCRIPTIONS, quote_callback_data, quote_plain,
 from .protocol import loads_message, pack_event, pack_response, pack_quote_latency_event, pack_whole_quote_event
 from .protocol import encode_response_result, request_expired
 from .tx_trade_bridge import TxTradeBridge, relay_sync_order_callback
+from .shared_quotes import SharedQuoteFeed
 
 
 COALESCED_QUERY_ACTIONS = set([
@@ -204,10 +205,11 @@ class NormalQmtBridge(TxTradeBridge):
         try:
             self.request_queue.put_nowait((msg, time.time(), None))
             self._release_worker("enqueue")
-            self._log(
-                "normal bridge request queued action=%s id=%s queue_size=%s"
-                % (msg.get("action"), msg.get("id"), self.request_queue.qsize())
-            )
+            if not (action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True):
+                self._log(
+                    "normal bridge request queued action=%s id=%s queue_size=%s"
+                    % (msg.get("action"), msg.get("id"), self.request_queue.qsize())
+                )
         except queue.Full as e:
             self._send_error(msg, e)
 
@@ -450,6 +452,22 @@ class NormalQmtBridge(TxTradeBridge):
         self._log("normal bridge worker thread started in init context")
 
     def _dispatch(self, action, params, msg):
+        if action == "cfquant.shared_quote_status":
+            key = params.get("shared_lease_key")
+            for row in self.quote_subscriptions.values():
+                if key and row.get("shared_lease_key") == key and row.get("lease_timeout"):
+                    row["lease_deadline"] = time.monotonic() + row["lease_timeout"]
+            return {"ready": self.context is not None, "lease_keys": [
+                row["shared_lease_key"] for row in self.quote_subscriptions.values()
+                if row.get("shared_lease_key")]}
+        if action == "cfquant.quote_heartbeat":
+            touched = []
+            for sub_id in params.get("subscribe_ids", []):
+                row = self.quote_subscriptions.get(int(sub_id))
+                if row and row.get("client_id") == (msg.get("client_id") or msg.get("reply_channel")) and row.get("lease_timeout"):
+                    row["lease_deadline"] = time.monotonic() + row["lease_timeout"]
+                    touched.append(sub_id)
+            return {"subscribe_ids": touched}
         if action == "xtdata.subscribe_whole_quote_latency":
             return self._subscribe_native_quote(dict(msg, params=params), "whole_quote_latency", "subscribe_whole_quote")
         if action in ("xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"):
@@ -473,7 +491,49 @@ class NormalQmtBridge(TxTradeBridge):
     def _handle_whole_quote_publish_subscribe(self, msg):
         return self._subscribe_native_quote(msg, "whole_quote", "subscribe_whole_quote")
 
+    def _get_whole_quote_feed(self):
+        feed = getattr(self, "_shared_whole_feed", None)
+        if feed is None:
+            feed_type = globals().get("SharedQuoteFeed")
+            if feed_type is None:
+                from cfquant.shared_quotes import SharedQuoteFeed as feed_type
+
+            def subscribe(codes, callback, generation):
+                func = self._get_callable("subscribe_whole_quote")
+                if not callable(func):
+                    raise NotImplementedError("QMT subscribe_whole_quote not found")
+                native_id = self._call_variants(func, [
+                    ((codes,), {"callback": callback}), ((codes, callback), {}),
+                ])
+                if native_id is None or isinstance(native_id, bool) or int(native_id) <= 0:
+                    raise RuntimeError("QMT subscribe_whole_quote failed: %r" % (native_id,))
+                return native_id
+
+            def unsubscribe(native_id):
+                result = self._get_callable("unsubscribe_quote")(native_id)
+                if result is False or (isinstance(result, (int, float)) and result < 0):
+                    raise RuntimeError("QMT unsubscribe_quote failed: %r" % (result,))
+                return result
+
+            feed = feed_type(subscribe, unsubscribe,
+                             idle_seconds=0, asynchronous=False, cache_latest=False)
+            self._shared_whole_feed = feed
+        return feed
+
     def _subscribe_native_quote(self, msg, kind, method):
+        params = msg.get("params") or {}
+        # Retrying an acknowledged/lost RPC with the same lease key must not
+        # allocate another native or logical subscription.
+        lease_key = params.get("shared_lease_key")
+        if lease_key and kind in ("whole_quote", "whole_quote_latency"):
+            for existing_id, existing in self.quote_subscriptions.items():
+                if existing.get("shared_lease_key") == lease_key and existing.get("client_id") == (msg.get("client_id") or msg.get("reply_channel")):
+                    if existing.get("code_list") != params.get("code_list", params.get("stock_list", [])) or existing.get("kind") != kind:
+                        raise ValueError("shared lease key already used with other subscription parameters")
+                    if existing.get("lease_timeout"):
+                        existing["lease_deadline"] = time.monotonic() + existing["lease_timeout"]
+                    return dict(subscribe_id=existing_id, internal_subscribe_id=existing["internal_subscribe_id"],
+                                callback_event=existing["callback_event"], publish_existing=False, shared=True)
         self.subscription_seq += 1
         sub_id = self.subscription_seq
         params = msg.get("params") or {}
@@ -485,8 +545,12 @@ class NormalQmtBridge(TxTradeBridge):
             "period": params.get("period", "1d"),
             "callback_event": params.get("callback_event") or "quote:%s" % sub_id,
             "publish_existing": False,
+            "shared_lease_key": lease_key,
+            "lease_timeout": 45 if params.get("lease_timeout") and kind in ("whole_quote", "whole_quote_latency") else 0,
         }
         pending = []
+        if sub["lease_timeout"]:
+            sub["lease_deadline"] = time.monotonic() + sub["lease_timeout"]
         callback_lock = threading.RLock()
         initializing = [True]
 
@@ -539,10 +603,14 @@ class NormalQmtBridge(TxTradeBridge):
         self.quote_subscriptions[sub_id] = sub
         try:
             if kind in ("whole_quote", "whole_quote_latency"):
-                internal_id = self._call_variants(func, [
-                    ((sub["code_list"],), {"callback": callback}),
-                    ((sub["code_list"], callback), {}),
-                ])
+                feed = self._get_whole_quote_feed()
+                sub["shared_lease_id"] = feed.acquire(
+                    "native:%s" % sub_id, sub["code_list"], callback, purpose=kind)
+                sub["shared_whole"] = True
+                internal_id = feed._handle
+                for row in self.quote_subscriptions.values():
+                    if row.get("shared_whole"):
+                        row["internal_subscribe_id"] = internal_id
             elif kind == "quote":
                 internal_id = func(sub["stock_code"], sub["period"], params.get("dividend_type") or "none", "dict", callback)
             elif method == "subscribe_l2thousand":
@@ -576,18 +644,41 @@ class NormalQmtBridge(TxTradeBridge):
             "internal_subscribe_id": internal_id,
             "callback_event": sub["callback_event"],
             "publish_existing": False,
+            "shared": bool(sub.get("shared_whole")),
         }
+
+    def _expire_whole_quote_leases(self):
+        now = time.monotonic()
+        if now < getattr(self, "_next_quote_expiry_check", 0):
+            return
+        self._next_quote_expiry_check = now + 1
+        expired = [key for key, row in self.quote_subscriptions.items()
+                   if row.get("lease_deadline") is not None and row["lease_deadline"] < now]
+        for sub_id in expired:
+            try:
+                self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
+            except Exception as error:
+                self._log("expired quote lease cleanup failed: %s" % error)
 
     def _handle_quote_unsubscribe(self, msg):
         params = msg.get("params") or {}
         sub_id = params.get("subscribe_id")
+        if params.get("shared_lease_key"):
+            matches = [key for key, row in self.quote_subscriptions.items()
+                       if row.get("shared_lease_key") == params["shared_lease_key"]]
+            if not matches:
+                return True
+            sub_id = matches[0]
         try:
             sub_id = int(sub_id)
         except (TypeError, ValueError):
             pass
         sub = self.quote_subscriptions.get(sub_id)
         if sub and "internal_subscribe_id" in sub:
-            result = self._get_callable("unsubscribe_quote")(sub["internal_subscribe_id"])
+            if sub.get("shared_whole"):
+                result = self._get_whole_quote_feed().release(sub["shared_lease_id"])
+            else:
+                result = self._get_callable("unsubscribe_quote")(sub["internal_subscribe_id"])
             if result is False or (isinstance(result, (int, float)) and result < 0):
                 raise RuntimeError("QMT unsubscribe_quote failed: %r" % (result,))
         self.quote_subscriptions.pop(sub_id, None)
@@ -600,9 +691,14 @@ class NormalQmtBridge(TxTradeBridge):
     def _close_quote_subscriptions(self):
         with self.dispatch_lock:
             internal_ids = [sub["internal_subscribe_id"] for sub in self.quote_subscriptions.values()
-                            if "internal_subscribe_id" in sub]
-            if self.whole_quote_sub_id is not None:
-                internal_ids.append(self.whole_quote_sub_id)
+                            if "internal_subscribe_id" in sub and not sub.get("shared_whole")]
+            feed = getattr(self, "_shared_whole_feed", None)
+            if feed is not None:
+                try:
+                    feed.close()
+                    self._shared_whole_feed = None
+                except Exception as error:
+                    self._log("normal bridge shared quote cleanup failed: %s" % error)
             self.quote_subscriptions.clear()
             self.whole_quote_publish_enabled = False
             self.whole_quote_publish_sub_id = None
@@ -702,6 +798,7 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_requests(self, source):
         with self.dispatch_lock:
+            self._expire_whole_quote_leases()
             self._poll_sync_order_responses()
             start = time.perf_counter()
             count = 0
@@ -740,10 +837,11 @@ class NormalQmtBridge(TxTradeBridge):
                 return
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
             self._send_response(msg, result)
-            self._log(
-                "normal bridge worker response source=%s action=%s id=%s total_ms=%.2f"
-                % (source, msg.get("action"), msg.get("id"), (time.time() - received_at) * 1000)
-            )
+            if not (msg.get("action") == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True):
+                self._log(
+                    "normal bridge worker response source=%s action=%s id=%s total_ms=%.2f"
+                    % (source, msg.get("action"), msg.get("id"), (time.time() - received_at) * 1000)
+                )
         except Exception as e:
             self._log(
                 "normal bridge worker request_error source=%s action=%s id=%s error=%s"
@@ -893,7 +991,8 @@ class NormalQmtBridge(TxTradeBridge):
         if self.context is None or self.whole_quote_sub_id:
             return
         try:
-            self.whole_quote_sub_id = self.context.subscribe_whole_quote(["SH", "SZ", "BJ"], callback=self._on_whole_quote)
+            self.whole_quote_sub_id = self._get_whole_quote_feed().acquire(
+                "internal-worker", ["SH", "SZ", "BJ"], self._on_whole_quote, purpose="worker")
             self._log("normal bridge internal whole quote subscribed id=%s" % self.whole_quote_sub_id)
         except Exception as e:
             self._log("normal bridge internal whole quote subscribe failed: %s" % e)

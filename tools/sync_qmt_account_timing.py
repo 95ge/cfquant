@@ -1,13 +1,17 @@
 """Embed account query diagnostics while preserving Lite's account routing."""
 import argparse
 import ast
+try:
+    from tools.sync_qmt_ast import parse_source
+except ImportError:
+    from sync_qmt_ast import parse_source
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def methods(source, class_name):
-    cls = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == class_name)
+    cls = next(n for n in parse_source(source).body if isinstance(n, ast.ClassDef) and n.name == class_name)
     return {n.name: n for n in cls.body if isinstance(n, ast.FunctionDef)}
 
 
@@ -47,7 +51,7 @@ def updated_source(source):
     for start, end, replacement in sorted(edits, reverse=True):
         lines[start:end] = [replacement]
     result = ''.join(lines)
-    ast.parse(result, feature_version=(3, 6))
+    parse_source(result, feature_version=(3, 6))
     return result
 
 

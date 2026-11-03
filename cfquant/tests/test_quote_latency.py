@@ -111,72 +111,62 @@ def test_sdk_diagnostic_callback_measures_before_user_work_and_unsubscribes(monk
     assert callbacks == {}
 
 
-def test_web_diagnostics_isolated_routes_receive_time_and_cleanup(monkeypatch):
-    requests, broadcasts, handlers = [], [], []
-    monkeypatch.setattr(web.CLIENTS, "add_callback", lambda name, cb: handlers.append(cb))
-    monkeypatch.setattr(web.CLIENTS, "remove_callback", lambda name, cb: handlers.remove(cb))
-    manager = SimpleNamespace(count=lambda: 1, broadcast=broadcasts.append)
-    def provider(action, params, **kwargs):
-        requests.append((action, params, kwargs))
-        return {"result": {"subscribe_id": 101}, "bridge_id": "test-bridge", "channel": "normal", "mode": "lite"}
-    monkeypatch.setattr(web, "data_provider_request", provider)
-    monkeypatch.setattr(web, "account_request", lambda *args, **kwargs: requests.append((args, kwargs)) or {"result": True})
-    store = web.QuoteSubscriptionStore(diagnostic=True, manager=manager, max_events=2)
-    ordinary = web.QuoteSubscriptionStore(manager=manager)
+class DiagnosticService:
+    def __init__(self):
+        self.released = []
+        self.callback = None
+    def acquire(self, key, codes, callback, **kwargs):
+        assert kwargs["diagnostic"]
+        self.callback = callback
+        callback(dict(envelope(100), shared_received_at_ms=STAMP + 32))
+        return 101
+    def release(self, lease):
+        self.released.append(lease)
+        return True
+    def status(self):
+        return {"source": {"bridge_id": "test-bridge", "channel": "normal"}}
+
+
+def test_web_diagnostics_shared_routes_receive_time_and_cleanup():
+    broadcasts = []
+    service = DiagnosticService()
+    manager = SimpleNamespace(count=lambda *args: 1, broadcast=broadcasts.append)
+    store = web.QuoteSubscriptionStore(diagnostic=True, manager=manager, max_events=2, shared_service=service)
     try:
         result = store.subscribe_whole({"markets": ["SZ"], "bridge_id": "test-bridge"})
-        assert requests[0][0] == diagnostics.ACTION
         assert result["kind"] == "whole_quote_latency"
-        assert requests[0][2]["bridge_id"] == "test-bridge"
-        msg = {"subscription_id": 101, "event": requests[0][1]["callback_event"], "data": envelope(100)}
-        ordinary._subscriptions["101"] = {}
-        ordinary._on_quote(msg)
-        store._on_quote(dict(msg, data={"000001.SZ": {"time": STAMP}}))
-        store._on_quote(dict(msg, event="quote:another-sdk-client"))
-        assert broadcasts == []
-        monkeypatch.setattr(web.time, "time", lambda: (STAMP + 32) / 1000)
+        assert result["shared"]
         for _ in range(3):
-            store._on_quote(msg)
+            service.callback(dict(envelope(100), shared_received_at_ms=STAMP + 32))
         assert len(store.latest()) == 2
         event = broadcasts[-1]
         assert event["latency"]["internal_latency_ms"] == 20
         assert event["latency"]["samples"][0]["quote_latency_ms"] == 32
         assert event["latency"]["samples"][0]["qmt_quote_latency_ms"] == 10
-        assert event["received_at"] * 1000 == STAMP + 32
-        assert len(event["data"]) == event["code_count"] == len(event["latency"]["samples"]) == 100
-        assert event['data']['000099.SZ'] == msg['data']['quotes']['000099.SZ']
-        assert store.unsubscribe({"subscribe_id": 101})["result"] is True
-        assert requests[-1][0][3] == "xtdata.unsubscribe_quote"
+        assert len(event["data"]) == event["code_count"] == 100
+        count = len(broadcasts)
+        store._on_quote({"subscription_id":101, "event":"quote:other", "data":envelope()})
+        assert len(broadcasts) == count
+        assert store.unsubscribe({"subscribe_id":101})["result"] is True
+        assert service.released == [101]
         assert store.latest() == []
-        store._on_quote(msg)
-        assert len(broadcasts) == 3
+        service.callback(envelope())
+        assert len(broadcasts) == count
     finally:
-        with store._lock:
-            store._cancel_idle_release_locked()
         store.close()
-        ordinary.close()
 
 
-def test_web_keeps_early_snapshot_receive_timestamp(monkeypatch):
-    monkeypatch.setattr(web.CLIENTS, "add_callback", lambda *args: None)
-    monkeypatch.setattr(web.CLIENTS, "remove_callback", lambda *args: None)
-    monkeypatch.setattr(web, "account_request", lambda *args, **kwargs: {"result": True})
-    manager = SimpleNamespace(count=lambda: 1, broadcast=lambda event: None)
-    store = web.QuoteSubscriptionStore(diagnostic=True, manager=manager)
-    def provider(action, params, **kwargs):
-        store._on_quote({"subscription_id": 102, "event": params["callback_event"], "data": envelope()}, STAMP + 32)
-        assert store.latest() == []
-        return {"result": {"subscribe_id": 102}, "bridge_id": "test", "channel": "normal", "mode": "lite"}
-    monkeypatch.setattr(web, "data_provider_request", provider)
+def test_web_keeps_early_snapshot_receive_timestamp():
+    service = DiagnosticService()
+    manager = SimpleNamespace(count=lambda *args:1, broadcast=lambda event:None)
+    store = web.QuoteSubscriptionStore(diagnostic=True, manager=manager, shared_service=service)
     try:
-        store.subscribe_whole({"markets": ["SZ"]})
-        assert store.latest()[0]["latency"]["internal_latency_ms"] == 20
-        assert store.latest()[0]["latency"]["received_at_ms"] == STAMP + 32
-        assert store.latest()[0]["latency"]["samples"][0]["qmt_quote_latency_ms"] == 10
-        assert store._pending_diagnostics == {}
+        store.subscribe_whole({"markets":["SZ"]})
+        report = store.latest()[0]["latency"]
+        assert report["internal_latency_ms"] == 20
+        assert report["received_at_ms"] == STAMP + 32
+        assert report["samples"][0]["qmt_quote_latency_ms"] == 10
     finally:
-        with store._lock:
-            store._cancel_idle_release_locked()
         store.close()
 
 
@@ -210,26 +200,26 @@ def test_print_script_reports_and_cleans_up_on_keyboard_interrupt(monkeypatch, c
     assert '"行情到QMT_本批全部": {"count": 2, "min_ms": 10.0' in output
 
 
-@pytest.mark.parametrize('plain', [False, True])
-def test_web_lttx_forwards_diagnostic_envelope_and_unsubscribes(monkeypatch, plain):
+def test_web_lttx_forwards_diagnostic_envelope_and_unsubscribes(monkeypatch):
     messages = []
     router = web.LttxWebRouteServer()
     router.tx = SimpleNamespace(push=lambda kind, payload, channel: messages.append((kind, loads_message(payload), channel)))
     packet = envelope()
-    def request(msg):
-        router._on_quote_event({'subscription_id': 42, 'event': msg['params']['callback_event'], 'data': packet,
-                               'meta': {'quote_json_plain': True} if plain else {}})
-        return {'subscribe_id': 42}, {'bridge_id': 'test', 'channel': 'normal', 'mode': 'lite'}
-    monkeypatch.setattr(web, 'route_external_lttx_request', request)
+    def acquire(key, codes, callback, **kwargs):
+        assert kwargs['diagnostic']
+        callback(packet)
+        return 42
     released = []
-    monkeypatch.setattr(web.CLIENTS, 'request', lambda *args, **kwargs: released.append(args) or True)
+    monkeypatch.setattr(web, 'PROJECT_QUOTES', SimpleNamespace(
+        acquire=acquire, status=lambda:{'source':{'bridge_id':'test', 'channel':'normal', 'mode':'lite'}},
+        release=lambda lease:released.append(lease) or True))
     router._handle_raw(pack_request(diagnostics.ACTION, {'code_list': ['SZ'], 'callback_event': 'quote:sdk'}, client_id='sdk'))
     assert [message[0] for message in messages] == ['event', 'response']
     assert messages[0][1]['data'] == packet
-    assert bool(messages[0][1]['meta'].get('quote_json_plain')) is plain
+    assert not messages[0][1].get('meta', {}).get('quote_json_plain')
     assert messages[0][1]['event'] == 'quote:sdk'
     assert messages[0][2] == 'sdk'
     sid = messages[-1][1]['result']['subscribe_id']
     router._handle_raw(pack_request('xtdata.unsubscribe_quote', {'subscribe_id': sid}, client_id='sdk'))
-    assert released[0][3] == {'subscribe_id': 42}
+    assert released == [42]
     assert router._quote_routes == {} and router._quote_event_routes == {}

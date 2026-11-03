@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261103_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20261103_02">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -210,10 +210,11 @@
             <label class="field wide">
               <span>运行模式</span>
               <select id="setupMode" name="mode">
-                <option value="ctypes">通用模式（推荐）</option>
-                <option value="lite">极致模式</option>
-                <option value="lttx">高级模式（两个 QMT）</option>
+                <option value="lite" selected>极致模式（默认）</option>
+                <option value="ctypes" hidden>通用模式（已有配置）</option>
+                <option value="lttx" hidden>高级模式（已有配置）</option>
               </select>
+              <small>适配当前 QMT 版本，新绑定使用极致模式。</small>
             </label>
             <label class="field wide">
               <span>cfquant Python 环境</span>
@@ -312,6 +313,7 @@
         <button class="nav-item" data-view="trade">交易</button>
         <button class="nav-item" data-view="orders">委托</button>
         <button class="nav-item" data-view="status">状态</button>
+        <button class="nav-item" data-view="monitor">监控</button>
         <button class="nav-item" data-view="bindings">绑定</button>
         <button class="nav-item" data-view="callbacks">回调</button>
         <button class="nav-item" data-view="api">接口</button>
@@ -376,6 +378,7 @@
         </section>
 
         <section class="grid">
+          <section id="tradingMonitor" class="span-12 view-panel view-monitor hidden" aria-label="交易监控"></section>
           <div class="panel span-12 view-panel view-overview home-intro-panel">
             <div class="home-intro">
               <div class="home-intro-copy">
@@ -1419,7 +1422,7 @@
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="onboarding">
                   <strong>新手引导</strong>
-                  <span>单账号通用模式，最快跑通</span>
+                  <span>单账号极致模式，快速完成绑定</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="project">
                   <strong>项目架构</strong>
@@ -1440,6 +1443,10 @@
                 <button class="tutorial-menu-item" type="button" data-guide="cftrader">
                   <strong>cftrader 批量交易与撤单</strong>
                   <span>批量下单、批量撤单、原回调</span>
+                </button>
+                <button class="tutorial-menu-item" type="button" data-guide="algorithm">
+                  <strong>算法交易 · TWAP / VWAP / POV</strong>
+                  <span>共享行情、完整示例、任务管理</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="same_account_market">
                   <strong>同账号独立市场</strong>
@@ -1478,7 +1485,7 @@
                     <p>填写账号、选择模式并保存，系统自动同步项目代码和 QMT 内部策略代码，然后按提示启动并登录 QMT。</p>
                     <div class="guide-callout">
                       <strong>推荐</strong>
-                      <span>第一次用通用模式，QMT 目录填 <code>bin.x64</code>；无需手工复制代码，只需先完成 QMT Python 库下载。</span>
+                      <span>默认使用极致模式，QMT 目录填 <code>bin.x64</code>；无需手工复制代码，只需先完成 QMT Python 库下载。</span>
                     </div>
                     <div class="onboarding-inline-actions">
                       <button id="openOnboardingInlineBtn" class="primary" type="button">开始初始化向导</button>
@@ -1516,8 +1523,8 @@
                           </div>
                           <div class="onboarding-quick-item">
                             <span>2</span>
-                            <strong>选择模式</strong>
-                            <small>不确定就选通用模式。</small>
+                            <strong>极致模式</strong>
+                            <small>新绑定默认使用，适配当前 QMT。</small>
                           </div>
                           <div class="onboarding-quick-item">
                             <span>3</span>
@@ -1531,8 +1538,8 @@
                           </div>
                         </div>
                         <div class="guide-callout compact">
-                          <strong>高级模式</strong>
-                          <span>只有确认要双 QMT 低延迟交易时再选。</span>
+                          <strong>使用极致模式</strong>
+                          <span>适配当前 QMT 版本，系统自动部署对应策略。</span>
                         </div>
                         <div class="onboarding-actions">
                           <button id="onboardingStartConfigBtn" class="primary" type="button">开始配置</button>
@@ -1567,11 +1574,11 @@
                           <label class="field">
                             <span>运行模式</span>
                             <select id="onboardingMode">
-                              <option value="ctypes">通用模式（推荐）</option>
-                              <option value="lite">极致模式</option>
-                              <option value="lttx">高级模式</option>
+                              <option value="lite" selected>极致模式（默认）</option>
+                              <option value="ctypes" hidden>通用模式（已有配置）</option>
+                              <option value="lttx" hidden>高级模式（已有配置）</option>
                             </select>
-                            <small>首次建议通用模式；高级模式会要求第二个 QMT 目录。</small>
+                            <small>适配当前 QMT 版本，新绑定使用极致模式。</small>
                           </label>
                           <label class="field wide">
                             <span>QMT 安装目录或核心目录</span>
@@ -2287,6 +2294,7 @@ configure(
                       <a href="#cftrader-cancel-async">批量异步撤单</a>
                       <a href="#cftrader-results">返回值与失败处理</a>
                     </nav>
+                    <p>需要将母单按时间或成交量拆分执行？<button type="button" data-algorithm-guide>查看 TWAP / VWAP / POV 算法交易教程</button></p>
                     <div class="guide-table-wrap">
                       <table>
                         <thead><tr><th scope="col">接口</th><th scope="col">参数与结果</th></tr></thead>
@@ -2477,6 +2485,115 @@ else:
                     <p>批量撤单结果额外有 <code>operation="cancel"</code>；每行包含 <code>order_id</code>、可选 <code>stock_code</code>/<code>market</code>、<code>seq</code>、<code>cancel_result</code> 和 <code>error</code>。<code>cancel_result=0</code> 表示 QMT 撤单调用成功，不代表原委托已经处于已撤状态。</p>
                     <p>QMT 本地下单异常会停止尚未执行的行。<code>trader.set_timeout()</code> 对整批 RPC 生效，整批超时或回包丢失时所有未确认行标为 <code>unknown</code>，保留原异步关联；SDK 和 Web 均不自动重试或切换通道重发。已提交订单不回滚，不保证原子提交或同时成交。</p>
                     <p>启用 SH/SZ 独立市场路由时，连续同目标市场的订单组成一段，每段一个批量请求，由对应 QMT 本地执行；返回结果仍保持输入顺序。</p>
+                  </div>
+                </article>
+
+                <article class="tutorial-topic" data-guide-panel="algorithm">
+                  <div class="guide-section" id="algo-overview">
+                    <h3>算法交易：TWAP、VWAP、POV</h3>
+                    <p>通过 <code>cftrader.CfQuantTrader</code> 提交一个母单，由 Web 服务按计划拆分并执行子单。无需事先订阅行情：用户订阅、行情诊断和算法任务复用同一行情源的全推订阅及最新缓存，取消其中一个使用者不会中断其他使用者。</p>
+                    <p>启动新版 Web 服务、加载新版 QMT 脚本并配置行情与交易账号后即可调用。首版支持 SH/SZ/BJ 的普通买卖；所有子单受买入最高价或卖出最低价约束。以下示例默认 <code>ENABLE_TRADING = False</code>，替换账号及交易参数后再开启。</p>
+                    <nav class="python-guide-toc" aria-label="算法交易章节">
+                      <a href="#algo-twap">TWAP 示例</a>
+                      <a href="#algo-vwap">VWAP 示例</a>
+                      <a href="#algo-pov">POV 示例</a>
+                      <a href="#algo-controls">查询、暂停、恢复、撤销</a>
+                      <a href="#algo-parameters">参数与状态</a>
+                      <a href="#algo-http">HTTP 接口</a>
+                    </nav>
+                    <div class="guide-table-wrap"><table>
+                      <thead><tr><th scope="col">算法</th><th scope="col">执行方式</th><th scope="col">数据需求</th></tr></thead>
+                      <tbody>
+                        <tr><td><a href="#python-api=cftrader.order_twap">TWAP</a></td><td>按有效交易时间均匀拆分数量。</td><td>实时行情、交易日历与证券规则。</td></tr>
+                        <tr><td><a href="#python-api=cftrader.order_vwap">基础 VWAP</a></td><td>按成交量曲线分配数量，不保证成交价等于市场 VWAP。</td><td>实时行情，加历史分钟量或自定义权重。</td></tr>
+                        <tr><td><a href="#python-api=cftrader.order_pov">POV</a></td><td>按启动后观察到的成交量增量乘参与率执行。</td><td>实时行情中的累计成交量。</td></tr>
+                      </tbody>
+                    </table></div>
+                  </div>
+                  <div class="guide-section" id="algo-twap">
+                    <h3>TWAP：10 分钟执行 1000 股</h3>
+                    <p>示例按 60 秒分片执行，午休不计入有效交易时间；买入子单价格不高于 10 元。返回 <code>algo_id</code>，后续用它查询或控制任务。</p>
+                    <button type="button" data-algo-copy="algo-twap-code">复制 TWAP 示例</button>
+                    <pre class="guide-code" data-language="python" data-algo-example="order_twap" id="algo-twap-code" tabindex="0"></pre>
+                    <p><a href="#python-api=cftrader.order_twap">查看 order_twap 参数与返回值</a></p>
+                  </div>
+                  <div class="guide-section" id="algo-vwap">
+                    <h3>VWAP：按 50%、30%、20% 的量曲线执行</h3>
+                    <p><code>volume_profile=[5, 3, 2]</code> 对应三个等长有效交易时间段。省略曲线时使用执行日之前已有的历史分钟成交量；历史数据不足时需要先下载，或显式给出曲线。</p>
+                    <button type="button" data-algo-copy="algo-vwap-code">复制 VWAP 示例</button>
+                    <pre class="guide-code" data-language="python" data-algo-example="order_vwap" id="algo-vwap-code" tabindex="0"></pre>
+                    <p><a href="#python-api=cftrader.order_vwap">查看 order_vwap 参数与返回值</a></p>
+                  </div>
+                  <div class="guide-section" id="algo-pov">
+                    <h3>POV：按市场成交增量的 10% 参与</h3>
+                    <p><code>participation_rate=0.1</code> 表示目标参与率为 10%。只累计建立基准后观察到的成交量，启动前的量不会触发追单；行情断线恢复时重新建立基准。行情 <code>volume</code> 默认按手换算为股，不同品种或来源须核实 <code>volume_multiplier</code>。</p>
+                    <button type="button" data-algo-copy="algo-pov-code">复制 POV 示例</button>
+                    <pre class="guide-code" data-language="python" data-algo-example="order_pov" id="algo-pov-code" tabindex="0"></pre>
+                    <p><a href="#python-api=cftrader.order_pov">查看 order_pov 参数与返回值</a></p>
+                  </div>
+                  <div class="guide-section" id="algo-controls">
+                    <h3>查询、暂停、恢复与撤销任务</h3>
+                    <p>将 <code>YOUR_ALGO_ID</code> 替换为创建时返回的 ID。新进程操作已有任务时显式传入账号。下面每次只执行 <code>action</code> 指定的一种操作。</p>
+                    <button type="button" data-algo-copy="algo-controls-code">复制任务管理示例</button>
+                    <pre class="guide-code" data-language="python" id="algo-controls-code" tabindex="0">from cfquant import cftrader
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+ENABLE_REQUESTS = False
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+orders_api = cftrader.CfQuantTrader(XtQuantTrader("", 0))
+algo_id = "YOUR_ALGO_ID"
+action = "query"  # query / list / pause / resume / cancel
+
+if ENABLE_REQUESTS:
+    if action == "query":
+        task = orders_api.query_algo(algo_id, account=account)
+        print(task["status"], task["filled_volume"], task["remaining_volume"])
+    elif action == "list":
+        print(orders_api.list_algos(account))
+    elif action == "pause":
+        print(orders_api.pause_algo(algo_id, account=account))
+    elif action == "resume":
+        print(orders_api.resume_algo(algo_id, account=account))
+    elif action == "cancel":
+        print(orders_api.cancel_algo(algo_id, account=account))
+else:
+    print("Preview only; requests are disabled")</pre>
+                    <p>暂停会停止新增子单并请求撤销在途子单；恢复仍遵循原截止时间，并等待未确认撤单完成。撤销后可能保持 <code>CANCELLING</code>，直到子单结果全部确认。关闭调用脚本不会撤销任务，需显式调用 <code>cancel_algo()</code>。</p>
+                    <p>接口说明：<a href="#python-api=cftrader.query_algo">query_algo</a> · <a href="#python-api=cftrader.list_algos">list_algos</a> · <a href="#python-api=cftrader.pause_algo">pause_algo</a> · <a href="#python-api=cftrader.resume_algo">resume_algo</a> · <a href="#python-api=cftrader.cancel_algo">cancel_algo</a></p>
+                  </div>
+                  <div class="guide-section" id="algo-parameters">
+                    <h3>常用参数与任务状态</h3>
+                    <div class="guide-table-wrap"><table>
+                      <thead><tr><th scope="col">参数</th><th scope="col">说明</th></tr></thead>
+                      <tbody>
+                        <tr><td><code>limit_price</code></td><td>必填；买单最高价或卖单最低价。</td></tr>
+                        <tr><td><code>duration_seconds</code> / <code>interval_seconds</code></td><td>有效交易时长 / 最小子单提交间隔，默认 3600 / 60 秒；时长须能放进当日可用交易时段。</td></tr>
+                        <tr><td><code>request_key</code></td><td>创建重试时使用相同账号、参数和 key，避免重复创建母单；新的交易意图使用新的 key。</td></tr>
+                        <tr><td><code>max_child_volume</code></td><td>每笔子单最大数量，仍须符合证券最小申报量和数量步长。</td></tr>
+                        <tr><td><code>max_quote_age</code></td><td>默认 15 秒；行情过期时停止新增子单。</td></tr>
+                        <tr><td><code>child_timeout_seconds</code></td><td>默认 60 秒；子单超时请求撤销，确认结果后才决定是否补量。</td></tr>
+                        <tr><td><code>price_mode</code></td><td><code>opponent</code> 对手一档、<code>passive</code> 本方一档、<code>limit</code> 指定限价。</td></tr>
+                      </tbody>
+                    </table></div>
+                    <p><code>WAITING_MARKET</code> / <code>WAITING_SESSION</code> 表示等待行情或时段；<code>RUNNING</code> 执行中；<code>PAUSED</code> 已暂停；<code>CANCELLING</code> 等待子单结果；<code>COMPLETED</code>、<code>CANCELLED</code>、<code>EXPIRED</code>、<code>FAILED</code> 为终态。</p>
+                    <p>查询结果包含成交量 <code>filled_volume</code>、剩余量 <code>remaining_volume</code>、在途占用量 <code>reserved_volume</code>、成交均价 <code>average_price</code> 和错误信息 <code>last_error</code>。子单回包丢失时保留未知状态并核对委托，不自动重发。服务重启后先对账再恢复。</p>
+                    <p>统一入口为 <a href="#python-api=cftrader.order_algo"><code>order_algo()</code></a>。完整参数和首版支持范围见项目文档 <code>docs/algorithm_trading.md</code>。</p>
+                  </div>
+                  <div class="guide-section" id="algo-http">
+                    <h3>HTTP 接口与网页入口</h3>
+                    <p>左侧“接口”页面的“算法交易 · TWAP / VWAP / POV”分组提供全部 9 个 SDK 方法的说明、可复制 Python 示例和对应的 HTTP 请求示例。</p>
+                    <div class="guide-table-wrap"><table>
+                      <thead><tr><th scope="col">POST 路径</th><th scope="col">请求内容</th></tr></thead>
+                      <tbody>
+                        <tr><td><code>/api/trade/algo/submit</code></td><td>account、algo（TWAP/VWAP/POV）、证券、方向、数量、限价与计划参数。</td></tr>
+                        <tr><td><code>/api/trade/algo/query</code></td><td>account、algo_id。</td></tr>
+                        <tr><td><code>/api/trade/algo/list</code></td><td>account。</td></tr>
+                        <tr><td><code>/api/trade/algo/pause</code></td><td>account、algo_id。</td></tr>
+                        <tr><td><code>/api/trade/algo/resume</code></td><td>account、algo_id。</td></tr>
+                        <tr><td><code>/api/trade/algo/cancel</code></td><td>account、algo_id。</td></tr>
+                      </tbody>
+                    </table></div>
                   </div>
                 </article>
 
@@ -3091,10 +3208,11 @@ else:
         <label class="field wide">
           <span>账号模式</span>
           <select id="bindingMode" name="mode">
-            <option value="ctypes">通用模式（ctypes）</option>
-            <option value="lite">极致模式（纯 ctypes 自包含）</option>
-            <option value="lttx">高级模式（两个 QMT）</option>
+            <option value="lite" selected>极致模式（默认）</option>
+            <option value="ctypes" hidden>通用模式（已有配置）</option>
+            <option value="lttx" hidden>高级模式（已有配置）</option>
           </select>
+          <small>适配当前 QMT 版本，新绑定使用极致模式。</small>
         </label>
         <label id="bindingQmtTradeDirField" class="field wide hidden">
           <span>高级模式极速交易端 QMT 安装目录或核心目录</span>
@@ -3334,11 +3452,12 @@ else:
 
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
   <script src="/python-api-data.js?v=20261017_whole_quote_markets_01"></script>
-  <script src="/cftrader-api-data.js?v=20260911_02"></script>
-  <script src="/api-tester.js?v=20260916_apikey_01"></script>
-  <script src="/python-api.js?v=20261017_whole_quote_markets_01"></script>
-  <script src="/docs.js?v=20260925_data_docs_01"></script>
-  <script src="/app.js?v=web_20261103_01"></script>
+  <script src="/cftrader-api-data.js?v=20261103_algorithm_01"></script>
+  <script src="/api-tester.js?v=20261103_algorithm_01"></script>
+  <script src="/python-api.js?v=20261103_algorithm_01"></script>
+  <script src="/docs.js?v=20261103_algorithm_01"></script>
+  <script src="/trading-monitor.js?v=20261103_scope_01"></script>
+  <script src="/app.js?v=web_20261103_02"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

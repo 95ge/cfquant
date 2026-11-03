@@ -19,6 +19,7 @@ from cfquant.protocol import loads_message, pack_event, pack_request, pack_respo
 from cfquant.callback_dispatcher import dispatch_callbacks
 from cfquant.protocol import encode_response_result, request_expired
 from cfquant.tx_trade_bridge import TxTradeBridge
+from cfquant.quote_service import ProjectQuoteService
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -89,11 +90,13 @@ def rpc(bridge, action, params=None, client="client-a"):
     return bridge._dispatch(action, message["params"], message)
 
 
-@pytest.mark.parametrize("codes", [["BJ"], ["SH", "SZ", "BJ"], ["830799.BJ"],
-                                   ["SF", "rb2610.SF", "CUSTOM"], [], ["bj", "BJ", "bj"]])
-def test_whole_quote_forwards_requested_list_without_whitelist(bridge, codes):
+@pytest.mark.parametrize("codes, upstream", [(["BJ"], ["BJ"]), (["SH", "SZ", "BJ"], ["SH", "SZ", "BJ"]),
+                                            (["830799.BJ"], ["830799.BJ"]),
+                                            (["SF", "rb2610.SF", "CUSTOM"], ["SF", "CUSTOM"]),
+                                            ([], []), (["bj", "BJ", "bj"], ["bj", "BJ"])])
+def test_whole_quote_preserves_scope_and_removes_redundant_upstream_codes(bridge, codes, upstream):
     result = rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": codes})
-    assert bridge.context.subscribed == [codes]
+    assert bridge.context.subscribed == [upstream]
     assert result["internal_subscribe_id"] == 100
     assert result["publish_existing"] is False
     assert bridge.quote_subscriptions[result["subscribe_id"]]["code_list"] == codes
@@ -117,7 +120,7 @@ def test_subscriptions_and_callbacks_are_independent(bridge):
     bridge._on_whole_quote({"000001.SZ": {"lastPrice": 10}})
     assert bridge.tx.messages == []
     payload = {"830799.BJ": {"lastPrice": 12}}
-    bridge.context.callbacks[first["internal_subscribe_id"]](payload)
+    bridge.context.callbacks[max(bridge.context.callbacks)](payload)
     kind, event, client = bridge.tx.messages.pop()
     assert (kind, client) == ("event", "client-a")
     assert event["subscription_id"] == first["subscribe_id"]
@@ -212,7 +215,7 @@ def test_close_releases_public_and_internal_quotes(bridge):
     rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": ["CUSTOM"]})
     callbacks = list(bridge.context.callbacks.values())
     bridge.close()
-    assert sorted(bridge.context.unsubscribed) == [100, 101, 102]
+    assert sorted(bridge.context.unsubscribed) == [100, 101]
     assert bridge.quote_subscriptions == {}
     for callback in callbacks:
         callback({"830799.BJ": {}})
@@ -231,11 +234,15 @@ def test_diagnostic_subscription_is_independent_and_preserves_quotes(bridge):
     assert event["data"]["schema"] == "cfquant.quote_latency.v1"
     assert begin <= event["data"]["qmt_callback_at_ms"] <= event["data"]["qmt_push_at_ms"] <= time.time() * 1000
     bridge.context.callbacks[ordinary["internal_subscribe_id"]](data)
-    assert bridge.tx.messages[-1][1]["data"] == data
+    events = {event["subscription_id"]: event for _, event, _ in bridge.tx.messages[-2:]}
+    assert events[ordinary["subscribe_id"]]["data"] == data
+    assert events[diagnostic["subscribe_id"]]["data"]["quotes"] == data
+    assert bridge.context.subscribed == [["SZ"]]
     rpc(bridge, "xtdata.unsubscribe_quote", {"subscribe_id": diagnostic["subscribe_id"]})
     count = len(bridge.tx.messages)
     bridge.context.callbacks[diagnostic["internal_subscribe_id"]](data)
-    assert len(bridge.tx.messages) == count
+    assert len(bridge.tx.messages) == count + 1
+    assert bridge.tx.messages[-1][1]["subscription_id"] == ordinary["subscribe_id"]
     assert ordinary["subscribe_id"] in bridge.quote_subscriptions
 
 
@@ -361,11 +368,12 @@ def test_web_route_preserves_whole_quote_batches_and_encoding_marker(monkeypatch
              '600000.SH': {'lastPrice': 8.6}}
     if not plain:
         batch['000001.SZ']['raw'] = b'\x00\xff'
-    def request(msg):
-        router._on_quote_event({'subscription_id': 42, 'event': msg['params']['callback_event'],
-                               'data': batch, 'meta': {'quote_json_plain': True} if plain else {}})
-        return {'subscribe_id': 42}, {'bridge_id': 'test', 'channel': 'normal', 'mode': 'lite'}
-    monkeypatch.setattr(web, 'route_external_lttx_request', request)
+    def acquire(key, codes, callback, **kwargs):
+        callback(batch)
+        return 42
+    monkeypatch.setattr(web, 'PROJECT_QUOTES', SimpleNamespace(
+        acquire=acquire, release=lambda lease: True,
+        status=lambda: {'source': {'bridge_id': 'test', 'channel': 'normal', 'mode': 'lite'}}))
     monkeypatch.setattr(web.CLIENTS, 'request', lambda *args, **kwargs: True)
     if plain:
         def unexpected_pack(*args, **kwargs):
@@ -424,15 +432,25 @@ def store(monkeypatch):
 
     monkeypatch.setattr(web, "data_provider_request", request)
     monkeypatch.setattr(store, "_request_unsubscribe", unsubscribe)
-    return SimpleNamespace(quotes=store, calls=calls)
+    service = ProjectQuoteService(
+        lambda params, source: web.data_provider_request("xtdata.subscribe_whole_quote", params, **source),
+        lambda handle: unsubscribe(handle["bridge_id"], handle["channel"], handle["subscribe_id"]),
+        lambda handle: {"ready": True, "lease_keys": [handle["shared_lease_key"]]},
+        lambda *args: None, lambda *args: None, initial_scope=(), idle_seconds=0, monitor_seconds=0)
+    store._shared_service = service
+    yield SimpleNamespace(quotes=store, calls=calls)
+    store.close()
+    service.close()
 
 
 @pytest.mark.parametrize("value, expected", [("BJ, SF,rb2610.SF,CUSTOM", ["BJ", "SF", "rb2610.SF", "CUSTOM"]),
                                             (["BJ", "CUSTOM", "BJ"], ["BJ", "CUSTOM", "BJ"]),
-                                            ([], []), ("", []), (None, None)])
+                                            ([], []), ("", [])])
 def test_web_forwards_arbitrary_markets_codes_and_empty_lists(store, value, expected):
     result = store.quotes.subscribe_whole({"markets": value})
-    assert store.calls[0][1] == {"code_list": expected}
+    upstream = [item for item in dict.fromkeys(expected)
+                if "." not in item or item.rsplit(".", 1)[-1] not in expected]
+    assert store.calls[0][1]["code_list"] == upstream
     assert result["markets"] == expected
 
 
@@ -445,21 +463,22 @@ def test_web_code_list_alias_and_chinese_comma(store):
     assert store.quotes.subscribe_whole({"code_list": value})["markets"] == ["BJ", "rb2610.SF"]
 
 
-def test_web_replaces_subscription_when_markets_change(store):
+def test_web_extends_upstream_scope_without_releasing_other_consumers(store):
     first = store.quotes.subscribe_whole({"markets": ["SH", "SZ"]})
     second = store.quotes.subscribe_whole({"markets": ["BJ"]})
     assert [call[0] for call in store.calls] == ["xtdata.subscribe_whole_quote", "xtdata.unsubscribe_quote", "xtdata.subscribe_whole_quote"]
     assert second["markets"] == ["BJ"]
     assert second["already_subscribed"] is False
-    assert first["subscribe_id"] not in store.quotes._subscriptions
+    assert first["subscribe_id"] in store.quotes._subscriptions
+    assert store.calls[-1][1]["code_list"] == ["SH", "SZ", "BJ"]
 
 
 def test_web_identical_subscription_can_be_reused(store):
     first = store.quotes.subscribe_whole({"markets": ["BJ"]})
     second = store.quotes.subscribe_whole({"markets": ["BJ"]})
     assert len(store.calls) == 1
-    assert second["subscribe_id"] == first["subscribe_id"]
-    assert second["already_subscribed"] is True
+    assert second["subscribe_id"] != first["subscribe_id"]
+    assert second["shared"] is True
 
 
 def test_web_concurrent_subscriptions_are_coalesced(store, monkeypatch):
@@ -487,22 +506,22 @@ def test_web_concurrent_subscriptions_are_coalesced(store, monkeypatch):
             second.join(timeout=3)
     assert not first.is_alive() and not second.is_alive()
     assert len(results) == 2
-    assert results[0]["subscribe_id"] == results[1]["subscribe_id"]
+    assert results[0]["subscribe_id"] != results[1]["subscribe_id"]
     assert len(store.calls) == 1
 
 
 def test_web_different_bridge_is_not_reused(store):
     store.quotes.subscribe_whole({"markets": ["BJ"], "bridge_id": "first"})
-    result = store.quotes.subscribe_whole({"markets": ["BJ"], "bridge_id": "second"})
-    assert result["bridge_id"] == "second"
-    assert len(store.calls) == 3
+    with pytest.raises(ValueError, match="another bridge_id"):
+        store.quotes.subscribe_whole({"markets": ["BJ"], "bridge_id": "second"})
+    assert len(store.calls) == 1
 
 
-def test_web_disconnected_viewer_is_released_before_new_subscription(store, monkeypatch):
+def test_web_disconnected_viewer_does_not_force_duplicate_subscription(store, monkeypatch):
     store.quotes.subscribe_whole({"markets": ["BJ"]})
     monkeypatch.setattr(web.WS_QUOTES, "count", lambda: 0)
     store.quotes.subscribe_whole({"markets": ["BJ"]})
-    assert len(store.calls) == 3
+    assert len(store.calls) == 1
 
 
 def test_web_does_not_report_success_when_qmt_rejects_market(store, monkeypatch):

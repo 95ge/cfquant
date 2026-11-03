@@ -715,7 +715,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.57"
+CORE_VERSION = "0.2.58"
 LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -2341,19 +2341,22 @@ class TxTradeBridge(object):
         request_id = msg.get("id")
         action = msg.get("action")
         client_id = msg.get("client_id") or msg.get("reply_channel")
+        renewal = action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True
         try:
             result = self._dispatch(action, msg.get("params") or {}, msg)
             response = pack_response(request_id, ok=True, result=result, meta=msg.get("_response_meta"))
-            self._log("tx trade response_ready action=%s id=%s" % (action, request_id))
+            if not renewal:
+                self._log("tx trade response_ready action=%s id=%s" % (action, request_id))
         except Exception as e:
             response = pack_response(request_id, ok=False, error=e, meta=msg.get("_response_meta"))
             self._log("tx trade request_error action=%s id=%s error=%s" % (action, request_id, e))
         if client_id:
             self.tx.push("response", response, client_id)
-            self._log(
-                "tx trade response_sent action=%s id=%s client_id=%s total_ms=%.2f"
-                % (action, request_id, client_id, (time.time() - received_at) * 1000)
-            )
+            if not renewal:
+                self._log(
+                    "tx trade response_sent action=%s id=%s client_id=%s total_ms=%.2f"
+                    % (action, request_id, client_id, (time.time() - received_at) * 1000)
+                )
 
     def _dispatch_timed_account_query(self, action, params, msg, detail_type):
         started = time.perf_counter()
@@ -5236,20 +5239,33 @@ class TxTradeBridge(object):
             raise ValueError("account_id is required")
         account_id = str(account_id).strip()
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
-        self.account_id = account_id
-        self.account_type = account_type
         subscriber_key = (account_type.upper(), account_id)
         client_id = ""
         if msg:
             client_id = msg.get("client_id") or msg.get("reply_channel") or ""
+        with self.subscriber_lock:
+            existing = client_id and client_id in self.account_subscribers.get(subscriber_key, ())
+        renewal = existing and params.get("subscription_renewal") is True
+        previous_account = (self.account_id, self.account_type)
         if client_id:
             with self.subscriber_lock:
                 self.account_subscribers.setdefault(subscriber_key, set()).add(client_id)
                 self.client_accounts.setdefault(client_id, set()).add(subscriber_key)
             account_route_subscribe(self.bridge_id, account_id, client_id, account_type=account_type)
-        self._set_context_account(account_id, account_type)
-        self._enable_auto_trade_callback()
-        self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
+        try:
+            if not renewal:
+                # Native setup can emit callbacks immediately; install routing first.
+                self.account_id = account_id
+                self.account_type = account_type
+                self._set_context_account(account_id, account_type)
+            self._enable_auto_trade_callback()
+        except Exception:
+            if client_id and not existing:
+                self._unsubscribe_account({"account_id": account_id, "account_type": account_type}, msg)
+            self.account_id, self.account_type = previous_account
+            raise
+        if not renewal:
+            self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
         return 0
 
     def _unsubscribe_account(self, params, msg=None):
@@ -5850,6 +5866,356 @@ COALESCED_QUERY_ACTIONS = set([
 ])
 
 
+# BEGIN GENERATED SHARED QUOTES
+"""One upstream whole-quote subscription, leased by independent consumers.
+
+The upstream adapter owns routing and reconnect detection. No trading API is
+called here. A cache is shared by all leases; callbacks receive private copies.
+"""
+
+import copy
+import logging
+import threading
+import time
+
+
+def quote_scope(codes):
+    if isinstance(codes, str):
+        codes = codes.replace("\uff0c", ",").split(",")
+    if not isinstance(codes, (list, tuple, set)):
+        raise ValueError("code_list must be a list of markets or securities")
+    result = []
+    for code in codes:
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("market/security codes must be nonempty strings")
+        code = code.strip()
+        if code not in result:
+            result.append(code)
+    return result
+
+
+def quote_matches(code, scope):
+    return not scope or code in scope or code.rsplit(".", 1)[-1] in scope
+
+
+def quote_scope_union(*scopes):
+    result = []
+    for scope in scopes:
+        for code in scope:
+            if code not in result and not ("." in code and code.rsplit(".", 1)[-1] in result):
+                result.append(code)
+    markets = set(code for code in result if "." not in code)
+    return [code for code in result if "." not in code or code.rsplit(".", 1)[-1] not in markets]
+
+
+class _QuoteListener:
+    """One bounded pending batch; a slow callback never blocks ingestion."""
+
+    def __init__(self, callback, asynchronous):
+        self.callback = callback
+        self.asynchronous = asynchronous
+        self._condition = threading.Condition()
+        self._pending = {}
+        self._closed = False
+        self._thread = None
+
+    def push(self, data):
+        if not self.callback or not data:
+            return
+        if not self.asynchronous:
+            with self._condition:
+                if self._closed:
+                    return
+            self._call(data)
+            return
+        with self._condition:
+            if self._closed:
+                return
+            self._pending.update(copy.deepcopy(data))
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._run, name="cfquant-shared-quote", daemon=True)
+                self._thread.start()
+            self._condition.notify()
+
+    def _call(self, data):
+        try:
+            self.callback(copy.deepcopy(data))
+        except Exception:
+            logging.getLogger(__name__).exception("shared quote listener failed")
+
+    def _run(self):
+        while True:
+            with self._condition:
+                while not self._pending and not self._closed:
+                    self._condition.wait()
+                if self._closed:
+                    return
+                data, self._pending = self._pending, {}
+            self._call(data)
+
+    def close(self):
+        with self._condition:
+            self._closed = True
+            self._pending.clear()
+            self._condition.notify_all()
+
+
+class SharedQuoteFeed:
+    """Serialize physical subscription changes and reference-count leases.
+
+    subscribe(scope, callback, generation) returns an opaque upstream handle.
+    unsubscribe(handle) must raise on failure. Never acquire the lifecycle lock
+    in an upstream callback: native APIs may invoke callbacks before returning.
+    """
+
+    def __init__(self, subscribe, unsubscribe, initial_scope=(), idle_seconds=5.0,
+                 asynchronous=True, clock=None, cache_latest=True):
+        self._subscribe = subscribe
+        self._unsubscribe = unsubscribe
+        self._base_scope = quote_scope(initial_scope)
+        self._idle_seconds = max(0.0, float(idle_seconds))
+        self._asynchronous = asynchronous
+        self._cache_latest = cache_latest
+        self._clock = clock or time.monotonic
+        self._lifecycle = threading.RLock()
+        self._lock = threading.RLock()
+        self._leases = {}
+        self._keys = {}
+        self._seq = 0
+        self._generation = 0
+        self._quote_sequence = 0
+        self._handle = None
+        self._scope = []
+        self._cache = {}
+        self._pending_initial = {}
+        self._state = "idle"
+        self._error = ""
+        self._timer = None
+        self._closed = False
+        self._last_received = None
+        self.changed = threading.Event()
+
+    def acquire(self, key, codes, callback=None, purpose="user"):
+        codes = quote_scope(codes)
+        if not key or (callback is not None and not callable(callback)):
+            raise ValueError("a lease key and callable callback are required")
+        with self._lifecycle:
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("shared quote feed is closed")
+                self._cancel_timer()
+                if key in self._keys:
+                    lease_id = self._keys[key]
+                    if self._leases[lease_id]["codes"] != codes:
+                        raise ValueError("lease key already used with another scope")
+                    existing = True
+                else:
+                    self._seq += 1
+                    lease_id = self._seq
+                    self._leases[lease_id] = dict(key=key, codes=codes, purpose=purpose,
+                                                 listener=_QuoteListener(callback, self._asynchronous))
+                    self._keys[key] = lease_id
+                    existing = False
+                wanted = quote_scope_union(self._base_scope, self._scope, *[
+                    row["codes"] for row in self._leases.values()])
+            try:
+                if self._handle is None or wanted != self._scope or self._state != "live":
+                    self._replace(wanted)
+            except BaseException:
+                if not existing:
+                    with self._lock:
+                        row = self._leases.pop(lease_id)
+                        self._keys.pop(key, None)
+                        row["listener"].close()
+                raise
+            return lease_id
+
+    def release(self, lease_id):
+        with self._lifecycle:
+            with self._lock:
+                row = self._leases.get(lease_id)
+                if row is None:
+                    return False
+                last = len(self._leases) == 1
+            # For synchronous release, preserve the lease if native unsubscribe
+            # fails. A caller can retry without losing the resource handle.
+            if last and self._idle_seconds == 0:
+                self._stop_upstream()
+            with self._lock:
+                row = self._leases.pop(lease_id)
+                self._keys.pop(row["key"], None)
+                row["listener"].close()
+                if not self._leases and self._idle_seconds:
+                    self._cancel_timer()
+                    self._timer = threading.Timer(self._idle_seconds, self.release_idle)
+                    self._timer.daemon = True
+                    self._timer.start()
+            return True
+
+    def release_idle(self):
+        with self._lifecycle:
+            with self._lock:
+                self._cancel_timer()
+                if self._leases:
+                    return False
+            try:
+                self._stop_upstream()
+                return True
+            except Exception as error:
+                with self._lock:
+                    self._error = str(error)
+                    if not self._closed:
+                        self._timer = threading.Timer(max(1.0, self._idle_seconds), self.release_idle)
+                        self._timer.daemon = True
+                        self._timer.start()
+                return False
+
+    def reconnect(self):
+        """Replace once after a verified upstream session loss, for all leases."""
+        with self._lifecycle:
+            with self._lock:
+                if self._closed or not self._leases:
+                    return False
+                wanted = quote_scope_union(self._base_scope, self._scope, *[
+                    row["codes"] for row in self._leases.values()])
+            self._replace(wanted)
+            return True
+
+    def upstream_lost(self):
+        """Invalidate data immediately; retain the handle until cleanup succeeds."""
+        with self._lock:
+            self._state = "disconnected"
+            self._cache.clear()
+            self._pending_initial.clear()
+            self.changed.set()
+
+    def _replace(self, scope):
+        self._stop_upstream()
+        with self._lock:
+            self._generation += 1
+            generation = self._generation
+            self._state = "subscribing"
+            self._error = ""
+            self._pending_initial.clear()
+        try:
+            handle = self._subscribe(list(scope), lambda data: self._receive(data, generation), generation)
+            if handle is None or handle is False:
+                raise RuntimeError("upstream did not acknowledge quote subscription")
+        except BaseException as error:
+            with self._lock:
+                self._state = "error"
+                self._error = str(error)
+                self._pending_initial.clear()
+                self._cache.clear()
+                self.changed.set()
+            raise
+        with self._lock:
+            self._handle = handle
+            self._scope = list(scope)
+            self._state = "live"
+            pending, self._pending_initial = self._pending_initial, {}
+        if pending:
+            self._receive(pending, generation)
+
+    def _stop_upstream(self):
+        with self._lock:
+            handle = self._handle
+            self._state = "stopping" if handle is not None else "idle"
+            self._cache.clear()
+            self._pending_initial.clear()
+            self.changed.set()
+        if handle is not None:
+            try:
+                result = self._unsubscribe(handle)
+                if result is False or (isinstance(result, (int, float)) and result < 0):
+                    raise RuntimeError("upstream quote unsubscribe failed")
+            except BaseException as error:
+                with self._lock:
+                    self._state = "error"
+                    self._error = str(error)
+                raise
+        with self._lock:
+            self._handle = None
+            self._state = "idle"
+            self._last_received = None
+
+    def _receive(self, data, generation):
+        if not isinstance(data, dict):
+            return
+        with self._lock:
+            if self._closed or generation != self._generation:
+                return
+            if self._state == "subscribing" and self._cache_latest:
+                self._pending_initial.update(copy.deepcopy(data))
+                return
+            if self._state != "live" and not (self._state == "subscribing" and not self._cache_latest):
+                return
+            now = self._clock()
+            self._last_received = now
+            changed = {}
+            for code, quote in data.items():
+                if not isinstance(code, str) or not isinstance(quote, dict):
+                    continue
+                previous = self._cache.get(code)
+                old = previous["quote"] if previous else {}
+                stamp, old_stamp = quote.get("time"), old.get("time")
+                try:
+                    if stamp is not None and old_stamp is not None and float(stamp) < float(old_stamp):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                merged = dict(old)
+                merged.update(copy.deepcopy(quote))
+                if self._cache_latest and previous is not None and merged == old:
+                    continue
+                self._quote_sequence += 1
+                if self._cache_latest:
+                    self._cache[code] = dict(quote=merged, received_at=time.time(), monotonic_at=now,
+                                             generation=generation, sequence=self._quote_sequence)
+                changed[code] = merged
+            listeners = [(row["listener"], row["codes"]) for row in self._leases.values()]
+            if changed:
+                self.changed.set()
+        for listener, codes in listeners:
+            filtered = {code: quote for code, quote in changed.items() if quote_matches(code, codes)}
+            listener.push(filtered)
+
+    def snapshot(self, code, max_age=None):
+        with self._lock:
+            row = self._cache.get(code)
+            if self._state != "live" or row is None:
+                return None
+            if max_age is not None and self._clock() - row["monotonic_at"] > max_age:
+                return None
+            return copy.deepcopy(row)
+
+    def status(self):
+        with self._lock:
+            return dict(state=self._state, scope=list(self._scope), generation=self._generation,
+                        consumers=len(self._leases), symbols=len(self._cache), error=self._error,
+                        last_received_monotonic=self._last_received,
+                        leases=[dict(lease_id=key, purpose=row["purpose"], codes=list(row["codes"]))
+                                for key, row in self._leases.items()])
+
+    def _cancel_timer(self):
+        timer, self._timer = self._timer, None
+        if timer:
+            timer.cancel()
+
+    def close(self):
+        with self._lifecycle:
+            with self._lock:
+                self._closed = True
+                self._cancel_timer()
+                for row in self._leases.values():
+                    row["listener"].close()
+            self._stop_upstream()
+            with self._lock:
+                self._leases.clear()
+                self._keys.clear()
+                self._state = "closed"
+# END GENERATED SHARED QUOTES
+
 class NormalQmtBridge(TxTradeBridge):
     def __init__(
         self,
@@ -5986,10 +6352,11 @@ class NormalQmtBridge(TxTradeBridge):
         try:
             self.request_queue.put_nowait((msg, time.time(), None))
             self._release_worker("enqueue")
-            self._log(
-                "normal bridge request queued action=%s id=%s queue_size=%s"
-                % (msg.get("action"), msg.get("id"), self.request_queue.qsize())
-            )
+            if not (action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True):
+                self._log(
+                    "normal bridge request queued action=%s id=%s queue_size=%s"
+                    % (msg.get("action"), msg.get("id"), self.request_queue.qsize())
+                )
         except queue.Full as e:
             self._send_error(msg, e)
 
@@ -6056,13 +6423,22 @@ class NormalQmtBridge(TxTradeBridge):
     def _handle_quote_unsubscribe(self, msg):
         params = msg.get("params") or {}
         sub_id = params.get("subscribe_id")
+        if params.get("shared_lease_key"):
+            matches = [key for key, row in self.quote_subscriptions.items()
+                       if row.get("shared_lease_key") == params["shared_lease_key"]]
+            if not matches:
+                return True
+            sub_id = matches[0]
         try:
             sub_id = int(sub_id)
         except (TypeError, ValueError):
             pass
         sub = self.quote_subscriptions.get(sub_id)
         if sub and "internal_subscribe_id" in sub:
-            result = self._get_callable("unsubscribe_quote")(sub["internal_subscribe_id"])
+            if sub.get("shared_whole"):
+                result = self._get_whole_quote_feed().release(sub["shared_lease_id"])
+            else:
+                result = self._get_callable("unsubscribe_quote")(sub["internal_subscribe_id"])
             if result is False or (isinstance(result, (int, float)) and result < 0):
                 raise RuntimeError("QMT unsubscribe_quote failed: %r" % (result,))
         self.quote_subscriptions.pop(sub_id, None)
@@ -6071,6 +6447,7 @@ class NormalQmtBridge(TxTradeBridge):
         self.whole_quote_publish_sub_id = whole_ids[-1] if whole_ids else None
         self._log("normal bridge quote unsubscribed id=%s" % sub_id)
         return True
+
 
     def _try_enqueue_coalesced_request(self, msg):
         coalesce_key = self._coalesce_key(msg)
@@ -6160,6 +6537,7 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_requests(self, source):
         with self.dispatch_lock:
+            self._expire_whole_quote_leases()
             self._poll_sync_order_responses()
             start = time.perf_counter()
             count = 0
@@ -6264,10 +6642,11 @@ class NormalQmtBridge(TxTradeBridge):
                 return
             result = self._dispatch(msg.get("action"), msg.get("params") or {}, msg)
             self._send_response(msg, result)
-            self._log(
-                "normal bridge worker response source=%s action=%s id=%s total_ms=%.2f"
-                % (source, msg.get("action"), msg.get("id"), (time.time() - received_at) * 1000)
-            )
+            if not (msg.get("action") == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True):
+                self._log(
+                    "normal bridge worker response source=%s action=%s id=%s total_ms=%.2f"
+                    % (source, msg.get("action"), msg.get("id"), (time.time() - received_at) * 1000)
+                )
         except Exception as e:
             self._log(
                 "normal bridge worker request_error source=%s action=%s id=%s error=%s"
@@ -6353,10 +6732,12 @@ class NormalQmtBridge(TxTradeBridge):
         if self.context is None or self.whole_quote_sub_id:
             return
         try:
-            self.whole_quote_sub_id = self.context.subscribe_whole_quote(["SH", "SZ", "BJ"], callback=self._on_whole_quote)
+            self.whole_quote_sub_id = self._get_whole_quote_feed().acquire(
+                "internal-worker", ["SH", "SZ", "BJ"], self._on_whole_quote, purpose="worker")
             self._log("normal bridge internal whole quote subscribed id=%s" % self.whole_quote_sub_id)
         except Exception as e:
             self._log("normal bridge internal whole quote subscribe failed: %s" % e)
+
 
     def _schedule_timer(self):
         if self.context is None or self.schedule_key:
@@ -6727,6 +7108,22 @@ class NormalQmtBridge(TxTradeBridge):
 
 
     def _dispatch(self, action, params, msg):
+        if action == "cfquant.shared_quote_status":
+            key = params.get("shared_lease_key")
+            for row in self.quote_subscriptions.values():
+                if key and row.get("shared_lease_key") == key and row.get("lease_timeout"):
+                    row["lease_deadline"] = time.monotonic() + row["lease_timeout"]
+            return {"ready": self.context is not None, "lease_keys": [
+                row["shared_lease_key"] for row in self.quote_subscriptions.values()
+                if row.get("shared_lease_key")]}
+        if action == "cfquant.quote_heartbeat":
+            touched = []
+            for sub_id in params.get("subscribe_ids", []):
+                row = self.quote_subscriptions.get(int(sub_id))
+                if row and row.get("client_id") == (msg.get("client_id") or msg.get("reply_channel")) and row.get("lease_timeout"):
+                    row["lease_deadline"] = time.monotonic() + row["lease_timeout"]
+                    touched.append(sub_id)
+            return {"subscribe_ids": touched}
         if action == "xtdata.subscribe_whole_quote_latency":
             return self._subscribe_native_quote(dict(msg, params=params), "whole_quote_latency", "subscribe_whole_quote")
         if action in ("xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"):
@@ -6744,9 +7141,14 @@ class NormalQmtBridge(TxTradeBridge):
     def _close_quote_subscriptions(self):
         with self.dispatch_lock:
             internal_ids = [sub["internal_subscribe_id"] for sub in self.quote_subscriptions.values()
-                            if "internal_subscribe_id" in sub]
-            if self.whole_quote_sub_id is not None:
-                internal_ids.append(self.whole_quote_sub_id)
+                            if "internal_subscribe_id" in sub and not sub.get("shared_whole")]
+            feed = getattr(self, "_shared_whole_feed", None)
+            if feed is not None:
+                try:
+                    feed.close()
+                    self._shared_whole_feed = None
+                except Exception as error:
+                    self._log("normal bridge shared quote cleanup failed: %s" % error)
             self.quote_subscriptions.clear()
             self.whole_quote_publish_enabled = False
             self.whole_quote_publish_sub_id = None
@@ -6757,7 +7159,21 @@ class NormalQmtBridge(TxTradeBridge):
                 except Exception as e:
                     self._log("normal bridge quote cleanup failed id=%s error=%s" % (internal_id, e))
 
+
     def _subscribe_native_quote(self, msg, kind, method):
+        params = msg.get("params") or {}
+        # Retrying an acknowledged/lost RPC with the same lease key must not
+        # allocate another native or logical subscription.
+        lease_key = params.get("shared_lease_key")
+        if lease_key and kind in ("whole_quote", "whole_quote_latency"):
+            for existing_id, existing in self.quote_subscriptions.items():
+                if existing.get("shared_lease_key") == lease_key and existing.get("client_id") == (msg.get("client_id") or msg.get("reply_channel")):
+                    if existing.get("code_list") != params.get("code_list", params.get("stock_list", [])) or existing.get("kind") != kind:
+                        raise ValueError("shared lease key already used with other subscription parameters")
+                    if existing.get("lease_timeout"):
+                        existing["lease_deadline"] = time.monotonic() + existing["lease_timeout"]
+                    return dict(subscribe_id=existing_id, internal_subscribe_id=existing["internal_subscribe_id"],
+                                callback_event=existing["callback_event"], publish_existing=False, shared=True)
         self.subscription_seq += 1
         sub_id = self.subscription_seq
         params = msg.get("params") or {}
@@ -6769,8 +7185,12 @@ class NormalQmtBridge(TxTradeBridge):
             "period": params.get("period", "1d"),
             "callback_event": params.get("callback_event") or "quote:%s" % sub_id,
             "publish_existing": False,
+            "shared_lease_key": lease_key,
+            "lease_timeout": 45 if params.get("lease_timeout") and kind in ("whole_quote", "whole_quote_latency") else 0,
         }
         pending = []
+        if sub["lease_timeout"]:
+            sub["lease_deadline"] = time.monotonic() + sub["lease_timeout"]
         callback_lock = threading.RLock()
         initializing = [True]
 
@@ -6823,10 +7243,14 @@ class NormalQmtBridge(TxTradeBridge):
         self.quote_subscriptions[sub_id] = sub
         try:
             if kind in ("whole_quote", "whole_quote_latency"):
-                internal_id = self._call_variants(func, [
-                    ((sub["code_list"],), {"callback": callback}),
-                    ((sub["code_list"], callback), {}),
-                ])
+                feed = self._get_whole_quote_feed()
+                sub["shared_lease_id"] = feed.acquire(
+                    "native:%s" % sub_id, sub["code_list"], callback, purpose=kind)
+                sub["shared_whole"] = True
+                internal_id = feed._handle
+                for row in self.quote_subscriptions.values():
+                    if row.get("shared_whole"):
+                        row["internal_subscribe_id"] = internal_id
             elif kind == "quote":
                 internal_id = func(sub["stock_code"], sub["period"], params.get("dividend_type") or "none", "dict", callback)
             elif method == "subscribe_l2thousand":
@@ -6860,7 +7284,50 @@ class NormalQmtBridge(TxTradeBridge):
             "internal_subscribe_id": internal_id,
             "callback_event": sub["callback_event"],
             "publish_existing": False,
+            "shared": bool(sub.get("shared_whole")),
         }
+
+
+    def _get_whole_quote_feed(self):
+        feed = getattr(self, "_shared_whole_feed", None)
+        if feed is None:
+            feed_type = SharedQuoteFeed
+
+            def subscribe(codes, callback, generation):
+                func = self._get_callable("subscribe_whole_quote")
+                if not callable(func):
+                    raise NotImplementedError("QMT subscribe_whole_quote not found")
+                native_id = self._call_variants(func, [
+                    ((codes,), {"callback": callback}), ((codes, callback), {}),
+                ])
+                if native_id is None or isinstance(native_id, bool) or int(native_id) <= 0:
+                    raise RuntimeError("QMT subscribe_whole_quote failed: %r" % (native_id,))
+                return native_id
+
+            def unsubscribe(native_id):
+                result = self._get_callable("unsubscribe_quote")(native_id)
+                if result is False or (isinstance(result, (int, float)) and result < 0):
+                    raise RuntimeError("QMT unsubscribe_quote failed: %r" % (result,))
+                return result
+
+            feed = feed_type(subscribe, unsubscribe,
+                             idle_seconds=0, asynchronous=False, cache_latest=False)
+            self._shared_whole_feed = feed
+        return feed
+
+
+    def _expire_whole_quote_leases(self):
+        now = time.monotonic()
+        if now < getattr(self, "_next_quote_expiry_check", 0):
+            return
+        self._next_quote_expiry_check = now + 1
+        expired = [key for key, row in self.quote_subscriptions.items()
+                   if row.get("lease_deadline") is not None and row["lease_deadline"] < now]
+        for sub_id in expired:
+            try:
+                self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
+            except Exception as error:
+                self._log("expired quote lease cleanup failed: %s" % error)
 
 
 def start_normal_bridge(

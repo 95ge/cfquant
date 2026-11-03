@@ -1,6 +1,10 @@
 """Keep the six Pipe QMT entries free of application-managed filesystem IO."""
 import argparse
 import ast
+try:
+    from tools.sync_qmt_ast import parse_source
+except ImportError:
+    from sync_qmt_ast import parse_source
 from pathlib import Path
 import textwrap
 
@@ -17,7 +21,7 @@ END = '# END GENERATED PIPE RUNTIME\n'
 
 
 def replace_functions(source, replacements, class_name=None):
-    tree = ast.parse(source)
+    tree = parse_source(source)
     body = tree.body
     if class_name:
         body = next(node for node in body if isinstance(node, ast.ClassDef) and node.name == class_name).body
@@ -71,14 +75,14 @@ def updated_source(source, lite):
     return "", {}
 ''',
     }
-    tree = ast.parse(source)
+    tree = parse_source(source)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and (node.name.startswith('_lite_marker_')
                 or node.name in ('_lite_runtime_marker_dirs', '_write_lite_runtime_marker')):
             replacements[node.name] = ''
     source = replace_functions(source, replacements)
     lines = source.splitlines(True)
-    for node in reversed(ast.parse(source).body):
+    for node in reversed(parse_source(source).body):
         obsolete = (isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id in (
             '_CFQUANT_CONFIG_FILENAME', '_runtime_marker_started_at') for t in node.targets))
         obsolete = obsolete or (isinstance(node, ast.If) and isinstance(node.test, ast.Call)
@@ -102,7 +106,7 @@ def updated_source(source, lite):
     if lite:
         # Gate business requests before either Pipe endpoint becomes visible.
         for class_name in ('PipeNormalQmtBridge', 'PipeTradeBridge'):
-            cls = next(n for n in ast.parse(source).body if isinstance(n, ast.ClassDef) and n.name == class_name)
+            cls = next(n for n in parse_source(source).body if isinstance(n, ast.ClassDef) and n.name == class_name)
             method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'start')
             body = textwrap.dedent(''.join(source.splitlines(True)[method.lineno-1:method.end_lineno]))
             if 'runtime.attach_bridge(self)' not in body:
@@ -122,7 +126,7 @@ def updated_source(source, lite):
             '_qmt_userdata_log_dir': '',
         }, 'TxTradeBridge')
         normal = (ROOT / 'cfquant/normal_bridge.py').read_text(encoding='utf-8')
-        body = next(n.body for n in ast.parse(normal).body if isinstance(n, ast.ClassDef) and n.name == 'NormalQmtBridge')
+        body = next(n.body for n in parse_source(normal).body if isinstance(n, ast.ClassDef) and n.name == 'NormalQmtBridge')
         method = next(n for n in body if isinstance(n, ast.FunctionDef) and n.name == '_handle_raw_from_thread')
         replacement = textwrap.dedent(''.join(normal.splitlines(True)[method.lineno-1:method.end_lineno]))
         replacement = replacement.replace('    if self.order_meta_enabled and self._handle_order_meta_raw(raw):\n        return\n', '')
@@ -155,7 +159,7 @@ def updated_source(source, lite):
     if lite:
         source = update_dispatch_source(source)
     source = update_binding_source(source, lite)
-    ast.parse(source, feature_version=(3, 6))
+    parse_source(source, feature_version=(3, 6))
     return source
 
 

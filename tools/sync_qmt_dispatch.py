@@ -1,6 +1,10 @@
 """Embed the common QMT caller-thread dispatcher in all standalone Lite entries."""
 import argparse
 import ast
+try:
+    from tools.sync_qmt_ast import parse_source
+except ImportError:
+    from sync_qmt_ast import parse_source
 from pathlib import Path
 import textwrap
 
@@ -9,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _function(source, name, class_name=None):
-    body = ast.parse(source).body
+    body = parse_source(source).body
     if class_name:
         body = next(n.body for n in body if isinstance(n, ast.ClassDef) and n.name == class_name)
     node = next(n for n in body if isinstance(n, ast.FunctionDef) and n.name == name)
@@ -57,7 +61,7 @@ def updated_source(source):
 
     # Share the entry's configurable QMT timer, rather than also installing
     # the bridge's legacy 500 ms timer. Reception threads still only enqueue.
-    call = next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call)
+    call = next(n for n in ast.walk(parse_source(source)) if isinstance(n, ast.Call)
                 and isinstance(n.func, ast.Name) and n.func.id == 'start_pipe_normal_bridge')
     lines = source.splitlines(True)
     creation = ''.join(lines[call.lineno - 1:call.end_lineno])
@@ -85,7 +89,7 @@ def updated_source(source):
     source = source.replace('"xttrader_to_normal_worker"', '"xttrader_to_normal_qmt_timer"')
     source = source.replace('LITE_ENTRY_VERSION = "lite_20260828_01"',
                             'LITE_ENTRY_VERSION = "lite_20261014_01"')
-    ast.parse(source, feature_version=(3, 6))
+    parse_source(source, feature_version=(3, 6))
     return source
 
 

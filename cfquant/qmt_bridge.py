@@ -114,6 +114,8 @@ class CfquantQmtBridge(object):
         self._log("cfquant QMT TX桥接已关闭")
 
     def poll(self, max_messages=20):
+        if self._quote_bridge is not None:
+            self._quote_bridge._expire_whole_quote_leases()
         count = 0
         while count < max_messages:
             try:
@@ -196,6 +198,7 @@ class CfquantQmtBridge(object):
 
     def _requires_qmt_thread(self, action):
         if action in {"xtdata.subscribe_quote", "xtdata.subscribe_whole_quote", "xtdata.unsubscribe_quote",
+                      "xtdata.subscribe_whole_quote_latency", "cfquant.shared_quote_status", "cfquant.quote_heartbeat",
                       "xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"}:
             return True
         return action in {
@@ -236,6 +239,8 @@ class CfquantQmtBridge(object):
             return pack_response(request_id, ok=False, error=e)
 
     def _dispatch(self, action, params, msg):
+        if action in ("cfquant.shared_quote_status", "cfquant.quote_heartbeat", "xtdata.subscribe_whole_quote_latency"):
+            return self._quote_dispatch(action, params, msg)
         if action == "xttrader.get_hkt_exchange_rate":
             return query_connect_exchange_rate(self, params)
         if action in CFTRADER_BATCH_CANCEL_ACTIONS:
@@ -380,7 +385,7 @@ class CfquantQmtBridge(object):
         bridge = self._quote_bridge
         bridge.context, bridge.tx = self.context, self.tx
         result = bridge._dispatch(action, params, msg)
-        if action != "xtdata.unsubscribe_quote":
+        if action not in ("xtdata.unsubscribe_quote", "cfquant.shared_quote_status", "cfquant.quote_heartbeat"):
             self._remember_subscription(result["subscribe_id"], msg.get("client_id"), action, params)
         return result
 

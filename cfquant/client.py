@@ -426,6 +426,8 @@ def close_client():
     with _client_lock:
         client, _default_client = _default_client, None
     if client is not None:
+        from .quote_leases import close_client_leases
+        close_client_leases(client)
         client.close()
 
 
@@ -439,5 +441,7 @@ def configure(**kwargs):
     global _default_client
     with _client_lock:
         if _default_client is not None:
+            from .quote_leases import close_client_leases
+            close_client_leases(_default_client)
             _default_client.close()
         _default_client = None

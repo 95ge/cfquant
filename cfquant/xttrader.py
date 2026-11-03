@@ -8,7 +8,7 @@ import atexit
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from .client import CfquantError, CfquantTimeout, create_rpc_client
+from .client import CfquantError, create_rpc_client
 from .config import get_config
 from .channels import channels_for_bridge, normalize_bridge_id
 from .protocol import new_id
@@ -366,9 +366,9 @@ class XtQuantTrader(object):
         self._subscription_thread = None
         self._subscription_client = None
         self._subscription_errors = {}
+        self._subscription_retries = {}
         self._subscription_interval = 2.0
         self._subscription_timeout = 2.0
-        self._last_session_rebuild = 0.0
         self._pending_async_orders = []
         self._pending_async_orders_lock = threading.RLock()
         self._completed_async_order_seqs = {}
@@ -422,6 +422,7 @@ class XtQuantTrader(object):
                 pass
         self._subscribed_accounts.clear()
         self._subscription_errors.clear()
+        self._subscription_retries.clear()
         with self._query_lock:
             clients = list(self._clients.values())
             self._client = None
@@ -483,6 +484,7 @@ class XtQuantTrader(object):
                 key = _subscription_key_from_payload(payload)
                 self._subscribed_accounts[key] = payload
                 self._subscription_errors.pop(key, None)
+                self._subscription_retries.pop(key, None)
                 self._start_subscription_recovery()
             return result
 
@@ -495,6 +497,7 @@ class XtQuantTrader(object):
             key = _subscription_key_from_payload(payload)
             self._subscribed_accounts.pop(key, None)
             self._subscription_errors.pop(key, None)
+            self._subscription_retries.pop(key, None)
             return self._trade_request("xttrader.unsubscribe", {
                 "account": payload,
             })
@@ -516,7 +519,7 @@ class XtQuantTrader(object):
     def _rebuild_connection(self):
         """Replace a stale transport while preserving desired subscriptions.
 
-        Rebuilding is only used by connect/session recovery. It never replays
+        Rebuilding is only used by an explicit connect(). It never replays
         orders or cancels; account subscriptions are idempotent registrations.
         """
         self._stop_subscription_recovery()
@@ -558,12 +561,14 @@ class XtQuantTrader(object):
             with self._subscription_lock:
                 keys = list(self._subscribed_accounts)
             for key in keys:
-                rebuild = False
                 with self._subscription_lock:
                     if stop.is_set():
                         return
                     payload = self._subscribed_accounts.get(key)
                     if payload is None:
+                        continue
+                    retry = self._subscription_retries.get(key, {})
+                    if time.monotonic() < retry.get('due', 0):
                         continue
                     try:
                         bridge_id = _bridge_id_from_params({"account": payload}) or self.bridge_id
@@ -572,40 +577,39 @@ class XtQuantTrader(object):
                         self._subscription_client = client
                         if stop.is_set():
                             return
-                        result = client.request("xttrader.subscribe", {"account": dict(payload)},
+                        result = client.request("xttrader.subscribe", {"account": dict(payload),
+                                                "subscription_renewal": True},
                                                 timeout=self._subscription_timeout)
                         if result is False or (isinstance(result, (int, float)) and result < 0):
                             raise CfquantError(
                                 "account subscription rejected: %s" % result,
                                 details={"code": "ACCOUNT_SUBSCRIPTION_REJECTED",
                                          "stage": "subscription_recovery", "dispatched": False})
-                        self._subscription_errors.pop(key, None)
+                        if self._subscription_errors.pop(key, None) is not None:
+                            logging.getLogger(__name__).info("account callback subscription restored account=%s", key)
+                        self._subscription_retries.pop(key, None)
                     except Exception as error:
                         if not stop.is_set():
                             detail = "%s: %s" % (type(error).__name__, error)
-                            if self._subscription_errors.get(key) != detail:
+                            now = time.monotonic()
+                            failures = min(retry.get('failures', 0) + 1, 6)
+                            delay = min(30.0, self._subscription_interval * (2 ** (failures - 1)))
+                            logged_at = retry.get('logged_at', 0)
+                            if key not in self._subscription_errors or now - logged_at >= 30:
                                 logging.getLogger(__name__).warning(
-                                    "account callback subscription recovery failed account=%s: %s", key, detail)
+                                    "account callback subscription recovery failed account=%s; retry in %.1fs: %s",
+                                    key, delay, detail)
+                                logged_at = now
                             self._subscription_errors[key] = detail
-                        details = getattr(error, "error_details", None)
-                        # A business rejection belongs to this account and
-                        # must not tear down healthy subscriptions for other
-                        # accounts. Rebuild only for transport/session faults.
-                        code = details.get("code") if isinstance(details, dict) else ""
-                        text = str(error).lower()
-                        rebuild = (isinstance(error, (OSError, CfquantTimeout))
-                                   or code == "SESSION_NOT_READY"
-                                   or "connection closed" in text
-                                   or "transport" in text)
+                            self._subscription_retries[key] = {
+                                'failures': failures, 'due': now + delay, 'logged_at': logged_at,
+                            }
+                        # A missed renewal response does not prove disconnection.
+                        # Keep all clients, pending RPCs and callback handlers.
+                        # Each transport's receive loop/start() reconnects its own
+                        # failed connection; the next renewal restores registration.
                     finally:
                         self._subscription_client = None
-                if rebuild and time.monotonic() - self._last_session_rebuild >= 5.0:
-                    self._last_session_rebuild = time.monotonic()
-                    try:
-                        self._rebuild_connection()
-                    except Exception as error:
-                        logging.getLogger(__name__).warning(
-                            "trade session rebuild failed account=%s: %s", key, error)
 
     def _stop_subscription_recovery(self):
         worker = self._subscription_thread

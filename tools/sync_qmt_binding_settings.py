@@ -1,5 +1,9 @@
 """Apply per-strategy timer/log settings to the six fileless QMT entries."""
 import ast
+try:
+    from tools.sync_qmt_ast import parse_source
+except ImportError:
+    from sync_qmt_ast import parse_source
 
 try:
     from .sync_qmt_dispatch import ROOT, _function, _replace
@@ -85,5 +89,5 @@ def updated_source(source, lite):
             if 'if get_log_enabled():\n' not in callback:
                 callback = callback.replace(line, prefix + 'if get_log_enabled():\n    ' + line)
     source = _replace(source, '_publish_callback', callback)
-    ast.parse(source, feature_version=(3, 6))
+    parse_source(source, feature_version=(3, 6))
     return source

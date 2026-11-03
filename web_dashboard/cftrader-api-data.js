@@ -173,4 +173,77 @@ else:
         : ['cftrader.order_stock_batch', 'cftrader.order_stock_batch_async', 'cftrader.cancel_order_stock_batch', 'cftrader.cancel_order_stock_batch_async'],
     };
   });
+
+  const algoDefinitions = [
+    ['order_algo', '创建算法任务', 'account, stock_code, order_type, order_volume, algo, limit_price, duration_seconds=3600, interval_seconds=60, **options'],
+    ['order_twap', 'TWAP 时间均分', 'account, stock_code, order_type, order_volume, limit_price, **options'],
+    ['order_vwap', 'VWAP 成交量曲线', 'account, stock_code, order_type, order_volume, limit_price, **options'],
+    ['order_pov', 'POV 成交量参与', 'account, stock_code, order_type, order_volume, limit_price, participation_rate, **options'],
+    ['query_algo', '查询算法任务', 'algo_id, account=None'],
+    ['list_algos', '列出算法任务', 'account=None'],
+    ['pause_algo', '暂停算法任务', 'algo_id, account=None'],
+    ['resume_algo', '恢复算法任务', 'algo_id, account=None'],
+    ['cancel_algo', '撤销算法任务', 'algo_id, account=None'],
+  ];
+  const algoHelp = {
+    account: 'StockAccount 或账号字典；控制已有任务时可使用当前 SDK 记住的账号或 trader 绑定的账号。',
+    stock_code: 'SH/SZ/BJ 证券代码。', order_type: '普通买入 23 或普通卖出 24。',
+    order_volume: '母单总量，须符合证券数量规则。', algo: 'TWAP、VWAP 或 POV。',
+    limit_price: '买入最高价或卖出最低价；所有子单均为限价单。',
+    duration_seconds: '当日有效交易秒数，排除午休，须能放进可用交易时段。',
+    interval_seconds: '最小子单提交间隔；也是 TWAP 时间片长度。',
+    participation_rate: 'POV 目标参与率，范围 (0, 1]，例如 0.1。',
+    algo_id: '创建时返回的持久化任务 ID。',
+    options: '可传 request_key、max_child_volume、child_timeout_seconds、max_quote_age、price_mode、start_time、end_time、volume_profile、lookback_days、volume_multiplier 等，详见 docs/algorithm_trading.md。',
+  };
+  for (const [method, title, signature] of algoDefinitions) {
+    const create = method.startsWith('order_');
+    const algorithm = method === 'order_vwap' ? 'VWAP' : method === 'order_pov' ? 'POV' : 'TWAP';
+    const httpBody = { account: { account_id: 'YOUR_ACCOUNT_ID', account_type: 'STOCK' } };
+    if (create) Object.assign(httpBody, {
+      algo: algorithm, stock_code: '600000.SH', order_type: 23, order_volume: 1000,
+      limit_price: 10.00, duration_seconds: 600, interval_seconds: 60,
+      request_key: `example-${method}-001`,
+      ...(algorithm === 'VWAP' ? { volume_profile: [5, 3, 2] } : {}),
+      ...(algorithm === 'POV' ? { participation_rate: 0.1 } : {}),
+    });
+    else if (method !== 'list_algos') httpBody.algo_id = 'YOUR_ALGO_ID';
+    const httpOperation = create ? 'submit' : method === 'list_algos' ? 'list' : method.replace('_algo', '');
+    const call = create
+      ? `account, "600000.SH", xtconstant.STOCK_BUY, 1000, ${method === 'order_algo' ? '"TWAP", ' : ''}10.00${method === 'order_pov' ? ', 0.1' : ''},\n        duration_seconds=600, interval_seconds=60, request_key="example-${method}-001"${method === 'order_vwap' ? ', volume_profile=[5, 3, 2]' : ''}`
+      : method === 'list_algos' ? 'account' : '"YOUR_ALGO_ID", account=account';
+    window.CFQUANT_CFTRADER_API.push({
+      id: 'cftrader.' + method, name: method, module: 'cftrader', group: '算法交易',
+      status: 'extension', operation: 'algorithm', title,
+      http: { method: 'POST', path: '/api/trade/algo/' + httpOperation, body: httpBody },
+      description: '服务端持久化算法任务，自动复用项目共享全推行情。支持 TWAP、基础 VWAP 和 POV；用户无需预先订阅。',
+      signature: `CfQuantTrader.${method}(${signature})`,
+      parameters: signature.split(', ').map(item => {
+        const [raw, value] = item.split('=');
+        const name = raw.replace('**', '');
+        return parameter(name, algoHelp[name], value ?? (name === 'options' ? '{}' : '必填'));
+      }),
+      orderFields: [],
+      resultRows: create ? [['algo_id', '持久化母单 ID；不代表已成交。']]
+        : [['任务状态', method === 'list_algos' ? '该账号的任务列表。' : '母单、子单、成交量、占用量、剩余量和 last_error。']],
+      resultHelp: 'query_algo 返回 filled_volume、remaining_volume、reserved_volume 和 average_price。撤销后可能处于 CANCELLING，须等待子单结果确认。',
+      note: '调用脚本退出不撤销母单。重试创建时保持相同账号、参数和 request_key。未知子单不会自动重发。基础 VWAP 跟随成交量曲线，不保证成交均价。完整说明见 docs/algorithm_trading.md。',
+      usage: '通过 CfQuantTrader 包装已有 trader。算法接口连接 Web 执行服务，后台自动订阅行情并调度子单。首版支持 SH/SZ/BJ 普通买卖。',
+      example: `from cfquant import cftrader, xtconstant
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+
+ENABLE_TRADING = False
+account = StockAccount("YOUR_ACCOUNT_ID", "STOCK")
+orders_api = cftrader.CfQuantTrader(XtQuantTrader("", 0))
+if ENABLE_TRADING:
+    result = orders_api.${method}(
+        ${call},
+    )
+    print(result)
+else:
+    print("Preview only; trading is disabled")`,
+      related: ['cftrader.order_twap', 'cftrader.order_vwap', 'cftrader.order_pov', 'cftrader.query_algo', 'cftrader.cancel_algo'].filter(id => id !== 'cftrader.' + method),
+    });
+  }
 })();

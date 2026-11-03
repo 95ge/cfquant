@@ -343,3 +343,110 @@ def test_pipe_retry_closes_partial_connections(monkeypatch, failure):
         assert client._recv_thread.is_alive()
     finally:
         client.close()
+
+
+def test_congested_renewal_keeps_pending_query_and_other_account_connected(env):
+    second = StockAccount('TEST_B', 'STOCK', bridge_id='second')
+    assert env.trader.subscribe(second) == 0
+    env.trader._subscription_timeout = .05
+    original = env.publisher.request
+    held_queries, missed_renewals, result = [], [], []
+    clients = list(env.clients)
+    healthy_receiver = env.publisher.receivers[clients[1].client_id]
+
+    def congested(raw):
+        msg = loads_message(raw)
+        if msg['action'] == 'xttrader.query_stock_asset':
+            held_queries.append(msg)
+        elif (msg['action'] == 'xttrader.subscribe' and
+              msg['params']['account']['account_id'] == 'TEST_A'):
+            missed_renewals.append(msg)
+        else:
+            original(raw)
+
+    env.publisher.request = congested
+    def query():
+        try:
+            result.append(clients[0].request('xttrader.query_stock_asset', {'account':env.payload}, timeout=3))
+        except Exception as error:
+            result.append(error)
+    worker = threading.Thread(target=query)
+    worker.start()
+    try:
+        wait_until(lambda: held_queries and len(missed_renewals) >= 2)
+        assert env.trader._subscription_errors
+        assert env.clients == clients and all(not client._closed for client in clients)
+        assert held_queries[0]['id'] in clients[0]._pending and not result
+        assert env.publisher.receivers[clients[1].client_id] is healthy_receiver
+        second_payload = dict(account_id=second.account_id, account_type=second.account_type, bridge_id='second')
+        env.publisher.emit(second_payload, 80)
+        wait_until(lambda: ('TEST_B', 80) in env.received)
+        env.publisher.receivers[clients[0].client_id].Q.put(pack_response(held_queries[0]['id'], result={'cash':123}))
+        worker.join(1)
+        assert result == [{'cash':123}]
+        env.publisher.request = original
+        # Remote registration disappeared during congestion, with no socket EOF.
+        env.publisher.subscribers.pop(account_key(env.payload), None)
+        wait_until(lambda: not env.trader._subscription_errors)
+        assert not env.trader._subscription_retries
+        env.publisher.emit(env.payload, 90)
+        wait_until(lambda: ('TEST_A', 90) in env.received)
+        assert env.received.count(('TEST_A', 90)) == 1
+        assert all(msg['params']['subscription_renewal'] for msg in missed_renewals)
+        assert {msg['action'] for msg in env.publisher.requests} <= {'cfquant.ping', 'xttrader.subscribe'}
+    finally:
+        env.publisher.request = original
+        for msg in held_queries:
+            if msg['id'] in clients[0]._pending:
+                env.publisher.receivers[clients[0].client_id].Q.put(pack_response(msg['id'], result={}))
+        worker.join(3)
+
+
+def test_one_transport_disconnect_recovers_without_closing_healthy_account(env):
+    second = StockAccount('TEST_B', 'STOCK', bridge_id='second')
+    assert env.trader.subscribe(second) == 0
+    first, healthy = env.clients
+    healthy_receiver = env.publisher.receivers[healthy.client_id]
+    broken_receiver = env.publisher.receivers[first.client_id]
+    env.publisher.subscribers.pop(account_key(env.payload), None)
+    broken_receiver.close()
+    wait_until(lambda: env.publisher.receivers[first.client_id] is not broken_receiver)
+    wait_until(lambda: bool(env.publisher.subscribers.get(account_key(env.payload))))
+    assert env.clients == [first, healthy]
+    assert not healthy._closed and env.publisher.receivers[healthy.client_id] is healthy_receiver
+    env.publisher.emit(env.payload, 91)
+    wait_until(lambda: env.received == [('TEST_A', 91)])
+
+
+def test_renewal_backoff_is_per_account_and_rate_limits_changing_errors(monkeypatch, caplog):
+    from cfquant.client import CfquantTimeout
+    import cfquant.xttrader as sdk
+    clock = [100.0]
+    monkeypatch.setattr(sdk, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    trader = XtQuantTrader()
+    trader._subscription_interval = 2.0
+    trader._subscribed_accounts = {'bad':{'bridge_id':'bad'}, 'good':{'bridge_id':'good'}}
+    attempts, good_attempts = [], []
+    class Client:
+        def __init__(self, bridge): self.bridge = bridge
+        def request(self, *args, **kwargs):
+            if self.bridge == 'bad':
+                attempts.append(clock[0])
+                raise CfquantTimeout('changing request id %s' % clock[0])
+            good_attempts.append(clock[0])
+            return 0
+        def close(self): pytest.fail('renewal must not close a client')
+    clients = {name:Client(name) for name in ('bad', 'good')}
+    trader._get_client = lambda bridge=None: clients[bridge]
+    trader._register_trader_events = lambda bridge: None
+    trader._rebuild_connection = lambda: pytest.fail('renewal must not rebuild the session')
+    class Stop:
+        def wait(self, seconds):
+            clock[0] += seconds
+            return clock[0] > 164
+        def is_set(self): return False
+    trader._recover_subscriptions(Stop())
+    assert attempts == [102, 104, 108, 116, 132, 162]
+    assert len(good_attempts) == 32
+    warnings = [row for row in caplog.records if 'recovery failed' in row.message]
+    assert len(warnings) == 3

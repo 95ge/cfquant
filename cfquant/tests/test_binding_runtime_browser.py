@@ -19,7 +19,10 @@ def test_binding_runtime_default_save_edit_and_isolation(page, frontend_url):
     expect(page.locator('#bindingQmtTimerInterval')).to_have_value('1')
     expect(page.locator('#bindingQmtLogEnabled')).to_have_value('off')
     page.locator('#bindingAccountId').fill('TEST_ONLY')
-    page.locator('#bindingMode').select_option('lite')
+    expect(page.locator('#bindingMode')).to_have_value('lite')
+    assert page.locator('#bindingMode option:not([hidden])').evaluate_all('rows => rows.map(row => row.value)') == ['lite']
+    page.locator('#bindingMode').press('End')
+    expect(page.locator('#bindingMode')).to_have_value('lite')
     # No installation or launch even in the mocked request payload.
     page.evaluate("fillQmtStrategySettings('binding', {enabled: false})")
     page.locator('#bindingQmtAutoLogin').uncheck()
@@ -40,6 +43,7 @@ def test_binding_runtime_default_save_edit_and_isolation(page, frontend_url):
     page.route('**/api/account-config', save)
     page.locator('#bindingForm [type="submit"]').click()
     expect(page.locator('#bindingDialogOverlay')).not_to_be_visible()
+    assert saved[0]['mode'] == 'lite'
     assert saved[0]['qmt_runtime'] == {'timer_interval_ms': 5, 'log_enabled': True}
     page.evaluate("""() => {
         document.querySelector('#bindingQmtGuideOverlay').classList.add('hidden');
@@ -57,6 +61,7 @@ def test_binding_runtime_default_save_edit_and_isolation(page, frontend_url):
     }""")
     expect(page.locator('#bindingQmtTimerInterval')).to_have_value('1')
     expect(page.locator('#bindingQmtLogEnabled')).to_have_value('off')
+    expect(page.locator('#bindingMode')).to_have_value('lite')
     page.locator('#bindingRuntimeSettings').scroll_into_view_if_needed()
     folder = Path(__file__).resolve().parents[2] / 'runtime/screenshots'
     folder.mkdir(parents=True, exist_ok=True)
@@ -80,6 +85,7 @@ def test_binding_runtime_legacy_inheritance_validation_and_modes(page, frontend_
     }""")
     expect(page.locator('#bindingQmtTimerInterval')).to_have_value('1')
     expect(page.locator('#bindingQmtLogEnabled')).to_have_value('inherit')
+    expect(page.locator('#bindingMode')).to_have_value('ctypes')
     for value in ('0', '1001', '2.5', ''):
         page.locator('#bindingQmtTimerInterval').fill(value)
         assert page.locator('#bindingQmtTimerInterval').evaluate('el => !el.checkValidity()')

@@ -1,4 +1,105 @@
 /* finesse: register=product; surface=cfquant-runtime-architecture; density=7 */
+#tradingMonitor { min-width: 0; display: grid; gap: 18px; font-variant-numeric: tabular-nums; }
+#tradingMonitor.hidden { display: none; }
+#tradingMonitor .monitor-alert.hidden { display: none; }
+.monitor-control { padding: 16px 18px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+.monitor-control-head { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; }
+.monitor-switch { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 600; cursor: pointer; }
+#monitorEnabled { width: 18px; height: 18px; min-width: 18px; min-height: 0; padding: 0; margin: 0; accent-color: var(--accent); }
+#monitorControlStatus, .monitor-control p { font-size: 12px; color: var(--muted); line-height: 1.8; }
+.monitor-control p { margin: 10px 0 0; }
+.monitor-benchmark { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.monitor-benchmark summary { cursor: pointer; width: fit-content; }
+.monitor-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.monitor-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); box-sizing: border-box; padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); overflow: auto; }
+.monitor-dialog::backdrop { background: rgb(15 23 42 / 45%); }
+.monitor-dialog h2 { margin: 0 0 12px; font-size: 22px; }
+.monitor-dialog p { font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+.monitor-dialog :is(button, input, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.monitor-dialog input:is([type=checkbox], [type=radio]) { width: 17px; height: 17px; min-width: 17px; min-height: 0; padding: 0; margin: 0; accent-color: var(--accent); }
+.monitor-account-scope { margin: 20px 0; padding: 12px 0 0; border: 0; border-top: 1px solid var(--line); }
+.monitor-account-scope legend { padding: 0 12px 0 0; font-weight: 600; font-size: 14px; }
+.monitor-account-scope > label { display: flex; gap: 9px; align-items: center; margin: 12px 0; font-size: 13px; cursor: pointer; }
+.monitor-accounts { max-height: 210px; overflow: auto; border-block: 1px solid var(--line); }
+.monitor-account { display: flex; align-items: center; gap: 10px; padding: 12px 4px; cursor: pointer; border-bottom: 1px solid var(--line); }
+.monitor-account:last-child { border-bottom: 0; }
+.monitor-account span { min-width: 0; overflow-wrap: anywhere; }
+.monitor-account strong { font-size: 13px; font-weight: 500; }
+.monitor-account small { display: block; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.monitor-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+.monitor-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.monitor-kicker { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
+.monitor-heading h2 { margin: 8px 0; font-size: 28px; letter-spacing: -.03em; }
+.monitor-heading p, #monitorFreshness { color: var(--muted); font-size: 12px; margin: 0; }
+.monitor-filters { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.monitor-filters label { display: grid; gap: 7px; font-size: 12px; color: var(--muted); }
+.monitor-filters input, .monitor-filters select, .monitor-kind select { min-height: 36px; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); color: var(--text); padding: 6px 10px; max-width: 240px; }
+.monitor-filters .monitor-auto { display: flex; align-items: center; min-height: 36px; white-space: nowrap; }
+#monitorAuto { width: 16px; height: 16px; min-width: 16px; min-height: 0; padding: 0; margin: 0; flex: 0 0 16px; }
+#tradingMonitor :is(button, input, select, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.monitor-health { border-left: 3px solid var(--good); padding: 12px 16px; background: var(--panel); color: var(--text); font-size: 13px; line-height: 1.6; }
+.monitor-health.has-issues { border-color: var(--warn); }
+.monitor-alert { border-left: 3px solid var(--danger); padding: 12px 16px; background: var(--panel); color: var(--danger); }
+.monitor-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.monitor-stat { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 20px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+.monitor-stat:nth-child(n+5) { border-bottom: 0; }
+.monitor-stat:nth-child(4n) { border-right: 0; }
+.monitor-stat > span { font-size: 12px; color: var(--muted); }
+.monitor-stat strong { font-size: clamp(18px, 1.65vw, 28px); font-weight: 650; letter-spacing: -.03em; overflow-wrap: anywhere; }
+.monitor-stat small { font-size: 11px; color: var(--muted); line-height: 1.5; }
+.monitor-stat.has-issues strong, .monitor-error-text { color: var(--danger); }
+.monitor-detail-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr); gap: 18px; }
+#tradingMonitor .panel { min-width: 0; padding: 20px; margin: 0; }
+#tradingMonitor h3 { font-size: 15px; margin: 0; }
+.monitor-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 12px 0 0; }
+.monitor-legend { display: flex; gap: 18px; font-size: 12px; margin: 18px 0 0; }
+.monitor-legend span::before { content: ''; display: inline-block; width: 14px; height: 3px; background: var(--accent); margin: 0 6px 3px 0; }
+.monitor-legend span:nth-child(2)::before { background: var(--good); }
+.monitor-legend span:nth-child(3)::before { background: var(--warn); }
+#monitorChart svg { width: 100%; display: block; margin-top: 12px; min-height: 150px; }
+#monitorChart text { fill: var(--muted); font: 12px sans-serif; }
+.monitor-gridline { stroke: var(--line); stroke-dasharray: 3 4; }
+.monitor-line { fill: none; stroke-width: 2; stroke: var(--accent); vector-effect: non-scaling-stroke; }
+.monitor-line.line-1 { stroke: var(--good); }
+.monitor-line.line-2 { stroke: var(--warn); stroke-dasharray: 5 3; }
+.monitor-latency { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; }
+.monitor-latency dt { font-size: 12px; color: var(--muted); }
+.monitor-latency dd { margin: 8px 0 0; font-size: 26px; }
+.monitor-latency small { font-size: 11px; color: var(--muted); }
+.monitor-table-wrap { overflow-x: auto; margin-top: 16px; }
+.monitor-events-scroll { max-height: 480px; }
+.monitor-events-scroll th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.monitor-table-wrap table { width: 100%; min-width: 850px; border-collapse: collapse; font-size: 12px; }
+.monitor-table-wrap :is(th, td) { padding: 12px 10px; text-align: left; border-bottom: 1px solid var(--line); }
+.monitor-table-wrap th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.monitor-table-wrap td { max-width: 320px; overflow-wrap: anywhere; }
+.monitor-table-wrap td small { display: block; margin-top: 5px; color: var(--muted); }
+.monitor-state { display: inline-block; white-space: nowrap; }
+.monitor-state::before { content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 6px; }
+.monitor-state.is-good { color: var(--good); }
+.monitor-state.is-bad { color: var(--danger); }
+.monitor-empty { color: var(--muted); padding: 35px 16px !important; text-align: center !important; line-height: 2; }
+.monitor-chart-empty { min-height: 170px; display: grid; align-content: center; }
+.monitor-kind { font-size: 12px; color: var(--muted); }
+.monitor-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+.monitor-pagination span { margin-right: auto; font-size: 12px; color: var(--muted); }
+.monitor-definitions { color: var(--muted); font-size: 12px; line-height: 1.8; padding: 8px 0 24px; }
+.monitor-definitions summary { cursor: pointer; width: fit-content; color: var(--text); }
+@media (max-width: 1100px) { .monitor-detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  .monitor-heading { align-items: flex-start; flex-direction: column; }
+  .monitor-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .monitor-stat { padding: 14px; }
+  .monitor-stat:nth-child(n+5) { border-bottom: 1px solid var(--line); }
+  .monitor-stat:nth-child(n+7) { border-bottom: 0; }
+  .monitor-stat:nth-child(2n) { border-right: 0; }
+  .monitor-filters label { flex: 1 1 40%; min-width: 0; }
+  .monitor-filters input, .monitor-filters select { width: 100%; max-width: 100%; min-width: 0; }
+  .monitor-filters .monitor-auto { flex: 1 1 100%; }
+  .monitor-auto input { width: auto; }
+  #tradingMonitor .panel { padding: 14px; }
+  .monitor-pagination { flex-wrap: wrap; }
+}
 :root {
   --bg: #f4f6f8;
   --panel: #ffffff;
@@ -27,6 +128,9 @@
 .docs-sidebar { border-right:1px solid var(--line); padding-right:18px; }
 .docs-sidebar label { display:block; margin-bottom:8px; font-size:12px; color:var(--muted); }
 .docs-sidebar input { width:100%; box-sizing:border-box; padding:9px 10px; border:1px solid var(--line); background:var(--surface); color:var(--text); border-radius:6px; }
+.docs-sidebar select { width:100%; box-sizing:border-box; padding:9px 10px; margin-bottom:16px; border:1px solid var(--line); background:var(--surface); color:var(--text); border-radius:6px; }
+.docs-head > div { min-width:0; }
+.docs-head [data-doc-algorithm-intro] { margin-top:14px; }
 .docs-sidebar nav { margin-top:16px; display:grid; gap:3px; }
 .docs-nav-item { display:grid; gap:3px; text-align:left; width:100%; padding:10px 11px; border:0; border-left:2px solid transparent; background:transparent; color:var(--text); cursor:pointer; }
 .docs-nav-item:hover, .docs-nav-item.active { background:var(--surface-2); border-left-color:var(--accent); }

@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261103_01';
+const FRONTEND_VERSION = 'web_20261103_02';
 
 const state = {
   accountId: '',
@@ -298,6 +298,8 @@ let mermaidRendererReady = false;
 let forceCloseVersionPopover = () => {};
 let activeHelpTooltipButton = null;
 let pinnedHelpTooltipButton = null;
+
+const DEFAULT_BINDING_MODE = 'lite';
 
 function normalizeTransportMode(mode) {
   const value = String(mode || 'ctypes').trim().toLowerCase();
@@ -1592,6 +1594,7 @@ const DOWNLOAD_EVENT_LIMIT = 80;
 
 const API_GROUPS = [
   { id: 'cftrader', title: 'cftrader 独立下单/撤单接口' },
+  { id: 'algorithm', title: '算法交易 · TWAP / VWAP / POV' },
   { id: 'data', title: '数据' },
   { id: 'trade', title: '交易' },
   { id: 'system', title: '系统' },
@@ -1600,6 +1603,10 @@ const API_GROUPS = [
 
 const API_ENDPOINTS = [
   ...(window.CFQUANT_CFTRADER_API || []).map((entry) => {
+    if (entry.operation === 'algorithm') return {
+      id: entry.id, group: 'algorithm', title: entry.title, functionName: entry.name,
+      method: 'DOC', path: entry.http.path, desc: entry.description, fields: [], sdkEntry: entry,
+    };
     const isBatch = entry.name.includes('batch');
     const isCancelBatch = entry.name.startsWith('cancel_order_stock_batch');
     return {
@@ -1623,7 +1630,7 @@ const API_ENDPOINTS = [
     title: '内部延迟',
     method: 'POST',
     path: '/api/diagnostics/quotes/subscribe',
-    desc: '独立订阅全推行情，分别显示行情时间 → QMT 回调入口、行情时间 → Web 接收回调，以及 QMT 发送前 → Web 接收回调的时间差。默认订阅 SH,SZ,BJ 全市场，也可填写证券代码缩小范围。保留本批全部数据，支持分页、代码筛选、排序和导出，统计覆盖本批全部有效时间。订阅后点击“连接推送”；可暂停刷新以检查某一批数据。',
+    desc: '复用项目共享全推行情，诊断订阅可独立取消。分别显示行情时间 → QMT 回调入口、行情时间 → Web 接收回调，以及 QMT 发送前 → Web 接收回调的时间差。默认订阅 SH,SZ,BJ 全市场，也可填写证券代码筛选回调范围。保留本批全部数据，支持分页、代码筛选、排序和导出。订阅后点击“连接推送”；可暂停刷新以检查某一批数据。',
     defaults: { channel: 'normal', markets: 'SH,SZ,BJ', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['bridge_id', 'whole_quote_channel', 'markets', 'timeout'],
   },
@@ -4285,7 +4292,7 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
     ? `Python SDK cfquant.cftrader.CfQuantTrader.${endpoint.sdkEntry.name}`
     : `${endpoint.method} ${endpoint.path}`;
   $('apiHttpPreview').classList.toggle('hidden', endpoint.method === 'DOC');
-  document.querySelector('.api-settings-tip').classList.remove('hidden');
+  document.querySelector('.api-settings-tip').classList.toggle('hidden', endpoint.method === 'DOC');
   form.innerHTML = endpoint.fields.map((fieldName) => apiFieldHtml(fieldName)).join('');
   if (endpoint.method !== 'DOC') {
     const actions = document.createElement('div');
@@ -4724,25 +4731,48 @@ function resetQuoteLive(subscribeId = '', options = {}) {
   renderQuoteLiveTable();
 }
 
+async function copyDocumentCode(button, code) {
+  const label = button.textContent;
+  try {
+    await navigator.clipboard.writeText(code);
+    button.textContent = '已复制';
+  } catch {
+    button.textContent = '复制失败，请选择代码复制';
+  }
+  setTimeout(() => { button.textContent = label; }, 1500);
+}
+
 function renderApiDocDetail(endpoint) {
   const box = $('apiDocDetail');
   if (!box) return;
   if (endpoint.sdkEntry) {
     const entry = endpoint.sdkEntry;
+    const algorithm = entry.operation === 'algorithm';
+    const httpExample = entry.http ? `${entry.http.method} ${entry.http.path}\nContent-Type: application/json\nX-API-Key: YOUR_API_KEY\n\n${JSON.stringify(entry.http.body, null, 2)}` : '';
     box.innerHTML = `
       <div class="api-doc-extra">
-        <h3>cfquant 独立 Python SDK 接口</h3>
+        <h3>${algorithm ? 'cftrader 算法交易接口' : 'cfquant 独立 Python SDK 接口'}</h3>
         <p>${esc(entry.usage)}</p><p>${esc(entry.note)}</p>
-        <button type="button" data-api-sdk-tutorial>教程与可复制示例</button>
+        <button type="button" data-api-sdk-tutorial>${algorithm ? 'Python API 参考' : '教程与可复制示例'}</button>
+        ${algorithm ? '<button type="button" data-api-algorithm-guide>算法交易完整教程</button>' : ''}
         <pre class="guide-code" tabindex="0"><code>${esc(entry.signature)}</code></pre>
       </div>
       <div><h3>调用参数</h3>${apiDocTable(entry.parameters.map(p => [p.name, `${p.help} 默认值：${p.default}`]))}</div>
       <div><h3>返回值与状态</h3>${apiDocTable(entry.resultRows)}</div>
       ${entry.orderFields.length ? `<div class="api-doc-extra"><h3>orders 逐笔字段</h3>${apiDocTable(entry.orderFields.map(p => [p.name, `${p.help} 默认值：${p.default}`]))}</div>` : ''}
-      <div class="api-doc-extra"><h3>Python 调用示例</h3><p>${esc(entry.resultHelp)}</p><pre class="guide-code" data-language="python" tabindex="0"><code>${esc(entry.example)}</code></pre></div>`;
+      <div class="api-doc-extra"><h3>Python 调用示例</h3><p>${esc(entry.resultHelp)}</p><button type="button" data-api-copy-example="python">复制 Python 示例</button><pre class="guide-code" data-language="python" tabindex="0"><code>${esc(entry.example)}</code></pre></div>
+      ${algorithm ? `<div class="api-doc-extra"><h3>HTTP 请求示例</h3><p>服务地址默认是 http://127.0.0.1:8765；将账号、API Key 和任务参数替换为自己的配置。创建接口返回 algo_id，查询与控制接口返回任务状态。</p><button type="button" data-api-copy-example="http">复制 HTTP 示例</button><pre class="guide-code" data-language="http" tabindex="0"><code>${esc(httpExample)}</code></pre></div>` : ''}`;
     box.querySelector('[data-api-sdk-tutorial]').addEventListener('click', () => {
       setView('tutorial');
       window.CfquantPythonReference.open(entry.id);
+    });
+    box.querySelector('[data-api-algorithm-guide]')?.addEventListener('click', () => {
+      setView('tutorial');
+      setTutorialTopic('algorithm');
+    });
+    box.querySelectorAll('[data-api-copy-example]').forEach(button => {
+      button.addEventListener('click', () => copyDocumentCode(button,
+        button.dataset.apiCopyExample === 'http' ? httpExample : entry.example));
     });
     return;
   }
@@ -5581,7 +5611,7 @@ function showSetupOverlay(message = '') {
   if (qmtDirInput && !qmtDirInput.value) {
     qmtDirInput.value = qmtDeploymentPath(setup.default_qmt_dir || (defaultConfig && defaultConfig.qmt_dir) || '');
   }
-  if (modeInput) modeInput.value = setup.default_mode || (defaultConfig && defaultConfig.mode) || 'ctypes';
+  if (modeInput) modeInput.value = (defaultConfig && defaultConfig.mode) || DEFAULT_BINDING_MODE;
   const pythonEnvironment = setup.python_environment || {};
   if (pythonModeInput) pythonModeInput.value = pythonEnvironment.mode || 'default';
   if (pythonExecutableInput && !pythonExecutableInput.value) pythonExecutableInput.value = pythonEnvironment.configured_executable || '';
@@ -5653,7 +5683,7 @@ async function submitSetupForm(event) {
     account_type: $('setupAccountType') ? $('setupAccountType').value : 'STOCK',
     qmt_dir: $('setupQmtDir') ? qmtDeploymentPath($('setupQmtDir').value) : '',
     qmt_trade_dir: $('setupQmtTradeDir') ? qmtDeploymentPath($('setupQmtTradeDir').value) : '',
-    mode: $('setupMode') ? $('setupMode').value : 'ctypes',
+    mode: $('setupMode') ? $('setupMode').value : DEFAULT_BINDING_MODE,
     python_environment: {
       mode: $('setupPythonEnvironmentMode') ? $('setupPythonEnvironmentMode').value : 'default',
       python_executable: $('setupPythonExecutable') ? $('setupPythonExecutable').value.trim() : '',
@@ -8374,10 +8404,19 @@ function scheduleQuoteRender(force = false) {
   }, QUOTE_RENDER_INTERVAL_MS);
 }
 
-function setView(view) {
+let viewNavigation = 0;
+function setView(view, monitorAuthorized = false) {
   if (!document.querySelector(`.nav-item[data-view="${view}"]`)) {
     view = 'overview';
   }
+  const navigation = ++viewNavigation;
+  if (view === 'monitor' && !monitorAuthorized) {
+    window.CfquantMonitor.enter(() => {
+      if (navigation === viewNavigation) setView('monitor', true);
+    });
+    return;
+  }
+  if (view !== 'monitor') window.CfquantMonitor?.cancelEntry();
   const leavingApi = state.currentView === 'api' && view !== 'api';
   if (leavingApi) {
     stopQuoteLive();
@@ -8391,6 +8430,7 @@ function setView(view) {
     trade: '交易',
     orders: '委托',
     status: '状态',
+    monitor: '交易监控',
     bindings: '绑定',
     callbacks: '回调',
     api: '接口',
@@ -8432,7 +8472,7 @@ function setView(view) {
 function syncHomeToolbar() {
   const home = state.currentView === 'overview';
   const toolbar = document.querySelector('.toolbar');
-  const toolbarHidden = state.currentView === 'bindings' || state.currentView === 'tests' || state.currentView === 'docs';
+  const toolbarHidden = ['bindings', 'tests', 'docs', 'monitor'].includes(state.currentView);
   if (toolbar) toolbar.style.display = toolbarHidden ? 'none' : '';
   const bridgeField = $('bridgeField');
   if (bridgeField) bridgeField.style.display = 'none';
@@ -9634,7 +9674,7 @@ async function saveCurrentAccountPair() {
   const form = $('bindingForm');
   const qmtDir = form && form.qmt_dir ? form.qmt_dir.value.trim() : '';
   const qmtTradeDir = form && form.qmt_trade_dir ? form.qmt_trade_dir.value.trim() : '';
-  const mode = form && form.mode ? form.mode.value : 'ctypes';
+  const mode = form && form.mode ? form.mode.value : DEFAULT_BINDING_MODE;
   const dataProvider = !!(form && form.data_provider && form.data_provider.checked);
   const enabled = !(form && form.enabled && !form.enabled.checked);
   const qmtAutoLoginSettings = readBindingQmtAutoLoginSettings(form);
@@ -9847,9 +9887,9 @@ function syncBindingForm() {
   fillBindingRuntimeSettings(config ? (config.qmt_runtime || {}) : undefined);
   if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
   if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(config && config.qmt_dir ? config.qmt_dir : '');
-  if (form.mode) form.mode.value = config && config.mode ? config.mode : 'ctypes';
+  if (form.mode) form.mode.value = config && config.mode ? config.mode : DEFAULT_BINDING_MODE;
   if (form.qmt_trade_dir) form.qmt_trade_dir.value = qmtDeploymentPath(config && config.qmt_trade_dir ? config.qmt_trade_dir : '');
-  syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
+  syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : DEFAULT_BINDING_MODE);
   if (form.data_provider) form.data_provider.checked = !!(config && config.data_provider);
   if (form.enabled) form.enabled.checked = config ? accountConfigEnabled(config) : true;
   const routes = normalizeMarketRoutes(config || {});
@@ -9890,9 +9930,9 @@ function fillBindingForm(values = {}) {
   form.account_id.value = values.accountId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
   if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(values.qmtDir || '');
-  if (form.mode) form.mode.value = values.mode || 'ctypes';
+  if (form.mode) form.mode.value = values.mode || DEFAULT_BINDING_MODE;
   if (form.qmt_trade_dir) form.qmt_trade_dir.value = qmtDeploymentPath(values.qmtTradeDir || '');
-  syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : 'ctypes');
+  syncAdvancedQmtDirField('bindingQmtTradeDir', form.mode ? form.mode.value : DEFAULT_BINDING_MODE);
   if (form.data_provider) form.data_provider.checked = !!values.dataProvider;
   if (form.enabled) form.enabled.checked = configBool(values.enabled, true);
   const routes = normalizeMarketRoutes({ market_bridges: values.marketBridges || {} });
@@ -9930,7 +9970,7 @@ function openBindingDialog(options = {}) {
     displayName,
     qmtDir: config && config.qmt_dir ? config.qmt_dir : (options.qmtDir || ''),
     qmtTradeDir: config && config.qmt_trade_dir ? config.qmt_trade_dir : (options.qmtTradeDir || ''),
-    mode: config && config.mode ? config.mode : (options.mode || 'ctypes'),
+    mode: config && config.mode ? config.mode : (options.mode || DEFAULT_BINDING_MODE),
     dataProvider: config ? !!config.data_provider : !!options.dataProvider,
     enabled: config ? accountConfigEnabled(config) : configBool(options.enabled, true),
     marketRoutingEnabled: config ? isMarketRoutingEnabled(config) : !!options.marketRoutingEnabled,
@@ -10228,7 +10268,7 @@ async function submitBindingForm(event) {
   const accountType = normalizeAccountType(form.account_type ? form.account_type.value : 'STOCK');
   const qmtDir = form.qmt_dir ? qmtDeploymentPath(form.qmt_dir.value) : '';
   const qmtTradeDir = form.qmt_trade_dir ? qmtDeploymentPath(form.qmt_trade_dir.value) : '';
-  const mode = form.mode ? form.mode.value : 'ctypes';
+  const mode = form.mode ? form.mode.value : DEFAULT_BINDING_MODE;
   const qmtRuntime = readBindingRuntimeSettings(form);
   if (normalizeTransportMode(mode) !== 'lttx' && !qmtRuntime) {
     setBindingNotice('QMT 调度间隔必须是 1–1000 ms 的整数。', 'error', { autoHide: false });
@@ -13268,7 +13308,7 @@ function onboardingValues() {
     account_key: config.account_key || makeAccountKey(accountId, accountType, config.bridge_id || state.defaultBridgeId || 'default'),
     qmt_dir: qmtDir,
     qmt_trade_dir: $('onboardingQmtTradeDir') ? qmtDeploymentPath($('onboardingQmtTradeDir').value) : qmtDeploymentPath(accountConfigQmtTradeDir(config)),
-    mode: $('onboardingMode') ? $('onboardingMode').value : (config.mode || 'ctypes'),
+    mode: $('onboardingMode') ? $('onboardingMode').value : (config.mode || DEFAULT_BINDING_MODE),
     python_environment: {
       mode: $('onboardingPythonEnvironmentMode') ? $('onboardingPythonEnvironmentMode').value : ((state.setup && state.setup.python_environment && state.setup.python_environment.mode) || 'default'),
       python_executable: $('onboardingPythonExecutable') ? $('onboardingPythonExecutable').value.trim() : ((state.setup && state.setup.python_environment && state.setup.python_environment.configured_executable) || ''),
@@ -13555,7 +13595,7 @@ function syncOnboardingWizard(options = {}) {
   }
   const modeInput = $('onboardingMode');
   if (modeInput) {
-    modeInput.value = config.mode || (state.setup && state.setup.default_mode) || 'ctypes';
+    modeInput.value = config.mode || DEFAULT_BINDING_MODE;
   }
   const pythonEnvironment = (state.setup && state.setup.python_environment) || {};
   const pythonModeInput = $('onboardingPythonEnvironmentMode');
@@ -14340,6 +14380,16 @@ function wireTutorialReader() {
 }
 
 function wireTutorialNavigation() {
+  document.querySelectorAll('[data-algo-example]').forEach(block => {
+    const entry = (window.CFQUANT_CFTRADER_API || []).find(item => item.name === block.dataset.algoExample);
+    if (entry) block.textContent = entry.example;
+  });
+  document.querySelectorAll('[data-algo-copy]').forEach(button => {
+    button.addEventListener('click', () => copyDocumentCode(button, $(button.dataset.algoCopy).textContent));
+  });
+  document.querySelectorAll('[data-algorithm-guide]').forEach(button => {
+    button.addEventListener('click', () => setTutorialTopic('algorithm'));
+  });
   document.querySelectorAll('.tutorial-menu-item').forEach((item) => {
     item.addEventListener('click', () => {
       if (item.dataset.guide === 'onboarding') {

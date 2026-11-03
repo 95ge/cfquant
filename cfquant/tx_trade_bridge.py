@@ -321,19 +321,22 @@ class TxTradeBridge(object):
         request_id = msg.get("id")
         action = msg.get("action")
         client_id = msg.get("client_id") or msg.get("reply_channel")
+        renewal = action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True
         try:
             result = self._dispatch(action, msg.get("params") or {}, msg)
             response = pack_response(request_id, ok=True, result=result, meta=msg.get("_response_meta"))
-            self._log("tx trade response_ready action=%s id=%s" % (action, request_id))
+            if not renewal:
+                self._log("tx trade response_ready action=%s id=%s" % (action, request_id))
         except Exception as e:
             response = pack_response(request_id, ok=False, error=e, meta=msg.get("_response_meta"))
             self._log("tx trade request_error action=%s id=%s error=%s" % (action, request_id, e))
         if client_id:
             self.tx.push("response", response, client_id)
-            self._log(
-                "tx trade response_sent action=%s id=%s client_id=%s total_ms=%.2f"
-                % (action, request_id, client_id, (time.time() - received_at) * 1000)
-            )
+            if not renewal:
+                self._log(
+                    "tx trade response_sent action=%s id=%s client_id=%s total_ms=%.2f"
+                    % (action, request_id, client_id, (time.time() - received_at) * 1000)
+                )
 
     def _dispatch(self, action, params, msg):
         if action in ("xtdata.get_market_data", "xtdata.get_market_data_ex", "xtdata.get_full_tick"):
@@ -3487,20 +3490,33 @@ class TxTradeBridge(object):
             raise ValueError("account_id is required")
         account_id = str(account_id).strip()
         account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
-        self.account_id = account_id
-        self.account_type = account_type
         subscriber_key = (account_type.upper(), account_id)
         client_id = ""
         if msg:
             client_id = msg.get("client_id") or msg.get("reply_channel") or ""
+        with self.subscriber_lock:
+            existing = client_id and client_id in self.account_subscribers.get(subscriber_key, ())
+        renewal = existing and params.get("subscription_renewal") is True
+        previous_account = (self.account_id, self.account_type)
         if client_id:
             with self.subscriber_lock:
                 self.account_subscribers.setdefault(subscriber_key, set()).add(client_id)
                 self.client_accounts.setdefault(client_id, set()).add(subscriber_key)
             account_routing.subscribe(self.bridge_id, account_id, client_id, account_type=account_type)
-        self._set_context_account(account_id, account_type)
-        self._enable_auto_trade_callback()
-        self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
+        try:
+            if not renewal:
+                # Native setup can emit callbacks immediately; install routing first.
+                self.account_id = account_id
+                self.account_type = account_type
+                self._set_context_account(account_id, account_type)
+            self._enable_auto_trade_callback()
+        except Exception:
+            if client_id and not existing:
+                self._unsubscribe_account({"account_id": account_id, "account_type": account_type}, msg)
+            self.account_id, self.account_type = previous_account
+            raise
+        if not renewal:
+            self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
         return 0
 
     def _unsubscribe_account(self, params, msg=None):

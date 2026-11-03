@@ -9,6 +9,10 @@ these adapters are part of the public query/data contract.
 from __future__ import annotations
 
 import ast
+try:
+    from tools.sync_qmt_ast import parse_source
+except ImportError:
+    from sync_qmt_ast import parse_source
 import re
 from pathlib import Path
 try:
@@ -27,7 +31,7 @@ LITE_PATHS = sorted((ROOT / "qmt_scripts").rglob("CFQUANT_LITE*.py"))
 
 
 def _class_node(source, class_name="TxTradeBridge"):
-    tree = ast.parse(source)
+    tree = parse_source(source)
     return next(
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == class_name
@@ -35,7 +39,7 @@ def _class_node(source, class_name="TxTradeBridge"):
 
 
 def _method_source(source, class_name, method_name):
-    tree = ast.parse(source)
+    tree = parse_source(source)
     cls = next(
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == class_name
@@ -284,10 +288,10 @@ _LITE_CREDIT_FIELD_ALIASES = {
 
 def _patch_source(source, core):
     protocol = (ROOT / "cfquant" / "protocol.py").read_text(encoding="utf-8")
-    for node in ast.parse(protocol).body:
+    for node in parse_source(protocol).body:
         if isinstance(node, ast.FunctionDef) and node.name in ("_quote_json_default", "pack_quote_latency_event", "pack_whole_quote_event"):
             replacement = "".join(protocol.splitlines(True)[node.lineno - 1:node.end_lineno])
-            existing = next((item for item in ast.parse(source).body
+            existing = next((item for item in parse_source(source).body
                              if isinstance(item, ast.FunctionDef) and item.name == node.name), None)
             if existing:
                 lines = source.splitlines(True)
@@ -531,8 +535,12 @@ LITE_OBJECT_QUERY_METHODS = {
         '            rows = func(account_id, account_type.lower(), detail_type.lower()) or []',
         '            rows = self._call_trade_detail_data(func, account_id, account_type.lower(), detail_type.lower()) or []',
     )
-    ast.parse(source, feature_version=(3, 6))
-    return update_account_timing_source(update_latency_source(source))
+    parse_source(source, feature_version=(3, 6))
+    try:
+        from tools.sync_qmt_shared_quotes import updated_source as update_shared_quotes
+    except ImportError:
+        from sync_qmt_shared_quotes import updated_source as update_shared_quotes
+    return update_shared_quotes(update_account_timing_source(update_latency_source(source)))
 
 
 def main():

@@ -119,6 +119,9 @@ def _subscribe_quote_request(action, params, callback):
     if callback is not None and not callable(callback):
         raise TypeError("callback must be callable")
     client = get_client()
+    if action in ("xtdata.subscribe_whole_quote", "xtdata.subscribe_whole_quote_latency"):
+        params["shared_lease_key"] = new_id("sdk_quote")
+        params["lease_timeout"] = 45
     event_name = "quote:%s" % new_id("subscription") if callback is not None else None
     if event_name:
         params["callback_event"] = event_name
@@ -140,12 +143,17 @@ def _subscribe_quote_request(action, params, callback):
             event_name = "quote:%s" % subscribe_id
             client.add_callback(event_name, callback)
         _subscription_callbacks[subscribe_id] = (event_name, callback)
+    if isinstance(result, dict) and result.get("shared"):
+        from .quote_leases import remember
+        remember(client, subscribe_id)
     return subscribe_id
 
 
 def unsubscribe_quote(seq):
     client = get_client()
     if getattr(client, "_closed", False):
+        from .quote_leases import forget
+        forget(client, seq)
         # Cleanup after run()/Ctrl+C must not open a new network connection.
         item = _subscription_callbacks.pop(seq, None)
         if item:
@@ -154,6 +162,8 @@ def unsubscribe_quote(seq):
     result = client.request("xtdata.unsubscribe_quote", {"subscribe_id": seq})
     if result is False or (isinstance(result, (int, float)) and result < 0):
         return result
+    from .quote_leases import forget
+    forget(client, seq)
     item = _subscription_callbacks.pop(seq, None)
     if item:
         event_name, callback = item

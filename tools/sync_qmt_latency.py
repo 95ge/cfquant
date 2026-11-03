@@ -1,5 +1,9 @@
 """Embed latency helpers without adding any file IO to standalone QMT scripts."""
 import ast
+try:
+    from tools.sync_qmt_ast import parse_source
+except ImportError:
+    from sync_qmt_ast import parse_source
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,10 +20,10 @@ def updated_source(source):
     for filename, names in wanted.items():
         text = (ROOT / 'cfquant' / filename).read_text(encoding='utf-8')
         lines = text.splitlines(True)
-        for node in ast.parse(text).body:
+        for node in parse_source(text).body:
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names:
                 replacements[node.name] = ''.join(lines[node.lineno-1:node.end_lineno]) + '\n'
-    tree = ast.parse(source)
+    tree = parse_source(source)
     lines = source.splitlines(True)
     edits = []
     for node in tree.body:
@@ -27,7 +31,7 @@ def updated_source(source):
             edits.append((node.lineno-1, node.end_lineno, replacements.pop(node.name)))
     normal = (ROOT / 'cfquant/normal_bridge.py').read_text(encoding='utf-8')
     normal_lines = normal.splitlines(True)
-    normal_class = next(n for n in ast.parse(normal).body if isinstance(n, ast.ClassDef) and n.name == 'NormalQmtBridge')
+    normal_class = next(n for n in parse_source(normal).body if isinstance(n, ast.ClassDef) and n.name == 'NormalQmtBridge')
     methods = {n.name: ''.join(normal_lines[n.lineno-1:n.end_lineno]) + '\n'
                for n in normal_class.body if isinstance(n, ast.FunctionDef)
                and n.name in {'_drain_coalesced_request', '_send_response', '_drain_single_request', '_status_extra', '_worker_loop'}}
@@ -49,7 +53,7 @@ def updated_source(source):
                                 '"CFQUANT_CTYPE_%s_PUMP_MAX_MS", "5"' % name)
     while '\n\n\n\n' in source:
         source = source.replace('\n\n\n\n', '\n\n\n')
-    ast.parse(source, feature_version=(3, 6))
+    parse_source(source, feature_version=(3, 6))
     return source
 
 

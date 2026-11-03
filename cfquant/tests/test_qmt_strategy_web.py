@@ -199,7 +199,7 @@ def test_binding_preserves_explicitly_disabled_qmt_auto_login(web_config, tmp_pa
 
 def test_same_qmt_same_fund_has_one_mode_across_path_aliases_and_bindings(web_config, tmp_path):
     web, config = web_config
-    first = config.save_account_config("1000000001", qmt_auto_login={"enabled": False}, bridge_id="first", qmt_dir=str(tmp_path), data_provider=True)
+    first = config.save_account_config("1000000001", qmt_auto_login={"enabled": False}, bridge_id="first", qmt_dir=str(tmp_path), data_provider=True, mode="ctypes")
     other = config.save_account_config("1000000002", qmt_auto_login={"enabled": False}, bridge_id="other", qmt_dir=str(tmp_path))
     second = config.save_account_config("1000000001", qmt_auto_login={"enabled": False}, bridge_id="second", qmt_dir=str(tmp_path / "bin.x64"), mode="lite")
     rows = config.account_configs()

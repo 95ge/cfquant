@@ -6,6 +6,24 @@ from .batch_orders import (
 )
 from .protocol import new_id
 from .xttrader import XtQuantTrader, _account_payload
+import threading
+
+
+_algo_client = None
+_algo_client_lock = threading.Lock()
+
+
+def _algo_rpc(action, params):
+    """Algorithm tasks always live in the shared service, also for direct SDKs."""
+    global _algo_client
+    with _algo_client_lock:
+        if _algo_client is None:
+            import atexit
+            from .client import create_rpc_client
+            _algo_client = create_rpc_client(transport="web_lttx")
+            atexit.register(_algo_client.close)
+        client = _algo_client
+    return client.request(action, params)
 
 
 __all__ = ["CfQuantTrader"]
@@ -14,14 +32,59 @@ class CfQuantTrader:
     """Use CfQuantTrader(trader) with an existing cfquant XtQuantTrader instance.
 
     Lifecycle, subscriptions, cancellation and callbacks belong to ``trader``.
-    Each batch is sent in one RPC and executed inside QMT. It does not add a
-    worker, connection, callback channel or automatic retry in the SDK.
+    Each batch is sent in one RPC and executed inside QMT. Algorithm methods
+    use a lazy connection to the shared Web execution service; tasks run there.
     """
 
     def __init__(self, trader):
         if not isinstance(trader, XtQuantTrader):
             raise TypeError("trader must be a cfquant.xttrader.XtQuantTrader instance")
         self._trader = trader
+        self._algo_accounts = {}
+
+    def order_algo(self, account, stock_code, order_type, order_volume, algo,
+                   limit_price, duration_seconds=3600, interval_seconds=60, **options):
+        """Return a persistent algo_id. Caller exit does not cancel the task."""
+        payload = _account_payload(self._trader._resolve_account(account))
+        params = dict(options, account=payload, stock_code=stock_code, order_type=order_type,
+                      order_volume=order_volume, algo=algo, limit_price=limit_price,
+                      duration_seconds=duration_seconds, interval_seconds=interval_seconds)
+        params.setdefault("request_key", new_id("algo_request"))
+        algo_id = _algo_rpc("cftrader.order_algo", params)
+        self._algo_accounts[algo_id] = payload
+        return algo_id
+
+    def order_twap(self, account, stock_code, order_type, order_volume, limit_price, **options):
+        return self.order_algo(account, stock_code, order_type, order_volume, "TWAP", limit_price, **options)
+
+    def order_vwap(self, account, stock_code, order_type, order_volume, limit_price, **options):
+        return self.order_algo(account, stock_code, order_type, order_volume, "VWAP", limit_price, **options)
+
+    def order_pov(self, account, stock_code, order_type, order_volume, limit_price, participation_rate, **options):
+        return self.order_algo(account, stock_code, order_type, order_volume, "POV", limit_price,
+                               participation_rate=participation_rate, **options)
+
+    def _algo_control(self, action, algo_id=None, account=None):
+        resolved = account or self._algo_accounts.get(algo_id)
+        payload = _account_payload(self._trader._resolve_account(resolved))
+        return _algo_rpc("cftrader." + action, dict(algo_id=algo_id, account=payload))
+
+    def query_algo(self, algo_id, account=None):
+        return self._algo_control("query_algo", algo_id, account)
+
+    def list_algos(self, account=None):
+        return self._algo_control("list_algos", account=account)
+
+    def pause_algo(self, algo_id, account=None):
+        """Pause new orders and request cancellation of working children."""
+        return self._algo_control("pause_algo", algo_id, account)
+
+    def resume_algo(self, algo_id, account=None):
+        return self._algo_control("resume_algo", algo_id, account)
+
+    def cancel_algo(self, algo_id, account=None):
+        """CANCELLING remains until the broker confirms all child outcomes."""
+        return self._algo_control("cancel_algo", algo_id, account)
 
     def order_stock(self, account, stock_code, order_type, order_volume, price_type, price,
                     strategy_name="", order_remark=""):

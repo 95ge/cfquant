@@ -476,7 +476,8 @@ def test_web_route_parallel_clients_and_expired_query_not_order(monkeypatch):
             route._executor.close()
 
 
-def test_subscription_completed_after_connection_change_is_released(monkeypatch):
+@pytest.mark.parametrize('action', ['xtdata.subscribe_quote', 'xtdata.subscribe_whole_quote'])
+def test_subscription_completed_after_connection_change_is_released(monkeypatch, action):
     route = web.LttxWebRouteServer()
     old = SimpleNamespace(push=lambda *args: pytest.fail('sent on retired transport'))
     route.tx = old
@@ -484,9 +485,16 @@ def test_subscription_completed_after_connection_change_is_released(monkeypatch)
     def dispatch(msg):
         route.tx = object()
         return {'subscribe_id': 77}, {'bridge_id': 'test', 'channel': 'normal'}
+    def acquire(*args, **kwargs):
+        route.tx = object()
+        return 77
+    monkeypatch.setattr(web, 'PROJECT_QUOTES', SimpleNamespace(
+        acquire=acquire, release=released.append,
+        status=lambda: {'source': {'bridge_id': 'test', 'channel': 'normal'}},
+    ))
     monkeypatch.setattr(web, 'route_external_lttx_request', dispatch)
     monkeypatch.setattr(route, '_release_external_quote', lambda row, timeout: released.append(row['native_id']))
-    route._handle_raw(protocol.pack_request('xtdata.subscribe_whole_quote', {'code_list': ['SH', 'SZ', 'BJ']}, client_id='a'), response_tx=old)
+    route._handle_raw(protocol.pack_request(action, {'code_list': ['SH', 'SZ', 'BJ']}, client_id='a'), response_tx=old)
     assert released == [77] and not route._quote_routes and not route._quote_event_routes
 
 
@@ -569,7 +577,8 @@ def test_coalesced_encoding_failure_replies_to_every_waiter(bridge, monkeypatch)
 
 def test_qmt_pump_yields_between_requests_but_never_interrupts_one(bridge, monkeypatch):
     now = [10.0]
-    monkeypatch.setattr('cfquant.normal_bridge.time', SimpleNamespace(perf_counter=lambda: now[0], time=time.time))
+    monkeypatch.setattr('cfquant.normal_bridge.time', SimpleNamespace(
+        perf_counter=lambda: now[0], monotonic=lambda: now[0], time=time.time))
     bridge.pump_max_ms = 5
     def dispatch(action, params, msg):
         bridge.calls.append(msg['id'])

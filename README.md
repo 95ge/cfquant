@@ -369,6 +369,7 @@ restart_cfquant.bat     重启
 |---|---|
 | QMT 综合部署教程 | [QMT 部署教程](docs/QMT部署教程.md) |
 | cftrader 批量同步/异步下单与撤单 | [cftrader 批量交易与撤单](docs/cftrader批量交易.md)，含 100 单本地基准 |
+| cftrader TWAP / VWAP / POV | [算法交易与共享全推行情](docs/algorithm_trading.md)，含自动订阅、生命周期和接口示例 |
 | 通用模式部署 | [通用模式部署指南](docs/通用模式部署指南.md) |
 | 极致模式部署 | [极致模式部署指南](docs/极致模式部署指南.md) |
 | 高级模式部署 | [高级模式部署指南](docs/高级模式部署指南.md) |

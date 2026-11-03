@@ -21,6 +21,7 @@ from cfquant.stock_connect import connect_account_type, normalize_connect_code, 
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
 from cfquant.qmt_dependencies import check_login_dependencies, report_startup_dependencies
 from cfquant import remote_management as remote_agent_module
+from cfquant.trading_monitor import TradingMonitor, monitored_request
 import posixpath
 import queue
 import re
@@ -126,6 +127,9 @@ from cfquant.protocol import dataframe_numeric_rows
 from cfquant.pipe_transport import DEFAULT_PIPE_NAME, normalize_pipe_name
 from cfquant.protocol import decode_value, loads_message, new_id, pack_event, pack_response, pack_whole_quote_event
 from cfquant.protocol import is_readonly_request
+from cfquant.quote_service import ProjectQuoteService
+from cfquant.algo import ALGO_ACTIONS, AlgoEngine, AlgoStore
+from cfquant.algo_broker import RoutedAlgoBroker
 from cfquant.flow_control import KeyedExecutor, OrderedSender
 from cfquant.quote_history import QuoteHistory
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
@@ -479,6 +483,7 @@ try:
 except Exception:
     _LOG_FP = None
 DEFAULT_ACCOUNT_ID = os.environ.get("CFQUANT_ACCOUNT_ID", "").strip()
+DEFAULT_BINDING_MODE = "lite"
 WEB_CONFIG_FILE = os.environ.get("CFQUANT_WEB_CONFIG_FILE") or os.path.join(
     RUNTIME_CONFIG_DIR,
     "cfquant_web_config.json",
@@ -2701,7 +2706,7 @@ class WebRuntimeConfig(object):
             initialized = bool(self._data.get("initialized"))
         default_config = configs.get(default_account_key) or {}
         default_mode = normalize_transport_mode(
-            default_config.get("mode") or self.transport_mode()
+            default_config.get("mode") or DEFAULT_BINDING_MODE
         )
         default_qmt_trade_dir = default_config.get("qmt_trade_dir") or ""
         if not default_qmt_trade_dir and default_mode == "lttx":
@@ -2796,8 +2801,8 @@ class WebRuntimeConfig(object):
                 qmt_runtime, existing=(existing or {}).get("qmt_runtime"), strict=True,
             )
             # Older clients may omit mode when editing an existing binding.
-            # Preserve its strategy selection instead of silently choosing ctypes.
-            mode = normalize_transport_mode(mode or (existing or {}).get("mode") or "ctypes")
+            # Preserve saved selections; new bindings use the standalone Lite bridge.
+            mode = normalize_transport_mode(mode or (existing or {}).get("mode") or DEFAULT_BINDING_MODE)
             if mode == "lttx" and enabled is not False:
                 if not qmt_dir:
                     raise ValueError("高级模式需要填写普通 QMT 核心目录")
@@ -3631,6 +3636,8 @@ class WebRuntimeConfig(object):
                 "log_retention_days": self._data.get("log_retention_days", LOG_RETENTION_DAYS),
             }, f, ensure_ascii=False, indent=2, sort_keys=True)
         os.replace(temp_path, self.path)
+        if globals().get('WEB_CONFIG') is self and globals().get('TRADING_MONITOR') is not None:
+            refresh_monitor_accounts(self._data.get('account_configs') or {})
 
     def _normalize_bridges(self, value):
         result = {}
@@ -4327,6 +4334,33 @@ class GlobalTxClient(object):
         self._get_client(mode).start()
 
     def request(
+        self, bridge_id, channel_key, action, params=None, timeout=8.0,
+        mark_offline_on_timeout=False, ignore_cooldown=False, mode=None,
+    ):
+        monitor = TRADING_MONITOR
+        if not monitor.enabled or not monitored_request(action):
+            return self._request(bridge_id, channel_key, action, params, timeout,
+                                 mark_offline_on_timeout, ignore_cooldown, mode)
+        started = time.perf_counter()
+        result, error = None, None
+        try:
+            result = self._request(bridge_id, channel_key, action, params, timeout,
+                                   mark_offline_on_timeout, ignore_cooldown, mode)
+            return result
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            if monitored_request(action):
+                try:
+                    monitor_params = dict(params or {}, account_id=_external_account_id(params),
+                                          account_type=_external_account_type(params))
+                    monitor.record_request(bridge_id, action, monitor_params,
+                        (time.perf_counter() - started) * 1000, result=result, error=error)
+                except Exception as exc:
+                    safe_print("trading monitor request capture failed: %s" % exc)
+
+    def _request(
         self,
         bridge_id,
         channel_key,
@@ -4376,7 +4410,9 @@ class GlobalTxClient(object):
                     # Never retry an order, cancel, subscription or download here.
                 raise
             except CfquantTimeout as e:
-                if mark_offline_on_timeout:
+                # A subscription acknowledgement can wait behind quote traffic.
+                # Do not freeze the trading channel because a renewal was late.
+                if mark_offline_on_timeout and action != "xttrader.subscribe":
                     self._mark_failed(cooldown_key, e)
                 raise
             except Exception as e:
@@ -5660,6 +5696,8 @@ def route_external_lttx_request(msg):
     params = msg.get("params") or {}
     if not isinstance(params, dict):
         params = {}
+    if action in ALGO_ACTIONS:
+        return algorithm_request(action, params), {"route": "algorithm_service"}
     if action in ("cfquant.registry", "cfquant.discovery", "cfquant.runtime"):
         return build_lttx_registry(), {"route": "registry"}
     if action == "cfquant.ping":
@@ -5804,6 +5842,7 @@ class LttxWebRouteServer(object):
                 pass
 
     def publish_registry(self, force=False):
+        self._expire_shared_quote_clients()
         tx = self.tx
         if tx is None:
             return False
@@ -5861,7 +5900,7 @@ class LttxWebRouteServer(object):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         keys = [("client", client_id)]
         action = str(msg.get("action") or "")
-        if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS:
+        if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS or action in ALGO_ACTIONS:
             params = msg.get("params") or {}
             # All clients addressing the same account retain arrival ordering.
             keys.append(("account", _external_account_id(params) or configured_default_account_id(),
@@ -5910,6 +5949,19 @@ class LttxWebRouteServer(object):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         action = str(msg.get("action") or "")
         params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        if action == "cfquant.quote_heartbeat":
+            touched = []
+            with self._lock:
+                for subscribe_id in params.get("subscribe_ids", []):
+                    row = self._quote_routes.get((str(subscribe_id), client_id))
+                    if row and row.get("shared_lease_id") is not None:
+                        row["lease_deadline"] = time.monotonic() + 45
+                        touched.append(subscribe_id)
+            if client_id and response_tx is self.tx:
+                response_tx.push("response", pack_response(request_id, ok=True, result={"subscribe_ids": touched}), client_id)
+            return
+        if action in ("xtdata.subscribe_whole_quote", "xtdata.subscribe_whole_quote_latency"):
+            return self._handle_shared_whole_quote(msg, response_tx)
         callback_event = params.get("callback_event")
         quote_subscribe = action in (
             "xtdata.subscribe_quote", "xtdata.subscribe_whole_quote", "xtdata.subscribe_whole_quote_latency",
@@ -5968,12 +6020,63 @@ class LttxWebRouteServer(object):
                 safe_print("cfquant LTtx 统一路由回包失败 client=%s error=%s" % (client_id, e))
 
     def _release_external_quote(self, row, timeout):
+        if "shared_lease_id" in row:
+            return PROJECT_QUOTES.release(row["shared_lease_id"])
         route = row["route"]
         return CLIENTS.request(
             route["bridge_id"], route["channel"], "xtdata.unsubscribe_quote",
             {"subscribe_id": row["native_id"]}, timeout=timeout,
             ignore_cooldown=True, mode=route.get("mode"),
         )
+
+    def _handle_shared_whole_quote(self, msg, response_tx):
+        params = msg.get("params") or {}
+        client_id = msg.get("client_id") or msg.get("reply_channel")
+        try:
+            if not client_id:
+                raise ValueError("client_id is required")
+            key = "sdk:%s:%s" % (client_id, params.get("shared_lease_key") or msg.get("id"))
+            with self._lock:
+                existing = next((row for row in self._quote_routes.values() if row.get("shared_key") == key), None)
+                self._quote_sequence += 1
+                external_id = existing["subscribe_id"] if existing else self._quote_sequence
+            callback_event = params.get("callback_event") or "quote:%s" % external_id
+            diagnostic = msg.get("action") == "xtdata.subscribe_whole_quote_latency"
+            def callback(data):
+                self._push_event(client_id, callback_event, data, external_id, plain_quote=not diagnostic)
+            lease = PROJECT_QUOTES.acquire(key, params.get("code_list", []), callback,
+                                           purpose="sdk", source=params, diagnostic=diagnostic)
+            route = PROJECT_QUOTES.status()["source"]
+            row = dict(subscribe_id=external_id, client_id=client_id, callback_event=callback_event,
+                       shared_lease_id=lease, shared_key=key, wire_event=callback_event, route=route)
+            if params.get("lease_timeout"):
+                row["lease_deadline"] = time.monotonic() + 45
+            with self._lock:
+                if response_tx is not self.tx:
+                    PROJECT_QUOTES.release(lease)
+                    raise RuntimeError("SDK route closed during subscription")
+                self._quote_routes[(str(external_id), client_id)] = row
+            response = pack_response(msg.get("id"), ok=True,
+                                     result=dict(subscribe_id=external_id, callback_event=callback_event,
+                                                 shared=True, publish_existing=False), meta=route)
+        except Exception as error:
+            response = pack_response(msg.get("id"), ok=False, error=error)
+        if client_id and response_tx is self.tx:
+            response_tx.push("response", response, client_id)
+
+    def _expire_shared_quote_clients(self):
+        with self._lock:
+            expired = [(key, row) for key, row in self._quote_routes.items()
+                       if row.get("shared_lease_id") is not None and row.get("lease_deadline", float("inf")) < time.monotonic()]
+        for key, row in expired:
+            try:
+                with self._lock:
+                    if self._quote_routes.get(key) is not row or row.get("lease_deadline", float("inf")) >= time.monotonic():
+                        continue
+                    self._release_external_quote(row, timeout=2)
+                    self._quote_routes.pop(key, None)
+            except Exception as error:
+                safe_print("expired SDK quote lease cleanup failed: %s" % error)
 
     def _remember_external_subscription(self, action, msg, result):
         client_id = msg.get("client_id") or msg.get("reply_channel")
@@ -6688,16 +6791,18 @@ class WebSocketQuoteManager(object):
         for client in dead:
             self.remove(client)
 
-    def count(self):
+    def count(self, subscribe_id=None):
         with self._lock:
-            return len(self._clients)
+            if subscribe_id is None:
+                return len(self._clients)
+            return sum(1 for client in self._clients if client.alive and client.matches({"subscribe_id": subscribe_id}))
 
 
 WS_QUOTES = WebSocketQuoteManager()
 
 
 class QuoteSubscriptionStore(object):
-    def __init__(self, max_events=1000, diagnostic=False, manager=None):
+    def __init__(self, max_events=1000, diagnostic=False, manager=None, shared_service=None):
         self.diagnostic = diagnostic
         self.manager = manager or WS_QUOTES
         self._pending_diagnostics = {}
@@ -6712,12 +6817,12 @@ class QuoteSubscriptionStore(object):
         self._whole_subscribe_id = None
         self._whole_subscribed_at = 0
         self._idle_release_timer = None
+        self._shared_service = shared_service
 
     def start(self):
         with self._lock:
             if self._callback_registered:
                 return
-            CLIENTS.add_callback("quote", self._on_quote)
             self._callback_registered = True
 
     def close(self):
@@ -6725,9 +6830,8 @@ class QuoteSubscriptionStore(object):
             self._cancel_idle_release_locked()
             self._events.clear()
             self._pending_diagnostics.clear()
-            diagnostic_ids = list(self._subscriptions) if self.diagnostic else []
+            diagnostic_ids = list(self._subscriptions)
             if self._callback_registered:
-                CLIENTS.remove_callback("quote", self._on_quote)
                 self._callback_registered = False
         for subscribe_id in diagnostic_ids:
             try:
@@ -6737,114 +6841,45 @@ class QuoteSubscriptionStore(object):
 
     def subscribe_whole(self, body):
         with self._subscribe_lock:
-            return self._subscribe_whole(body)
+            return self._subscribe_shared_whole(body or {})
 
-    def _subscribe_whole(self, body):
-        body = body or {}
+    def _subscribe_shared_whole(self, body):
         markets = self._normalize_markets(body.get("markets", body.get("code_list", ["SH", "SZ", "BJ"])))
-        requested_channel = body.get("channel")
-        timeout = request_timeout_value(body.get("timeout"), default=12.0)
-        started = time.perf_counter()
+        service = self._shared_service or PROJECT_QUOTES
         self.start()
-        replace_id = None
+        pending, identity = [], []
+        callback_lock = threading.Lock()
+        def receive(data):
+            with callback_lock:
+                if not identity:
+                    pending.append(data)
+                    return
+                subscribe_id = identity[0]
+            received = data.get("shared_received_at_ms") if self.diagnostic and isinstance(data, dict) else None
+            self._on_quote(dict(subscription_id=subscribe_id, event="quote:" + subscribe_id, data=data), received)
+        lease = service.acquire("web:" + new_id("quote"), markets, receive, purpose="web", source=body,
+                                diagnostic=self.diagnostic)
+        subscribe_id = str(lease)
+        source = service.status()["source"]
         with self._lock:
-            existing_id = self._whole_subscribe_id
-            if existing_id and existing_id in self._subscriptions:
-                row = self._subscriptions[existing_id]
-                same_request = (
-                    row.get("markets") == markets
-                    and (not body.get("bridge_id") or normalize_bridge_id(body["bridge_id"]) == row.get("bridge_id"))
-                    and (not requested_channel or requested_channel == row.get("channel"))
-                )
-                if not same_request or self.manager.count() <= 0:
-                    replace_id = existing_id
-                    existing_id = None
-                else:
-                    self._clear_events_locked(existing_id)
-                    row["event_count"] = 0
-                    row.pop("last_event_at", None)
-                    row["created_at"] = time.time()
-                    self._whole_subscribed_at = row["created_at"]
-                    self._schedule_idle_release_locked()
-                    existing_bridge_id = row.get("bridge_id") or DEFAULT_BRIDGE_ID
-                    return {
-                        "subscribe_id": existing_id,
-                        "bridge_id": existing_bridge_id,
-                        "channel": row.get("channel") or "normal",
-                        "account_id": row.get("account_id") or "",
-                        "account_type": row.get("account_type") or "",
-                        "account_key": row.get("account_key") or "",
-                        "kind": "whole_quote_latency" if self.diagnostic else "whole_quote",
-                        "markets": row.get("markets", markets),
-                        "already_subscribed": True,
-                        "event_count": row.get("event_count", 0),
-                        "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-                    }
-            if existing_id is None:
-                self._clear_events_locked(None)
-        if replace_id is not None:
-            self.unsubscribe({"subscribe_id": replace_id, "timeout": timeout})
-        callback_event = "quote:%s" % new_id("latency") if self.diagnostic else None
-        params = {"code_list": markets}
-        if callback_event:
-            params["callback_event"] = callback_event
-            with self._lock:
-                self._pending_diagnostics[callback_event] = None
-        try:
-            route = data_provider_request(
-                "xtdata.subscribe_whole_quote_latency" if self.diagnostic else "xtdata.subscribe_whole_quote",
-                params,
-                requested_channel=requested_channel,
-                default_channel="normal",
-                timeout=timeout,
-                bridge_id=body.get("bridge_id"),
-            )
-        except BaseException:
-            with self._lock:
-                self._pending_diagnostics.pop(callback_event, None)
-            raise
-        result = route["result"]
-        bridge_id = route["bridge_id"]
-        channel = route["channel"]
-        subscribe_id = str(result.get("subscribe_id") if isinstance(result, dict) else result)
-        with self._lock:
-            self._subscriptions[subscribe_id] = {
-                "subscribe_id": subscribe_id,
-                "callback_event": callback_event,
-                "bridge_id": bridge_id,
-                "channel": channel,
-                "mode": route["mode"],
-                "account_id": route.get("data_provider") or "",
-                "account_type": route.get("data_provider_account_type") or "",
-                "account_key": route.get("data_provider_account_key") or "",
-                "kind": "whole_quote_latency" if self.diagnostic else "whole_quote",
-                "markets": markets,
-                "created_at": time.time(),
-                "event_count": 0,
-                "publish_existing": bool(result.get("publish_existing")) if isinstance(result, dict) else False,
-                "internal_subscribe_id": result.get("internal_subscribe_id") if isinstance(result, dict) else None,
-            }
+            row = dict(subscribe_id=subscribe_id, shared_lease_id=lease,
+                       kind="whole_quote_latency" if self.diagnostic else "whole_quote", markets=markets,
+                       callback_event="quote:" + subscribe_id,
+                       created_at=time.time(), event_count=0, publish_existing=False,
+                       bridge_id=source.get("bridge_id", DEFAULT_BRIDGE_ID), channel=source.get("channel", "normal"),
+                       mode=source.get("mode"), account_id=source.get("account_id", ""),
+                       account_type=source.get("account_type", ""), account_key=source.get("account_key", ""))
+            self._subscriptions[subscribe_id] = row
             self._whole_subscribe_id = subscribe_id
-            self._whole_subscribed_at = time.time()
-            self._clear_events_locked(subscribe_id)
+            self._whole_subscribed_at = row["created_at"]
             self._schedule_idle_release_locked()
-            pending = self._pending_diagnostics.pop(callback_event, None)
-        if pending is not None:
-            self._on_quote(*pending)
-        return {
-            "subscribe_id": subscribe_id,
-            "bridge_id": bridge_id,
-            "channel": channel,
-            "account_id": route.get("data_provider") or "",
-            "account_type": route.get("data_provider_account_type") or "",
-            "account_key": route.get("data_provider_account_key") or "",
-            "kind": "whole_quote_latency" if self.diagnostic else "whole_quote",
-            "markets": markets,
-            "already_subscribed": False,
-            "publish_existing": bool(result.get("publish_existing")) if isinstance(result, dict) else False,
-            "internal_subscribe_id": result.get("internal_subscribe_id") if isinstance(result, dict) else None,
-            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-        }
+        with callback_lock:
+            identity.append(subscribe_id)
+            queued = list(pending)
+            pending.clear()
+        for data in queued:
+            receive(data)
+        return dict(row, shared=True, already_subscribed=False)
 
     def unsubscribe(self, body):
         subscribe_id = str((body or {}).get("subscribe_id") or "").strip()
@@ -6852,6 +6887,11 @@ class QuoteSubscriptionStore(object):
             raise ValueError("subscribe_id is required")
         with self._lock:
             row = dict(self._subscriptions.get(subscribe_id) or {})
+        if "shared_lease_id" in row:
+            result = (self._shared_service or PROJECT_QUOTES).release(row["shared_lease_id"])
+            with self._lock:
+                self._remove_subscription_locked(subscribe_id)
+            return dict(row, result=result)
         bridge_id = normalize_bridge_id(
             row.get("bridge_id") or (body or {}).get("bridge_id") or DEFAULT_BRIDGE_ID
         )
@@ -6882,43 +6922,18 @@ class QuoteSubscriptionStore(object):
 
     def release_idle_whole_subscription(self, reason="", grace_seconds=0):
         with self._lock:
-            subscribe_id = self._whole_subscribe_id
-            if not subscribe_id or subscribe_id not in self._subscriptions:
-                return {"released": False, "reason": "no whole quote subscription"}
-            if self.manager.count() > 0:
-                return {"released": False, "reason": "websocket clients still connected"}
-            age = time.time() - (self._whole_subscribed_at or self._subscriptions[subscribe_id].get("created_at", 0))
-            if grace_seconds and age < grace_seconds:
-                return {"released": False, "reason": "within grace period", "age_seconds": round(age, 2)}
-            row = dict(self._subscriptions.get(subscribe_id) or {})
-        bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
-        channel = normalize_channel(row.get("channel"), "normal")
-        try:
-            result = self._request_unsubscribe(
-                bridge_id,
-                channel,
-                subscribe_id,
-                account_id=row.get("account_id") or "",
-                account_type=row.get("account_type") or "",
-                account_key=row.get("account_key") or "",
-                timeout=5.0,
-            )
-            error = ""
-        except Exception as e:
-            result = None
-            error = str(e)
-            safe_print("quote idle release failed subscribe_id=%s reason=%s error=%s" % (subscribe_id, reason, e))
-        with self._lock:
-            self._remove_subscription_locked(subscribe_id)
-        return {
-            "released": True,
-            "subscribe_id": subscribe_id,
-            "bridge_id": bridge_id,
-            "channel": channel,
-            "reason": reason,
-            "result": result,
-            "error": error,
-        }
+            rows = [dict(row) for row in self._subscriptions.values() if "shared_lease_id" in row]
+        released = []
+        for row in rows:
+            try:
+                connected = self.manager.count(row["subscribe_id"])
+            except TypeError:
+                connected = self.manager.count()
+            if connected or time.time() - row["created_at"] < grace_seconds:
+                continue
+            self.unsubscribe({"subscribe_id": row["subscribe_id"]})
+            released.append(row["subscribe_id"])
+        return {"released": bool(released), "subscribe_ids": released, "reason": reason}
 
     def _request_unsubscribe(self, bridge_id, channel, subscribe_id, account_id="", account_type="", account_key="", timeout=8.0):
         route = account_request(
@@ -6943,6 +6958,10 @@ class QuoteSubscriptionStore(object):
             self._whole_subscribed_at = 0
             self._clear_events_locked(subscribe_id)
             self._cancel_idle_release_locked()
+            if not self.diagnostic and self._subscriptions:
+                self._whole_subscribe_id = next(iter(self._subscriptions))
+                self._whole_subscribed_at = self._subscriptions[self._whole_subscribe_id]["created_at"]
+                self._schedule_idle_release_locked()
 
     def _clear_events_locked(self, subscribe_id=None):
         self._history_error = ""
@@ -6988,6 +7007,7 @@ class QuoteSubscriptionStore(object):
                 "history": self._events.status(),
                 "history_error": self._history_error,
                 "websocket_clients": self.manager.count(),
+                "shared_feed": (self._shared_service or PROJECT_QUOTES).status(),
             }
 
     def _on_quote(self, data, received_at_ms=None):
@@ -7068,6 +7088,113 @@ class QuoteSubscriptionStore(object):
         elif isinstance(value, (list, tuple, set)):
             return list(value)
         return value
+
+
+def _shared_quote_subscribe(params, source):
+    # Pin one provider for the lifetime of the feed, including uncertain RPCs.
+    # A failed subscription is reconciled on that provider, never replayed on
+    # another account/bridge by the generic data-provider fallback loop.
+    if not source.get("_resolved"):
+        candidates = data_provider_candidates()
+        account = next((row for row in candidates
+                        if (not source.get("account_key") or row.get("account_key") == source["account_key"])
+                        and (not source.get("account_id") or row.get("account_id") == source["account_id"])
+                        and (not source.get("bridge_id") or row.get("bridge_id") == source["bridge_id"])), None)
+        if account is None:
+            raise RuntimeError("no configured provider matches the shared quote source")
+        account_id = str(account.get("account_id") or "")
+        account_type = normalize_account_type(account.get("account_type") or "STOCK")
+        bridge_id = normalize_bridge_id(source.get("bridge_id") or account.get("bridge_id") or DEFAULT_BRIDGE_ID)
+        mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id,
+                                    account_key=account.get("account_key"))
+        source.update(account_id=account_id, account_type=account_type, account_key=account.get("account_key") or "",
+                      bridge_id=bridge_id, mode=mode, channel=source.get("channel") or "normal", _resolved=True)
+    result = CLIENTS.request(source["bridge_id"], source["channel"], "xtdata.subscribe_whole_quote_latency", params,
+                             timeout=12.0, mode=source["mode"], ignore_cooldown=True)
+    return dict(source, result=result)
+
+
+def _shared_quote_unsubscribe(handle):
+    return CLIENTS.request(handle["bridge_id"], handle["channel"], "xtdata.unsubscribe_quote",
+                           {"subscribe_id": handle["subscribe_id"], "shared_lease_key": handle["shared_lease_key"]},
+                           timeout=8.0, mode=handle["mode"], ignore_cooldown=True)
+
+
+def _shared_quote_probe(handle):
+    return CLIENTS.request(handle["bridge_id"], handle["channel"], "cfquant.shared_quote_status",
+                           {"shared_lease_key": handle["shared_lease_key"]},
+                           timeout=3.0, mode=handle["mode"], ignore_cooldown=True)
+
+
+PROJECT_QUOTES = ProjectQuoteService(
+    _shared_quote_subscribe, _shared_quote_unsubscribe, _shared_quote_probe,
+    lambda event, callback: CLIENTS.add_callback(event, callback),
+    lambda event, callback: CLIENTS.remove_callback(event, callback),
+)
+_ALGO_ENGINE = None
+_ALGO_ENGINE_LOCK = threading.Lock()
+
+
+def _algo_trade_request(account, action, params):
+    if action.startswith("xttrader.query_") and params.get("stock_code"):
+        _, routes = account_market_route_config(account_id=account["account_id"],
+            account_type=account.get("account_type"), bridge_id=account.get("bridge_id"),
+            account_key=account.get("account_key"))
+        if routes:
+            market = params["stock_code"].rsplit(".", 1)[-1]
+            target = routes.get(market) or {}
+            if not target.get("bridge_id") or target.get("enabled", True) is False:
+                raise ValueError("No enabled algorithm query route for " + market)
+            mode = resolve_account_mode(account["account_id"], account_type=account.get("account_type"),
+                                        bridge_id=account.get("bridge_id"), account_key=account.get("account_key"))
+            channel = route_channel_for_account(account["account_id"], default="trade", mode=mode,
+                account_type=account.get("account_type"), bridge_id=target["bridge_id"],
+                account_key=account.get("account_key"), action=action, params=params)
+            return CLIENTS.request(target["bridge_id"], channel, action, params, timeout=12, mode=mode)
+    request = account_cftrader_batch_request if action in CFTRADER_BATCH_ACTIONS else account_request
+    route = request(account["account_id"], account.get("bridge_id"), None, action, params,
+                            default_channel="trade", timeout=12, account_type=account.get("account_type", "STOCK"),
+                            account_key=account.get("account_key", ""))
+    return route["result"]
+
+
+def _algo_market_request(action, params):
+    return data_provider_request(action, params, default_channel="normal")["result"]
+
+
+def algorithm_engine():
+    global _ALGO_ENGINE
+    with _ALGO_ENGINE_LOCK:
+        if _ALGO_ENGINE is None:
+            store = AlgoStore(os.path.join(RUNTIME_DB_DIR, "algorithm_tasks.sqlite3"))
+            broker = RoutedAlgoBroker(_algo_trade_request, _algo_market_request)
+            _ALGO_ENGINE = AlgoEngine(PROJECT_QUOTES, broker, store)
+            CLIENTS.add_callback("__event__", _ALGO_ENGINE.notify)
+            _ALGO_ENGINE.start()
+        return _ALGO_ENGINE
+
+
+def algorithm_request(action, params):
+    if action not in ALGO_ACTIONS:
+        raise ValueError("unknown algorithm action")
+    account_id = _external_account_id(params) or configured_default_account_id()
+    account_type = normalize_account_type(_external_account_type(params))
+    account_key = _external_account_key(params)
+    bridge_id = resolve_bridge_id(account_id=account_id, account_type=account_type,
+                                  bridge_id=(params.get("account") or {}).get("bridge_id") or params.get("bridge_id"),
+                                  account_key=account_key)
+    account = dict(account_id=account_id, account_type=account_type, bridge_id=bridge_id,
+                   account_key=account_key or account_key_for(account_id, account_type, bridge_id))
+    engine = algorithm_engine()
+    if action == "cftrader.order_algo":
+        options = {key: value for key, value in params.items()
+                   if key not in ("account_id", "account_type", "account_key", "bridge_id", "channel", "timeout")}
+        return engine.submit(dict(options, account=account))
+    if action == "cftrader.list_algos":
+        return engine.list(account)
+    if action == "cftrader.query_algo":
+        return engine.query(params.get("algo_id"), account)
+    return engine.control(params.get("algo_id"), account, action.split(".", 1)[1].split("_", 1)[0])
 
 
 QUOTES = QuoteSubscriptionStore()
@@ -7327,6 +7454,10 @@ class CallbackEventStore(object):
             ACCOUNT_CACHE.update_from_event(row)
         except Exception as e:
             safe_print("account cache callback update failed: %s" % e)
+        try:
+            TRADING_MONITOR.record_callback(row)
+        except Exception as e:
+            safe_print("trading monitor callback capture failed: %s" % e)
         WS_CALLBACKS.broadcast(row)
         if source == "channel":
             self._forward_to_lttx_route(row)
@@ -7549,6 +7680,34 @@ class CallbackEventStore(object):
 
 
 CALLBACKS = CallbackEventStore()
+TRADING_MONITOR = TradingMonitor(os.path.join(RUNTIME_DB_DIR, "trading_monitor.sqlite3"),
+    settings_path=os.path.join(RUNTIME_CONFIG_DIR, "trading_monitor.json"),
+    account_type_normalizer=normalize_account_type)
+
+
+def refresh_monitor_accounts(configs=None):
+    """Publish only binding identities; never expose paths or credentials to monitoring."""
+    if configs is None:
+        if WEB_CONFIG is not None:
+            with WEB_CONFIG._lock:
+                refresh_monitor_accounts(WEB_CONFIG.account_configs())
+            return
+        configs = {}
+    accounts = []
+    for key, config in configs.items():
+        if not isinstance(config, dict) or not config.get('account_id'):
+            continue
+        bridge = normalize_bridge_id(config.get('bridge_id') or DEFAULT_BRIDGE_ID)
+        accounts.append({
+            'account_key': str(config.get('account_key') or key),
+            'account_id': str(config['account_id']),
+            'account_type': normalize_account_type(config.get('account_type')),
+            'bridge_id': bridge,
+            'bridge_ids': list(dict.fromkeys([bridge] + account_config_market_bridge_ids(config))),
+            'display_name': str(config.get('display_name') or config.get('account_name') or ''),
+            'binding_enabled': account_config_is_enabled(config),
+        })
+    TRADING_MONITOR.update_accounts(accounts)
 
 
 def normalize_optional_path(value):
@@ -7656,6 +7815,7 @@ def cleanup_cfquant_local_logs(retention_days=LOG_RETENTION_DAYS):
 
 
 WEB_CONFIG = WebRuntimeConfig(WEB_CONFIG_FILE)
+refresh_monitor_accounts()
 UPDATER = None
 
 
@@ -13060,6 +13220,7 @@ class ChannelStatusMonitor(object):
                                 },
                             }
                         snapshots[mode] = snapshot
+                        TRADING_MONITOR.record_snapshot(snapshot)
                     with self._lock:
                         self._snapshots[bridge_id] = snapshots
             except Exception as e:
@@ -16936,6 +17097,18 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if not self._authorized(parsed):
             self._write_json(fail("invalid credentials", 401), status=401)
             return
+        if parsed.path == "/api/monitor/settings":
+            try:
+                body = self._read_json_body()
+                if (not isinstance(body, dict) or 'enabled' not in body or
+                        set(body) - {'enabled', 'account_keys'}):
+                    raise ValueError("请提供 enabled 开关，可选 account_keys 账号范围")
+                refresh_monitor_accounts()
+                TRADING_MONITOR.configure(**body)
+                self._write_json(ok(TRADING_MONITOR.settings()))
+            except Exception as error:
+                self._write_json(fail(error, 400), status=400)
+            return
         if parsed.path == "/api/remote-management":
             try:
                 origin = self.headers.get("Origin")
@@ -17082,6 +17255,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(LATENCY_QUOTES.subscribe_whole(body)))
             elif parsed.path == "/api/diagnostics/quotes/unsubscribe":
                 self._write_json(ok(LATENCY_QUOTES.unsubscribe(body)))
+            elif parsed.path.startswith("/api/trade/algo/"):
+                method = parsed.path.rsplit("/", 1)[-1]
+                methods = {"submit": "order_algo", "query": "query_algo", "list": "list_algos",
+                           "pause": "pause_algo", "resume": "resume_algo", "cancel": "cancel_algo"}
+                if method not in methods:
+                    raise ValueError("unknown algorithm operation")
+                self._write_json(ok(algorithm_request("cftrader." + methods[method], body)))
             elif parsed.path == "/api/quotes/whole/subscribe":
                 self._write_json(ok(subscribe_whole_quote(body)))
             elif parsed.path == "/api/quotes/subscribe":
@@ -17609,6 +17789,19 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     account_route_status(account_id, bridge_id=bridge_id, account_type=account_type, account_key=account_key)
                     if account_id else STATUS_MONITOR.latest(bridge_id=bridge_id)
                 ))
+            elif parsed.path == "/api/monitor":
+                self._write_json(ok(TRADING_MONITOR.query(
+                    start=(query.get("start") or [None])[0],
+                    end=(query.get("end") or [None])[0],
+                    bridge_id=(query.get("bridge_id") or [""])[0],
+                    account_id=(query.get("account_id") or [""])[0],
+                    account_type=(query.get("account_type") or [""])[0],
+                    kind=(query.get("kind") or [""])[0],
+                    page=(query.get("page") or [1])[0],
+                )))
+            elif parsed.path == "/api/monitor/settings":
+                refresh_monitor_accounts()
+                self._write_json(ok(TRADING_MONITOR.settings()))
             elif parsed.path == "/api/qmt/processes":
                 qmt_dir = (query.get("qmt_dir") or query.get("path") or [""])[0]
                 self._write_json(ok(qmt_process_snapshot(qmt_dir)))
@@ -18147,6 +18340,7 @@ def main(argv=None):
                 safe_print("cfquant managed QMT strategy refresh failed: %s" % result["error"])
         start_configured_qmt_on_web_startup()
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
+    TRADING_MONITOR.restore()
     try:
         internal_api_key()
         if "lttx" in configured_modes:
@@ -18177,6 +18371,8 @@ def main(argv=None):
     ACCOUNT_CACHE.start()
     CALLBACKS.start()
     QUOTES.start()
+    if os.path.isfile(os.path.join(RUNTIME_DB_DIR, "algorithm_tasks.sqlite3")):
+        algorithm_engine()
     LOG_CLEANUP.start()
     try:
         from cfquant.remote_adapter import register_runtime, refresh_launch_settings
@@ -18197,10 +18393,15 @@ def main(argv=None):
         QMT_STRATEGIES.close()
         ACCOUNT_CACHE.close()
         CALLBACKS.close()
+        if _ALGO_ENGINE is not None:
+            CLIENTS.remove_callback("__event__", _ALGO_ENGINE.notify)
+            _ALGO_ENGINE.close()
         QUOTES.close()
         LATENCY_QUOTES.close()
         LTTX_WEB_ROUTE.close()
+        PROJECT_QUOTES.close()
         CLIENTS.close()
+        TRADING_MONITOR.close()
         server.server_close()
         restart_request = None
         with WEB_RESTART_LOCK:

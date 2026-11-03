@@ -93,6 +93,8 @@ def test_first_setup_can_read_without_saving_and_preserves_draft(page, frontend_
     opener = page.locator("#setupOverlay [data-open-tutorial]")
     expect(page.locator("#setupAccountId")).to_have_value("")
     expect(page.locator("#setupQmtDir")).to_have_value("")
+    expect(page.locator("#setupMode")).to_have_value("lite")
+    assert page.locator('#setupMode option:not([hidden])').evaluate_all('rows => rows.map(row => row.value)') == ['lite']
     page.screenshot(path=str(tmp_path / "setup.png"))
     opener.click()
     expect(page.locator("#tutorialReader")).to_be_visible()
@@ -187,6 +189,8 @@ def test_deployment_images_and_navigation_work_before_setup(page, frontend_url):
 def test_onboarding_draft_and_locked_bridge_flow_survive_reading(page, frontend_url):
     requests, errors = open_app(page, frontend_url, setup_required=False)
     page.locator("#onboardingStartConfigBtn").click()
+    expect(page.locator("#onboardingMode")).to_have_value("lite")
+    assert page.locator('#onboardingMode option:not([hidden])').evaluate_all('rows => rows.map(row => row.value)') == ['lite']
     page.locator("#onboardingAccountId").fill("DRAFT_ACCOUNT")
     page.locator("#onboardingAccountType").select_option("CREDIT")
     page.locator("#onboardingMode").select_option("lttx")

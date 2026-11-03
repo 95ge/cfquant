@@ -37,7 +37,7 @@
     if (entry.module === 'callback') route = ['callbacks', { event_name: `trader:${entry.name}` }];
     if (!route || !['supported', 'partial', 'extension'].includes(entry.status)) return null;
     const endpoint = API_ENDPOINTS.find(item => item.id === route[0]);
-    if (!endpoint) return null;
+    if (!endpoint || endpoint.method === 'DOC') return null;
     const resolved = { ...endpoint, defaults: { ...endpoint.defaults, ...route[1] } };
     if (entry.module === 'xtdata') {
       resolved.path = '/api/python/xtdata';

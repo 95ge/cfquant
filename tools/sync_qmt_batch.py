@@ -2,6 +2,10 @@
 
 import argparse
 import ast
+try:
+    from tools.sync_qmt_ast import parse_source
+except ImportError:
+    from sync_qmt_ast import parse_source
 import io
 import re
 import tokenize
@@ -66,7 +70,7 @@ def sync_account_routing(source):
 
 
 def _class_method(source, class_name, method_name):
-    tree = ast.parse(source)
+    tree = parse_source(source)
     cls = next(node for node in tree.body
                if isinstance(node, ast.ClassDef) and node.name == class_name)
     method = next(node for node in cls.body
@@ -76,7 +80,7 @@ def _class_method(source, class_name, method_name):
 
 
 def _replace_class_method(source, class_name, method_name, replacement):
-    tree = ast.parse(source)
+    tree = parse_source(source)
     cls = next(node for node in tree.body
                if isinstance(node, ast.ClassDef) and node.name == class_name)
     method = next(node for node in cls.body
@@ -100,7 +104,7 @@ def updated_source(source):
         anchor = 'CORE_VERSION = '
         index = source.index(anchor)
         source = source[:index] + block + "\n" + source[index:]
-    tree = ast.parse(source)
+    tree = parse_source(source)
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "TxTradeBridge")
     dispatch = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "_dispatch")
     lines = source.splitlines(keepends=True)
@@ -273,6 +277,7 @@ def updated_source(source):
     source = _replace_class_method(source, 'TxTradeBridge', '_order_stock', order_stock)
 
     sync_methods = (
+        '_subscribe_account',
         '_async_order_record',
         '_remember_order_request',
         '_enrich_order_request_fields',
@@ -291,6 +296,7 @@ def updated_source(source):
     additions = []
     for name in sync_methods:
         replacement = _class_method(core, 'TxTradeBridge', name)
+        replacement = replacement.replace('account_routing.subscribe(', 'account_route_subscribe(')
         replacement = replacement.replace(
             '            order_meta.reconcile_order_id(order, order_id)\n',
             '            current_order_id = self._normalize_order_id(order.get("order_id"))\n'
@@ -357,7 +363,7 @@ def updated_source(source):
         else:
             anchor = '    def _drain_single_request(self, source, msg, received_at):\n'
             source = source.replace(anchor, replacement + '\n' + anchor, 1)
-    ast.parse(source, feature_version=(3, 6))
+    parse_source(source, feature_version=(3, 6))
     return source
 
 

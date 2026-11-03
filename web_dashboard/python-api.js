@@ -52,7 +52,7 @@
     if (entry.resultRows?.length) solution += table(['字段 / 状态', '含义'], entry.resultRows);
     solution += `<p>${inline(entry.usage)}</p>`;
     if (entry.example) solution += codeBlock(entry.example, '现在：cfquant 示例');
-    if (extension) solution += '<button type="button" data-python-cftrader-guide>cftrader 完整教程</button>';
+    if (extension) solution += `<button type="button" data-python-cftrader-guide="${entry.operation === 'algorithm' ? 'algorithm' : 'cftrader'}">${entry.operation === 'algorithm' ? '算法交易完整教程' : 'cftrader 完整教程'}</button>`;
     if (api && !supported) solution += '<p class="python-unavailable">尚未支持</p>';
     if (entry.related?.length) solution += `<div class="python-related">${entry.related.map(id => `<button type="button" data-python-entry="${esc(id)}">${esc(byId.get(id)?.name || id)}</button>`).join('')}</div>`;
     const index = entries.indexOf(entry);
@@ -187,7 +187,7 @@
     extensionFilter.value = 'extension';
     extensionFilter.textContent = `cfquant 独立接口 (${extensions.length})`;
     root.querySelector('#pythonApiFilter').append(extensionFilter);
-    root.querySelector('.python-reference-scope').append(` cftrader 另提供 ${extensions.length} 个独立下单/撤单接口，包含批量同步与批量异步。`);
+    root.querySelector('.python-reference-scope').append(` cftrader 另提供 ${extensions.length} 个独立接口，包含批量交易，以及 TWAP、VWAP、POV 算法交易与任务管理。`);
     nav = root.querySelector('.python-api-nav');
     doc = root.querySelector('.python-api-document');
     doc.before(legacy);
@@ -205,8 +205,9 @@
       else if (button.hasAttribute('data-python-copy')) copy(codeValues.get(button.dataset.pythonCopy), button);
       else if (button.hasAttribute('data-python-link')) copy(location.href, button);
       else if (button.hasAttribute('data-python-cftrader-guide')) {
-        setTutorialTopic('cftrader');
-        const heading = document.querySelector('[data-guide-panel="cftrader"] h3');
+        const topic = button.dataset.pythonCftraderGuide || 'cftrader';
+        setTutorialTopic(topic);
+        const heading = document.querySelector(`[data-guide-panel="${topic}"] h3`);
         heading.setAttribute('tabindex', '-1');
         heading.scrollIntoView({ block: 'start' });
         heading.focus({ preventScroll: true });

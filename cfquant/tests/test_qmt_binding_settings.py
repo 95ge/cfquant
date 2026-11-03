@@ -25,7 +25,9 @@ def save(config, account='TEST', **changes):
 
 
 def test_binding_settings_preserve_partial_edits_and_reload(config):
+    assert config.setup_info()['default_mode'] == 'lite'
     default = save(config)
+    assert default['mode'] == 'lite'
     assert default['qmt_runtime'] == {'timer_interval_ms': 1, 'log_enabled': None}
     changed = save(config, qmt_runtime={'timer_interval_ms': 5, 'log_enabled': False})
     assert save(config)['qmt_runtime'] == changed['qmt_runtime']
@@ -37,6 +39,18 @@ def test_binding_settings_preserve_partial_edits_and_reload(config):
     assert values['TEST'] == {'timer_interval_ms': 10, 'log_enabled': False}
     assert values['SECOND'] == {'timer_interval_ms': 60, 'log_enabled': True}
     assert save(config, qmt_runtime={'log_enabled': None})['qmt_runtime']['log_enabled'] is None
+
+
+@pytest.mark.parametrize('mode', ['ctypes', 'lttx', 'lite'])
+def test_edit_without_mode_keeps_existing_binding_mode(config, tmp_path, mode):
+    paths = dict(qmt_dir=str(tmp_path / 'normal'), qmt_trade_dir=str(tmp_path / 'trade'))
+    original = save(config, mode=mode, **paths)
+    changed = save(config, display_name='Renamed binding', **paths)
+    assert changed['account_key'] == original['account_key']
+    assert changed['mode'] == mode
+    assert config.setup_info()['default_mode'] == mode
+    restored = web.WebRuntimeConfig(config.path, config.settings_db_path)
+    assert restored.account_configs()[original['account_key']]['mode'] == mode
 
 
 @pytest.mark.parametrize('value', [0, -1, 1001, 1.5, True, None, '', 'nan', '1e3'])
