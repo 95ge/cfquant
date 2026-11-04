@@ -48,8 +48,16 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
         self.request_channels = list(request_channels or [request_channel])
         self.connect_timeout_ms = int(connect_timeout_ms)
+        self._pipe_lock = threading.RLock()
+        self._pipe_closed = False
 
     def start(self):
+        with self._pipe_lock:
+            if self._pipe_closed:
+                raise RuntimeError("pipe bridge is closed")
+            return self._start_transport()
+
+    def _start_transport(self):
         runtime = self.globals_dict.get("_managed_runtime")
         if runtime is not None:
             runtime.attach_bridge(self)
@@ -80,21 +88,29 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         self._publish_runtime_report("start")
         return self
 
+    def stop_transport(self):
+        # This phase must not wait for QMT native work or dispatch_lock.
+        with self._pipe_lock:
+            self._pipe_closed = True
+            self.running = False
+            tx, self.tx = self.tx, None
+        event = getattr(self, "worker_event", None)
+        if event is not None:
+            event.set()
+        if tx is not None:
+            tx.close()
+        deadline = time.monotonic() + 0.5
+        for worker in (getattr(self, "recv_thread", None), getattr(self, "worker_thread", None)):
+            if worker is not None and worker is not threading.current_thread() and worker.is_alive():
+                worker.join(max(0.0, deadline - time.monotonic()))
+
     def close(self):
+        self.stop_transport()
         self._flush_pending_order_errors(force=True)
-        self.running = False
-        self.worker_event.set()
         self._close_quote_subscriptions()
         if self.context is not None and self.schedule_key:
             try:
                 self.context.cancel_schedule_run(self.schedule_key)
-            except Exception:
-                pass
-        tx = self.tx
-        self.tx = None
-        if tx is not None:
-            try:
-                tx.close()
             except Exception:
                 pass
         self._log("pipe normal bridge stopped")
@@ -138,8 +154,16 @@ class PipeTradeBridge(TxTradeBridge):
         )
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
         self.connect_timeout_ms = int(connect_timeout_ms)
+        self._pipe_lock = threading.RLock()
+        self._pipe_closed = False
 
     def start(self):
+        with self._pipe_lock:
+            if self._pipe_closed:
+                raise RuntimeError("pipe bridge is closed")
+            return self._start_transport()
+
+    def _start_transport(self):
         runtime = self.globals_dict.get("_managed_runtime")
         if runtime is not None:
             runtime.attach_bridge(self)
@@ -166,15 +190,11 @@ class PipeTradeBridge(TxTradeBridge):
         self._publish_runtime_report("start")
         return self
 
+    def stop_transport(self):
+        PipeNormalQmtBridge.stop_transport(self)
+
     def close(self):
-        self.running = False
-        tx = self.tx
-        self.tx = None
-        if tx is not None:
-            try:
-                tx.close()
-            except Exception:
-                pass
+        self.stop_transport()
         self._log("pipe trade bridge stopped")
 
     def poll(self, max_messages=100, timeout=0):

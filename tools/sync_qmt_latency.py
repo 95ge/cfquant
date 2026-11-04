@@ -15,7 +15,7 @@ def updated_source(source):
     wanted = {
         'protocol.py': {'encode_response_result', 'pack_response', 'is_readonly_request', 'request_expired'},
         'flow_control.py': {'OrderedSender'},
-        'pipe_transport.py': {'PipeTxClient'},
+        'pipe_transport.py': {'PipeTxClient', 'connect_pipe'},
     }
     for filename, names in wanted.items():
         text = (ROOT / 'cfquant' / filename).read_text(encoding='utf-8')

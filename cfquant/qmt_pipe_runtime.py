@@ -30,6 +30,7 @@ class ManagedPipeRuntime(object):
         self.failure = ""
         self.calls = 0
         self.bridges_closed = False
+        self.closing = False
         self.attached_bridges = []
         self.mutex = _cq_threading.RLock()
 
@@ -129,8 +130,6 @@ class ManagedPipeRuntime(object):
         return guarded
 
     def bind(self, namespace):
-        if not self.descriptor:
-            return
         self.namespace = namespace
         self.original_stop = namespace.get("stop")
         for name, value in list(namespace.items()):
@@ -166,24 +165,51 @@ class ManagedPipeRuntime(object):
 
     def close(self, context=None):
         with self.mutex:
-            if not self.active:
+            if self.closing or self.bridges_closed:
                 return
+            self.closing = True
             self.active = False
             self.approved = False
+        errors = []
+        completed = False
+        bridges = list(self.attached_bridges)
+        for name in ("_normal_bridge", "_trade_bridge"):
+            bridge = self.namespace.get(name)
+            if bridge is not None and bridge not in bridges:
+                bridges.append(bridge)
         try:
+            # Stop ALL Pipe workers before the entry cancels QMT timers or
+            # unsubscribes quotes. Either native operation may block or fail.
+            for bridge in bridges:
+                stop_transport = getattr(bridge, "stop_transport", None)
+                if callable(stop_transport):
+                    try:
+                        stop_transport()
+                    except Exception as error:
+                        errors.append(str(error))
+            original_failed = False
             if self.original_stop is not None:
-                self.original_stop(context)
-            else:
-                bridges = list(self.attached_bridges)
-                for name in ("_normal_bridge", "_trade_bridge"):
-                    bridge = self.namespace.get(name)
-                    if bridge is not None and bridge not in bridges:
-                        bridges.append(bridge)
+                try:
+                    self.original_stop(context)
+                except Exception as error:
+                    original_failed = True
+                    errors.append(str(error))
+            if self.original_stop is None or original_failed:
                 for bridge in bridges:
-                    bridge.close()
+                    try:
+                        bridge.close()
+                    except Exception as error:
+                        errors.append(str(error))
+            worker = self.namespace.get("_trade_thread")
+            if worker is not None and worker is not _cq_threading.current_thread() and worker.is_alive():
+                worker.join(0.5)
+            completed = True
+        finally:
             with self.mutex:
-                self.bridges_closed = True
-                self.release_if_idle()
-        except Exception as error:
-            self.failure = str(error)
-            print("cfquant strategy shutdown failed: %s" % error)
+                self.closing = False
+                self.bridges_closed = completed and not errors
+                if self.bridges_closed:
+                    self.release_if_idle()
+        if errors:
+            self.failure = "; ".join(errors)
+            print("cfquant strategy shutdown failed: %s" % self.failure)

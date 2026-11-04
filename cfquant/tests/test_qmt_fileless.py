@@ -26,6 +26,7 @@ class FakeTransport:
     def __init__(self, *args, **kwargs):
         self.Q = queue.Queue()
         self.events = []
+        self.closed = False
 
     def start(self):
         return self
@@ -34,7 +35,7 @@ class FakeTransport:
         pass
 
     def close(self):
-        pass
+        self.closed = True
 
     def _get_conn(self):
         return self
@@ -130,6 +131,7 @@ def test_entry_load_init_status_callbacks_and_stop_without_files(path, managed, 
         deny_files(patch, attempts)
         exec(code, namespace)
         normal, trade = namespace["_normal_bridge"], namespace["_trade_bridge"]
+        transports = (normal.tx, trade.tx)
         runtime = namespace["_managed_runtime"]
         try:
             context = Context()
@@ -170,6 +172,18 @@ def test_entry_load_init_status_callbacks_and_stop_without_files(path, managed, 
         finally:
             namespace["stop"](context)
         assert not normal.running and not trade.running
+        assert all(tx.closed for tx in transports)
+        assert runtime.bridges_closed and not runtime.active
+        # Delayed callbacks after QMT stop must not recreate either bridge,
+        # including manually imported strategies without a managed descriptor.
+        intervals = list(context.intervals)
+        namespace['init'](context)
+        namespace['after_init'](context)
+        namespace['handlebar'](context)
+        namespace['order_callback'](context, {})
+        namespace['stop'](context)
+        assert context.intervals == intervals
+        assert namespace['_normal_bridge'] is None and namespace['_trade_bridge'] is None
         assert attempts == []
 
 

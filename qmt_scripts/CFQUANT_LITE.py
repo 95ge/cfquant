@@ -715,7 +715,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.60"
+CORE_VERSION = "0.2.61"
 LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -7640,12 +7640,14 @@ class NamedPipeConnection(object):
                 offset += written.value
 
 
-def connect_pipe(pipe_name=None, timeout_ms=3000):
+def connect_pipe(pipe_name=None, timeout_ms=3000, stop_event=None):
     pipe_name = normalize_pipe_name(pipe_name)
     k32 = kernel32()
-    deadline = time.time() + max(float(timeout_ms), 1.0) / 1000.0
+    deadline = time.monotonic() + max(float(timeout_ms), 1.0) / 1000.0
     last_error = None
     while True:
+        if stop_event is not None and stop_event.is_set():
+            raise ConnectionAbortedError("named pipe connection cancelled")
         handle = k32.dll.CreateFileW(
             pipe_name,
             GENERIC_READ | GENERIC_WRITE,
@@ -7656,16 +7658,23 @@ def connect_pipe(pipe_name=None, timeout_ms=3000):
             None,
         )
         if not k32.invalid_handle(handle):
-            return NamedPipeConnection(handle, pipe_name, owner_server_side=False)
+            conn = NamedPipeConnection(handle, pipe_name, owner_server_side=False)
+            if stop_event is not None and stop_event.is_set():
+                conn.close()
+                raise ConnectionAbortedError("named pipe connection cancelled")
+            return conn
         last_error = k32.last_error()
         if last_error == ERROR_PIPE_BUSY:
-            wait_ms = min(250, max(1, int((deadline - time.time()) * 1000)))
+            wait_ms = min(50 if stop_event is not None else 250,
+                          max(1, int((deadline - time.monotonic()) * 1000)))
             k32.dll.WaitNamedPipeW(pipe_name, wait_ms)
-        elif last_error in (ERROR_FILE_NOT_FOUND, ERROR_ACCESS_DENIED):
-            time.sleep(0.05)
+        elif stop_event is not None:
+            stop_event.wait(0.05)
         else:
             time.sleep(0.05)
-        if time.time() >= deadline:
+        if stop_event is not None and stop_event.is_set():
+            raise ConnectionAbortedError("named pipe connection cancelled")
+        if time.monotonic() >= deadline:
             raise OSError(last_error or 0, "connect named pipe timeout pipe=%s winerror=%s" % (pipe_name, last_error))
 
 
@@ -7752,21 +7761,27 @@ class PipeTxClient(object):
         self._sender = None
         self._sender_conn = None
         self._stop_event = threading.Event()
+        self._closed = False
+        self._connecting_conns = set()
         self.send_max_bytes = int(os.environ.get("CFQUANT_PIPE_SEND_MAX_BYTES", 128 * 1024 * 1024))
         self.send_timeout = float(os.environ.get("CFQUANT_PIPE_SEND_TIMEOUT", "15"))
 
     def start(self):
-        if self.running:
-            return self
-        self.running = True
-        self._stop_event.clear()
-        self.thread = threading.Thread(target=self._connect_loop)
-        self.thread.daemon = True
-        self.thread.start()
-        if self.heartbeat_interval > 0 or self.send_timeout > 0:
-            self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
-            self.heartbeat_thread.daemon = True
-            self.heartbeat_thread.start()
+        with self.conn_lock:
+            # A strategy restart creates a new client. Reusing this stop event
+            # could reactivate workers still exiting from the previous run.
+            if self._closed:
+                raise RuntimeError("pipe tx client is closed")
+            if self.running:
+                return self
+            self.running = True
+            self.thread = threading.Thread(target=self._connect_loop, name="cfquant-pipe-connect")
+            self.thread.daemon = True
+            self.thread.start()
+            if self.heartbeat_interval > 0 or self.send_timeout > 0:
+                self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, name="cfquant-pipe-heartbeat")
+                self.heartbeat_thread.daemon = True
+                self.heartbeat_thread.start()
         return self
 
     def start_tx(self):
@@ -7792,6 +7807,8 @@ class PipeTxClient(object):
             if not isinstance(payload, str):
                 raise TypeError("pipe publish payload must be an encoded string")
             with self.conn_lock:
+                if self._closed:
+                    return {"code": -1, "msg": "pipe tx client is closed"}
                 if (self.tx_conn, self.connection_generation) != (conn, generation):
                     raise RuntimeError("pipe connection changed before send")
                 if self._sender is None or self._sender_conn is not conn:
@@ -7816,25 +7833,59 @@ class PipeTxClient(object):
             return {"code": -1, "msg": str(e)}
 
     def close(self):
-        self.running = False
-        self._stop_event.set()
+        with self.conn_lock:
+            self._closed = True
+            self.running = False
+            self._stop_event.set()
+            connecting = tuple(self._connecting_conns)
+            self._connecting_conns.clear()
+            sender = self._sender
+            workers = (self.thread, self.heartbeat_thread)
+        # Interrupt ReadFile/WriteFile, including either hello handshake,
+        # before joining. Native cleanup and joins must not hold conn_lock.
+        self._drop_pair(None, reason="pipe tx client closed", conns=connecting)
+        # A concurrent submit may have started the sender just before it was
+        # closed. Read its thread only after close prevents further submits.
+        workers += (getattr(sender, "_thread", None),)
         try:
             self.Q.put_nowait(None)
-        except Exception:
+        except queue.Full:
             pass
-        self._drop_pair(None, reason="pipe tx client closed", conns=self._get_conns())
+        deadline = time.monotonic() + 1.0
+        for worker in workers:
+            if worker is not None and worker is not threading.current_thread() and worker.is_alive():
+                worker.join(max(0.0, deadline - time.monotonic()))
+
+    def _open_connection(self, role):
+        conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms,
+                            stop_event=self._stop_event)
+        try:
+            with self.conn_lock:
+                if self._closed:
+                    raise ConnectionAbortedError("pipe tx client is closed")
+                self._connecting_conns.add(conn)
+            conn.write_frame(dumps_pipe_message(self._pipe_envelope("hello", role)))
+            if self._stop_event.is_set():
+                raise ConnectionAbortedError("pipe tx client is closed")
+            return conn
+        except BaseException:
+            with self.conn_lock:
+                self._connecting_conns.discard(conn)
+            self._close_conns((conn,))
+            raise
 
     def _connect_loop(self):
-        while self.running:
+        while self.running and not self._stop_event.is_set():
             rx_conn = None
             tx_conn = None
             generation = None
             try:
-                rx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
-                rx_conn.write_frame(dumps_pipe_message(self._pipe_envelope("hello", "qmt_rx")))
-                tx_conn = connect_pipe(self.pipe_name, timeout_ms=self.connect_timeout_ms)
-                tx_conn.write_frame(dumps_pipe_message(self._pipe_envelope("hello", "qmt_tx")))
+                rx_conn = self._open_connection("qmt_rx")
+                tx_conn = self._open_connection("qmt_tx")
                 with self.conn_lock:
+                    if self._closed:
+                        raise ConnectionAbortedError("pipe tx client is closed")
+                    self._connecting_conns.difference_update((rx_conn, tx_conn))
                     self.connection_generation += 1
                     generation = self.connection_generation
                     self.rx_conn = rx_conn
@@ -7847,29 +7898,44 @@ class PipeTxClient(object):
                 )
                 self._read_loop(rx_conn, generation)
             except Exception as e:
-                self.last_error = str(e)
-                if self.running:
-                    self._log("pipe connect/read failed: %s" % e)
+                with self.conn_lock:
+                    if self.running and not self._closed:
+                        self.last_error = str(e)
+                        self._log("pipe connect/read failed: %s" % e)
             finally:
+                with self.conn_lock:
+                    self._connecting_conns.difference_update((rx_conn, tx_conn))
                 if generation is None:
                     self._close_conns((rx_conn, tx_conn))
                 else:
                     self._drop_pair(generation, conns=(rx_conn, tx_conn))
-            if self.running:
-                time.sleep(self.reconnect_interval)
+            if self._stop_event.wait(max(0.0, self.reconnect_interval)):
+                break
 
     def _read_loop(self, conn, generation):
-        while self.running and self._get_rx_state() == (conn, generation):
+        while self.running and not self._stop_event.is_set() and self._get_rx_state() == (conn, generation):
             raw = conn.read_frame()
             if raw is None:
                 break
             envelope = loads_pipe_message(raw)
             if envelope:
                 payload = envelope.get("payload")
-                if payload:
-                    self.Q.put(payload)
+                if payload and not self._queue_received(payload):
+                    return
                 continue
-            self.Q.put(raw)
+            if not self._queue_received(raw):
+                return
+
+    def _queue_received(self, payload):
+        # A stopped bridge no longer drains Q. Never leave the reader blocked
+        # forever in put() when its bounded queue is full at shutdown.
+        while self.running and not self._stop_event.is_set():
+            try:
+                self.Q.put(payload, timeout=0.1)
+                return True
+            except queue.Full:
+                pass
+        return False
 
     def _get_rx_conn(self):
         with self.conn_lock:
@@ -8035,8 +8101,38 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
         self.request_channels = list(request_channels or [request_channel])
         self.connect_timeout_ms = int(connect_timeout_ms)
+        self._pipe_lock = threading.RLock()
+        self._pipe_closed = False
 
     def start(self):
+        with self._pipe_lock:
+            if self._pipe_closed:
+                raise RuntimeError("pipe bridge is closed")
+            return self._start_transport()
+
+    def close(self):
+        self.stop_transport()
+        self._close_quote_subscriptions()
+        if self.context is not None and self.schedule_key:
+            try:
+                self.context.cancel_schedule_run(self.schedule_key)
+            except Exception:
+                pass
+        self._log("pipe normal bridge stopped")
+
+    def _status_extra(self):
+        data = super(PipeNormalQmtBridge, self)._status_extra()
+        data.update({
+            "transport": "lite",
+            "transport_mode": "lite",
+            "pipe_transport": "pipe",
+            "pipe_name": self.pipe_name,
+            "pipe_request_channels": list(self.request_channels),
+            "pipe_connected": self.tx is not None and self.tx._get_conn() is not None,
+        })
+        return data
+
+    def _start_transport(self):
         runtime = self.globals_dict.get("_managed_runtime")
         if runtime is not None:
             runtime.attach_bridge(self)
@@ -8067,35 +8163,21 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         self._publish_runtime_report("start")
         return self
 
-    def close(self):
-        self.running = False
-        self.worker_event.set()
-        self._close_quote_subscriptions()
-        if self.context is not None and self.schedule_key:
-            try:
-                self.context.cancel_schedule_run(self.schedule_key)
-            except Exception:
-                pass
-        tx = self.tx
-        self.tx = None
+    def stop_transport(self):
+        # This phase must not wait for QMT native work or dispatch_lock.
+        with self._pipe_lock:
+            self._pipe_closed = True
+            self.running = False
+            tx, self.tx = self.tx, None
+        event = getattr(self, "worker_event", None)
+        if event is not None:
+            event.set()
         if tx is not None:
-            try:
-                tx.close()
-            except Exception:
-                pass
-        self._log("pipe normal bridge stopped")
-
-    def _status_extra(self):
-        data = super(PipeNormalQmtBridge, self)._status_extra()
-        data.update({
-            "transport": "lite",
-            "transport_mode": "lite",
-            "pipe_transport": "pipe",
-            "pipe_name": self.pipe_name,
-            "pipe_request_channels": list(self.request_channels),
-            "pipe_connected": self.tx is not None and self.tx._get_conn() is not None,
-        })
-        return data
+            tx.close()
+        deadline = time.monotonic() + 0.5
+        for worker in (getattr(self, "recv_thread", None), getattr(self, "worker_thread", None)):
+            if worker is not None and worker is not threading.current_thread() and worker.is_alive():
+                worker.join(max(0.0, deadline - time.monotonic()))
 
 
 class PipeTradeBridge(TxTradeBridge):
@@ -8123,43 +8205,17 @@ class PipeTradeBridge(TxTradeBridge):
         )
         self.pipe_name = pipe_name or DEFAULT_PIPE_NAME
         self.connect_timeout_ms = int(connect_timeout_ms)
+        self._pipe_lock = threading.RLock()
+        self._pipe_closed = False
 
     def start(self):
-        runtime = self.globals_dict.get("_managed_runtime")
-        if runtime is not None:
-            runtime.attach_bridge(self)
-        if self.running:
-            return self
-        self.running = True
-        if not self.started_at:
-            self.started_at = time.time()
-        self.tx = PipeTxClient(
-            pipe_name=self.pipe_name,
-            request_channel=self.request_channel,
-            bridge_id=self.bridge_id,
-            endpoint_name="trade",
-            show=self.show,
-            connect_timeout_ms=self.connect_timeout_ms,
-        )
-        self.tx._log = self._log
-        self.tx.start()
-        self.tx.start_txg(self.request_channel)
-        self._log(
-            "pipe trade bridge started pipe=%s request_channel=%s"
-            % (self.pipe_name, self.request_channel)
-        )
-        self._publish_runtime_report("start")
-        return self
+        with self._pipe_lock:
+            if self._pipe_closed:
+                raise RuntimeError("pipe bridge is closed")
+            return self._start_transport()
 
     def close(self):
-        self.running = False
-        tx = self.tx
-        self.tx = None
-        if tx is not None:
-            try:
-                tx.close()
-            except Exception:
-                pass
+        self.stop_transport()
         self._log("pipe trade bridge stopped")
 
     def poll(self, max_messages=100, timeout=0):
@@ -8186,6 +8242,36 @@ class PipeTradeBridge(TxTradeBridge):
             "pipe_name": self.pipe_name,
             "pipe_connected": self.tx is not None and self.tx._get_conn() is not None,
         }
+
+    def _start_transport(self):
+        runtime = self.globals_dict.get("_managed_runtime")
+        if runtime is not None:
+            runtime.attach_bridge(self)
+        if self.running:
+            return self
+        self.running = True
+        if not self.started_at:
+            self.started_at = time.time()
+        self.tx = PipeTxClient(
+            pipe_name=self.pipe_name,
+            request_channel=self.request_channel,
+            bridge_id=self.bridge_id,
+            endpoint_name="trade",
+            show=self.show,
+            connect_timeout_ms=self.connect_timeout_ms,
+        )
+        self.tx._log = self._log
+        self.tx.start()
+        self.tx.start_txg(self.request_channel)
+        self._log(
+            "pipe trade bridge started pipe=%s request_channel=%s"
+            % (self.pipe_name, self.request_channel)
+        )
+        self._publish_runtime_report("start")
+        return self
+
+    def stop_transport(self):
+        PipeNormalQmtBridge.stop_transport(self)
 
 
 def start_pipe_normal_bridge(
@@ -8487,6 +8573,7 @@ class ManagedPipeRuntime(object):
         self.failure = ""
         self.calls = 0
         self.bridges_closed = False
+        self.closing = False
         self.attached_bridges = []
         self.mutex = _cq_threading.RLock()
 
@@ -8586,8 +8673,6 @@ class ManagedPipeRuntime(object):
         return guarded
 
     def bind(self, namespace):
-        if not self.descriptor:
-            return
         self.namespace = namespace
         self.original_stop = namespace.get("stop")
         for name, value in list(namespace.items()):
@@ -8623,27 +8708,54 @@ class ManagedPipeRuntime(object):
 
     def close(self, context=None):
         with self.mutex:
-            if not self.active:
+            if self.closing or self.bridges_closed:
                 return
+            self.closing = True
             self.active = False
             self.approved = False
+        errors = []
+        completed = False
+        bridges = list(self.attached_bridges)
+        for name in ("_normal_bridge", "_trade_bridge"):
+            bridge = self.namespace.get(name)
+            if bridge is not None and bridge not in bridges:
+                bridges.append(bridge)
         try:
+            # Stop ALL Pipe workers before the entry cancels QMT timers or
+            # unsubscribes quotes. Either native operation may block or fail.
+            for bridge in bridges:
+                stop_transport = getattr(bridge, "stop_transport", None)
+                if callable(stop_transport):
+                    try:
+                        stop_transport()
+                    except Exception as error:
+                        errors.append(str(error))
+            original_failed = False
             if self.original_stop is not None:
-                self.original_stop(context)
-            else:
-                bridges = list(self.attached_bridges)
-                for name in ("_normal_bridge", "_trade_bridge"):
-                    bridge = self.namespace.get(name)
-                    if bridge is not None and bridge not in bridges:
-                        bridges.append(bridge)
+                try:
+                    self.original_stop(context)
+                except Exception as error:
+                    original_failed = True
+                    errors.append(str(error))
+            if self.original_stop is None or original_failed:
                 for bridge in bridges:
-                    bridge.close()
+                    try:
+                        bridge.close()
+                    except Exception as error:
+                        errors.append(str(error))
+            worker = self.namespace.get("_trade_thread")
+            if worker is not None and worker is not _cq_threading.current_thread() and worker.is_alive():
+                worker.join(0.5)
+            completed = True
+        finally:
             with self.mutex:
-                self.bridges_closed = True
-                self.release_if_idle()
-        except Exception as error:
-            self.failure = str(error)
-            print("cfquant strategy shutdown failed: %s" % error)
+                self.closing = False
+                self.bridges_closed = completed and not errors
+                if self.bridges_closed:
+                    self.release_if_idle()
+        if errors:
+            self.failure = "; ".join(errors)
+            print("cfquant strategy shutdown failed: %s" % self.failure)
 # END GENERATED PIPE RUNTIME
 
 _managed_runtime = ManagedPipeRuntime(RUNTIME_CONFIG.get("managed_strategy")).acquire()

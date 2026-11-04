@@ -21,8 +21,15 @@ def _function(source, name, class_name=None):
 
 
 def _replace(source, name, replacement, class_name=None):
-    node, _ = _function(source, name, class_name)
     lines = source.splitlines(True)
+    try:
+        node, _ = _function(source, name, class_name)
+    except StopIteration:
+        if class_name is None:
+            raise
+        cls = next(n for n in parse_source(source).body if isinstance(n, ast.ClassDef) and n.name == class_name)
+        lines[cls.end_lineno:cls.end_lineno] = ['\n' + textwrap.indent(replacement, '    ') + '\n']
+        return ''.join(lines)
     lines[node.lineno - 1:node.end_lineno] = [textwrap.indent(replacement, '    ' if class_name else '')]
     return ''.join(lines)
 
@@ -53,9 +60,12 @@ def updated_source(source):
         method = method.replace('    self._maybe_reset_order_meta_stores()\n', '')
         method = method.replace('    self._flush_pending_order_errors()\n', '')
         source = _replace(source, name, method, 'NormalQmtBridge')
-    _, constructor = _function(pipe, '__init__', 'PipeNormalQmtBridge')
-    constructor = constructor.replace('        order_meta_enabled=False,\n', '')
-    source = _replace(source, '__init__', constructor, 'PipeNormalQmtBridge')
+    for class_name in ('PipeNormalQmtBridge', 'PipeTradeBridge'):
+        for name in ('__init__', 'start', '_start_transport', 'stop_transport', 'close'):
+            _, method = _function(pipe, name, class_name)
+            method = method.replace('        order_meta_enabled=False,\n', '')
+            method = method.replace('    self._flush_pending_order_errors(force=True)\n', '')
+            source = _replace(source, name, method, class_name)
     for name, origin in (('start_normal_bridge', normal), ('start_pipe_normal_bridge', pipe)):
         source = _replace(source, name, _function(origin, name)[1])
 
