@@ -308,12 +308,67 @@ def test_whitelist_not_ready_does_not_consume_retries(recovery_case):
     assert job["recovery"]["attempts"] == {"CFQ_TEST001_LITE": 0}
 
 
-def test_unverified_native_build_is_rejected_before_attach(tmp_path):
+@pytest.mark.parametrize('can_query', [True, False])
+def test_backend_uses_live_capabilities_instead_of_file_hash(tmp_path, monkeypatch, can_query):
+    from types import SimpleNamespace
+    from cfquant.qmt_component_login import QtLoginBackend
     directory = tmp_path / "bin.x64"
     directory.mkdir()
-    (directory / "Formula.dll").write_bytes(b"unverified build")
-    with pytest.raises(UnsupportedQmt):
-        QtStrategyBackend(tmp_path)
+    (directory / "Formula.dll").write_bytes(b"another broker or version")
+    closed = []
+    def attach(self, directory, *, agent_extension, strategy):
+        assert strategy and 'strategycapabilities' in agent_extension
+        self.api = SimpleNamespace(strategycapabilities=lambda: {
+            'can_query': can_query, 'can_read_notices': False, 'missing_query': [] if can_query else ['isFomrulaRun']})
+    monkeypatch.setattr(QtLoginBackend, '__init__', attach)
+    monkeypatch.setattr(QtLoginBackend, 'already_logged_in', lambda self: True)
+    monkeypatch.setattr(QtLoginBackend, 'close', lambda self: closed.append(True))
+    if can_query:
+        backend = QtStrategyBackend(tmp_path)
+        assert backend.notices() == []
+        assert not closed
+        backend.close()
+    else:
+        with pytest.raises(UnsupportedQmt, match='isFomrulaRun'):
+            QtStrategyBackend(tmp_path)
+    assert closed == [True]
+
+
+@pytest.mark.parametrize('running', [True, False])
+@pytest.mark.parametrize('inspect_only', [True, False])
+def test_query_continues_without_start_api_or_retry_consumption(recovery_case, running, inspect_only):
+    recovery, backend, calls, now, job, accounts = recovery_case
+    backend.models[0]['running'] = running
+    snapshot = backend.snapshot
+    backend.snapshot = lambda: dict(snapshot(), capabilities={'can_query': True, 'can_start': False})
+    for _ in range(2):
+        result = recovery(job, inspect_only=inspect_only)
+        assert result['state'] == ('running' if running else 'stopped' if inspect_only else 'detection_only')
+        assert result['strategies'][0]['running'] is running
+        assert not result.get('attempts') and not result.get('retry_after')
+        assert not calls
+        now[0] += 20
+
+
+def test_optional_notice_scan_failure_does_not_disable_strategy_detection(recovery_case):
+    recovery, backend, calls, now, job, accounts = recovery_case
+    backend.models[0]['running'] = True
+    backend.notices = lambda: (_ for _ in ()).throw(RuntimeError('message layout unavailable'))
+    result = recovery(job)
+    assert result['state'] == 'running' and result['notice_error'] == 'message layout unavailable'
+    assert not calls
+
+
+def test_detection_only_is_visible_to_user(recovery_case, tmp_path):
+    from types import SimpleNamespace
+    recovery, backend, calls, now, job, accounts = recovery_case
+    manager = SimpleNamespace(lock=threading.RLock(), jobs={'one': job})
+    scheduler = QmtStrategyRecoveryScheduler(manager, lambda: accounts, tmp_path / 'status.json')
+    import time
+    scheduler.states = {'one': dict(state='detection_only', generation='g1', last_checked_at=time.time())}
+    status = scheduler.decorate('binding', {'targets': [{'root': job['root'], 'state': 'waiting_start'}]})
+    assert status['targets'][0]['state'] == 'waiting_manual_start'
+    assert '手动启动' in status['targets'][0]['message']
 
 
 def test_scheduler_rechecks_live_job_after_snapshot(recovery_case, tmp_path):

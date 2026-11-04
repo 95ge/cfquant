@@ -715,7 +715,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.61"
+CORE_VERSION = "0.2.62"
 LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])

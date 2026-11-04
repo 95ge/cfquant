@@ -6,7 +6,6 @@ The command line defaults to inspection; --ensure/--watch enable recovery.
 import argparse
 import copy
 import datetime
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -22,17 +21,6 @@ from .qmt_strategy_deploy import (
     _role_stock, _strategy_slot_name, account_qmt_roots,
     _write_json, _digest, PipeStrategyController, normalize_strategy_mode, normalize_strategy_settings, qmt_root,
 )
-
-
-# Verified on Guojin simulation 2.1.33.0 / Qt 5.6.2 x64. Native ABI support is
-# deliberately explicit; another build needs its own inspection and live test.
-SUPPORTED_FORMULA_SHA256 = {
-    "673e512bab175e068cbee5fa349e33025bf564e5f57192ff3509f87dad8b8214",
-}
-NOTICE_DLL_SHA256 = {
-    "Dialog.dll": "b71c3dc77cfa830e1037ac2b7f1cc10a43aabec113a9a4c77d0fa97b34cedd67",
-    "BaseWidget.dll": "31fd0313f8b2b1f55f0d367121782ec3dc941a884d59a40cfc77ae155e2e861b",
-}
 
 
 def visible_notice_windows(pid, main_hwnd):
@@ -92,18 +80,14 @@ class UnsupportedQmt(RuntimeError):
 class QtStrategyBackend(QtLoginBackend):
     def __init__(self, root):
         directory = qmt_root(root) / "bin.x64"
-        digest = hashlib.sha256((directory / "Formula.dll").read_bytes()).hexdigest()
-        if digest not in SUPPORTED_FORMULA_SHA256:
-            raise UnsupportedQmt("QMT 策略组件版本尚未验证，未执行自动启动")
-        self.notice_supported = all(hashlib.sha256((directory / name).read_bytes()).hexdigest() == digest
-                                    for name, digest in NOTICE_DLL_SHA256.items())
         extension = Path(__file__).with_name("qmt_strategy_agent.js").read_text(encoding="utf-8")
-        super().__init__(directory, agent_extension=extension)
+        super().__init__(directory, agent_extension=extension, strategy=True)
         try:
             if not self.already_logged_in():
                 raise QmtNotReady("QMT 尚未登录，等待主界面")
-            if "strategystatus" not in self.script.list_exports_sync():
-                raise UnsupportedQmt("QMT 策略组件接口不可用")
+            self.capabilities = self.api.strategycapabilities()
+            if not self.capabilities.get("can_query"):
+                raise UnsupportedQmt("QMT 缺少策略运行检测接口: " + ", ".join(self.capabilities.get("missing_query", [])))
         except Exception:
             self.close()
             raise
@@ -115,7 +99,7 @@ class QtStrategyBackend(QtLoginBackend):
         return self.api.strategystart(str(self.main_hwnd), expected)["result"]
 
     def notices(self):
-        if not self.notice_supported:
+        if not self.capabilities.get("can_read_notices"):
             return []
         result = []
         for hwnd in visible_notice_windows(self.pid, self.main_hwnd):
@@ -186,7 +170,15 @@ class QmtStrategyRecovery:
                              event_id=(status.get("incident") or {}).get("id"), **details))
 
     def _notices(self, job, status, backend, expected):
-        for notice in backend.notices():
+        try:
+            notices = backend.notices()
+            status.pop("notice_error", None)
+        except Exception as error:
+            # An optional broker-specific message widget must not disable
+            # the independently supported strategy-state query.
+            status["notice_error"] = str(error)
+            return
+        for notice in notices:
             if expected_models(job, self.accounts_provider()) != expected or not self.job_is_current(job):
                 raise ValueError("Binding changed before warning dismissal")
             incident = status.get("incident") or {}
@@ -249,7 +241,9 @@ class QmtStrategyRecovery:
             if (status.get("pid"), status.get("generation")) != (backend.pid, job["generation"]):
                 status = {"last_checked_at": now, "next_check_at": now + self.interval,
                           "pid": backend.pid, "generation": job["generation"], "attempts": {}}
-            models = match_models(backend.snapshot(), expected)
+            snapshot = backend.snapshot()
+            models = match_models(snapshot, expected)
+            status["capabilities"] = snapshot.get("capabilities") or {}
             status["main_hwnd"] = getattr(backend, "main_hwnd", None)
             if not inspect_only:
                 self._notices(job, status, backend, expected)
@@ -271,7 +265,9 @@ class QmtStrategyRecovery:
             else:
                 status.pop("stable_since", None)
                 status["state"] = "stopped"
-                if not inspect_only:
+                if not inspect_only and status["capabilities"].get("can_start") is False:
+                    status["state"] = "detection_only"
+                elif not inspect_only:
                     attempts = dict(status.get("attempts") or {})
                     status["attempts"] = attempts
                     if any(attempts.get(target["name"], 0) >= 5 for target in stopped):
@@ -389,8 +385,11 @@ class QmtStrategyRecoveryScheduler:
                         "backoff": "托管策略尚未恢复，等待冷却后重试",
                         "retry_exhausted": "托管策略连续启动失败，已暂停重试，请检查 QMT 提示",
                     }[state]
+                elif state == "detection_only":
+                    target["state"] = "waiting_manual_start"
+                    target["message"] = "已检测到托管策略停止，当前 QMT 缺少自动恢复接口，请手动启动策略"
                 elif state == "unsupported" and target.get("state") != "running":
-                    target["message"] = recovery.get("error", "当前 QMT 版本尚未验证策略自动恢复")
+                    target["message"] = recovery.get("error", "当前 QMT 缺少策略运行检测接口")
         return status
 
     def start(self):

@@ -27,7 +27,7 @@ def verify_environment(directory):
     verify_environment_isolated(directory)
 
 
-def _verify_environment_native(directory):
+def _verify_environment_native(directory, *, strategy=False):
     """Only invoked inside the native worker or the standalone login CLI."""
     try:
         from .qmt_dependencies import LOGIN_MODULES, import_login_module
@@ -38,14 +38,17 @@ def _verify_environment_native(directory):
     directory = Path(directory)
     for module in ("Qt5Core.dll", "Qt5Widgets.dll"):
         version = win32api.GetFileVersionInfo(str(directory / module), "\\")
-        if (version["FileVersionMS"], version["FileVersionLS"]) != ((5 << 16) | 6, 2 << 16):
+        if strategy:
+            if version["FileVersionMS"] >> 16 != 5:
+                raise RuntimeError("QMT 策略检测需要兼容的 Qt 5 接口，当前组件 ABI 不受支持")
+        elif (version["FileVersionMS"], version["FileVersionLS"]) != ((5 << 16) | 6, 2 << 16):
             raise RuntimeError("QMT 组件自动登录当前仅支持 Qt 5.6.2，请先适配此客户端版本")
     with (directory / "XtItClient.exe").open("rb") as stream:
         stream.seek(0x3C)
         offset = int.from_bytes(stream.read(4), "little")
         stream.seek(offset + 4)
         if int.from_bytes(stream.read(2), "little") != 0x8664:
-            raise RuntimeError("QMT 组件自动登录需要 64 位客户端")
+            raise RuntimeError("QMT 原生组件操作需要 64 位客户端")
 
 
 def auto_login(backend, password_provider, *, retry_not_ready=False, login_account=None,
@@ -132,7 +135,7 @@ def select_binding(config_path, name):
 
 
 class QtLoginBackend:
-    def __init__(self, directory, timeout=40, expected_pid=None, *, agent_extension=""):
+    def __init__(self, directory, timeout=40, expected_pid=None, *, agent_extension="", strategy=False):
         try:
             from .qmt_dependencies import import_login_module
         except ImportError:
@@ -170,7 +173,10 @@ class QtLoginBackend:
         self.pid = matches[0].pid
         if expected_pid is not None and self.pid != expected_pid:
             raise RuntimeError("QMT process changed; stopping this login attempt")
-        _verify_environment_native(directory)
+        if strategy:
+            _verify_environment_native(directory, strategy=True)
+        else:
+            _verify_environment_native(directory)
         self.mutex = win32event.CreateMutex(None, False, "Local\\CFQuantQmtComponentLogin_" + str(self.pid))
         acquired = win32event.WaitForSingleObject(self.mutex, 0)
         if acquired not in (0, 0x80):
@@ -179,13 +185,16 @@ class QtLoginBackend:
             raise RuntimeError("Another component login is already running for this QMT")
         try:
             self.session = frida.attach(self.pid)
-            readiness = self.session.create_script("rpc.exports.ready = () => ['Qt5Core.dll', 'Qt5Widgets.dll', 'LoginDialog.dll'].every(n => Process.findModuleByName(n) !== null);")
+            modules = ["Qt5Core.dll", "Qt5Widgets.dll"]
+            if not strategy:
+                modules.append("LoginDialog.dll")
+            readiness = self.session.create_script("rpc.exports.ready = () => %s.every(n => Process.findModuleByName(n) !== null);" % json.dumps(modules))
             readiness.load()
             ready = readiness.exports_sync.ready()
             readiness.unload()
             if not ready:
                 raise QmtNotReady("QMT login modules are still loading")
-            source = Path(__file__).with_name("qmt_component_agent.js").read_text(encoding="utf-8")
+            source = "" if strategy else Path(__file__).with_name("qmt_component_agent.js").read_text(encoding="utf-8")
             script = self.session.create_script(source + "\n" + agent_extension)
             script.on("message", lambda message, data: self.messages.append("agent_error") if message.get("type") == "error" else None)
             script.load()
