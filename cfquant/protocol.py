@@ -154,7 +154,8 @@ def is_readonly_request(action):
     # Only known query families. Downloads, subscriptions and all writes retain
     # their existing execution semantics, including on an ambiguous timeout.
     return (str(action).startswith(("xtdata.get_", "xttrader.query_"))
-            or action in ("cfquant.ping", "cfquant.status", "cfquant.query_info"))
+            or action in ("cfquant.ping", "cfquant.status", "cfquant.query_info",
+                          "cfquant.account_subscription_status"))
 
 
 def request_expired(msg, now=None):

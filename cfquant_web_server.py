@@ -2453,6 +2453,10 @@ class WebRuntimeConfig(object):
                     with open(self.path, "r", encoding="utf-8") as f:
                         raw = json.load(f)
                     if isinstance(raw, dict):
+                        from cfquant.qmt_binding_defaults import MIGRATION_KEY
+                        raw = self._migrate_automation_defaults_locked(raw)
+                        self._data["saved_core_version"] = raw.get("saved_core_version", raw.get("core_version", ""))
+                        self._data[MIGRATION_KEY] = raw.get(MIGRATION_KEY) or {}
                         self._data["bridges"] = self._normalize_bridges(raw.get("bridges") or {})
                         self._data["account_pairs"] = self._normalize_pairs(raw.get("account_pairs") or {})
                         self._data["account_configs"] = self._normalize_account_configs(raw.get("account_configs") or {})
@@ -2503,6 +2507,35 @@ class WebRuntimeConfig(object):
             except Exception as e:
                 safe_print("web sqlite settings load failed: %s" % e)
             self._repair_account_defaults_locked()
+
+    def _migrate_automation_defaults_locked(self, raw):
+        from cfquant.qmt_binding_defaults import migrate_qmt_automation_defaults, MIGRATION_KEY
+        migrated, count = migrate_qmt_automation_defaults(raw)
+        if migrated is raw:
+            return raw
+        # Persist before exposing enabled settings to startup jobs. A failed
+        # write leaves the original preferences active and can be retried.
+        temp_path = self.path + ".automation.tmp"
+        try:
+            backup_path = self.path + ".before-qmt-automation-0.2.59.bak"
+            if not os.path.exists(backup_path):
+                with open(self.path, "rb") as original, open(backup_path, "xb") as backup:
+                    shutil.copyfileobj(original, backup)
+            with open(temp_path, "w", encoding="utf-8") as output:
+                json.dump(migrated, output, ensure_ascii=False, indent=2)
+            os.replace(temp_path, self.path)
+        except OSError as error:
+            safe_print("QMT automation defaults migration could not be saved; original preferences retained: %s" % error)
+            return raw
+        finally:
+            try:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+            except OSError:
+                pass
+        safe_print("QMT automation defaults migrated: %s binding(s), source %s, threshold 0.2.59" % (
+            count, migrated[MIGRATION_KEY]["source_version"]))
+        return migrated
 
     def snapshot(self):
         with self._lock:
@@ -2813,12 +2846,14 @@ class WebRuntimeConfig(object):
                     raise ValueError("高级模式的两个 QMT 核心目录必须不同")
             if mode != "lttx":
                 qmt_trade_dir = ""
-            strategy_settings = normalize_strategy_settings(
-                qmt_strategy if qmt_strategy is not None else (existing or {}).get("qmt_strategy")
-            )
+            strategy_source = qmt_strategy if qmt_strategy is not None else (existing or {}).get("qmt_strategy")
+            if not existing:
+                strategy_source = dict({"enabled": True, "autorun": True},
+                                       **(strategy_source if isinstance(strategy_source, dict) else {}))
+            strategy_settings = normalize_strategy_settings(strategy_source)
             auto_login_settings = normalize_qmt_auto_login_settings(
                 qmt_auto_login,
-                existing=(existing or {}).get("qmt_auto_login") if isinstance(existing, dict) else None,
+                existing=existing.get("qmt_auto_login") if existing else {"auto_update": True},
             )
             if strategy_settings["enabled"] and not qmt_dir:
                 raise ValueError("自动导入策略需要填写 QMT 目录")
@@ -3622,6 +3657,8 @@ class WebRuntimeConfig(object):
         temp_path = self.path + ".tmp"
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump({
+                "saved_core_version": CORE_VERSION,
+                "qmt_automation_defaults_migration": self._data.get("qmt_automation_defaults_migration") or {},
                 "bridges": self._data.get("bridges") or {},
                 "account_pairs": self._data.get("account_pairs") or {},
                 "account_configs": self._data.get("account_configs") or {},
@@ -4254,7 +4291,8 @@ def forced_channel_for_action(action, mode=None, params=None):
     mode = normalize_transport_mode(mode or default_runtime_client_mode())
     if xtdata_action_requires_normal_bridge(action, params=params):
         return "normal"
-    if mode == "lttx" and (action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS):
+    if mode == "lttx" and (action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS
+                           or action == "cfquant.account_subscription_status"):
         return "trade"
     return None
 
@@ -4413,7 +4451,7 @@ class GlobalTxClient(object):
             except CfquantTimeout as e:
                 # A subscription acknowledgement can wait behind quote traffic.
                 # Do not freeze the trading channel because a renewal was late.
-                if mark_offline_on_timeout and action != "xttrader.subscribe":
+                if mark_offline_on_timeout and action not in ("xttrader.subscribe", "cfquant.account_subscription_status"):
                     self._mark_failed(cooldown_key, e)
                 raise
             except Exception as e:
@@ -4622,6 +4660,10 @@ def account_request(
                     "error": str(error),
                     "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 })
+                if (action == "cfquant.account_subscription_status" and
+                        str(error).startswith("unsupported action: cfquant.account_subscription_status")):
+                    # Preserve legacy capability negotiation for the SDK.
+                    raise
                 # The QMT managed-runtime gate rejected the request before
                 # dispatch. Preserve its structured, safe-to-retry outcome
                 # and do not hide it behind a transport fallback.
@@ -5724,7 +5766,7 @@ def route_external_lttx_request(msg):
     account_type = _external_account_type(params)
     account_key = _external_account_key(params)
     timeout = float(params.get("timeout") or msg.get("timeout") or 12.0)
-    if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS:
+    if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS or action == "cfquant.account_subscription_status":
         account_id = account_id or configured_default_account_id()
         if action in CFTRADER_BATCH_ACTIONS:
             route = account_cftrader_batch_request(
@@ -5805,6 +5847,7 @@ class LttxWebRouteServer(object):
         self._trader_event_dedupe_ttl = float(os.environ.get("CFQUANT_WEB_LTTX_TRADER_EVENT_DEDUPE_SECONDS", "2.0") or 2.0)
         self._last_registry_put = 0.0
         self._executor = None
+        self._subscription_probe_executor = None
 
     def start(self):
         with self._lock:
@@ -5823,8 +5866,11 @@ class LttxWebRouteServer(object):
         with self._lock:
             tx, self.tx = self.tx, None
             executor, self._executor = self._executor, None
+            probe_executor, self._subscription_probe_executor = self._subscription_probe_executor, None
         if executor is not None:
             executor.close()
+        if probe_executor is not None:
+            probe_executor.close()
         CLIENTS.remove_callback("quote", self._on_quote_event)
         CLIENTS.remove_callback("__event__", self._on_client_event)
         with self._lock:
@@ -5832,6 +5878,7 @@ class LttxWebRouteServer(object):
             self._quote_routes.clear()
             self._quote_event_routes.clear()
             self._trader_event_dedupe.clear()
+            self._account_subscribers.clear()
         for row in quote_routes:
             try:
                 self._release_external_quote(row, timeout=2.0)
@@ -5932,11 +5979,18 @@ class LttxWebRouteServer(object):
         with self._lock:
             if self.tx is not tx:
                 return
-            if self._executor is None:
-                self._executor = KeyedExecutor(
-                    workers=int(os.environ.get("CFQUANT_WEB_ROUTE_WORKERS", "8")),
-                    max_pending=int(os.environ.get("CFQUANT_WEB_ROUTE_MAX_PENDING", "1024")))
-            executor = self._executor
+            if action == "cfquant.account_subscription_status":
+                # Read-only control traffic must not wait behind a slow native
+                # query on the same client/account or occupy business workers.
+                if self._subscription_probe_executor is None:
+                    self._subscription_probe_executor = KeyedExecutor(workers=2, max_pending=128)
+                executor = self._subscription_probe_executor
+            else:
+                if self._executor is None:
+                    self._executor = KeyedExecutor(
+                        workers=int(os.environ.get("CFQUANT_WEB_ROUTE_WORKERS", "8")),
+                        max_pending=int(os.environ.get("CFQUANT_WEB_ROUTE_MAX_PENDING", "1024")))
+                executor = self._executor
         try:
             executor.submit(keys, run, reject)
         except Exception as error:
@@ -5981,7 +6035,11 @@ class LttxWebRouteServer(object):
                 self._quote_event_routes[callback_event] = quote_route
             msg = dict(msg, params=dict(params, callback_event=callback_event))
         try:
-            if action == "xtdata.unsubscribe_quote":
+            if action == "cfquant.account_subscription_status" and not self._has_external_account_subscription(msg):
+                # The upstream Web client is shared by external callers. Its
+                # QMT registration alone cannot prove THIS caller has a route.
+                result, meta = {"subscribed": False}, {"route": "web_lttx"}
+            elif action == "xtdata.unsubscribe_quote":
                 with self._lock:
                     row = self._quote_routes.get((str(params.get("subscribe_id")), client_id))
                 if row is None:
@@ -6012,7 +6070,8 @@ class LttxWebRouteServer(object):
             if quote_subscribe and callback_event:
                 with self._lock:
                     self._quote_event_routes.pop(callback_event, None)
-            response = pack_response(request_id, ok=False, error=e, meta={"route": "web_lttx"})
+            response = pack_response(request_id, ok=False, error=e,
+                                     meta={"route": "web_lttx", "web_queue_ms": msg.get("_web_queue_ms", 0)})
             safe_print("cfquant LTtx 统一路由请求失败 action=%s id=%s error=%s" % (action, request_id, e))
         response_tx = response_tx if response_tx is not None else self.tx
         if client_id and response_tx is not None and response_tx is self.tx:
@@ -6080,6 +6139,18 @@ class LttxWebRouteServer(object):
             except Exception as error:
                 safe_print("expired SDK quote lease cleanup failed: %s" % error)
 
+    def _has_external_account_subscription(self, msg):
+        params = msg.get("params") or {}
+        client_id = msg.get("client_id") or msg.get("reply_channel")
+        account_id = _external_account_id(params) or configured_default_account_id()
+        account_type = _external_account_type(params)
+        account_key = _external_account_key(params)
+        bridge_id = params.get("bridge_id") or resolve_bridge_id(
+            account_id=account_id, account_type=account_type, account_key=account_key)
+        keys = account_subscription_keys(account_id, account_type, bridge_id, account_key)
+        with self._lock:
+            return bool(client_id) and any(client_id in self._account_subscribers.get(key, ()) for key in keys)
+
     def _remember_external_subscription(self, action, msg, result):
         client_id = msg.get("client_id") or msg.get("reply_channel")
         params = msg.get("params") or {}
@@ -6095,6 +6166,8 @@ class LttxWebRouteServer(object):
                     if row:
                         self._quote_event_routes.pop(row["wire_event"], None)
         elif action == "xttrader.subscribe":
+            if result is False or (isinstance(result, (int, float)) and result < 0):
+                return
             account_id = _external_account_id(params) or configured_default_account_id()
             account_type = _external_account_type(params)
             bridge_id = params.get("bridge_id") or resolve_bridge_id(account_id=account_id, account_type=account_type)
@@ -11757,6 +11830,8 @@ def _qmt_component_login_preflight(paths, settings):
 
 def _qmt_component_login_worker(row, paths, pid, config_path):
     from cfquant.qmt_component_login import login_running_qmt
+    from cfquant.qmt_native_worker import QmtAutomationError
+    from cfquant.qmt_dependencies import QmtDependencyError
     from cfquant.qmt_credentials import QmtCredentialStore
     from cfquant.qmt_update import manage_qmt_startup
     settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
@@ -11863,6 +11938,9 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
                    "login_attempts": result.get("attempts", []), "message": message,
                    "update_count": result.get("update_count", 0),
                    "error": "" if result.get("login_succeeded") or outcome == "client_login" else message}
+    except (QmtAutomationError, QmtDependencyError) as error:
+        updates = {"state": "login_failed", "login_state": "component_unavailable", "login_phase": "",
+                   "login_succeeded": False, "error": str(error), "message": str(error)}
     except Exception:
         # Native exceptions and credential providers must never echo supplied data.
         updates = {"state": "login_failed", "login_state": "component_error", "login_phase": "", "login_succeeded": False,

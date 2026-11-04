@@ -22,7 +22,22 @@
 
 ## 使用
 
-本机验证依赖：Python 环境中的 Frida 17.16.4、pywin32 306、psutil 5.9.8。Frida 和 pywin32 现已作为 Windows 依赖加入项目。
+本机验证依赖：Python 环境中的 Frida 17.16.4、pywin32 306、psutil 5.9.8。Windows 安装依赖已固定为 `frida==17.16.4`，`pyproject.toml`、`requirements.txt` 与组件修复命令使用同一版本。
+
+Frida 17.25 引入的新 Windows 注入实现，在部分 Windows 版本上会触发 `Unable to locate the ntdll loader TLS routines` 并直接终止调用进程。仅能导入模块不足以证明兼容；项目在导入 Frida 前校验版本，未经本项目验证的版本停止自动操作并给出修复提示。上游问题与修复记录：<https://github.com/frida/frida-gum/issues/1203>。
+
+通过 `start_cfquant.bat` 启动时，即使 cfquant 主包版本一致，也会检查 Frida 版本；不匹配时使用本次启动选择的 Python 安装 `frida==17.16.4`。已匹配时不重复安装。安装失败或超过 120 秒会提示并继续启动 Web，用户可手动登录和启动策略。直接运行 Web Python 入口时只检测并提示，不自动修改依赖。
+
+Web 的登录环境预检、Frida 登录操作和策略恢复操作均在隐藏的独立子进程中执行。子进程异常退出、调用超时不会终止 Web；不重放结果不确定的登录或策略启动操作。密码只通过子进程标准输入传递，不放入命令行、文件或日志。取消登录会结束对应子进程；Web 退出导致输入管道断开时，子进程也会退出。
+
+需要关闭原生自动化时，可在项目目录的 PowerShell 中执行：
+
+```powershell
+$env:CFQUANT_QMT_AUTOMATION = "0"
+.\start_cfquant.bat
+```
+
+此开关关闭 Frida 组件登录、环境原生预检和策略原生恢复，并跳过启动时的 Frida 自动安装。它不关闭行情、交易接口，也不等同于关闭 QMT 进程启动和部署管理。若需完全手动管理 QMT 的启动与重启，同时设置 `$env:CFQUANT_QMT_AUTO_START = "0"`。恢复时移除对应环境变量并重启项目。网页组件检测和下述探测命令只读取环境。
 
 项目启动时会用实际运行 Web 服务的 Python 解释器检查 `frida`、`win32api`、`win32crypt`、`win32event`、`win32gui` 和 `win32process` 是否可以导入。检查只读取环境，不会在每次启动时强制重装；版本已满足但 DLL 已损坏或与旧文件冲突时也会明确报告。网页的“自动登录组件检测”会显示解释器路径、环境类型、失败模块和修复命令，可复制到同一台电脑的 PowerShell 执行。Conda 环境使用绑定当前前缀的 `conda install --prefix ... --force-reinstall` 命令；venv 和普通 Python 环境都使用探测到的解释器执行 `python -m pip`，只有普通 Python 环境会附带 `pywin32_postinstall`，venv 不运行该脚本。依赖异常时可以选择改为手动启动并登录 QMT，绑定配置仍可继续使用。
 

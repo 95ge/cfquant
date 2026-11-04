@@ -12,24 +12,25 @@ from cfquant.tests.test_lite_qmt_dispatch import lite, enqueue
 
 
 @pytest.mark.parametrize('renewal', [False, True])
-def test_web_subscription_timeout_does_not_cool_down_or_close_trading_channel(monkeypatch, renewal):
+@pytest.mark.parametrize('action', ['xttrader.subscribe', 'cfquant.account_subscription_status'])
+def test_web_subscription_timeout_does_not_cool_down_or_close_trading_channel(monkeypatch, renewal, action):
     import cfquant_web_server as web
     manager = web.GlobalTxClient()
     calls = []
-    def request(action, *args, **kwargs):
-        calls.append(action)
-        if action == 'xttrader.subscribe':
+    def request(request_action, *args, **kwargs):
+        calls.append(request_action)
+        if request_action == action:
             raise CfquantTimeout('subscription response delayed behind quotes')
         return {'cash': 100}
     client = SimpleNamespace(request=request, close=lambda: pytest.fail('timeout closed shared client'))
     monkeypatch.setattr(manager, '_get_client', lambda mode: client)
     monkeypatch.setattr(web, 'bridge_channels', lambda bridge: {'normal':'test.normal', 'trade':'test.trade'})
     with pytest.raises(CfquantTimeout):
-        manager.request('test', 'trade', 'xttrader.subscribe', {'subscription_renewal':renewal},
+        manager.request('test', 'trade', action, {'subscription_renewal':renewal},
                         mode='ctypes', mark_offline_on_timeout=True)
     assert not manager._cooldown_until
     assert manager.request('test', 'trade', 'xttrader.query_stock_asset', mode='ctypes') == {'cash':100}
-    assert calls == ['xttrader.subscribe', 'xttrader.query_stock_asset']
+    assert calls == [action, 'xttrader.query_stock_asset']
 
 
 @pytest.fixture(params=[TxTradeBridge, NormalQmtBridge], ids=['trade', 'normal'])

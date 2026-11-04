@@ -84,6 +84,12 @@ class Publisher:
         result, error = 0, None
         if action == "cfquant.ping" and self.ping_results:
             result = self.ping_results.pop(0)
+        if action == "cfquant.account_subscription_status":
+            key = account_key(msg["params"]["account"])
+            if not self.ready:
+                error = "Managed strategy is awaiting account mode confirmation from cfquant Web."
+            else:
+                result = {"subscribed": msg["client_id"] in self.subscribers.get(key, ())}
         if action in ("xttrader.subscribe", "xttrader.unsubscribe"):
             key = account_key(msg["params"]["account"])
             if action == "xttrader.subscribe" and self.before_subscribe is not None:
@@ -147,6 +153,12 @@ def env(request, monkeypatch):
         trader.stop()
 
 
+def test_healthy_registration_uses_only_readonly_probes(env):
+    env.publisher.requests.clear()
+    wait_until(lambda: len(env.publisher.requests) >= 3)
+    assert {msg["action"] for msg in env.publisher.requests} == {"cfquant.account_subscription_status"}
+
+
 def test_publisher_restart_restores_callbacks_without_user_requests(env):
     publisher = env.publisher
     publisher.emit(env.payload, 1)
@@ -162,7 +174,8 @@ def test_publisher_restart_restores_callbacks_without_user_requests(env):
     assert env.received == [("TEST_A", 1), ("TEST_A", 2), ("TEST_A", 3)]
     assert len(env.clients) == 1
     assert len(env.clients[0]._callbacks["trader:on_stock_asset"]) == 1
-    assert {msg["action"] for msg in publisher.requests} <= {"cfquant.ping", "xttrader.subscribe"}
+    assert {msg["action"] for msg in publisher.requests} <= {
+        "cfquant.ping", "xttrader.subscribe", "cfquant.account_subscription_status"}
 
 
 def test_connect_rebuilds_stale_session_after_qmt_reload(env):
@@ -218,6 +231,7 @@ def test_unsubscribe_serializes_with_inflight_renewal(env):
         entered.set()
         assert release.wait(3)
     env.publisher.before_subscribe = block
+    env.publisher.subscribers.clear()
     assert entered.wait(2)
     done = threading.Event()
     def unsubscribe():
@@ -263,7 +277,7 @@ def test_stop_cancels_pending_subscription_response(env):
     original = env.publisher.request
     entered = threading.Event()
     def no_response(raw):
-        if loads_message(raw)["action"] == "xttrader.subscribe":
+        if loads_message(raw)["action"] in ("xttrader.subscribe", "cfquant.account_subscription_status"):
             entered.set()
             return
         original(raw)
@@ -358,7 +372,7 @@ def test_congested_renewal_keeps_pending_query_and_other_account_connected(env):
         msg = loads_message(raw)
         if msg['action'] == 'xttrader.query_stock_asset':
             held_queries.append(msg)
-        elif (msg['action'] == 'xttrader.subscribe' and
+        elif (msg['action'] == 'cfquant.account_subscription_status' and
               msg['params']['account']['account_id'] == 'TEST_A'):
             missed_renewals.append(msg)
         else:
@@ -392,8 +406,9 @@ def test_congested_renewal_keeps_pending_query_and_other_account_connected(env):
         env.publisher.emit(env.payload, 90)
         wait_until(lambda: ('TEST_A', 90) in env.received)
         assert env.received.count(('TEST_A', 90)) == 1
-        assert all(msg['params']['subscription_renewal'] for msg in missed_renewals)
-        assert {msg['action'] for msg in env.publisher.requests} <= {'cfquant.ping', 'xttrader.subscribe'}
+        assert all(msg['action'] == 'cfquant.account_subscription_status' for msg in missed_renewals)
+        assert {msg['action'] for msg in env.publisher.requests} <= {
+            'cfquant.ping', 'xttrader.subscribe', 'cfquant.account_subscription_status'}
     finally:
         env.publisher.request = original
         for msg in held_queries:
@@ -434,7 +449,7 @@ def test_renewal_backoff_is_per_account_and_rate_limits_changing_errors(monkeypa
                 attempts.append(clock[0])
                 raise CfquantTimeout('changing request id %s' % clock[0])
             good_attempts.append(clock[0])
-            return 0
+            return {"subscribed": True}
         def close(self): pytest.fail('renewal must not close a client')
     clients = {name:Client(name) for name in ('bad', 'good')}
     trader._get_client = lambda bridge=None: clients[bridge]

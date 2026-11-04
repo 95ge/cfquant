@@ -194,7 +194,7 @@ class NormalQmtBridge(TxTradeBridge):
         if action == "cfquant.status":
             self._send_response(msg, self._status())
             return
-        if action == "cfquant.strategy.control":
+        if action in ("cfquant.strategy.control", "cfquant.account_subscription_status"):
             try:
                 self._send_response(msg, self._dispatch(action, msg.get("params") or {}, msg))
             except Exception as error:

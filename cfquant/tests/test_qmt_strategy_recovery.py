@@ -62,6 +62,26 @@ def test_only_stopped_bound_mode_is_requested(recovery_case):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("incompatible", [False, True])
+def test_native_crash_degrades_recovery_and_popup_does_not_cause_crash_loop(recovery_case, incompatible):
+    from cfquant.qmt_native_worker import QmtAutomationError
+    from cfquant.qmt_dependencies import QmtDependencyError
+    recovery, backend, calls, now, job, accounts = recovery_case
+    attaches = []
+    def crash(root):
+        attaches.append(root)
+        raise (QmtDependencyError if incompatible else QmtAutomationError)("native worker unavailable")
+    recovery.backend_factory = crash
+    recovery.notice_probe = lambda *a: [123]
+    assert recovery(job)["state"] == "unavailable"
+    now[0] += 1
+    recovery(job)
+    assert len(attaches) == 1
+    now[0] += 60
+    recovery(job)
+    assert len(attaches) == 2 and not calls
+
+
 @pytest.mark.parametrize("change", ["account", "mode", "root", "disabled", "manual", "removed", "pending_import", "old_generation"])
 def test_ineligible_bindings_never_attach(recovery_case, change):
     recovery, backend, calls, now, job, accounts = recovery_case

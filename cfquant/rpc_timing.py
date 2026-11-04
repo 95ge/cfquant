@@ -38,6 +38,8 @@ class RpcTiming(object):
         if self.sent_at is not None:
             self.output["rpc"]["response_wait_ms"] = round((self.received_at - self.sent_at) * 1000, 3)
         meta = message.get("meta") or {}
+        if "web_queue_ms" in meta:
+            self.output["web"] = {"queue_ms": meta["web_queue_ms"], "route": meta.get("route")}
         qmt = (meta.get("timing") or {}).get("qmt")
         self.output["qmt"] = dict(qmt) if isinstance(qmt, dict) else {
             "available": False, "reason": "bridge_timing_unavailable",

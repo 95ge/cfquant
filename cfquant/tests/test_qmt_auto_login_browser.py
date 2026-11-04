@@ -70,6 +70,37 @@ def saved_binding(page):
     }""")
 
 
+@pytest.mark.parametrize('entry', ['setup', 'onboarding', 'binding'])
+def test_new_bindings_default_all_automation_checked(page, frontend_url, entry):
+    _, errors = open_app(page, frontend_url, setup_required=entry == 'setup')
+    if entry == 'binding':
+        open_binding(page)
+    elif entry == 'onboarding':
+        page.locator('#onboardingStartConfigBtn').click()
+    for suffix in ('QmtAutoLogin', 'QmtAutoUpdate', 'StrategyEnabled', 'StrategyAutorun'):
+        expect(page.locator(f'#{entry}{suffix}')).to_be_checked()
+    page.locator(f'#{entry}QmtAutoUpdate').uncheck()
+    settings = page.evaluate('readBindingQmtAutoLoginSettings()') if entry == 'binding' else None
+    if settings is not None:
+        assert settings['auto_update'] is False
+    assert errors == []
+
+
+def test_existing_binding_explicit_disabled_and_missing_update_stay_off(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    saved_binding(page)
+    expect(page.locator('#bindingQmtAutoUpdate')).not_to_be_checked()
+    page.evaluate('''() => {
+        closeBindingDialog();
+        state.accountConfigs.fixture.qmt_auto_login = {enabled:false, auto_update:false};
+        state.accountConfigs.fixture.qmt_strategy = {enabled:false, autorun:false};
+        openBindingDialog({accountKey:'fixture'});
+    }''')
+    for suffix in ('QmtAutoLogin', 'QmtAutoUpdate', 'StrategyEnabled', 'StrategyAutorun'):
+        expect(page.locator('#binding' + suffix)).not_to_be_checked()
+    assert errors == []
+
+
 def test_edit_reveals_saved_password_only_on_click_and_clears_on_close(page, frontend_url):
     _, errors = open_app(page, frontend_url, setup_required=False)
     calls = []

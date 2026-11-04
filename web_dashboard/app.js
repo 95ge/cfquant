@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261104_01';
+const FRONTEND_VERSION = 'web_20261104_02';
 
 const state = {
   accountId: '',
@@ -383,7 +383,7 @@ function normalizeQmtDeploymentTargets(values = {}) {
 
 function defaultQmtAutoLoginSettings(value = undefined) {
   return value === undefined || value === null
-    ? { enabled: true, auto_fill_credentials: true, restart_times: ['09:00'] }
+    ? { enabled: true, auto_fill_credentials: true, auto_update: true, restart_times: ['09:00'] }
     : normalizeQmtAutoLoginSettings(value);
 }
 
@@ -5621,7 +5621,7 @@ function showSetupOverlay(message = '') {
   }
   if ($('setupQmtAutoLogin')) {
     $('setupQmtAutoLogin').checked = defaultQmtAutoLoginSettings(defaultConfig && defaultConfig.account_id ? defaultConfig.qmt_auto_login : undefined).enabled;
-    fillQmtLoginCredentials('setup', (defaultConfig || {}).qmt_auto_login || {}, qmtDirInput ? qmtDirInput.value : '', (defaultConfig || {}).account_key);
+    fillQmtLoginCredentials('setup', defaultQmtAutoLoginSettings(defaultConfig?.account_id ? (defaultConfig.qmt_auto_login || {}) : undefined), qmtDirInput ? qmtDirInput.value : '', (defaultConfig || {}).account_key);
   }
   fillQmtStrategySettings('setup', defaultConfig && defaultConfig.account_id ? (defaultConfig.qmt_strategy || { enabled: false }) : undefined);
   syncAdvancedQmtDirField('setupQmtTradeDir', modeInput && modeInput.value);
@@ -9901,7 +9901,7 @@ function syncBindingForm() {
   if (form.market_sz_bridge_id) form.market_sz_bridge_id.value = routes.SZ.bridge_id || '';
   if (form.market_sz_position_account_id) form.market_sz_position_account_id.value = marketPositionAccountValue(routes.SZ);
   if (form.qmt_auto_login) {
-    const settings = defaultQmtAutoLoginSettings(config ? config.qmt_auto_login : undefined);
+    const settings = defaultQmtAutoLoginSettings(config ? (config.qmt_auto_login || {}) : undefined);
     form.qmt_auto_login.checked = settings.enabled;
     renderBindingQmtRestartTimes(settings.restart_times);
     fillBindingQmtLoginCredentials(settings);
@@ -13606,7 +13606,7 @@ function syncOnboardingWizard(options = {}) {
   if (shouldFill) fillQmtStrategySettings('onboarding', config.account_id ? (config.qmt_strategy || { enabled: false }) : undefined);
   if (shouldFill && $('onboardingQmtAutoLogin')) {
     $('onboardingQmtAutoLogin').checked = defaultQmtAutoLoginSettings(config && config.account_id ? config.qmt_auto_login : undefined).enabled;
-    fillQmtLoginCredentials('onboarding', config.qmt_auto_login || {}, qmtInput ? qmtInput.value : '', config.account_key);
+    fillQmtLoginCredentials('onboarding', defaultQmtAutoLoginSettings(config.account_id ? (config.qmt_auto_login || {}) : undefined), qmtInput ? qmtInput.value : '', config.account_key);
   }
   syncAdvancedQmtDirField('onboardingQmtTradeDir', modeInput && modeInput.value);
   fillOnboardingQmtTradeDirFromSaved();

@@ -389,7 +389,7 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动输入账号和密码')
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('A 股交易日')
     assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05'],
-                                        'login_account': 'fixture-login', 'password': 'synthetic-secret', 'auto_fill_credentials': True}
+                                        'login_account': 'fixture-login', 'password': 'synthetic-secret', 'auto_fill_credentials': True, 'auto_update': True}
     assert saved[0]['qmt_dir'].endswith('\\bin.x64')
     assert errors == []
 

@@ -165,8 +165,8 @@ def test_saved_password_must_match_actual_account_and_directory(web_config, tmp_
 
 def test_disabling_auto_restart_needs_no_credentials(web_config):
     _, config = web_config
-    row = config.save_account_config("test-fund", qmt_auto_login={"enabled": False})
-    assert row["qmt_auto_login"] == {"enabled": False, "restart_times": [], "auto_fill_credentials": True}
+    row = config.save_account_config("test-fund", qmt_auto_login={"enabled": False}, qmt_strategy={"enabled": False})
+    assert row["qmt_auto_login"] == {"enabled": False, "restart_times": [], "auto_fill_credentials": True, "auto_update": True}
 
 
 def test_reenabling_auto_restart_defaults_to_nine(web_config, tmp_path, login_credentials):
@@ -289,6 +289,26 @@ def test_worker_records_success_and_supplies_saved_password_only_on_request(web_
     assert "synthetic-credential" not in json.dumps(state)
 
 
+def test_web_records_native_worker_failure_with_repair_hint(web_config, monkeypatch, tmp_path):
+    import cfquant.qmt_component_login as component
+    from cfquant.qmt_native_worker import QmtAutomationError
+    web, config = web_config
+    monkeypatch.setattr(web, "QMT_AUTO_LOGIN_STATE_FILE", str(tmp_path / "sessions.json"))
+    row = {"account_id": "fixture", "qmt_auto_login": {"login_account": "fixture-login"}}
+    key = web._qmt_component_job_key(str(tmp_path))
+    monkeypatch.setattr(web, "QMT_COMPONENT_JOBS", {key: threading.current_thread()})
+    web._qmt_auto_login_update_session(row, {"pid": 456})
+    def login(*a, **kw):
+        raise QmtAutomationError("Frida native worker unavailable; install frida==17.16.4")
+    monkeypatch.setattr(component, "login_running_qmt", login)
+    web._qmt_component_login_worker(row, {"bin_dir": str(tmp_path)}, 456, config.path)
+    state = web._qmt_auto_login_saved_session(row)
+    assert state["login_state"] == "component_unavailable"
+    assert "17.16.4" in state["error"]
+    assert not state["login_succeeded"]
+    assert key not in web.QMT_COMPONENT_JOBS
+
+
 def test_scheduled_restart_is_not_skipped_by_an_old_login_task(scheduler, monkeypatch):
     web, config, calls = scheduler
     row = config._data['account_configs']['test']
@@ -392,7 +412,7 @@ def test_force_stop_times_out_if_process_does_not_exit(web_config, monkeypatch, 
 
 def test_client_login_setting_survives_save_reload_and_partial_updates(web_config, tmp_path):
     web, config = web_config
-    options = {"enabled": True, "auto_fill_credentials": False, "restart_times": ["09:15"]}
+    options = {"enabled": True, "auto_fill_credentials": False, "auto_update": True, "restart_times": ["09:15"]}
     row = config.save_account_config("fixture", qmt_dir=str(tmp_path), qmt_auto_login=options)
     assert row["qmt_auto_login"] == options
     assert not QmtCredentialStore(config.path).path.exists()
@@ -421,7 +441,7 @@ def test_disabling_fill_keeps_saved_secret_without_replacing_or_decrypting_it(we
 
 
 @pytest.mark.parametrize("entry", ["save", "manual", "startup", "scheduled"])
-def test_client_login_starts_qmt_without_component_injection(web_config, tmp_path, monkeypatch, entry):
+def test_client_login_starts_qmt_with_update_monitor_without_credentials(web_config, tmp_path, monkeypatch, entry):
     web, config = web_config
     monkeypatch.setenv("CFQUANT_QMT_AUTO_START", "saved")
     monkeypatch.setattr(web, "QMT_AUTO_LOGIN_STATE_FILE", str(tmp_path / "sessions.json"))
@@ -443,7 +463,11 @@ def test_client_login_starts_qmt_without_component_injection(web_config, tmp_pat
     monkeypatch.setattr(web, "_qmt_auto_login_stop_xtitclient", stop)
     monkeypatch.setattr(web, "_qmt_auto_login_start_xtitclient", lambda *a, **kw: calls.append("start") or {"pid": 456})
     monkeypatch.setattr(web, "_qmt_component_login_preflight", forbidden)
-    monkeypatch.setattr(web, "_qmt_queue_component_login", forbidden)
+    def queue_update_monitor(binding, paths, pid):
+        assert binding['qmt_auto_login']['auto_update'] is True
+        assert binding['qmt_auto_login']['auto_fill_credentials'] is False
+        calls.append('updates')
+    monkeypatch.setattr(web, "_qmt_queue_component_login", queue_update_monitor)
     monkeypatch.setattr(QmtCredentialStore, "password", forbidden)
     if entry == "save":
         result = web.qmt_auto_login_apply_for_account(row)
@@ -453,7 +477,7 @@ def test_client_login_starts_qmt_without_component_injection(web_config, tmp_pat
         result = web.start_configured_qmt_on_web_startup()[0]
     else:
         result = web.QmtAutoLoginRestartScheduler().run_pending(at("2026-10-19"))[0]
-    assert calls == ["stop", "start"]
+    assert calls == ["stop", "start", "updates"]
     assert result["configured"] and not result["auto_fill_credentials"]
     assert result["login_state"] == "client_login" and not result.get("login_succeeded")
     session = web._qmt_auto_login_saved_session(row)

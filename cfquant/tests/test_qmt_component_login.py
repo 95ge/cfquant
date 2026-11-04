@@ -118,13 +118,13 @@ def test_fresh_process_waits_for_login_components_without_relaunch(monkeypatch, 
     terminal = Terminal(saved=remembered)
     terminal.select_account = lambda account, replace=False: calls.append(("account", account, replace))
     terminal.close = lambda: calls.append("closed")
-    def backend(directory, timeout, expected_pid):
+    def backend(directory, timeout, expected_pid, **kwargs):
         assert expected_pid == 456
         calls.append("attach")
         if calls.count("attach") == 1:
             raise component.QmtNotReady("modules loading")
         return terminal
-    monkeypatch.setattr(component, "QtLoginBackend", backend)
+    monkeypatch.setattr(component, "IsolatedLoginBackend", backend)
     monkeypatch.setattr(component.time, "sleep", lambda _: None)
     result = component.login_running_qmt(tmp_path, "fixture-user", lambda: "synthetic-fixture", expected_pid=456)
     assert result["login_succeeded"]
@@ -195,7 +195,7 @@ def test_managed_login_waits_for_update_longer_than_previous_timeouts(monkeypatc
     terminal.select_account = select
     closed = []
     terminal.close = lambda: closed.append(True)
-    monkeypatch.setattr(component, "QtLoginBackend", lambda *a, **kw: terminal)
+    monkeypatch.setattr(component, "IsolatedLoginBackend", lambda *a, **kw: terminal)
     result = component.login_running_qmt(tmp_path, "fixture-user", lambda: "synthetic-fixture")
     assert result["login_succeeded"] and login_clock.now == 125
     assert accounts == [("fixture-user", True)]
@@ -264,7 +264,7 @@ def test_managed_startup_can_wait_beyond_one_minute(monkeypatch, tmp_path, login
         if login_clock.now < 125:
             raise component.QmtNotReady("loading modules")
         return terminal
-    monkeypatch.setattr(component, "QtLoginBackend", attach)
+    monkeypatch.setattr(component, "IsolatedLoginBackend", attach)
     result = component.login_running_qmt(tmp_path, password_provider=lambda: "synthetic-fixture", startup_timeout=None)
     assert result["login_succeeded"] and login_clock.now == 125
 
@@ -276,7 +276,7 @@ def test_startup_stops_on_deadline_cancellation_or_process_exit(monkeypatch, tmp
         if outcome == "process_exited" and login_clock.now >= 2:
             raise component.QmtProcessExited("process exited")
         raise component.QmtNotReady("loading modules")
-    monkeypatch.setattr(component, "QtLoginBackend", attach)
+    monkeypatch.setattr(component, "IsolatedLoginBackend", attach)
     result = component.login_running_qmt(
         tmp_path, password_provider=no_password, startup_timeout=2 if outcome == "startup_timeout" else None,
         should_cancel=lambda: outcome == "cancelled" and login_clock.now >= 2)
@@ -341,7 +341,7 @@ def test_process_exit_during_readiness_wait_closes_backend(monkeypatch, tmp_path
     terminal.already_logged_in = check_main
     closed = []
     terminal.close = lambda: closed.append(True)
-    monkeypatch.setattr(component, "QtLoginBackend", lambda *a, **kw: terminal)
+    monkeypatch.setattr(component, "IsolatedLoginBackend", lambda *a, **kw: terminal)
     result = component.login_running_qmt(tmp_path, password_provider=no_password)
     assert result["outcome"] == "process_exited"
     assert closed == [True] and terminal.calls == []

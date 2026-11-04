@@ -10,9 +10,9 @@ import tempfile
 from pathlib import Path
 
 if __package__:
-    from .qmt_dependencies import report_startup_dependencies
+    from .qmt_dependencies import FRIDA_REQUIREMENT, FRIDA_VERSION, report_startup_dependencies
 else:
-    from qmt_dependencies import report_startup_dependencies
+    from qmt_dependencies import FRIDA_REQUIREMENT, FRIDA_VERSION, report_startup_dependencies
 
 
 PACKAGE_NAME = "cfquant"
@@ -517,6 +517,32 @@ def installed_package_version(python_exe=None):
     return completed.stdout.strip() if completed.returncode == 0 else ""
 
 
+def reconcile_startup_frida(project_root, python_exe):
+    """Repair version drift even when cfquant's own version did not change.
+
+    This launcher runs before Web/Frida loads. Failed optional repair must not
+    prevent manual QMT use; the native worker also checks before importing.
+    """
+    report = report_startup_dependencies(python_exe) or {}
+    if os.environ.get("CFQUANT_QMT_AUTOMATION", "1").lower() in ("0", "false", "off"):
+        return
+    if not report.get("supported") or not report.get("packages"):
+        return
+    if report["packages"].get("frida") == FRIDA_VERSION:
+        return
+    print("[INFO] Installing QMT compatibility dependency: %s" % FRIDA_REQUIREMENT)
+    command = [python_exe, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+               "--timeout", "15", "--retries", "1"] + pip_index_args() + [FRIDA_REQUIREMENT]
+    try:
+        completed = subprocess.run(command, cwd=str(project_root), env=pip_environment(),
+                                   timeout=120, **_hidden_subprocess_kwargs())
+        if completed.returncode:
+            raise RuntimeError("pip exit code %s" % completed.returncode)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        print("[WARN] Frida compatibility repair failed: %s. Web can continue; use manual QMT login." % error)
+    report_startup_dependencies(python_exe)
+
+
 def ensure_cfquant_installed(project_root, python_exe=None):
     project_root = Path(project_root).resolve()
     if not (project_root / "pyproject.toml").is_file():
@@ -546,7 +572,7 @@ def ensure_cfquant_installed(project_root, python_exe=None):
     print("cfquant installed=%s project=%s" % (installed or "missing", expected))
     if installed == expected:
         print("Package versions match; skip installation.")
-        report_startup_dependencies(python_exe)
+        reconcile_startup_frida(project_root, python_exe)
         return 0
 
     command = editable_install_args(project_root, python_exe)
@@ -570,7 +596,7 @@ def ensure_cfquant_installed(project_root, python_exe=None):
         print("[ERROR] Installed cfquant version does not match the project after installation.", file=sys.stderr)
         return 1
     print("%s package is installed." % PACKAGE_NAME)
-    report_startup_dependencies(python_exe)
+    reconcile_startup_frida(project_root, python_exe)
     return 0
 
 

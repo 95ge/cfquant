@@ -287,6 +287,10 @@ _LITE_CREDIT_FIELD_ALIASES = {
 
 
 def _patch_source(source, core):
+    if "self.confirmed_account_subscriptions = set()" not in source:
+        source = source.replace("        self.account_subscribers = {}\n",
+                                "        self.account_subscribers = {}\n"
+                                "        self.confirmed_account_subscriptions = set()\n", 1)
     protocol = (ROOT / "cfquant" / "protocol.py").read_text(encoding="utf-8")
     for node in parse_source(protocol).body:
         if isinstance(node, ast.FunctionDef) and node.name in ("_quote_json_default", "pack_quote_latency_event", "pack_whole_quote_event"):
@@ -361,6 +365,9 @@ LITE_OBJECT_QUERY_METHODS = {
     for name in (
         "_handle_raw",
         "_dispatch",
+        "_account_subscription_status",
+        "_subscribe_account",
+        "_unsubscribe_account",
         "_dispatch_timed_market_data",
         "_timed_market_call",
         "_legacy_market_result",
@@ -397,7 +404,10 @@ LITE_OBJECT_QUERY_METHODS = {
         "_smt_response_data",
         "_smt_request",
     ):
-        source = _replace_method(source, "TxTradeBridge", name, _method_source(core, "TxTradeBridge", name)) if "    def %s(" % name in source else _insert_method(source, _method_source(core, "TxTradeBridge", name))
+        replacement = _method_source(core, "TxTradeBridge", name)
+        replacement = replacement.replace("account_routing.subscribe(", "account_route_subscribe(")
+        replacement = replacement.replace("account_routing.unsubscribe(", "account_route_unsubscribe(")
+        source = _replace_method(source, "TxTradeBridge", name, replacement) if "    def %s(" % name in source else _insert_method(source, replacement)
 
     normal = (ROOT / "cfquant" / "normal_bridge.py").read_text(encoding="utf-8")
     for name in ("_send_response", "_send_error", "_dispatch", "_subscribe_native_quote", "_subscribe_internal_whole_quote"):

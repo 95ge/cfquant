@@ -715,7 +715,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.59"
+CORE_VERSION = "0.2.60"
 LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -1255,7 +1255,8 @@ def is_readonly_request(action):
     # Only known query families. Downloads, subscriptions and all writes retain
     # their existing execution semantics, including on an ambiguous timeout.
     return (str(action).startswith(("xtdata.get_", "xttrader.query_"))
-            or action in ("cfquant.ping", "cfquant.status", "cfquant.query_info"))
+            or action in ("cfquant.ping", "cfquant.status", "cfquant.query_info",
+                          "cfquant.account_subscription_status"))
 
 
 def request_expired(msg, now=None):
@@ -2264,6 +2265,7 @@ class TxTradeBridge(object):
         self.tx = None
         self.log_file = self._default_log_file()
         self.account_subscribers = {}
+        self.confirmed_account_subscriptions = set()
         self.client_accounts = {}
         self.subscriber_lock = threading.RLock()
         self.started_at = 0.0
@@ -2341,7 +2343,8 @@ class TxTradeBridge(object):
         request_id = msg.get("id")
         action = msg.get("action")
         client_id = msg.get("client_id") or msg.get("reply_channel")
-        renewal = action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True
+        renewal = (action == "cfquant.account_subscription_status" or
+                   (action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True))
         try:
             result = self._dispatch(action, msg.get("params") or {}, msg)
             response = pack_response(request_id, ok=True, result=result, meta=msg.get("_response_meta"))
@@ -2395,6 +2398,8 @@ class TxTradeBridge(object):
             }
         if action == "cfquant.status":
             return self._status()
+        if action == "cfquant.account_subscription_status":
+            return self._account_subscription_status(params, msg)
         if action == "cfquant.set_log_language":
             return self._set_log_language(params)
         if action == "cfquant.get_log_language":
@@ -4355,6 +4360,23 @@ class TxTradeBridge(object):
             if timing is not None:
                 timing["convert_ms"] = round(timing["convert_ms"] + (time.perf_counter() - started) * 1000, 3)
 
+    def _account_subscription_status(self, params, msg=None):
+        # A read-only check: never switch the QMT account or restore routing on
+        # the receiver thread. Routing is installed before native setup, so its
+        # presence alone does not mean that setup completed successfully.
+        account = params.get("account") or {}
+        account_id = str(account.get("account_id") or params.get("account_id") or "").strip()
+        if not account_id:
+            raise ValueError("account_id is required")
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        key = (account_type.upper(), account_id)
+        client_id = (msg or {}).get("client_id") or (msg or {}).get("reply_channel") or ""
+        with self.subscriber_lock:
+            subscribed = (bool(client_id) and client_id in self.account_subscribers.get(key, ())
+                          and (key, client_id) in self.confirmed_account_subscriptions
+                          and self.auto_trade_callback_enabled)
+        return {"subscribed": bool(subscribed)}
+
     def _dispatch_xttrader_compat(self, action, params, msg):
         method = action.split(".", 1)[1]
         if method in SMT_ASYNC_ARGUMENT_COUNTS:
@@ -5245,12 +5267,15 @@ class TxTradeBridge(object):
             client_id = msg.get("client_id") or msg.get("reply_channel") or ""
         with self.subscriber_lock:
             existing = client_id and client_id in self.account_subscribers.get(subscriber_key, ())
-        renewal = existing and params.get("subscription_renewal") is True
+            confirmed = (subscriber_key, client_id) in self.confirmed_account_subscriptions
+        renewal = existing and confirmed and params.get("subscription_renewal") is True
         previous_account = (self.account_id, self.account_type)
         if client_id:
             with self.subscriber_lock:
                 self.account_subscribers.setdefault(subscriber_key, set()).add(client_id)
                 self.client_accounts.setdefault(client_id, set()).add(subscriber_key)
+                if not renewal:
+                    self.confirmed_account_subscriptions.discard((subscriber_key, client_id))
             account_route_subscribe(self.bridge_id, account_id, client_id, account_type=account_type)
         try:
             if not renewal:
@@ -5264,6 +5289,9 @@ class TxTradeBridge(object):
                 self._unsubscribe_account({"account_id": account_id, "account_type": account_type}, msg)
             self.account_id, self.account_type = previous_account
             raise
+        if client_id:
+            with self.subscriber_lock:
+                self.confirmed_account_subscriptions.add((subscriber_key, client_id))
         if not renewal:
             self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
         return 0
@@ -5281,6 +5309,7 @@ class TxTradeBridge(object):
             subscriber_key = (account_type.upper(), account_id)
         with self.subscriber_lock:
             if account_id and client_id:
+                self.confirmed_account_subscriptions.discard((subscriber_key, client_id))
                 subscribers = self.account_subscribers.get(subscriber_key)
                 if subscribers:
                     subscribers.discard(client_id)
@@ -5293,6 +5322,9 @@ class TxTradeBridge(object):
                     if not accounts:
                         self.client_accounts.pop(client_id, None)
             elif client_id:
+                self.confirmed_account_subscriptions = {
+                    item for item in self.confirmed_account_subscriptions if item[1] != client_id
+                }
                 accounts = self.client_accounts.pop(client_id, set())
                 for item in accounts:
                     subscribers = self.account_subscribers.get(item)
@@ -6341,7 +6373,7 @@ class NormalQmtBridge(TxTradeBridge):
         if action == "cfquant.status":
             self._send_response(msg, self._status())
             return
-        if action == "cfquant.strategy.control":
+        if action in ("cfquant.strategy.control", "cfquant.account_subscription_status"):
             try:
                 self._send_response(msg, self._dispatch(action, msg.get("params") or {}, msg))
             except Exception as error:

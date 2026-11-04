@@ -22,7 +22,7 @@ def lite(request):
     tree = ast.parse(source, feature_version=(3, 6))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'TxTradeBridge')
     cls.bases = []
-    methods = {'_dispatch', '_subscribe_account', '_unsubscribe_account',
+    methods = {'_dispatch', '_subscribe_account', '_unsubscribe_account', '_account_subscription_status',
                '_client_ids_for_account', '_send_trader_event_to_account',
                '_account_subscriber_status', '_account_type_name'}
     cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in methods]
@@ -45,6 +45,8 @@ def lite(request):
         instance.request_channel = 'test.request'
         instance.subscriber_lock = threading.RLock()
         instance.account_subscribers = {}
+        instance.confirmed_account_subscriptions = set()
+        instance.auto_trade_callback_enabled = True
         instance.client_accounts = {}
         instance._set_context_account = lambda *args: None
         instance._enable_auto_trade_callback = lambda: None
@@ -68,7 +70,7 @@ def test_readme_connect_subscribes_and_disconnect_cleans_up(lite, monkeypatch, a
         def add_callback(self, *args):
             pass
 
-        def request(self, action, params=None, timeout=None):
+        def request(self, action, params=None, timeout=None, response_meta=None):
             calls.append(action)
             return bridge._dispatch(action, params or {}, {'client_id': trader.client_id})
 

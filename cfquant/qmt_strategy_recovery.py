@@ -16,6 +16,8 @@ import time
 import uuid
 
 from .qmt_component_login import QtLoginBackend, QmtNotReady
+from .qmt_native_worker import IsolatedStrategyBackend, QmtAutomationError
+from .qmt_dependencies import QmtDependencyError
 from .qmt_strategy_deploy import (
     _role_stock, _strategy_slot_name, account_qmt_roots,
     _write_json, _digest, PipeStrategyController, normalize_strategy_mode, normalize_strategy_settings, qmt_root,
@@ -166,7 +168,7 @@ def match_models(snapshot, expected):
 
 
 class QmtStrategyRecovery:
-    def __init__(self, accounts_provider, *, backend_factory=QtStrategyBackend,
+    def __init__(self, accounts_provider, *, backend_factory=IsolatedStrategyBackend,
                  job_is_current=lambda job: True, clock=time.time, interval=20.0,
                  notice_probe=visible_notice_windows, event_sink=None, bridge_verifier=confirm_recovery_bridge):
         self.accounts_provider = accounts_provider
@@ -235,10 +237,12 @@ class QmtStrategyRecovery:
             return job["recovery"]
         previous = job.get("recovery") or {}
         if (not inspect_only and now < previous.get("next_check_at", 0)
-                and not self.notice_probe(previous.get("pid"), previous.get("main_hwnd"))):
+                and (previous.get("native_failure")
+                     or not self.notice_probe(previous.get("pid"), previous.get("main_hwnd")))):
             return previous
         status = dict(previous, last_checked_at=now, next_check_at=now + self.interval)
         status.pop("error", None)
+        status.pop("native_failure", None)
         backend = None
         try:
             backend = self.backend_factory(job["root"])
@@ -303,6 +307,7 @@ class QmtStrategyRecovery:
         except Exception as error:
             status.update(state="unsupported" if isinstance(error, UnsupportedQmt) else "unavailable",
                           error=str(error), next_check_at=now + max(self.interval, 60))
+            status["native_failure"] = isinstance(error, (QmtAutomationError, QmtDependencyError))
             if status.get("incident") and status.get("last_logged_error") != str(error):
                 try:
                     self._event(job, status, "illegal_ip_processing_failed", error=str(error))

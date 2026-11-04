@@ -63,7 +63,9 @@
 
 ## 查看状态与单账号验证
 
-Web 服务启动后运行内置恢复线程，状态写入 `runtime/status/qmt_strategy_recovery.json`，绑定接口的 `qmt_strategy_deploy.targets[].recovery` 也会返回结果。该线程独立于 Pipe 控制线程，等待 Qt 界面不会阻塞通道同步。
+Web 服务启动后运行内置恢复线程，状态写入 `runtime/status/qmt_strategy_recovery.json`，绑定接口的 `qmt_strategy_deploy.targets[].recovery` 也会返回结果。该线程独立于 Pipe 控制线程，等待 Qt 界面不会阻塞通道同步。Frida 附加与原生方法在独立子进程中执行；异常退出或超时会记录 `unavailable`，Web 和 Pipe 控制继续运行，原生操作结果不确定时不自动重放。原生子进程故障至少间隔 60 秒重试，可见弹窗不会绕过这一退避。
+
+兼容依赖固定为 `frida==17.16.4`。设置 `CFQUANT_QMT_AUTOMATION=0` 可关闭原生恢复和组件登录，改为手动操作；安装与关闭方式见 [QMT 组件登录工具](QMT组件登录验证.md)。
 
 命令行默认只检查：
 

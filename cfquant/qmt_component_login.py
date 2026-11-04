@@ -11,6 +11,8 @@ from pathlib import Path
 import sys
 import time
 
+from .qmt_native_worker import IsolatedLoginBackend, QmtAutomationCancelled, verify_environment_isolated
+
 
 class QmtNotReady(RuntimeError):
     pass
@@ -22,6 +24,11 @@ class QmtProcessExited(RuntimeError):
 
 def verify_environment(directory):
     """Validate dependencies and native ABI before stopping a running terminal."""
+    verify_environment_isolated(directory)
+
+
+def _verify_environment_native(directory):
+    """Only invoked inside the native worker or the standalone login CLI."""
     try:
         from .qmt_dependencies import LOGIN_MODULES, import_login_module
     except ImportError:
@@ -163,7 +170,7 @@ class QtLoginBackend:
         self.pid = matches[0].pid
         if expected_pid is not None and self.pid != expected_pid:
             raise RuntimeError("QMT process changed; stopping this login attempt")
-        verify_environment(directory)
+        _verify_environment_native(directory)
         self.mutex = win32event.CreateMutex(None, False, "Local\\CFQuantQmtComponentLogin_" + str(self.pid))
         acquired = win32event.WaitForSingleObject(self.mutex, 0)
         if acquired not in (0, 0x80):
@@ -367,8 +374,11 @@ def login_running_qmt(directory, login_account="", password_provider=lambda: "",
         if should_cancel():
             return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
         try:
-            backend = QtLoginBackend(Path(directory), timeout, expected_pid=expected_pid)
+            backend = IsolatedLoginBackend(Path(directory), timeout, expected_pid=expected_pid,
+                                           should_cancel=should_cancel)
             break
+        except QmtAutomationCancelled:
+            return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
         except QmtProcessExited:
             return {"outcome": "process_exited", "login_succeeded": False, "attempts": []}
         except QmtNotReady:
@@ -380,6 +390,8 @@ def login_running_qmt(directory, login_account="", password_provider=lambda: "",
         backend.should_cancel = should_cancel
         return auto_login(backend, password_provider, retry_not_ready=True, login_account=login_account,
                           should_cancel=should_cancel, on_wait=on_wait)
+    except QmtAutomationCancelled:
+        return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
     except QmtProcessExited:
         return {"outcome": "process_exited", "login_succeeded": False, "attempts": []}
     finally:

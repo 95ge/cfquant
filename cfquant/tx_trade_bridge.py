@@ -232,6 +232,7 @@ class TxTradeBridge(object):
         self.tx = None
         self.log_file = self._default_log_file()
         self.account_subscribers = {}
+        self.confirmed_account_subscriptions = set()
         self.client_accounts = {}
         self.subscriber_lock = threading.RLock()
         self.started_at = 0.0
@@ -321,7 +322,8 @@ class TxTradeBridge(object):
         request_id = msg.get("id")
         action = msg.get("action")
         client_id = msg.get("client_id") or msg.get("reply_channel")
-        renewal = action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True
+        renewal = (action == "cfquant.account_subscription_status" or
+                   (action == "xttrader.subscribe" and (msg.get("params") or {}).get("subscription_renewal") is True))
         try:
             result = self._dispatch(action, msg.get("params") or {}, msg)
             response = pack_response(request_id, ok=True, result=result, meta=msg.get("_response_meta"))
@@ -356,6 +358,8 @@ class TxTradeBridge(object):
             }
         if action == "cfquant.status":
             return self._status()
+        if action == "cfquant.account_subscription_status":
+            return self._account_subscription_status(params, msg)
         if action == "cfquant.set_log_language":
             return self._set_log_language(params)
         if action == "cfquant.get_log_language":
@@ -3483,6 +3487,23 @@ class TxTradeBridge(object):
             params.get("end_date", params.get("end_time", "")),
         )
 
+    def _account_subscription_status(self, params, msg=None):
+        # A read-only check: never switch the QMT account or restore routing on
+        # the receiver thread. Routing is installed before native setup, so its
+        # presence alone does not mean that setup completed successfully.
+        account = params.get("account") or {}
+        account_id = str(account.get("account_id") or params.get("account_id") or "").strip()
+        if not account_id:
+            raise ValueError("account_id is required")
+        account_type = self._account_type_name(account.get("account_type") or params.get("account_type"))
+        key = (account_type.upper(), account_id)
+        client_id = (msg or {}).get("client_id") or (msg or {}).get("reply_channel") or ""
+        with self.subscriber_lock:
+            subscribed = (bool(client_id) and client_id in self.account_subscribers.get(key, ())
+                          and (key, client_id) in self.confirmed_account_subscriptions
+                          and self.auto_trade_callback_enabled)
+        return {"subscribed": bool(subscribed)}
+
     def _subscribe_account(self, params, msg=None):
         account = params.get("account") or {}
         account_id = account.get("account_id") or params.get("account_id") or self.account_id
@@ -3496,12 +3517,15 @@ class TxTradeBridge(object):
             client_id = msg.get("client_id") or msg.get("reply_channel") or ""
         with self.subscriber_lock:
             existing = client_id and client_id in self.account_subscribers.get(subscriber_key, ())
-        renewal = existing and params.get("subscription_renewal") is True
+            confirmed = (subscriber_key, client_id) in self.confirmed_account_subscriptions
+        renewal = existing and confirmed and params.get("subscription_renewal") is True
         previous_account = (self.account_id, self.account_type)
         if client_id:
             with self.subscriber_lock:
                 self.account_subscribers.setdefault(subscriber_key, set()).add(client_id)
                 self.client_accounts.setdefault(client_id, set()).add(subscriber_key)
+                if not renewal:
+                    self.confirmed_account_subscriptions.discard((subscriber_key, client_id))
             account_routing.subscribe(self.bridge_id, account_id, client_id, account_type=account_type)
         try:
             if not renewal:
@@ -3515,6 +3539,9 @@ class TxTradeBridge(object):
                 self._unsubscribe_account({"account_id": account_id, "account_type": account_type}, msg)
             self.account_id, self.account_type = previous_account
             raise
+        if client_id:
+            with self.subscriber_lock:
+                self.confirmed_account_subscriptions.add((subscriber_key, client_id))
         if not renewal:
             self._log("account subscribed account=%s client_id=%s" % (account_id, client_id or "-"))
         return 0
@@ -3532,6 +3559,7 @@ class TxTradeBridge(object):
             subscriber_key = (account_type.upper(), account_id)
         with self.subscriber_lock:
             if account_id and client_id:
+                self.confirmed_account_subscriptions.discard((subscriber_key, client_id))
                 subscribers = self.account_subscribers.get(subscriber_key)
                 if subscribers:
                     subscribers.discard(client_id)
@@ -3544,6 +3572,9 @@ class TxTradeBridge(object):
                     if not accounts:
                         self.client_accounts.pop(client_id, None)
             elif client_id:
+                self.confirmed_account_subscriptions = {
+                    item for item in self.confirmed_account_subscriptions if item[1] != client_id
+                }
                 accounts = self.client_accounts.pop(client_id, set())
                 for item in accounts:
                     subscribers = self.account_subscribers.get(item)

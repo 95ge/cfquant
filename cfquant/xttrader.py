@@ -367,8 +367,9 @@ class XtQuantTrader(object):
         self._subscription_client = None
         self._subscription_errors = {}
         self._subscription_retries = {}
+        self._subscription_probe_after = {}
         self._subscription_interval = 2.0
-        self._subscription_timeout = 2.0
+        self._subscription_timeout = 5.0
         self._pending_async_orders = []
         self._pending_async_orders_lock = threading.RLock()
         self._completed_async_order_seqs = {}
@@ -423,6 +424,7 @@ class XtQuantTrader(object):
         self._subscribed_accounts.clear()
         self._subscription_errors.clear()
         self._subscription_retries.clear()
+        self._subscription_probe_after.clear()
         with self._query_lock:
             clients = list(self._clients.values())
             self._client = None
@@ -498,6 +500,7 @@ class XtQuantTrader(object):
             self._subscribed_accounts.pop(key, None)
             self._subscription_errors.pop(key, None)
             self._subscription_retries.pop(key, None)
+            self._subscription_probe_after.pop(key, None)
             return self._trade_request("xttrader.unsubscribe", {
                 "account": payload,
             })
@@ -553,9 +556,38 @@ class XtQuantTrader(object):
                         _subscription_key_from_payload(payload), payload)
             raise
 
+    def _renew_account_subscription(self, client, payload, key, stop, diagnostics):
+        def request(action, params):
+            diagnostics.clear()
+            diagnostics["action"] = action
+            return client.request(action, params, timeout=self._subscription_timeout,
+                                  response_meta=diagnostics)
+
+        # Old Web/QMT versions keep the original renewal protocol. Cache only
+        # explicit unsupported-action responses, never timeouts or auth errors.
+        if time.monotonic() >= self._subscription_probe_after.get(key, 0):
+            try:
+                result = request("cfquant.account_subscription_status", {"account": dict(payload)})
+            except CfquantError as error:
+                message = str(error).lower()
+                if ("cfquant.account_subscription_status" not in message or
+                        not message.startswith(("unsupported action:", "unsupported external web_lttx action:"))):
+                    raise
+                self._subscription_probe_after[key] = time.monotonic() + 60.0
+            else:
+                if not isinstance(result, dict) or type(result.get("subscribed")) is not bool:
+                    raise CfquantError("invalid account subscription status response")
+                if result["subscribed"]:
+                    return 0
+        if stop.is_set():
+            return 0
+        # Only missing registrations (or legacy peers) enter the ordered QMT
+        # request pump. The probe itself must never mutate native QMT state.
+        return request("xttrader.subscribe", {"account": dict(payload), "subscription_renewal": True})
+
     def _recover_subscriptions(self, stop):
         # QMT/Web can restart without disconnecting the user's Hub/LTtx socket.
-        # Renew the idempotent account subscription, not just a transport ping.
+        # Check both callback registrations, not just a transport ping.
         # This never retries orders/cancels or replays historical events.
         while not stop.wait(self._subscription_interval):
             with self._subscription_lock:
@@ -570,6 +602,7 @@ class XtQuantTrader(object):
                     retry = self._subscription_retries.get(key, {})
                     if time.monotonic() < retry.get('due', 0):
                         continue
+                    diagnostics = {}
                     try:
                         bridge_id = _bridge_id_from_params({"account": payload}) or self.bridge_id
                         self._register_trader_events(bridge_id)
@@ -577,9 +610,9 @@ class XtQuantTrader(object):
                         self._subscription_client = client
                         if stop.is_set():
                             return
-                        result = client.request("xttrader.subscribe", {"account": dict(payload),
-                                                "subscription_renewal": True},
-                                                timeout=self._subscription_timeout)
+                        result = self._renew_account_subscription(client, payload, key, stop, diagnostics)
+                        if stop.is_set():
+                            return
                         if result is False or (isinstance(result, (int, float)) and result < 0):
                             raise CfquantError(
                                 "account subscription rejected: %s" % result,
@@ -597,8 +630,11 @@ class XtQuantTrader(object):
                             logged_at = retry.get('logged_at', 0)
                             if key not in self._subscription_errors or now - logged_at >= 30:
                                 logging.getLogger(__name__).warning(
-                                    "account callback subscription recovery failed account=%s; retry in %.1fs: %s",
-                                    key, delay, detail)
+                                    "account callback subscription recovery failed account=%s; retry in %.1fs: %s "
+                                    "action=%s request_id=%s timeout=%.1fs rpc=%s web=%s",
+                                    key, delay, detail, diagnostics.get("action", "connect"),
+                                    diagnostics.get("request_id", "-"), self._subscription_timeout,
+                                    diagnostics.get("rpc", {}), diagnostics.get("web", {}))
                                 logged_at = now
                             self._subscription_errors[key] = detail
                             self._subscription_retries[key] = {

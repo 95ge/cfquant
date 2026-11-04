@@ -1,6 +1,7 @@
 """Read-only checks and repair instructions for optional QMT login components."""
 import copy
 import importlib
+import importlib.metadata
 import json
 import os
 import subprocess
@@ -10,6 +11,10 @@ import time
 
 
 LOGIN_MODULES = ("frida", "win32api", "win32crypt", "win32event", "win32gui", "win32process")
+# Verified QMT baseline. 17.25 introduced a Windows mapper that can abort the
+# host on older ntdll builds; do not widen this without Windows/QMT validation.
+FRIDA_VERSION = "17.16.4"
+FRIDA_REQUIREMENT = "frida==" + FRIDA_VERSION
 _LOCK = threading.Lock()
 _CACHE = {}
 _PROBE_CODE = r'''
@@ -17,6 +22,8 @@ import importlib, importlib.metadata, json, os, pathlib, sys
 checks = []
 for name in MODULES:
     try:
+        if name == 'frida' and importlib.metadata.version('frida') != FRIDA_VERSION:
+            raise RuntimeError('Unsupported Frida version; install frida==' + FRIDA_VERSION)
         module = importlib.import_module(name)
         checks.append(dict(name=name, ok=True, path=getattr(module, '__file__', '')))
     except Exception as error:
@@ -46,6 +53,16 @@ def _ps_quote(value):
 
 
 def _finish_report(report):
+    if report.get("supported"):
+        version = (report.get("packages") or {}).get("frida")
+        if version and version != FRIDA_VERSION:
+            checks = report.setdefault("checks", [])
+            check = next((item for item in checks if item["name"] == "frida"), None)
+            if check is None:
+                check = {"name": "frida"}
+                checks.append(check)
+            check.update(ok=False, error="Frida %s 未通过本项目兼容性验证，请安装 %s" % (version, FRIDA_REQUIREMENT))
+        report["frida_requirement"] = FRIDA_REQUIREMENT
     report["checked_at"] = time.time()
     report["ok"] = bool(report.get("supported") and not report.get("error")
                         and all(item["ok"] for item in report.get("checks", [])))
@@ -73,8 +90,10 @@ def _finish_report(report):
                 if environment == "python":
                     commands.append(python + " -m pywin32_postinstall -install")
         if any(item["name"] == "frida" for item in failed):
-            commands.append(python + " -m pip install --no-cache-dir --upgrade --force-reinstall 'frida>=17.0,<18'")
-        commands.append(python + " -c " + _ps_quote("import " + ", ".join(LOGIN_MODULES) + "; print('QMT login components OK')"))
+            commands.append(python + " -m pip install --no-cache-dir --force-reinstall '" + FRIDA_REQUIREMENT + "'")
+        commands.append(python + " -c " + _ps_quote(
+            "from cfquant.qmt_dependencies import report_startup_dependencies; "
+            "r=report_startup_dependencies(); raise SystemExit(0 if r['ok'] else 1)"))
     report["repair_commands"] = commands
     if environment == "conda":
         report["repair_note"] = (
@@ -111,7 +130,7 @@ def check_login_dependencies(python_exe=None, refresh=False, timeout=15):
             if os.name == "nt":
                 run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             completed = subprocess.run(
-                [executable, "-c", "MODULES = %r\n" % (LOGIN_MODULES,) + _PROBE_CODE],
+                [executable, "-c", "MODULES = %r\nFRIDA_VERSION = %r\n" % (LOGIN_MODULES, FRIDA_VERSION) + _PROBE_CODE],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                 errors="replace", timeout=timeout,
                 **run_kwargs,
@@ -130,8 +149,21 @@ class QmtDependencyError(RuntimeError):
     pass
 
 
+def require_compatible_frida():
+    try:
+        version = importlib.metadata.version("frida")
+    except importlib.metadata.PackageNotFoundError:
+        version = "未安装"
+    if version != FRIDA_VERSION:
+        raise QmtDependencyError(
+            "Frida %s 未通过本项目兼容性验证，已跳过 QMT 自动操作。"
+            "请在当前 Python 环境安装 %s；手动登录及行情交易接口仍可使用。" % (version, FRIDA_REQUIREMENT))
+
+
 def import_login_module(name):
     """Keep in-process import errors actionable, including stale loaded DLLs."""
+    if name == "frida":
+        require_compatible_frida()
     try:
         return importlib.import_module(name)
     except (ImportError, OSError) as error:
