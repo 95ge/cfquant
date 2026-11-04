@@ -119,6 +119,7 @@ from cfquant import xtconstant as cf_xtconstant
 from cfquant.qmt_strategy_deploy import (QmtStrategyManager, account_qmt_roots,
     normalize_strategy_settings, qmt_root, entry_script_for_mode, read_entry_source,
     configured_pipe_source, PipeStrategyController)
+from cfquant.qmt_strategy_recovery import QmtStrategyRecoveryScheduler
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
@@ -5383,7 +5384,8 @@ def binding_status_snapshot():
             rows.append(dict(entry, status=status))
         except Exception as error:
             rows.append(dict(entry, error=str(error)))
-        rows[-1]["qmt_strategy_deploy"] = QMT_STRATEGIES.status(entry["account_key"])
+        rows[-1]["qmt_strategy_deploy"] = QMT_STRATEGY_RECOVERY.decorate(
+            entry["account_key"], QMT_STRATEGIES.status(entry["account_key"]))
         rows[-1]["qmt_auto_login"] = _qmt_auto_login_saved_session(entry)
     now = time.time()
     return {
@@ -10560,6 +10562,12 @@ QMT_STRATEGIES = QmtStrategyManager(
     os.path.join(RUNTIME_CONFIG_DIR, "qmt_strategy_jobs.json"),
     os.path.join(_SOURCE_ROOT, "qmt_scripts"),
     runtime_request=PipeStrategyController(),
+)
+QMT_STRATEGY_RECOVERY = QmtStrategyRecoveryScheduler(
+    QMT_STRATEGIES,
+    lambda: WEB_CONFIG.account_configs() if WEB_CONFIG is not None
+    and management_qmt_start_policy() is not False else {},
+    os.path.join(RUNTIME_STATUS_DIR, "qmt_strategy_recovery.json"),
 )
 
 
@@ -18367,6 +18375,7 @@ def main(argv=None):
     STATUS_MONITOR.start()
     QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
     QMT_STRATEGIES.start()
+    QMT_STRATEGY_RECOVERY.start()
     QMT_AUTO_LOGIN_RESTART_SCHEDULER.start()
     ACCOUNT_CACHE.start()
     CALLBACKS.start()
@@ -18390,6 +18399,7 @@ def main(argv=None):
         LOG_CLEANUP.close()
         STATUS_MONITOR.close()
         QMT_AUTO_LOGIN_RESTART_SCHEDULER.close()
+        QMT_STRATEGY_RECOVERY.close()
         QMT_STRATEGIES.close()
         ACCOUNT_CACHE.close()
         CALLBACKS.close()

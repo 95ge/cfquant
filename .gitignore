@@ -120,3 +120,4 @@ tem_delete/
 *.remote_management.status.json
 *.remote_management*.lock
 *.remote_management*.sqlite3*
+runtime/logs/

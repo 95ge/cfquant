@@ -5,6 +5,7 @@ include cfquant_pipe_hub.py
 
 recursive-include cfquant *.py
 include cfquant/qmt_component_agent.js
+include cfquant/qmt_strategy_agent.js
 recursive-include cfquant/tests *.py *.md
 recursive-include LTtx *.py
 include LTtx/tx/Config.txt

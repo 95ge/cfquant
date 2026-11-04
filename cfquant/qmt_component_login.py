@@ -125,7 +125,7 @@ def select_binding(config_path, name):
 
 
 class QtLoginBackend:
-    def __init__(self, directory, timeout=40, expected_pid=None):
+    def __init__(self, directory, timeout=40, expected_pid=None, *, agent_extension=""):
         try:
             from .qmt_dependencies import import_login_module
         except ImportError:
@@ -178,7 +178,8 @@ class QtLoginBackend:
             readiness.unload()
             if not ready:
                 raise QmtNotReady("QMT login modules are still loading")
-            script = self.session.create_script(Path(__file__).with_name("qmt_component_agent.js").read_text(encoding="utf-8"))
+            source = Path(__file__).with_name("qmt_component_agent.js").read_text(encoding="utf-8")
+            script = self.session.create_script(source + "\n" + agent_extension)
             script.on("message", lambda message, data: self.messages.append("agent_error") if message.get("type") == "error" else None)
             script.load()
             self.script, self.api = script, script.exports_sync
