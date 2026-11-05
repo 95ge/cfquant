@@ -258,6 +258,8 @@ print(result["status"], result["message"])
 
 `version_info(include_remote=False)` 只查询本地版本；`updates.check(force=True)` 只检查更新。按需更新也识别同版本号的安装包变化，首次安装包哈希未知时会执行一次更新以建立记录。真正需要更新时，默认要求先关闭相关 QMT；也可显式传入 `auto_close_qmt=True` 允许自动关闭。`restart=False` 可留待调用方重启。部分 QMT 部署失败返回 `update_incomplete`，已安装但尚未重启返回 `restart_required`；执行更新失败会抛出 `ManagementError`。
 
+外部程序复用绑定时的 `runtime` 对象，直接调用 `runtime.recover_strategy("YOUR_ACCOUNT_ID", account_type="STOCK")` 即可检测并尝试恢复已停止的 QMT 托管策略。本地托管实例由 SDK 自动读取管理凭据。也支持 `runtime.accounts.recover_strategy(...)` 和鉴权后的 `POST /api/qmt/strategies/recover`。返回值区分已提交启动、模型运行和通信确认，具体条件及示例见 [策略恢复接口](docs/第三方项目管理SDK.md#外部程序恢复-qmt-托管策略)。
+
 模拟／实盘参数需与实际账号一致。完整的启动策略、更新接口、重复绑定行为与错误处理见 [第三方项目管理 SDK](docs/第三方项目管理SDK.md)。
 
 ## 从 `xtquant` 迁移到 `cfquant`

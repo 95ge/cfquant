@@ -123,6 +123,76 @@ def test_import_is_resumable_and_not_confused_with_queue_consumption(deployment)
     assert queued.is_file()
 
 
+def test_restart_prepares_replacement_before_background_worker_runs(deployment):
+    manager, row, infos, running, root = deployment
+    manager.configure(row, infos)
+    finish_import(manager, root)
+    manager.process_once()
+    previous = copy.deepcopy(next(iter(manager.jobs.values())))
+    _write_json(previous["roles"][0]["runtime_status_path"], {
+        "state": "stopped", "generation": previous["generation"], "updated_at": time.time(),
+    })
+    running[0] = True
+    manager.configure(row, infos, force=True)
+    key, job = next(iter(manager.jobs.items()))
+    role = job["roles"][0]
+    assert job["state"] == "waiting_exit" and role["reimport_required"]
+    other = {"root": str(root.parent / "other"), "state": "waiting_exit", "enabled": True}
+    manager.jobs["other-terminal"] = copy.deepcopy(other)
+
+    # This runs synchronously in the gap between confirmed exit and launch.
+    running[0] = False
+    manager.prepare_for_start(root / "bin.x64")
+    assert job["state"] == "waiting_import"
+    assert role["model_prepared"] and not role["reimport_required"]
+    assert (root / "formulas" / (role["name"] + ".rzrk")).read_bytes() == Path(role["package_path"]).read_bytes()
+    assert not (root / "python" / (role["name"] + ".py")).exists()
+    assert manager.jobs["other-terminal"] == other
+    persisted = json.loads(manager.path.read_text(encoding="utf-8"))["jobs"][key]
+    assert persisted["roles"][0]["model_prepared"]
+
+    # Retain the old generation until the replacement actually reports online.
+    assert job["control_generation"] == previous["generation"]
+    _write_json(role["runtime_status_path"], {
+        "state": "running", "generation": job["generation"], "updated_at": time.time(),
+    })
+    running[0] = True
+    manager._observe_runtime(job)
+    assert job["state"] == "running" and not job.get("control_generation")
+
+
+def test_start_preparation_refuses_running_terminal_without_writes(deployment):
+    manager, row, infos, running, root = deployment
+    running[0] = True
+    manager.configure(row, infos)
+    config = root / "config" / "indexUserConfig.xml"
+    original = config.read_bytes()
+    with pytest.raises(RuntimeError, match="尚未完全退出"):
+        manager.prepare_for_start(root)
+    assert config.read_bytes() == original
+    assert not list((root / "formulas").glob("*.rzrk"))
+
+
+def test_start_preparation_reports_deployment_error_and_keeps_pending_job(deployment, monkeypatch):
+    manager, row, infos, running, root = deployment
+    running[0] = True
+    manager.configure(row, infos)
+    running[0] = False
+    advance = manager._advance
+    def fail(job):
+        raise OSError("fixture write failure")
+    monkeypatch.setattr(manager, "_advance", fail)
+    with pytest.raises(OSError, match="fixture write failure"):
+        manager.prepare_for_start(root)
+    job = next(iter(json.loads(manager.path.read_text(encoding="utf-8"))["jobs"].values()))
+    assert job["state"] == "error" and job["roles"][0]["reimport_required"]
+    assert job["deploy_retry_count"] == 1
+    monkeypatch.setattr(manager, "_advance", advance)
+    next(iter(manager.jobs.values()))["deploy_retry_after"] = 0
+    manager.prepare_for_start(root)
+    assert next(iter(manager.jobs.values()))["state"] == "waiting_import"
+
+
 def test_managed_name_conflict_is_replaced_from_stale_deployment(deployment):
     manager, row, infos, running, root = deployment
     manager.configure(row, infos)

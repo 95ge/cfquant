@@ -114,12 +114,18 @@ def test_optional_export_does_not_prevent_query(missing):
     result = run_agent(missing=missing, tryStart=True, running=False)
     assert result['snapshot']['models'][0]['running'] is False
     assert result['capabilities']['can_query']
-    if missing[0] in ('?isConnWhiteListReady@', '?runStrategy@'):
+    if missing[0] == '?runStrategy@':
         assert not result['capabilities']['can_start']
         assert result['start'] == {'outcome': 'detection_only', 'requested': False}
         assert result['starts'] == 0
     if missing[0] == '?isConnWhiteListReady@':
         assert result['snapshot']['whitelist_ready'] is None
+        assert result['capabilities']['can_start']
+        assert not result['capabilities']['can_check_whitelist']
+        assert result['capabilities']['missing_whitelist']
+        assert result['capabilities']['missing_start'] == []
+        assert result['start'] == {'outcome': 'start_requested', 'requested': True}
+        assert result['starts'] == 1 and result['whitelistChecks'] == 0
 
 
 @pytest.mark.parametrize('module', ['LoginDialog.dll', 'Dialog.dll', 'BaseWidget.dll'])
@@ -145,8 +151,9 @@ def test_supported_start_keeps_native_guards(running, whitelist, outcome, starts
     assert result['start']['outcome'] == outcome and result['starts'] == starts
 
 
-def test_start_rejects_changed_binding():
-    result = run_agent(tryStart=True, running=False, expected={'account':'WRONG'})
+@pytest.mark.parametrize('missing', [[], ['?isConnWhiteListReady@']])
+def test_start_rejects_changed_binding(missing):
+    result = run_agent(missing=missing, tryStart=True, running=False, expected={'account':'WRONG'})
     assert 'binding changed' in result['error'] and result['starts'] == 0
 
 
@@ -187,3 +194,16 @@ def test_strategy_environment_checks_qt_abi_without_exact_version_pin(tmp_path, 
     else:
         with pytest.raises(RuntimeError, match='5.6.2'):
             _verify_environment_native(tmp_path)
+
+
+def test_old_qmt_running_model_is_not_started_again():
+    result = run_agent(missing=['?isConnWhiteListReady@'], tryStart=True, running=True)
+    assert result['start'] == {'outcome': 'already_running', 'requested': False}
+    assert result['starts'] == 0 and result['whitelistChecks'] == 0
+
+
+def test_missing_start_and_readiness_query_remains_detection_only():
+    result = run_agent(missing=['?isConnWhiteListReady@', '?runStrategy@'], tryStart=True, running=False)
+    assert result['capabilities']['can_query'] and not result['capabilities']['can_start']
+    assert result['start'] == {'outcome': 'detection_only', 'requested': False}
+    assert result['starts'] == 0

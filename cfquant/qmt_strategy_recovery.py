@@ -15,7 +15,7 @@ import time
 import uuid
 
 from .qmt_component_login import QtLoginBackend, QmtNotReady
-from .qmt_native_worker import IsolatedStrategyBackend, QmtAutomationError
+from .qmt_native_worker import IsolatedStrategyBackend, QmtAutomationError, StrategyWorkerHost
 from .qmt_dependencies import QmtDependencyError
 from .qmt_strategy_deploy import (
     _role_stock, _strategy_slot_name, account_qmt_roots,
@@ -74,6 +74,10 @@ def confirm_recovery_bridge(job, pid):
 
 
 class UnsupportedQmt(RuntimeError):
+    pass
+
+
+class StrategyRecoveryBusy(RuntimeError):
     pass
 
 
@@ -152,17 +156,22 @@ def match_models(snapshot, expected):
 
 
 class QmtStrategyRecovery:
-    def __init__(self, accounts_provider, *, backend_factory=IsolatedStrategyBackend,
+    def __init__(self, accounts_provider, *, backend_factory=None,
                  job_is_current=lambda job: True, clock=time.time, interval=20.0,
                  notice_probe=visible_notice_windows, event_sink=None, bridge_verifier=confirm_recovery_bridge):
         self.accounts_provider = accounts_provider
-        self.backend_factory = backend_factory
+        self._worker_host = StrategyWorkerHost() if backend_factory is None else None
+        self.backend_factory = backend_factory or self._worker_host
         self.job_is_current = job_is_current
         self.clock = clock
         self.interval = interval
         self.notice_probe = notice_probe
         self.event_sink = event_sink or RecoveryJournal(Path("runtime/logs/qmt_strategy_recovery"))
         self.bridge_verifier = bridge_verifier
+
+    def close(self):
+        if self._worker_host is not None:
+            self._worker_host.close()
 
     def _event(self, job, status, event, **details):
         self.event_sink(dict(event=event, account_id=job["account_id"], account_key=job["account_key"],
@@ -221,14 +230,29 @@ class QmtStrategyRecovery:
             status.update(state="running", strategies=[{"name": m["name"], "running": True} for m in models])
             status["next_check_at"] = self.clock() + self.interval
 
-    def __call__(self, job, *, inspect_only=False):
+    def __call__(self, job, *, inspect_only=False, immediate=False):
         now = self.clock()
         expected = expected_models(job, self.accounts_provider())
         if not expected or not self.job_is_current(job):
-            job["recovery"] = {"state": "ineligible", "last_checked_at": now}
+            row = self.accounts_provider().get(job.get("account_key")) or {}
+            settings = row.get("qmt_strategy") or {}
+            if not row:
+                reason, message = "binding_unavailable", "当前绑定不可用，或服务已禁止策略自动恢复"
+            elif not row.get("enabled", True) or not job.get("enabled"):
+                reason, message = "binding_disabled", "账号绑定或策略部署已禁用"
+            elif not settings.get("enabled") or not settings.get("autorun"):
+                reason, message = "automation_disabled", "请先开启自动导入策略和策略自动运行"
+            elif (job.get("control_generation") or job.get("accepted_generations")
+                  or any(not role.get("model_prepared") or role.get("reimport_required")
+                         for role in job.get("roles", []))):
+                reason, message = "deployment_pending", "策略部署尚未完成，请先完成对应 QMT 的导入和模型配置"
+            else:
+                reason, message = "binding_changed", "策略部署与当前绑定不一致，请检查绑定配置"
+            job["recovery"] = {"state": "ineligible", "reason": reason, "message": message, "last_checked_at": now}
             return job["recovery"]
         previous = job.get("recovery") or {}
-        if (not inspect_only and now < previous.get("next_check_at", 0)
+        if (not inspect_only and (not immediate or previous.get("native_failure"))
+                and now < previous.get("next_check_at", 0)
                 and (previous.get("native_failure")
                      or not self.notice_probe(previous.get("pid"), previous.get("main_hwnd")))):
             return previous
@@ -327,6 +351,7 @@ class QmtStrategyRecoveryScheduler:
         self.stop_event = threading.Event()
         self.thread = None
         self.lock = threading.RLock()
+        self.run_lock = threading.Lock()
         self.states = {}
         try:
             self.states = json.loads(self.report_path.read_text(encoding="utf-8")).get("targets", {})
@@ -347,22 +372,66 @@ class QmtStrategyRecoveryScheduler:
                        for item in self.manager.jobs.values())
 
     def run_once(self):
-        with self.manager.lock:
-            jobs = copy.deepcopy(self.manager.jobs)
+        # HTTP recovery and the scheduled pass share attempts and native calls.
+        if not self.run_lock.acquire(blocking=False):
+            return
+        try:
+            with self.manager.lock:
+                jobs = copy.deepcopy(self.manager.jobs)
+            self._run_jobs(jobs, replace=True)
+        finally:
+            self.run_lock.release()
+
+    def recover_now(self, account_key):
+        if self.stop_event.is_set() or not self.run_lock.acquire(blocking=False):
+            raise StrategyRecoveryBusy("策略检测或恢复正在执行，请稍后查询状态或重试")
+        try:
+            with self.manager.lock:
+                jobs = {key: copy.deepcopy(job) for key, job in self.manager.jobs.items()
+                        if job.get("account_key") == account_key}
+            if not jobs:
+                raise ValueError("该账号没有托管策略部署任务")
+            # Retired roots/modes remain in the deployment history. They must
+            # not turn a successful current binding into a partial result.
+            enabled_jobs = {key: job for key, job in jobs.items() if job.get("enabled")}
+            if enabled_jobs:
+                jobs = enabled_jobs
+            result = self._run_jobs(jobs, immediate=True)
+            targets = [dict(root=jobs[key]["root"], generation=jobs[key]["generation"], recovery=value)
+                       for key, value in result.items()]
+            states = {target["recovery"].get("state") for target in targets}
+            running = bool(targets) and states == {"running"}
+            requested = "start_requested" in states
+            return {"account_key": account_key, "checked_at": time.time(), "targets": targets,
+                    "state": next(iter(states)) if len(states) == 1 else "partial",
+                    "running": running, "start_requested": requested,
+                    "bridge_confirmed": running and all(target["recovery"].get("bridge_confirmed", False)
+                                                        for target in targets)}
+        finally:
+            self.run_lock.release()
+
+    def _run_jobs(self, jobs, *, immediate=False, replace=False):
         with self.lock:
             states = copy.deepcopy(self.states)
         result = {}
         for key, job in jobs.items():
             if self.stop_event.is_set():
-                break
+                result[key] = {"state": "cancelled", "message": "服务正在停止，本目标未执行恢复",
+                               "last_checked_at": time.time()}
+                continue
             job["recovery"] = states.get(key, {})
             try:
-                result[key] = self.recovery(job)
+                result[key] = self.recovery(job, immediate=immediate)
             except Exception as error:
                 result[key] = dict(job["recovery"], state="unavailable", error=str(error))
         with self.lock:
-            self.states = result
-        _write_json(self.report_path, {"checked_at": time.time(), "targets": result})
+            if replace:
+                self.states = result
+            else:
+                self.states.update(result)
+            saved = copy.deepcopy(self.states)
+        _write_json(self.report_path, {"checked_at": time.time(), "targets": saved})
+        return result
 
     def decorate(self, account_key, status):
         status = copy.deepcopy(status)
@@ -408,6 +477,7 @@ class QmtStrategyRecoveryScheduler:
 
     def close(self):
         self.stop_event.set()
+        self.recovery.close()
         if self.thread:
             self.thread.join(timeout=2)
 
@@ -447,37 +517,40 @@ def main():
     recovery = QmtStrategyRecovery(accounts, job_is_current=lambda job: (
         (parent is None or parent.is_running()) and current(job)),
         event_sink=RecoveryJournal(args.config.parent.parent / "logs/qmt_strategy_recovery"))
-    states = {}
-    if args.report and args.report.exists():
-        states = json.loads(args.report.read_text(encoding="utf-8")).get("targets", {})
-    while True:
-        if parent is not None and not parent.is_running():
-            return 0
-        output = {"account_id": args.account_id, "checked_at": time.time(), "targets": {}}
-        try:
-            for key, original in jobs().items():
-                if original.get("account_id") != args.account_id:
-                    continue
-                job = copy.deepcopy(original)
-                if key in states:
-                    job["recovery"] = states[key]
-                result = recovery(job, inspect_only=not (args.ensure or args.watch))
-                output["targets"][key] = result
-        except Exception as error:
+    try:
+        states = {}
+        if args.report and args.report.exists():
+            states = json.loads(args.report.read_text(encoding="utf-8")).get("targets", {})
+        while True:
+            if parent is not None and not parent.is_running():
+                return 0
+            output = {"account_id": args.account_id, "checked_at": time.time(), "targets": {}}
+            try:
+                for key, original in jobs().items():
+                    if original.get("account_id") != args.account_id:
+                        continue
+                    job = copy.deepcopy(original)
+                    if key in states:
+                        job["recovery"] = states[key]
+                    result = recovery(job, inspect_only=not (args.ensure or args.watch))
+                    output["targets"][key] = result
+            except Exception as error:
+                if not args.watch:
+                    raise
+                output.update(targets=states, error=str(error))
+            states = output["targets"]
+            text = json.dumps(output, ensure_ascii=False, indent=2)
+            if args.report:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                temporary = args.report.with_suffix(".pending")
+                temporary.write_text(text, encoding="utf-8")
+                temporary.replace(args.report)
             if not args.watch:
-                raise
-            output.update(targets=states, error=str(error))
-        states = output["targets"]
-        text = json.dumps(output, ensure_ascii=False, indent=2)
-        if args.report:
-            args.report.parent.mkdir(parents=True, exist_ok=True)
-            temporary = args.report.with_suffix(".pending")
-            temporary.write_text(text, encoding="utf-8")
-            temporary.replace(args.report)
-        if not args.watch:
-            print(text)
-            return 0 if states and all(s["state"] in ("running", "start_requested") for s in states.values()) else 1
-        time.sleep(1)
+                print(text)
+                return 0 if states and all(s["state"] in ("running", "start_requested") for s in states.values()) else 1
+            time.sleep(1)
+    finally:
+        recovery.close()
 
 
 if __name__ == "__main__":

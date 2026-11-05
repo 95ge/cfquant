@@ -11,6 +11,11 @@ import pytest
 from cfquant.qmt_native_worker import NativeWorker, QmtAutomationError, QmtAutomationCancelled
 
 
+@pytest.fixture(autouse=True)
+def private_native_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFQUANT_FRIDA_TEMP_DIR", str(tmp_path / "native"))
+
+
 FAKE_WORKER = '''
 import os, sys, time
 from cfquant.qmt_native_worker import serve
@@ -60,6 +65,7 @@ def test_native_crash_is_reported_without_killing_caller_or_replaying(worker):
     with pytest.raises(QmtAutomationError):
         worker.already_logged_in()
     assert worker.process.returncode == 23
+    assert not worker.files.path.exists()
     with pytest.raises(QmtAutomationError):
         worker.state()
     assert worker._sequence == 2  # open + crashed call; no automatic replay.
@@ -114,6 +120,7 @@ def test_graceful_close_reaps_process_and_readers(worker):
     worker.close()
     assert worker.process.returncode == 0
     assert all(not reader.is_alive() for reader in worker._readers)
+    assert not worker.files.path.exists()
 
 
 def test_disabled_automation_never_starts_a_worker(monkeypatch):

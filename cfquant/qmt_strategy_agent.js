@@ -4,7 +4,7 @@
 // agent while the project is being upgraded.
 (() => {
 // Resolve query, start and notice APIs independently of the login agent.
-const missing = {gui: [], query: [], start: [], notice: [], dismiss: []};
+const missing = {gui: [], query: [], start: [], whitelist: [], notice: [], dismiss: []};
 function native(group, moduleName, name, result, args) {
   const module = Process.findModuleByName(moduleName);
   const address = module && module.findExportByName(name);
@@ -30,7 +30,9 @@ const strategyManager = native('query', 'Formula.dll', '?instance@?$CSingletonT@
 const strategySave = native('query', 'Formula.dll', '?saveSettings@CStrategyTradeManager@TC@@QEAAXAEAVQDomElement@@AEAVQDomDocument@@@Z', 'void', ['pointer', 'pointer', 'pointer']);
 // isStrategyRun takes a request identifier; isFomrulaRun takes a formula name.
 const strategyRunning = native('query', 'Formula.dll', '?isFomrulaRun@CStrategyTradeManager@TC@@QEAA_NAEBVQString@@@Z', 'bool', ['pointer', 'pointer']);
-const strategyWhitelistReady = native('start', 'Formula.dll', '?isConnWhiteListReady@CStrategyTradeManager@TC@@QEBA_NXZ', 'bool', ['pointer']);
+// Older QMT builds expose runStrategy without a separate readiness query.
+// Use their native start path; never replace or change QMT whitelist checks.
+const strategyWhitelistReady = native('whitelist', 'Formula.dll', '?isConnWhiteListReady@CStrategyTradeManager@TC@@QEBA_NXZ', 'bool', ['pointer']);
 const strategyRun = native('start', 'Formula.dll', '?runStrategy@CStrategyTradeManager@TC@@QEAAXHAEBV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@@Z', 'void', ['pointer', 'int', 'pointer']);
 const strategyDocCtor = native('query', 'Qt5Xml.dll', '??0QDomDocument@@QEAA@XZ', 'pointer', ['pointer']);
 const strategyDocDtor = native('query', 'Qt5Xml.dll', '??1QDomDocument@@QEAA@XZ', 'void', ['pointer']);
@@ -48,11 +50,12 @@ const closeNotice = native('dismiss', 'Dialog.dll', '?closeMessage@CGlobalMessag
 function capabilities() {
   const query = missing.gui.concat(missing.query);
   const start = query.concat(missing.start);
+  const whitelist = query.concat(missing.whitelist);
   const notice = query.concat(missing.notice);
   const dismiss = notice.concat(missing.dismiss);
-  return {can_query: !query.length, can_start: !start.length,
+  return {can_query: !query.length, can_start: !start.length, can_check_whitelist: !whitelist.length,
     can_read_notices: !notice.length, can_dismiss_notices: !dismiss.length,
-    missing_query: query, missing_start: start, missing_notice: notice, missing_dismiss: dismiss};
+    missing_query: query, missing_start: start, missing_whitelist: whitelist, missing_notice: notice, missing_dismiss: dismiss};
 }
 const typeNames = new Map();
 function hasType(object, name) {
@@ -228,7 +231,7 @@ rpc.exports.strategystart = (hwnd, expected) => onGui(hwnd, () => {
     throw new Error('Not an eligible managed strategy');
   }
   if (model.running) return {outcome: 'already_running', requested: false};
-  if (!snapshot.whitelist_ready) return {outcome: 'waiting_whitelist', requested: false};
+  if (snapshot.whitelist_ready === false) return {outcome: 'waiting_whitelist', requested: false};
   // Empty release-mode MSVC x64 std::string (SSO), matching the exported ABI.
   const reason = Memory.alloc(32);
   reason.writeByteArray(new Uint8Array(32));

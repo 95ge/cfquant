@@ -119,7 +119,7 @@ from cfquant import xtconstant as cf_xtconstant
 from cfquant.qmt_strategy_deploy import (QmtStrategyManager, account_qmt_roots,
     normalize_strategy_settings, qmt_root, entry_script_for_mode, read_entry_source,
     configured_pipe_source, PipeStrategyController)
-from cfquant.qmt_strategy_recovery import QmtStrategyRecoveryScheduler
+from cfquant.qmt_strategy_recovery import QmtStrategyRecoveryScheduler, StrategyRecoveryBusy
 from cfquant.channels import configured_bridges, normalize_bridge_id
 from cfquant.config import get_config as get_cfquant_config
 from cfquant.logging_i18n import normalize_log_enabled, normalize_log_language
@@ -594,7 +594,7 @@ MANAGEMENT_API_PATHS = frozenset({
     "/api/setup/initialize", "/api/account-config", "/api/account-config/delete", "/api/account-config/qmt-password",
     "/api/bindings/status", "/api/project-updates/status", "/api/project-updates/official",
     "/api/project-updates/github", "/api/project-updates/rollback", "/api/project-updates/ensure-latest",
-    "/api/version", "/api/config", "/api/remote-management",
+    "/api/version", "/api/config", "/api/remote-management", "/api/qmt/strategies/recover",
 })
 WEB_RESTART_LOCK = threading.RLock()
 WEB_RELOAD_WAIT_HOST_ENV = "CFQUANT_WEB_RELOAD_WAIT_HOST"
@@ -12071,6 +12071,10 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 raise RuntimeError("旧 QMT 进程未完全退出，已停止重启，避免重复启动")
             launch = None
             if not running:
+                # Startup refresh may have rebuilt a managed package while the
+                # old QMT was still running. The background deployer cannot
+                # catch an immediate stop/start, so finish offline work here.
+                QMT_STRATEGIES.prepare_for_start(paths["bin_dir"])
                 launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
                 running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
             pid = _qmt_auto_login_first_pid(running, launch)
@@ -15058,6 +15062,36 @@ def account_config_for_request(body):
     return row
 
 
+def recover_account_qmt_strategy(body):
+    if not isinstance(body, dict):
+        raise ValueError("request body must be an object")
+    selectors = {}
+    for field in ("account_id", "account_type", "bridge_id", "account_key"):
+        if field in body:
+            if not isinstance(body[field], str) or not body[field].strip():
+                raise ValueError(field + " must be a non-empty string")
+            selectors[field] = body[field].strip()
+    if not selectors.get("account_id") and not selectors.get("account_key"):
+        raise ValueError("account_id or account_key is required")
+    if "account_type" in selectors:
+        selectors["account_type"] = normalize_account_type(selectors["account_type"])
+    # Resolve all supplied selectors together. Never fall back to the default
+    # account when a key is stale or the same account has multiple bindings.
+    candidates = [dict(row, account_key=key) for key, row in WEB_CONFIG.account_configs().items()]
+    matches = [row for row in candidates
+               if all(str(row.get(field, "")) == value for field, value in selectors.items())]
+    if not matches:
+        raise ValueError("未找到与指定账号标识匹配的绑定")
+    if len(matches) != 1:
+        raise ValueError("账号存在多个绑定，请指定 account_key，或补充 account_type 和 bridge_id")
+    if PROJECT_UPDATER.is_busy():
+        raise ProjectUpdateBusyError("项目更新正在进行，请完成后再恢复策略")
+    row = matches[0]
+    result = QMT_STRATEGY_RECOVERY.recover_now(row["account_key"])
+    result.update(account_id=row["account_id"], account_type=row["account_type"], bridge_id=row["bridge_id"])
+    return result
+
+
 @serialized_account_configuration
 def complete_qmt_auto_login(body):
     row = account_config_for_request(body)
@@ -17418,6 +17452,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(start_qmt_processes_for_request(body)))
             elif parsed.path == "/api/qmt-auto-login/complete":
                 self._write_json(ok(complete_qmt_auto_login(body)))
+            elif parsed.path == "/api/qmt/strategies/recover":
+                self._write_json(ok(recover_account_qmt_strategy(body)))
             elif parsed.path == "/api/account-config/update-core":
                 self._write_json(ok(update_account_qmt_core(body)))
             elif parsed.path == "/api/account-config/delete":
@@ -17437,6 +17473,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 )
             else:
                 self._write_json(fail("not found", 404), status=404)
+        except StrategyRecoveryBusy as e:
+            self._write_json(dict(fail(e, 409), code="strategy_recovery_busy"), status=409)
         except ProjectUpdateBusyError as e:
             self._write_json(dict(fail(e, 409), code="project_update_busy"), status=409)
         except QmtRunningError as e:
@@ -17560,7 +17598,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
     def _authorized(self, parsed):
         if parsed.path == "/api/remote-management" and not is_loopback_host(self.client_address[0]):
             return self._has_access_token(parsed)
-        if parsed.path.startswith("/api/management/") or parsed.path == "/api/project-updates/ensure-latest":
+        if parsed.path.startswith("/api/management/") or parsed.path in (
+                "/api/project-updates/ensure-latest", "/api/qmt/strategies/recover"):
             return self._has_access_token(parsed)
         if os.environ.get("CFQUANT_MANAGEMENT_TOKEN_FILE") and parsed.path in MANAGEMENT_API_PATHS:
             return self._has_access_token(parsed)

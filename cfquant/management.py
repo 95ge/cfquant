@@ -314,6 +314,17 @@ class RuntimeManager:
         """Initialize the first binding; subsequent calls upsert that binding."""
         return self.accounts.upsert(account_id, qmt_dir, _initialize=True, **options)
 
+    def recover_strategy(self, account_id=None, *, account_type=None, bridge_id=None,
+                         account_key=None, timeout=180):
+        """Recover a binding using the same managed service as initialize().
+
+        Reuse this RuntimeManager after binding accounts. Local managed services
+        automatically use home/management.key, just like account management.
+        """
+        return self.accounts.recover_strategy(account_id, account_type=account_type,
+                                             bridge_id=bridge_id, account_key=account_key,
+                                             timeout=timeout)
+
     def wait_ready(self, account_id, *, account_type="STOCK", bridge_id=None, timeout=120):
         deadline = time.monotonic() + timeout
         last = None
@@ -362,6 +373,27 @@ class AccountManager:
 
     def status(self, timeout=None):
         return self.runtime._request("GET", "/api/bindings/status", timeout=timeout)
+
+    def recover_strategy(self, account_id=None, *, account_type=None, bridge_id=None,
+                         account_key=None, timeout=180):
+        """Check and recover this binding's stopped managed QMT strategies.
+
+        Requires enabled strategy automation and a completed deployment. Returns
+        running/start_requested and per-target recovery states; submitting a start
+        is not confirmation that the strategy or its bridge is already running.
+        Uses the Web service, so it also works while the QMT bridge is offline.
+        """
+        body = {key: str(value).strip() for key, value in {
+            "account_id": account_id, "account_type": account_type,
+            "bridge_id": bridge_id, "account_key": account_key,
+        }.items() if value is not None}
+        if not body.get("account_id") and not body.get("account_key"):
+            raise ValueError("account_id or account_key is required")
+        if any(not value for value in body.values()):
+            raise ValueError("account selectors must not be empty")
+        if not self.runtime.attached:
+            self.runtime.status()  # Verify managed instance ownership first.
+        return self.runtime._request("POST", "/api/qmt/strategies/recover", body, timeout=timeout)
 
     def upsert(self, account_id, qmt_dir, *, account_type="STOCK", mode="ctypes",
                auto_start_qmt=False, deploy_strategy=True, strategy_autorun=True,

@@ -12,9 +12,11 @@ import sys
 import threading
 import time
 
+from .qmt_native_files import NativeWorkerFiles, sweep_worker_directories
+
 
 LOGIN_METHODS = frozenset(("already_logged_in", "state", "select_account", "submit",
-                           "fill", "wait_outcome", "acknowledge_failure"))
+                           "fill", "wait_outcome", "acknowledge_failure", "diagnostics"))
 STRATEGY_METHODS = frozenset(("snapshot", "start_strategy", "notices", "dismiss_notice"))
 MAX_MESSAGE = 4 * 1024 * 1024
 
@@ -40,14 +42,29 @@ class NativeWorker:
         self._sequence = 0
         self._closed = False
         self._tls_error = False
+        self.files = NativeWorkerFiles()
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
-        self.process = subprocess.Popen(
-            command or [sys.executable, "-u", "-m", "cfquant.qmt_native_worker"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
-            cwd=str(Path(__file__).resolve().parents[1]),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
-        )
+        env.update(self.files.environment())
+        try:
+            self.process = subprocess.Popen(
+                command or [sys.executable, "-u", "-m", "cfquant.qmt_native_worker"],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
+                cwd=str(Path(__file__).resolve().parents[1]),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+            )
+            try:
+                self.files.register(self.process.pid)
+            except Exception:
+                if self.process.poll() is None:
+                    self.process.kill()
+                self.process.wait(timeout=5)
+                for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
+                    stream.close()
+                raise
+        except Exception:
+            self.files.close()
+            raise
         self._readers = [
             threading.Thread(target=self._read_responses, name="qmt-native-response", daemon=True),
             threading.Thread(target=self._read_errors, name="qmt-native-stderr", daemon=True),
@@ -154,7 +171,7 @@ class NativeWorker:
                 if not force and self.process.poll() is None:
                     self.process.stdin.write(json.dumps(dict(id=0, method="close")) + "\n")
                     self.process.stdin.flush()
-                    self.process.wait(timeout=1)
+                    self.process.wait(timeout=3)
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 pass
             finally:
@@ -169,6 +186,79 @@ class NativeWorker:
                     thread.join(timeout=1)
                 self.process.stdout.close()
                 self.process.stderr.close()
+                self.files.close()
+
+
+class StrategyWorkerHost:
+    """Reuse one Frida host, but detach the QMT session after every inspection."""
+    def __init__(self, worker_factory=NativeWorker):
+        self.worker_factory = worker_factory
+        self.worker = None
+        self.lock = threading.RLock()
+        self.stopped = threading.Event()
+
+    def __call__(self, directory):
+        self.lock.acquire()
+        try:
+            if self.stopped.is_set():
+                raise QmtAutomationCancelled("QMT 策略检测已停止")
+            worker = self.worker
+            if worker is not None and (worker._closed or worker.process.poll() is not None):
+                worker.close(force=True)
+                self.worker = worker = None
+            if worker is None:
+                worker = self.worker_factory("strategy", directory, timeout=15,
+                                             should_cancel=self.stopped.is_set)
+                self.worker = worker
+            else:
+                sweep_worker_directories(worker.files.root)
+                info = worker.call("open", kind="strategy", directory=str(directory), timeout=15)
+                worker.pid, worker.main_hwnd = info.get("pid"), info.get("main_hwnd")
+            return _StrategyWorkerLease(self, worker)
+        except BaseException:
+            self._discard()
+            self.lock.release()
+            raise
+
+    def _discard(self):
+        if self.worker is not None:
+            worker, self.worker = self.worker, None
+            worker.close(force=True)
+
+    def close(self):
+        self.stopped.set()
+        with self.lock:
+            if self.worker is not None:
+                worker, self.worker = self.worker, None
+                worker.close()
+
+
+class _StrategyWorkerLease:
+    def __init__(self, host, worker):
+        self.host, self.worker = host, worker
+        self.pid, self.main_hwnd = worker.pid, worker.main_hwnd
+        self.closed = False
+
+    def __getattr__(self, name):
+        if name not in STRATEGY_METHODS:
+            raise AttributeError(name)
+        def call(*args, **kwargs):
+            if self.closed:
+                raise QmtAutomationCancelled("QMT 策略检测会话已关闭")
+            return self.worker.call(name, *args, **kwargs)
+        return call
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            try:
+                self.worker.call("release")
+            except Exception:
+                self.host._discard()
+        finally:
+            self.host.lock.release()
 
 
 class IsolatedLoginBackend(NativeWorker):
@@ -232,6 +322,13 @@ def serve(factory=_open_backend):
                     opened = True
                     methods = LOGIN_METHODS if kwargs["kind"] == "login" else STRATEGY_METHODS
                     result = {key: getattr(backend, key, None) for key in ("pid", "main_hwnd")}
+                elif method == "release" and opened:
+                    try:
+                        if backend is not None:
+                            backend.close()
+                    finally:
+                        backend, opened, methods = None, False, frozenset()
+                    result = None
                 elif opened and backend is not None and method in methods:
                     result = getattr(backend, method)(*request.get("args", []), **request.get("kwargs", {}))
                 else:
@@ -244,9 +341,17 @@ def serve(factory=_open_backend):
             output.flush()
             request = None
     finally:
-        if backend is not None:
-            backend.close()
-        output.close()
+        try:
+            if backend is not None:
+                backend.close()
+        finally:
+            try:
+                # detach() releases a target session, not the host's DLL cache.
+                frida = sys.modules.get("frida")
+                if frida is not None:
+                    frida.shutdown()
+            finally:
+                output.close()
 
 
 if __name__ == "__main__":

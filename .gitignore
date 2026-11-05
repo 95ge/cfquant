@@ -51,6 +51,7 @@ runtime/reports/**
 runtime/status/*
 runtime/screenshots/*
 runtime/cli-qmt-export/
+runtime/frida/
 !runtime/db/.gitkeep
 !runtime/config/.gitkeep
 !runtime/cache/

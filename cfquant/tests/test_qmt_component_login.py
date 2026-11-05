@@ -345,3 +345,24 @@ def test_process_exit_during_readiness_wait_closes_backend(monkeypatch, tmp_path
     result = component.login_running_qmt(tmp_path, password_provider=no_password)
     assert result["outcome"] == "process_exited"
     assert closed == [True] and terminal.calls == []
+def test_cli_uses_isolated_backend_and_closes_it(tmp_path, monkeypatch, capsys):
+    import json
+    import sys
+    from cfquant import qmt_component_login as module
+    calls = []
+    class Backend:
+        pid = 123
+        def select_account(self, account, replace=False):
+            calls.append((account, replace))
+        def diagnostics(self):
+            return dict(minimized_before=False, foreground_before=1, foreground_after=1, script_errors=[])
+        def close(self):
+            calls.append("closed")
+    monkeypatch.setattr(module, "select_binding", lambda *args: ({}, tmp_path))
+    monkeypatch.setattr(module, "IsolatedLoginBackend", lambda *args: Backend())
+    monkeypatch.setattr(module, "QtLoginBackend", lambda *args: pytest.fail("CLI must isolate Frida"))
+    monkeypatch.setattr(module, "auto_login", lambda *args: {"outcome": "already_logged_in"})
+    monkeypatch.setattr(sys, "argv", ["qmt_component_login", "--binding", "fixture"])
+    assert module.main() == 0
+    assert calls == [("", True), "closed"]
+    assert json.loads(capsys.readouterr().out)["script_errors"] == []

@@ -248,6 +248,8 @@ def test_restart_stops_old_process_before_starting_and_queueing_login(web_config
         return {}
     monkeypatch.setattr(web, "_qmt_auto_login_stop_xtitclient", stop)
     monkeypatch.setattr(web, "_qmt_auto_login_processes", lambda directory, **kwargs: list(running))
+    monkeypatch.setattr(web, "QMT_STRATEGIES", SimpleNamespace(
+        prepare_for_start=lambda directory: calls.append(("deploy", directory))))
     monkeypatch.setattr(web, "_qmt_auto_login_start_xtitclient", lambda *a, **k: calls.append("start") or {"pid": 456})
     monkeypatch.setattr(web, "_qmt_queue_component_login", lambda row, p, pid: calls.append(("login", pid)))
     row = {"account_id": "fixture", "qmt_dir": paths["bin_dir"], "qmt_auto_login": {"enabled": True}}
@@ -259,8 +261,29 @@ def test_restart_stops_old_process_before_starting_and_queueing_login(web_config
         assert result["error"]
         assert calls == ["stop"]
     else:
-        assert calls == ["stop", "start", ("login", 456)]
+        assert calls == ["stop", ("deploy", paths["bin_dir"]), "start", ("login", 456)]
         assert result["login_state"] == "logging_in"
+
+
+def test_failed_offline_deployment_blocks_launch_and_login(web_config, monkeypatch, tmp_path):
+    web, _ = web_config
+    monkeypatch.setenv("CFQUANT_QMT_AUTO_START", "saved")
+    monkeypatch.setattr(web, "QMT_COMPONENT_JOBS", {})
+    monkeypatch.setattr(web, "QMT_AUTO_LOGIN_STATE_FILE", str(tmp_path / "sessions.json"))
+    paths = {"bin_dir": str(tmp_path / "QMT/bin.x64"), "exe_path": "fixture.exe"}
+    monkeypatch.setattr(web, "_qmt_auto_login_paths", lambda directory: paths)
+    monkeypatch.setattr(web, "_qmt_component_login_preflight", lambda *args: None)
+    monkeypatch.setattr(web, "_qmt_auto_login_processes", lambda *args, **kwargs: [])
+    def prepare(directory):
+        assert directory == paths["bin_dir"]
+        raise RuntimeError("deployment write failed")
+    monkeypatch.setattr(web, "QMT_STRATEGIES", SimpleNamespace(prepare_for_start=prepare))
+    monkeypatch.setattr(web, "_qmt_auto_login_start_xtitclient", lambda *a, **k: pytest.fail("must not launch"))
+    monkeypatch.setattr(web, "_qmt_queue_component_login", lambda *a: pytest.fail("must not log in"))
+    result = web.qmt_auto_login_apply_for_account({"account_id": "fixture", "qmt_dir": paths["bin_dir"],
+                                                  "qmt_auto_login": {"enabled": True}})
+    assert "deployment write failed" in result["error"]
+    assert not result["started"] and not result["configured"]
 
 
 def test_worker_records_success_and_supplies_saved_password_only_on_request(web_config, monkeypatch, tmp_path):

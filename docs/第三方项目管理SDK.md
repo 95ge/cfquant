@@ -6,7 +6,7 @@
 
 先在第三方项目的 Python 环境安装支持管理 SDK 的 cfquant。首次部署时关闭目标 QMT；下面的示例不会下单。
 
-本次为同版本号源码更新，可下载官网最新 ZIP，解压后在第三方的 Python 环境中执行 `python -m pip install --force-reinstall --no-deps <解压目录>` 更新 SDK（依赖已安装时）。仅依据 PyPI 的 `0.2.45` 版本号无法确认是否包含本次管理接口，可通过 `from cfquant.management import RuntimeManager` 验证。
+调用方 SDK 和后台服务都需要包含所用接口。升级后台不会替换第三方进程已经导入的 SDK；升级 SDK 后需重启调用方进程，升级后台后需重启后台服务。
 
 ```python
 from cfquant.management import RuntimeManager, ManagementError
@@ -157,6 +157,60 @@ if update["available"]:
 
 更新不会替换第三方进程中已经导入的 `cfquant`，不会执行 pip，也不会改变第三方项目的依赖锁定。若需要升级第三方自身使用的 SDK，请由第三方的依赖管理流程执行，并重启第三方进程。服务默认复用调用者的 Python 解释器及已安装依赖，也可指定 `python_executable` 使用专用虚拟环境；新版本增加依赖时需先在该解释器中安装依赖。
 
+## 外部程序恢复 QMT 托管策略
+
+与 `runtime.initialize()`、`runtime.accounts.upsert()` 绑定账号一样，直接在同一个管理对象上调用 `runtime.recover_strategy()`，对一个绑定执行一次即时检测和恢复。`runtime.accounts.recover_strategy()` 保留为等价入口。本地托管实例自动使用原有管理凭据，程序无需自行构造 HTTP 请求或填写 API Key。
+
+复用绑定时的 `runtime` 对象即可；重新创建对象时，`home` 和端口必须与绑定时一致：
+
+```python
+from cfquant.management import RuntimeManager
+
+runtime = RuntimeManager(home=r"D:\MyApp\cfquant", port=8765)
+# 复用与绑定相同的后台服务；绑定已经存在时无需再次 initialize/upsert。
+runtime.start(auto_start_qmt=None)
+result = runtime.recover_strategy(
+    "YOUR_ACCOUNT_ID", account_type="STOCK", timeout=180,
+)
+print(result["state"], result["running"], result["start_requested"])
+
+# 对同账号的多个绑定，指定 bridge_id，或直接使用完整 account_key：
+# result = runtime.recover_strategy(account_key="YOUR_ACCOUNT_KEY")
+
+# 已提交启动不等于已经恢复通信；需要通信就绪时，再等待桥接确认。
+if result["state"] in ("start_requested", "running"):
+    runtime.wait_ready(result["account_id"], account_type=result["account_type"],
+                       bridge_id=result["bridge_id"], timeout=60)
+else:
+    for target in result["targets"]:
+        print(target["recovery"])
+```
+
+方法由 SDK 调用后台服务，QMT 桥接策略停止、命名管道未连接时也能请求；后台服务仍需运行。接入已有的独立服务时，沿用绑定时使用的 `RuntimeManager(base_url=..., api_key=...)` 对象，同样调用 `runtime.recover_strategy(...)`。QMT 需已启动并登录，绑定需启用“自动导入策略”和“策略自动运行”，且已完成部署。服务启动策略禁止 QMT 自动化时，此方法也遵循该设置。
+
+升级已有部署时，调用程序和后台服务都需要加载包含此接口的新代码；更新文件后重启相应进程，避免调用方已有新方法而旧后台仍未加载恢复路由。
+
+方法参数：`account_id=None`、`account_type=None`、`bridge_id=None`、`account_key=None`、`timeout=180`。必须提供资金账号或完整绑定 Key；多个账号类型或多个桥接使用同一账号时，需补充限定字段使结果唯一。传入的标识必须相互匹配，未知 Key 不会回退到默认账号。`timeout` 是客户端 HTTP 等待秒数，不会修改服务端恢复规则。
+
+结果中 `running=true` 表示当前绑定全部目标模型已确认运行；`bridge_confirmed=true` 还要求同进程、同部署代次的近期通信确认。`start_requested=true` 仅表示本次提交过启动。每个 `targets` 项包含 `root`、`generation` 和详细的 `recovery` 状态。顶层 `state` 为各目标共同状态；不同目标状态不一致时为 `partial`，应逐项检查。
+
+| `state` | 含义 |
+|---|---|
+| `running` | 模型已运行，不重复启动；通信是否正常另看 `bridge_confirmed` |
+| `start_requested` | 已提交启动，等待后续检测及桥接回连 |
+| `ineligible` | 不满足恢复条件，具体原因在 `reason`、`message`；例如 `deployment_pending`、`automation_disabled` |
+| `waiting_whitelist` | QMT 白名单尚未就绪，等待后续检测 |
+| `backoff` / `retry_exhausted` | 正在冷却或已达到重试上限，接口不会重置重试计数 |
+| `detection_only` / `unsupported` | 当前终端缺少启动接口或核心查询接口 |
+| `binding_changed` / `unavailable` | 绑定变化或本次原生操作不可用，查看详细状态与错误 |
+| `cancelled` | 服务正在停止，此目标未执行恢复 |
+
+调用与后台检测共用执行锁和恢复状态。后台正忙或另一请求正在执行时，HTTP 返回 `409`、`code="strategy_recovery_busy"`，SDK 抛出 `ManagementError`；调用者可稍后查询状态或重试。即时检测会跳过常规轮询等待，但保留失败冷却、重试上限、绑定核对和 QMT 自身的白名单校验。旧 QMT 缺少独立白名单就绪查询时，仍可使用其原生策略启动接口；支持该查询且明确返回未就绪时等待。请求超时不代表服务端尚未执行，应先用 `runtime.accounts.status()`（HTTP `GET /api/bindings/status`）查看对应绑定的 `qmt_strategy_deploy.targets[].recovery`，避免循环重发。
+
+账号存在当前启用的部署任务时，恢复结果仅汇总这些任务，历史已停用的目录或模式不会让成功恢复显示为 `partial`。当前部署全部停用时，返回 `ineligible` 及停用原因。
+
+此接口恢复当前绑定的托管策略，不重启 QMT、不重新导入策略、不强制重启已运行模型。有关兼容性和部署条件，见 [QMT 策略自动恢复](QMT策略自动恢复.md)。
+
 ## 生命周期、鉴权和目录
 
 ```python
@@ -200,6 +254,7 @@ runtime = RuntimeManager(
 | POST | `/api/account-config` | 保存账号、QMT 路径、模式和策略配置 |
 | POST | `/api/account-config/delete` | 删除指定账号绑定 |
 | GET | `/api/bindings/status` | 账号桥接就绪状态 |
+| POST | `/api/qmt/strategies/recover` | 指定账号绑定，即时检测并尝试恢复已停止的托管策略 |
 | GET | `/api/project-updates/status?remote=1&force=1` | 更新状态、远程版本、备份列表；`force=1` 绕过远端缓存 |
 | POST | `/api/project-updates/ensure-latest` | 检查后按需更新，返回上述 `status`；支持布尔参数 `auto_close_qmt`、`reload` |
 | POST | `/api/project-updates/official` | 官网更新，支持 `auto_close_qmt`、`reload` |
@@ -209,5 +264,18 @@ runtime = RuntimeManager(
 | POST | `/api/management/stop` | 停止后台服务 |
 
 托管实例使用 `X-CFQuant-Management-Key` 请求头，值取自该实例的 `home/management.key`；已有服务也可使用配置的 `X-API-Key`。管理接口始终要求凭据。账号配置的自动启动字段为 `"qmt_auto_login": {"enabled": false}`，服务级启动策略具有优先权。HTTP 更新接口默认触发重启，需自行通过 `boot_id` 变化确认新实例就绪；Python SDK 已封装此等待过程。
+
+策略恢复请求示例（该接口始终要求凭据）：
+
+```http
+POST /api/qmt/strategies/recover HTTP/1.1
+Host: 127.0.0.1:8765
+X-API-Key: YOUR_API_KEY
+Content-Type: application/json
+
+{"account_id":"YOUR_ACCOUNT_ID","account_type":"STOCK"}
+```
+
+HTTP `200` 和 `ok=true` 表示本次检查已执行，恢复是否完成需读取 `data.state`、`data.running`、`data.bridge_confirmed`。参数缺失、绑定不存在或定位不唯一返回 `400`；未鉴权返回 `401`；恢复执行忙或项目正在更新返回 `409`。
 
 按需更新 HTTP 接口也始终要求凭据。它在确有安装或待生效更新时才触发重启，返回 JSON 后执行重启；此时响应中的 `restart_required` 仍为 true，`reload` 包含重启安排。Python 的 `ensure_latest()` 会等待新实例就绪后再将 `restart_required` 置为 false。

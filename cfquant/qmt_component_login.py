@@ -310,6 +310,12 @@ class QtLoginBackend:
             self.api.acknowledge(str(self.failure_hwnd))
         self.failure_hwnd = None
 
+    def diagnostics(self):
+        return dict(minimized_before=self.minimized_before,
+                    foreground_before=self.foreground_before,
+                    foreground_after=self.gui.GetForegroundWindow(),
+                    script_errors=list(self.messages))
+
     def close(self):
         try:
             from .qmt_dependencies import import_login_module
@@ -341,17 +347,13 @@ def main():
     if not 1 <= args.timeout <= 120:
         parser.error("timeout must be between 1 and 120 seconds")
     row, directory = select_binding(args.config, args.binding)
-    backend = QtLoginBackend(directory, args.timeout)
+    backend = IsolatedLoginBackend(directory, args.timeout)
     try:
         backend.select_account((row.get("qmt_auto_login") or {}).get("login_account", ""), replace=True)
         def read_password():
             return getpass.getpass("QMT password (hidden): ") if args.prompt else sys.stdin.readline().rstrip("\r\n")
         result = auto_login(backend, read_password)
-        result.update(binding=args.binding, process_id=backend.pid,
-                      minimized_before=backend.minimized_before,
-                      foreground_before=backend.foreground_before,
-                      foreground_after=backend.gui.GetForegroundWindow(),
-                      script_errors=backend.messages,
+        result.update(binding=args.binding, process_id=backend.pid, **backend.diagnostics(),
                       input_method="Qt native methods; no keyboard/mouse input")
         output = json.dumps(result, ensure_ascii=False, indent=2)
         if args.report:

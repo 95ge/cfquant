@@ -848,6 +848,39 @@ class QmtStrategyManager:
             if changed:
                 self._save()
 
+    def prepare_for_start(self, directory):
+        """Finish this terminal's offline deployment before allowing launch."""
+        root = qmt_root(directory)
+        with self.lock:
+            if self.load_error:
+                raise ValueError(self.load_error)
+            jobs = [job for job in self.jobs.values()
+                    if os.path.normcase(str(qmt_root(job["root"]))) == os.path.normcase(str(root))]
+            if not jobs:
+                return
+            if self.process_checker(root):
+                raise RuntimeError("QMT 尚未完全退出，无法完成启动前策略部署")
+            try:
+                for job in jobs:
+                    if job.get("enabled") and self._prepare_generation_transition(job):
+                        self._control(job)
+                    try:
+                        self._advance(job)
+                    except Exception as error:
+                        count = int(job.get("deploy_retry_count") or 0) + 1
+                        job["deploy_retry_count"] = count
+                        job["deploy_retry_after"] = time.time() + min(10.0, 2.0 * count)
+                        self._state(job, "error", str(error))
+                        raise
+                    if (job.get("state") not in ("configured", "waiting_import", "disabled")
+                            or (job.get("enabled") and any(
+                                not role.get("model_prepared") or role.get("reimport_required")
+                                for role in job["roles"]))):
+                        raise RuntimeError("QMT 启动前策略部署尚未完成: " +
+                                           (job.get("message") or job.get("state", "")))
+            finally:
+                self._save()
+
     def _advance(self, job):
         root = qmt_root(job["root"])
         if self.process_checker(root):
