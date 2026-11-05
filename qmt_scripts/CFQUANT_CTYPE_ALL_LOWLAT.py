@@ -716,15 +716,28 @@ def _publish_callback(event_name, obj):
         _print_log("cfquant ctypes lowlat callback publish failed event=%s error=%s" % (event_name, e))
 
 
+# BEGIN CFQUANT INNER API
+def _publish_inner_callback(name, *args):
+    bridge = globals().get('_normal_bridge')
+    if bridge is not None:
+        from cfquant.qmt_inner_runtime import publish_inner_callback
+        try:
+            publish_inner_callback(bridge, name, *args)
+        except Exception as error:
+            print('cfquant inner callback failed: %s' % error)
+# END CFQUANT INNER API
 def account_callback(ContextInfo, accountInfo):
+    _publish_inner_callback('account_callback', ContextInfo, accountInfo)
     _publish_callback("trader:on_stock_asset", accountInfo)
 
 
 def order_callback(ContextInfo, orderInfo):
+    _publish_inner_callback('order_callback', ContextInfo, orderInfo)
     _publish_callback("trader:on_stock_order", orderInfo)
 
 
 def deal_callback(ContextInfo, dealInfo):
+    _publish_inner_callback('deal_callback', ContextInfo, dealInfo)
     _publish_callback("trader:on_stock_trade", dealInfo)
 
 
@@ -733,6 +746,7 @@ def trade_callback(ContextInfo, tradeInfo):
 
 
 def position_callback(ContextInfo, positionInfo):
+    _publish_inner_callback('position_callback', ContextInfo, positionInfo)
     _publish_callback("trader:on_stock_position", positionInfo)
 
 
@@ -741,6 +755,7 @@ def order_error_callback(ContextInfo, orderError):
 
 
 def orderError_callback(ContextInfo, passOrderInfo, msg):
+    _publish_inner_callback('orderError_callback', ContextInfo, passOrderInfo, msg)
     data = _object_to_callback_dict(passOrderInfo)
     data["error_msg"] = msg
     _publish_callback("trader:on_order_error", data)
@@ -762,3 +777,15 @@ def cancel_order_stock_async_response_callback(ContextInfo, response):
     _publish_callback("trader:on_cancel_order_stock_async_response", response)
 
 _managed_runtime.bind(globals())
+
+
+def task_callback(ContextInfo, taskInfo):
+    _publish_inner_callback('task_callback', ContextInfo, taskInfo)
+
+
+def credit_account_callback(ContextInfo, seq, result):
+    _publish_inner_callback('credit_account_callback', ContextInfo, seq, result)
+
+
+def credit_opvolume_callback(ContextInfo, accid, seq, ret, result):
+    _publish_inner_callback('credit_opvolume_callback', ContextInfo, accid, seq, ret, result)

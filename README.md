@@ -23,6 +23,7 @@
 |---|---|
 | MiniQMT / `xtquant` 兼容调用 | 原有外部 Python 策略可以沿用接近 `xtdata`、`XtQuantTrader`、`StockAccount` 的写法，降低迁移成本。 |
 | 大 QMT 本地桥接 | 把大 QMT 内部的行情、查询、交易、撤单和回调能力桥接给外部 Python 程序和 Web 控制台。 |
+| 大 QMT 原生接口类 | 独立的 `QmtInnerApi` 面向外部数据查询、研究和实盘交易，按系统、行情、交易、回调、扩展数据与因子细分，保留原生函数名与参数，详见 [内置接口说明](docs/大QMT内置接口.md)。 |
 | Web 控制台 | 在浏览器里完成账号绑定、QMT 入口脚本指引、在线检测、接口调试、版本更新和回滚。 |
 | 多账号 / 多 QMT 路由 | 按 `bridge_id`、`account_type`、`account_id` 路由请求，适配多资金账号、普通账户、信用账户和多 QMT 终端。 |
 | 通用、极致、高级三种模式 | 普通环境快速跑通；受限 QMT 使用自包含入口；低延迟场景可拆分普通桥和交易桥。 |
@@ -372,6 +373,7 @@ restart_cfquant.bat     重启
 | QMT 综合部署教程 | [QMT 部署教程](docs/QMT部署教程.md) |
 | cftrader 批量同步/异步下单与撤单 | [cftrader 批量交易与撤单](docs/cftrader批量交易.md)，含 100 单本地基准 |
 | cftrader TWAP / VWAP / POV | [算法交易与共享全推行情](docs/algorithm_trading.md)，含自动订阅、生命周期和接口示例 |
+| 条件单 / 仓位计算 / 下单计划 | [条件单、仓位计算与下单计划](docs/conditional_orders.md)，含止盈止损、到时平仓、回撤 / 保本保护、风险仓位及 Python / HTTP 接口 |
 | 通用模式部署 | [通用模式部署指南](docs/通用模式部署指南.md) |
 | 极致模式部署 | [极致模式部署指南](docs/极致模式部署指南.md) |
 | 高级模式部署 | [高级模式部署指南](docs/高级模式部署指南.md) |

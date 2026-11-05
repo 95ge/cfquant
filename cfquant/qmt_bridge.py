@@ -197,6 +197,8 @@ class CfquantQmtBridge(object):
         )
 
     def _requires_qmt_thread(self, action):
+        if str(action).startswith("qmt_inner."):
+            return True
         if action in {"xtdata.subscribe_quote", "xtdata.subscribe_whole_quote", "xtdata.unsubscribe_quote",
                       "xtdata.subscribe_whole_quote_latency", "cfquant.shared_quote_status", "cfquant.quote_heartbeat",
                       "xtdata.subscribe_l2thousand", "xtdata.subscribe_l2thousand_queue"}:
@@ -239,6 +241,9 @@ class CfquantQmtBridge(object):
             return pack_response(request_id, ok=False, error=e)
 
     def _dispatch(self, action, params, msg):
+        if action.startswith("qmt_inner."):
+            from .qmt_inner_runtime import dispatch_inner_api
+            return dispatch_inner_api(self, action, params, msg)
         if action in ("cfquant.shared_quote_status", "cfquant.quote_heartbeat", "xtdata.subscribe_whole_quote_latency"):
             return self._quote_dispatch(action, params, msg)
         if action == "xttrader.get_hkt_exchange_rate":

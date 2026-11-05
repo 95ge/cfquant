@@ -4,7 +4,7 @@
 // agent while the project is being upgraded.
 (() => {
 // Resolve query, start and notice APIs independently of the login agent.
-const missing = {gui: [], query: [], start: [], whitelist: [], notice: [], dismiss: []};
+const missing = {gui: [], query: [], start: [], whitelist: [], notice: [], dismiss: [], messageBoxDismiss: []};
 function native(group, moduleName, name, result, args) {
   const module = Process.findModuleByName(moduleName);
   const address = module && module.findExportByName(name);
@@ -46,6 +46,9 @@ const isVisible = native('notice', 'Qt5Widgets.dll', '?isVisible@QWidget@@QEBA_N
 const children = native('notice', 'Qt5Core.dll', '?children@QObject@@QEBAAEBV?$QList@PEAVQObject@@@@XZ', 'pointer', ['pointer']);
 const noticeText = native('notice', 'BaseWidget.dll', '?getText@CSimpleTextWidget@XP@@QEBA?AVQString@@XZ', 'pointer', ['pointer', 'pointer']);
 const closeNotice = native('dismiss', 'Dialog.dll', '?closeMessage@CGlobalMessageDialog@XP@@SAXXZ', 'void', []);
+const noticeButtonText = native('messageBoxDismiss', 'Qt5Widgets.dll', '?text@QAbstractButton@@QEBA?AVQString@@XZ', 'pointer', ['pointer', 'pointer']);
+const noticeButtonClick = native('messageBoxDismiss', 'Qt5Widgets.dll', '?click@QAbstractButton@@QEAAXXZ', 'void', ['pointer']);
+const noticeButtonEnabled = native('messageBoxDismiss', 'Qt5Widgets.dll', '?isEnabled@QWidget@@QEBA_NXZ', 'bool', ['pointer']);
 
 function capabilities() {
   const query = missing.gui.concat(missing.query);
@@ -53,9 +56,12 @@ function capabilities() {
   const whitelist = query.concat(missing.whitelist);
   const notice = query.concat(missing.notice);
   const dismiss = notice.concat(missing.dismiss);
+  const messageBoxDismiss = notice.concat(missing.messageBoxDismiss);
   return {can_query: !query.length, can_start: !start.length, can_check_whitelist: !whitelist.length,
-    can_read_notices: !notice.length, can_dismiss_notices: !dismiss.length,
-    missing_query: query, missing_start: start, missing_whitelist: whitelist, missing_notice: notice, missing_dismiss: dismiss};
+    can_read_notices: !notice.length, can_dismiss_notices: !dismiss.length || !messageBoxDismiss.length,
+    can_dismiss_global_notices: !dismiss.length, can_dismiss_message_boxes: !messageBoxDismiss.length,
+    missing_query: query, missing_start: start, missing_whitelist: whitelist, missing_notice: notice,
+    missing_dismiss: dismiss, missing_message_box_dismiss: messageBoxDismiss};
 }
 const typeNames = new Map();
 function hasType(object, name) {
@@ -174,26 +180,58 @@ function childObjects(object) {
   for (let index = begin; index < end; index++) result.push(data.add(16 + index * Process.pointerSize).readPointer());
   return result;
 }
-function illegalIpNotice(hwnd) {
-  if (!capabilities().can_read_notices) return null;
-  const root = getRoot(hwnd);
-  if (!(hasType(root, 'XP::CGlobalMessageDialog') || hasType(root, 'CGlobalMessageDialog')) || !isVisible(root)) return null;
-  const queue = [root], seen = new Set(), matches = [];
+function noticeObjects(root) {
+  const queue = [root], seen = new Set(), objects = [];
   while (queue.length) {
     const object = queue.shift();
     if (object.isNull() || seen.has(object.toString())) continue;
     seen.add(object.toString());
     if (seen.size > 512) throw new Error('Message widget tree too large');
+    objects.push(object);
+    queue.push(...childObjects(object));
+  }
+  return objects;
+}
+function isIllegalIpText(text) {
+  if (/^\[防外接\]\s*Python进程访问了网络地址\s*\[[^\]]+\]\s*[，,]\s*策略运行中止[！!]\s*$/.test(text)) return true;
+  // Older broker builds show CMessageBox with one or more IPv4 endpoints.
+  // Match the complete warning, never a generic message merely mentioning IP.
+  const legacy = /^非法\s*IP\s*[:：]\s*(.+)$/i.exec(text.trim());
+  return Boolean(legacy && legacy[1].trim().split(/\s+/).every(endpoint => {
+    const match = /^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?$/.exec(endpoint);
+    return match && match[1].split('.').every(part => Number(part) <= 255) &&
+      (!match[2] || (Number(match[2]) > 0 && Number(match[2]) <= 65535));
+  }));
+}
+function illegalIpNotice(hwnd) {
+  if (!capabilities().can_read_notices) return null;
+  const root = getRoot(hwnd);
+  const global = hasType(root, 'XP::CGlobalMessageDialog') || hasType(root, 'CGlobalMessageDialog');
+  const messageBox = hasType(root, 'XP::CMessageBox') || hasType(root, 'CMessageBox');
+  if ((!global && !messageBox) || !isVisible(root)) return null;
+  const matches = [];
+  for (const object of noticeObjects(root)) {
     if ((hasType(object, 'XP::CSimpleTextWidget') || hasType(object, 'CSimpleTextWidget')) && isVisible(object)) {
       const value = Memory.alloc(Process.pointerSize);
       noticeText(object, value);
       let text;
       try { text = readString(value); } finally { stringDtor(value); }
-      if (/^\[防外接\]\s*Python进程访问了网络地址\s*\[[^\]]+\]\s*[，,]\s*策略运行中止[！!]\s*$/.test(text)) matches.push(text);
+      if (isIllegalIpText(text)) matches.push(text);
     }
-    queue.push(...childObjects(object));
   }
-  return matches.length === 1 ? {hwnd, text: matches[0]} : null;
+  return matches.length === 1 ? {hwnd, text: matches[0], kind: global ? 'global' : 'message_box'} : null;
+}
+function noticeConfirmButton(root) {
+  const matches = [];
+  for (const object of noticeObjects(root)) {
+    if (!hasType(object, 'QAbstractButton') || !isVisible(object) || !noticeButtonEnabled(object)) continue;
+    const value = Memory.alloc(Process.pointerSize);
+    noticeButtonText(object, value);
+    let text;
+    try { text = readString(value).replace(/&/g, '').trim(); } finally { stringDtor(value); }
+    if (/^(确定|OK)$/i.test(text)) matches.push(object);
+  }
+  return matches.length === 1 ? matches[0] : null;
 }
 rpc.exports.illegalipnotice = hwnd => onGui(hwnd, () => illegalIpNotice(hwnd));
 rpc.exports.dismissillegalip = (mainHwnd, hwnd, text, expected) => onGui(mainHwnd, () => {
@@ -209,8 +247,19 @@ rpc.exports.dismissillegalip = (mainHwnd, hwnd, text, expected) => onGui(mainHwn
   const current = illegalIpNotice(hwnd);
   if (!current) return {outcome: 'already_hidden_or_changed', closed: false};
   if (current.text !== text) return {outcome: 'message_changed', closed: false};
-  closeNotice();
-  const closed = !isVisible(getRoot(hwnd));
+  const support = capabilities();
+  if (current.kind === 'message_box') {
+    if (!support.can_dismiss_message_boxes) return {outcome: 'notice_close_unavailable', closed: false};
+    const button = noticeConfirmButton(getRoot(hwnd));
+    if (!button) return {outcome: 'confirmation_button_unavailable', closed: false};
+    noticeButtonClick(button);
+  } else {
+    if (!support.can_dismiss_global_notices) return {outcome: 'notice_close_unavailable', closed: false};
+    closeNotice();
+  }
+  // A modal CMessageBox may be destroyed as soon as its confirmation returns.
+  const remaining = findWidget(uint64(hwnd));
+  const closed = remaining.isNull() || !isVisible(remaining);
   return {outcome: closed ? 'closed' : 'close_failed', closed};
 });
 rpc.exports.strategystart = (hwnd, expected) => onGui(hwnd, () => {

@@ -131,6 +131,11 @@ from cfquant.protocol import is_readonly_request
 from cfquant.quote_service import ProjectQuoteService
 from cfquant.algo import ALGO_ACTIONS, AlgoEngine, AlgoStore
 from cfquant.algo_broker import RoutedAlgoBroker
+from cfquant.smart_orders import SMART_ACTIONS, SmartOrderEngine
+from cfquant.planning_broker import PlanningBroker
+from cfquant.position_sizing import calculate_position
+
+ALGO_ACTIONS = ALGO_ACTIONS | SMART_ACTIONS
 from cfquant.flow_control import KeyedExecutor, OrderedSender
 from cfquant.quote_history import QuoteHistory
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
@@ -563,6 +568,13 @@ PROJECT_UPDATE_TRADE_WRITE_PATHS = frozenset({
     "/api/future-option/orders/batch",
     "/api/stock-option/orders/batch",
     "/api/cancel",
+    "/api/trade/condition/submit",
+    "/api/trade/plan/submit",
+    "/api/trade/plan/cancel",
+    "/api/trade/algo/submit",
+    "/api/trade/algo/pause",
+    "/api/trade/algo/resume",
+    "/api/trade/algo/cancel",
 })
 QMT_ENTRY_SCRIPT_NAMES = (
     "CFQUANT_CTYPE_ALL_LOWLAT.py",
@@ -4597,7 +4609,7 @@ def account_request(
     )
     preferred_mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=base_bridge_id, account_key=resolved_account_key)
     modes = [preferred_mode]
-    if preferred_mode == "lttx" and action not in CFTRADER_BATCH_ACTIONS:
+    if preferred_mode == "lttx" and action not in CFTRADER_BATCH_ACTIONS and not action.startswith("qmt_inner."):
         modes.append("ctypes")
     attempts = []
     last_error = None
@@ -4653,6 +4665,10 @@ def account_request(
                 }
             except Exception as error:
                 last_error = error
+                if action.startswith("qmt_inner."):
+                    # Includes native orders and stateful subscriptions. Never
+                    # replay them on a different transport after a lost response.
+                    raise
                 attempts.append({
                     "mode": mode,
                     "channel": channel,
@@ -5766,6 +5782,17 @@ def route_external_lttx_request(msg):
     account_type = _external_account_type(params)
     account_key = _external_account_key(params)
     timeout = float(params.get("timeout") or msg.get("timeout") or 12.0)
+    if action.startswith("qmt_inner."):
+        # Bind event forwarding to the actual external requester, never a
+        # caller-supplied destination. Native APIs always use the normal strategy.
+        params = dict(params, _inner_client_id=msg.get("client_id") or msg.get("reply_channel"))
+        route = account_request(account_id, params.get("bridge_id"), "normal", action, params,
+                                default_channel="normal", timeout=timeout,
+                                account_type=account_type, account_key=account_key)
+        meta = dict(route)
+        meta.pop("result", None)
+        meta["route"] = "qmt_inner"
+        return route["result"], meta
     if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS or action == "cfquant.account_subscription_status":
         account_id = account_id or configured_default_account_id()
         if action in CFTRADER_BATCH_ACTIONS:
@@ -6230,6 +6257,11 @@ class LttxWebRouteServer(object):
         if not isinstance(msg, dict):
             return
         event = str(msg.get("event") or "")
+        if event.startswith("qmt_inner:"):
+            client_id = (msg.get("meta") or {}).get("inner_client_id")
+            if client_id:
+                self._push_event(client_id, event, msg.get("data"))
+            return
         if not event.startswith("trader:"):
             return
         account_id = CallbackEventStore.event_account_id_static(msg)
@@ -7242,8 +7274,8 @@ def algorithm_engine():
     with _ALGO_ENGINE_LOCK:
         if _ALGO_ENGINE is None:
             store = AlgoStore(os.path.join(RUNTIME_DB_DIR, "algorithm_tasks.sqlite3"))
-            broker = RoutedAlgoBroker(_algo_trade_request, _algo_market_request)
-            _ALGO_ENGINE = AlgoEngine(PROJECT_QUOTES, broker, store)
+            broker = PlanningBroker(_algo_trade_request, _algo_market_request)
+            _ALGO_ENGINE = SmartOrderEngine(PROJECT_QUOTES, broker, store)
             CLIENTS.add_callback("__event__", _ALGO_ENGINE.notify)
             _ALGO_ENGINE.start()
         return _ALGO_ENGINE
@@ -7252,6 +7284,8 @@ def algorithm_engine():
 def algorithm_request(action, params):
     if action not in ALGO_ACTIONS:
         raise ValueError("unknown algorithm action")
+    if action == "cftrader.calculate_position":
+        return calculate_position(**params)
     account_id = _external_account_id(params) or configured_default_account_id()
     account_type = normalize_account_type(_external_account_type(params))
     account_key = _external_account_key(params)
@@ -7261,6 +7295,19 @@ def algorithm_request(action, params):
     account = dict(account_id=account_id, account_type=account_type, bridge_id=bridge_id,
                    account_key=account_key or account_key_for(account_id, account_type, bridge_id))
     engine = algorithm_engine()
+    if action in ("cftrader.order_condition", "cftrader.preview_order_plan"):
+        options = {key: value for key, value in params.items()
+                   if key not in ("account_id", "account_type", "account_key", "bridge_id", "channel", "timeout")}
+        return getattr(engine, action.split(".")[1])(dict(options, account=account))
+    if action in ("cftrader.submit_order_plan", "cftrader.cancel_order_plan"):
+        return getattr(engine, action.split(".")[1])(params.get("plan_id"), account)
+    if action == "cftrader.query_order_plan":
+        result = engine.query(params.get("plan_id"), account)
+        if result.get("kind") != "plan":
+            raise ValueError("order plan not found")
+        return result
+    if action == "cftrader.list_order_plans":
+        return [row for row in engine.list(account) if row.get("kind") == "plan"]
     if action == "cftrader.order_algo":
         options = {key: value for key, value in params.items()
                    if key not in ("account_id", "account_type", "account_key", "bridge_id", "channel", "timeout")}
@@ -17381,6 +17428,17 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                            "pause": "pause_algo", "resume": "resume_algo", "cancel": "cancel_algo"}
                 if method not in methods:
                     raise ValueError("unknown algorithm operation")
+                self._write_json(ok(algorithm_request("cftrader." + methods[method], body)))
+            elif parsed.path == "/api/trade/position/calculate":
+                self._write_json(ok(algorithm_request("cftrader.calculate_position", body)))
+            elif parsed.path == "/api/trade/condition/submit":
+                self._write_json(ok(algorithm_request("cftrader.order_condition", body)))
+            elif parsed.path.startswith("/api/trade/plan/"):
+                method = parsed.path.rsplit("/", 1)[-1]
+                methods = {"preview": "preview_order_plan", "submit": "submit_order_plan", "query": "query_order_plan",
+                           "list": "list_order_plans", "cancel": "cancel_order_plan"}
+                if method not in methods:
+                    raise ValueError("unknown order plan operation")
                 self._write_json(ok(algorithm_request("cftrader." + methods[method], body)))
             elif parsed.path == "/api/quotes/whole/subscribe":
                 self._write_json(ok(subscribe_whole_quote(body)))

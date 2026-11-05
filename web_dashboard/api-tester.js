@@ -48,7 +48,7 @@
 
   function button(entry) {
     if (endpointFor(entry)) return `<button type="button" class="primary" data-python-test aria-expanded="false">${entry.module === 'callback' ? '查看回调' : '在线测试'}</button>`;
-    if (['trader', 'xtdata'].includes(entry.module)) return '<button type="button" disabled title="此接口尚未提供网页测试入口">仅 Python 调用</button>';
+    if (['trader', 'xtdata', 'qmt_inner'].includes(entry.module)) return '<button type="button" disabled title="此接口尚未提供网页测试入口">仅 Python 调用</button>';
     return '';
   }
 

@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261105_03';
+const FRONTEND_VERSION = 'web_20261106_01';
 
 const state = {
   accountId: '',
@@ -1593,8 +1593,13 @@ const DOWNLOAD_EVENT_PREFIX = 'xtdata:download';
 const DOWNLOAD_EVENT_LIMIT = 80;
 
 const API_GROUPS = [
+  { id: 'qmt_inner', title: '大 QMT 内置接口', children:
+    Object.entries(window.CFQUANT_QMT_INNER_API?.groups || {}).map(([category, title]) => ({
+      id: `qmt_inner_${category}`, title,
+    })),
+  },
   { id: 'cftrader', title: 'cftrader 独立下单/撤单接口' },
-  { id: 'algorithm', title: '算法交易 · TWAP / VWAP / POV' },
+  { id: 'algorithm', title: '算法交易 · 条件单 / 仓位 / TWAP' },
   { id: 'data', title: '数据' },
   { id: 'trade', title: '交易' },
   { id: 'system', title: '系统' },
@@ -1602,6 +1607,10 @@ const API_GROUPS = [
 ];
 
 const API_ENDPOINTS = [
+  ...(window.CFQUANT_QMT_INNER_API?.entries || []).map(entry => ({
+    id: entry.id, group: `qmt_inner_${entry.category}`, title: entry.title, functionName: entry.name,
+    method: 'DOC', path: entry.signature.split('(')[0], desc: entry.description, fields: [], nativeEntry: entry,
+  })),
   ...(window.CFQUANT_CFTRADER_API || []).map((entry) => {
     if (entry.operation === 'algorithm') return {
       id: entry.id, group: 'algorithm', title: entry.title, functionName: entry.name,
@@ -4212,12 +4221,21 @@ function saveApiOpenGroups() {
   localStorage.setItem(API_OPEN_GROUPS_KEY, JSON.stringify([...state.apiOpenGroups]));
 }
 
+function allApiGroups() {
+  return API_GROUPS.flatMap(group => [group, ...(group.children || [])]);
+}
+
+function apiGroupHasEndpoint(group, endpoint) {
+  return group.id === (endpoint.group || 'trade') ||
+    (group.children || []).some(child => child.id === endpoint.group);
+}
+
 function loadApiOpenGroups() {
   try {
     const raw = localStorage.getItem(API_OPEN_GROUPS_KEY);
     if (raw !== null) {
       const saved = JSON.parse(raw);
-      const validGroups = new Set(API_GROUPS.map((group) => group.id));
+      const validGroups = new Set(allApiGroups().map((group) => group.id));
       state.apiOpenGroups = new Set(saved.filter((id) => validGroups.has(id)));
     } else {
       state.apiOpenGroups = new Set();
@@ -4237,12 +4255,13 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
   if (previousEndpointId !== endpoint.id) state.apiDebugRequestSeq += 1;
   if (options.ensureGroupOpen) {
     state.apiOpenGroups.add(endpoint.group || 'trade');
+    API_GROUPS.filter(group => apiGroupHasEndpoint(group, endpoint)).forEach(group => state.apiOpenGroups.add(group.id));
   }
   saveApiOpenGroups();
   list.innerHTML = '';
   const groupsToggle = $('apiGroupsToggleBtn');
   if (groupsToggle) {
-    const groups = API_GROUPS.filter(group => API_ENDPOINTS.some(item => (item.group || 'trade') === group.id));
+    const groups = allApiGroups().filter(group => API_ENDPOINTS.some(item => apiGroupHasEndpoint(group, item)));
     const allOpen = groups.length > 0 && groups.every(group => state.apiOpenGroups.has(group.id));
     groupsToggle.textContent = allOpen ? '全部收起' : '全部展开';
     groupsToggle.onclick = () => {
@@ -4259,12 +4278,12 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
       groupsToggle.textContent = expand ? '全部收起' : '全部展开';
     };
   }
-  API_GROUPS.forEach((group) => {
+  const appendGroup = (group, parent) => {
     const groupEndpoints = API_ENDPOINTS.filter((item) => (item.group || 'trade') === group.id);
-    if (!groupEndpoints.length) return;
+    if (!API_ENDPOINTS.some(item => apiGroupHasEndpoint(group, item))) return;
     const open = state.apiOpenGroups.has(group.id);
     const wrap = document.createElement('div');
-    wrap.className = `api-group${open ? ' open' : ''}${(endpoint.group || 'trade') === group.id ? ' active' : ''}`;
+    wrap.className = `api-group${parent === list ? '' : ' api-subgroup'}${open ? ' open' : ''}${apiGroupHasEndpoint(group, endpoint) ? ' active' : ''}`;
     const header = document.createElement('button');
     header.type = 'button';
     header.className = 'api-group-head';
@@ -4275,20 +4294,22 @@ function renderApiDocs(endpointId = state.apiEndpointId, options = {}) {
     const body = document.createElement('div');
     body.className = 'api-group-body';
     if (!open) body.hidden = true;
+    (group.children || []).forEach(child => appendGroup(child, body));
     groupEndpoints.forEach((item) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `api-endpoint${item.id === endpoint.id ? ' active' : ''}`;
       button.dataset.endpointId = item.id;
-      button.innerHTML = `<span class="api-method">${esc(item.sdkEntry ? 'SDK' : item.method)}</span><span class="api-endpoint-label"><span>${esc(item.title)}</span>${item.functionName ? `<code>${esc(item.functionName)}</code>` : ''}</span>`;
+      button.innerHTML = `<span class="api-method">${esc(item.sdkEntry || item.nativeEntry ? 'SDK' : item.method)}</span><span class="api-endpoint-label"><span>${esc(item.title)}</span>${item.functionName ? `<code>${esc(item.functionName)}</code>` : ''}</span>`;
       body.appendChild(button);
     });
     wrap.appendChild(body);
-    list.appendChild(wrap);
-  });
+    parent.appendChild(wrap);
+  };
+  API_GROUPS.forEach(group => appendGroup(group, list));
   $('apiTitle').textContent = endpoint.functionName ? `${endpoint.title} · ${endpoint.functionName}` : endpoint.title;
   $('apiDesc').textContent = endpoint.desc;
-  $('apiRoute').textContent = endpoint.sdkEntry && endpoint.id !== 'async_order_example'
+  $('apiRoute').textContent = endpoint.nativeEntry ? `Python SDK ${endpoint.path}` : endpoint.sdkEntry && endpoint.id !== 'async_order_example'
     ? `Python SDK cfquant.cftrader.CfQuantTrader.${endpoint.sdkEntry.name}`
     : `${endpoint.method} ${endpoint.path}`;
   $('apiHttpPreview').classList.toggle('hidden', endpoint.method === 'DOC');
@@ -4745,23 +4766,26 @@ async function copyDocumentCode(button, code) {
 function renderApiDocDetail(endpoint) {
   const box = $('apiDocDetail');
   if (!box) return;
-  if (endpoint.sdkEntry) {
-    const entry = endpoint.sdkEntry;
+  if (endpoint.sdkEntry || endpoint.nativeEntry) {
+    const entry = endpoint.sdkEntry || endpoint.nativeEntry;
+    const native = Boolean(endpoint.nativeEntry);
     const algorithm = entry.operation === 'algorithm';
     const httpExample = entry.http ? `${entry.http.method} ${entry.http.path}\nContent-Type: application/json\nX-API-Key: YOUR_API_KEY\n\n${JSON.stringify(entry.http.body, null, 2)}` : '';
     box.innerHTML = `
       <div class="api-doc-extra">
-        <h3>${algorithm ? 'cftrader 算法交易接口' : 'cfquant 独立 Python SDK 接口'}</h3>
+        <h3>${native ? '大 QMT 内置接口 · QmtInnerApi' : algorithm ? 'cftrader 算法交易接口' : 'cfquant 独立 Python SDK 接口'}</h3>
         <p>${esc(entry.usage)}</p><p>${esc(entry.note)}</p>
         <button type="button" data-api-sdk-tutorial>${algorithm ? 'Python API 参考' : '教程与可复制示例'}</button>
+        ${native ? `<a href="${esc(entry.source)}" target="_blank" rel="noopener noreferrer">大 QMT 官方文档</a><p>通过外部 Python 调用；本页展示接口说明和示例。</p>` : ''}
         ${algorithm ? '<button type="button" data-api-algorithm-guide>算法交易完整教程</button>' : ''}
         <pre class="guide-code" tabindex="0"><code>${esc(entry.signature)}</code></pre>
+        ${native && entry.nativeSignature ? `<h4>QMT 原生原型</h4><pre class="guide-code" tabindex="0"><code>${esc(entry.nativeSignature)}</code></pre>` : ''}
       </div>
       <div><h3>调用参数</h3>${apiDocTable(entry.parameters.map(p => [p.name, `${p.help} 默认值：${p.default}`]))}</div>
       <div><h3>返回值与状态</h3>${apiDocTable(entry.resultRows)}</div>
       ${entry.orderFields.length ? `<div class="api-doc-extra"><h3>orders 逐笔字段</h3>${apiDocTable(entry.orderFields.map(p => [p.name, `${p.help} 默认值：${p.default}`]))}</div>` : ''}
-      <div class="api-doc-extra"><h3>Python 调用示例</h3><p>${esc(entry.resultHelp)}</p><button type="button" data-api-copy-example="python">复制 Python 示例</button><pre class="guide-code" data-language="python" tabindex="0"><code>${esc(entry.example)}</code></pre></div>
-      ${algorithm ? `<div class="api-doc-extra"><h3>HTTP 请求示例</h3><p>服务地址默认是 http://127.0.0.1:8765；将账号、API Key 和任务参数替换为自己的配置。创建接口返回 algo_id，查询与控制接口返回任务状态。</p><button type="button" data-api-copy-example="http">复制 HTTP 示例</button><pre class="guide-code" data-language="http" tabindex="0"><code>${esc(httpExample)}</code></pre></div>` : ''}`;
+      <div class="api-doc-extra"><h3>${esc(entry.exampleTitle || 'Python 调用示例')}</h3><p>${esc(entry.resultHelp)}</p><button type="button" data-api-copy-example="python">复制 Python 示例</button><pre class="guide-code" data-language="python" tabindex="0"><code>${esc(entry.example)}</code></pre></div>
+      ${algorithm ? `<div class="api-doc-extra"><h3>HTTP 请求示例</h3><p>服务地址默认是 http://127.0.0.1:8765；将账号、API Key 和任务参数替换为自己的配置。返回结构见本接口的返回值说明。</p><button type="button" data-api-copy-example="http">复制 HTTP 示例</button><pre class="guide-code" data-language="http" tabindex="0"><code>${esc(httpExample)}</code></pre></div>` : ''}`;
     box.querySelector('[data-api-sdk-tutorial]').addEventListener('click', () => {
       setView('tutorial');
       window.CfquantPythonReference.open(entry.id);

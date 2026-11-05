@@ -23,6 +23,10 @@ class RecordingTx:
     def __init__(self):
         self.pushes = []
         self.store = {}
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def push(self, *args):
         self.pushes.append(args)

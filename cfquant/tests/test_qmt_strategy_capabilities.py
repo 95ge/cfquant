@@ -14,7 +14,7 @@ AGENT = Path(__file__).resolve().parents[1] / 'qmt_strategy_agent.js'
 HARNESS = r'''
 const fs = require('fs'), vm = require('vm');
 const options = JSON.parse(fs.readFileSync(0, 'utf8'));
-let nextId = 1, hook, starts = 0, closes = 0, whitelistChecks = 0;
+let nextId = 1, hook, starts = 0, closes = 0, buttonClicks = 0, whitelistChecks = 0;
 class Pointer {
   constructor(value = {}, offset = 0, id = nextId++) { this.value = value; this.offset = offset; this.id = id; }
   add(offset) { return new Pointer(this.value, this.offset + offset, this.id); }
@@ -33,10 +33,17 @@ const target = {id:'7', name:'CFQ_TEST001_LITE', account:'TEST001', m_strAccount
   runMode:'1', startupAutorun:'1', eStrategyType:'4', stock:'SH000300', peroid:'86400'};
 const models = [Object.assign({}, target, {running: options.running !== false})];
 const main = new Pointer({types:['TC::CMainWindow'], children:[]});
-const text = '[防外接] Python进程访问了网络地址 [192.0.2.1]，策略运行中止！';
+const text = options.text || (options.legacy ? '非法IP:192.0.2.1:18028 198.51.100.2:59782' :
+  '[防外接] Python进程访问了网络地址 [192.0.2.1]，策略运行中止！');
 const content = new Pointer({types:[options.unqualified ? 'CSimpleTextWidget' : 'XP::CSimpleTextWidget'], text, children:[]});
 const container = new Pointer({types:['QWidget'], children:[content]});
-const notice = new Pointer({types:['XP::CGlobalMessageDialog'], children:[container]});
+const notice = new Pointer({types:[options.dialogType || (options.legacy ? 'XP::CMessageBox' : 'XP::CGlobalMessageDialog')], children:[container]});
+if (options.legacy && !options.noButton) {
+  const button = () => new Pointer({types:['QAbstractButton'], text:options.buttonText || '确定',
+    enabled:!options.disabledButton, children:[]});
+  notice.value.children.push(button());
+  if (options.duplicateButton) notice.value.children.push(button());
+}
 if (options.duplicate) notice.value.children.push(new Pointer({types:['XP::CSimpleTextWidget'], text, children:[]}));
 if (options.unrelated) content.value.text = 'An unrelated message';
 const manager = new Pointer({});
@@ -45,9 +52,10 @@ function call(symbol, args) {
   if (symbol === 'DispatchMessageW') return;
   if (symbol === 'GetWindowThreadProcessId') return 1;
   if (symbol === 'PostMessageW') { setImmediate(() => hook.onLeave.call({threadId:1})); return true; }
-  if (symbol.startsWith('?find@QWidget')) return String(a) === '1' ? main : notice;
+  if (symbol.startsWith('?find@QWidget')) return String(a) === '1' ? main : (notice.value.destroyed ? new Pointer(null) : notice);
   if (symbol.startsWith('?inherits@')) return a.value.types.includes(b.value.text);
   if (symbol.startsWith('?isVisible@')) return a.value.visible !== false;
+  if (symbol.startsWith('?isEnabled@')) return a.value.enabled !== false;
   if (symbol.startsWith('??0QString')) { a.value.text = b.value.text; return a; }
   if (symbol.startsWith('??1QString')) return;
   if (symbol.startsWith('?size@QString')) return a.value.text.length;
@@ -65,6 +73,13 @@ function call(symbol, args) {
   if (symbol.startsWith('?attribute@')) { b.value.text = a.value.models[a.value.index][c.value.text]; return b; }
   if (symbol.startsWith('?children@')) return new Pointer({list:new Pointer({items:a.value.children})});
   if (symbol.startsWith('?getText@')) { b.value.text = a.value.text; return b; }
+  if (symbol.startsWith('?text@QAbstractButton')) { b.value.text = a.value.text; return b; }
+  if (symbol.startsWith('?click@QAbstractButton')) {
+    buttonClicks++;
+    if (!options.closeFails) notice.value.visible = false;
+    if (options.destroyOnClose) notice.value.destroyed = true;
+    return;
+  }
   if (symbol.startsWith('?closeMessage@')) { closes++; notice.value.visible = false; return; }
   throw new Error('Unimplemented test native call: ' + symbol);
 }
@@ -89,15 +104,16 @@ vm.runInContext(fs.readFileSync(options.agent, 'utf8'), context);
       result.notice = (await api.illegalipnotice('2')).result;
       if (result.notice) {
         if (options.changed) content.value.text = text.replace('192.0.2.1','192.0.2.2');
-        result.dismiss = (await api.dismissillegalip('1','2',result.notice.text,[target])).result;
+        result.dismiss = (await api.dismissillegalip('1','2',result.notice.text,
+          [Object.assign({}, target, options.dismissExpected || {})])).result;
       }
     }
   } else {
     try { await api.strategystatus('1'); } catch (error) { result.query_error = error.message; }
   }
-  result.starts = starts; result.closes = closes; result.whitelistChecks = whitelistChecks;
+  result.starts = starts; result.closes = closes; result.buttonClicks = buttonClicks; result.whitelistChecks = whitelistChecks;
   process.stdout.write(JSON.stringify(result));
-})().catch(error => { process.stdout.write(JSON.stringify({error:error.message,starts,closes})); });
+})().catch(error => { process.stdout.write(JSON.stringify({error:error.message,starts,closes,buttonClicks})); });
 '''
 
 
@@ -171,6 +187,59 @@ def test_ambiguous_unrelated_or_unsupported_notice_is_not_closed(options):
     result = run_agent(notice=True, **options)
     assert result['notice'] is None and result['closes'] == 0
     assert result['snapshot']['models'][0]['running'] is True
+
+
+@pytest.mark.parametrize('options', [
+    {}, {'unqualified': True, 'dialogType': 'CMessageBox'}, {'destroyOnClose': True},
+    {'missing': ['?closeMessage@']}, {'buttonText': '&OK'},
+    {'text': '非法IP：192.0.2.1'},
+])
+def test_legacy_illegal_ip_warning_confirms_its_own_dialog_after_strategy_recovered(options):
+    result = run_agent(notice=True, legacy=True, running=True, **options)
+    assert result['snapshot']['models'][0]['running'] is True
+    assert result['notice']['hwnd'] == '2'
+    assert result['dismiss'] == {'outcome': 'closed', 'closed': True}
+    assert result['buttonClicks'] == 1 and result['closes'] == 0 and result['starts'] == 0
+
+
+@pytest.mark.parametrize('options', [
+    {'text': '非法IP设置已修改'}, {'text': '非法IP:192.0.2.1:18028，是否继续交易？'},
+    {'text': '非法IP:999.0.2.1:18028'}, {'text': '非法IP:192.0.2.1:65536'},
+    {'text': '非法IP:192.0.2.1:18028 unrelated'}, {'dialogType': 'QDialog'}, {'duplicate': True},
+])
+def test_legacy_confirmation_never_accepts_unrelated_or_ambiguous_messages(options):
+    result = run_agent(notice=True, legacy=True, **options)
+    assert result['notice'] is None
+    assert result['buttonClicks'] == 0 and result['closes'] == 0
+
+
+@pytest.mark.parametrize('options,outcome', [
+    ({'noButton': True}, 'confirmation_button_unavailable'),
+    ({'disabledButton': True}, 'confirmation_button_unavailable'),
+    ({'buttonText': '取消'}, 'confirmation_button_unavailable'),
+    ({'duplicateButton': True}, 'confirmation_button_unavailable'),
+    ({'missing': ['?click@QAbstractButton']}, 'notice_close_unavailable'),
+    ({'changed': True}, 'message_changed'),
+    ({'closeFails': True}, 'close_failed'),
+])
+def test_legacy_warning_close_checks_button_message_and_actual_visibility(options, outcome):
+    result = run_agent(notice=True, legacy=True, **options)
+    assert result['notice']['hwnd'] == '2'
+    assert result['dismiss'] == {'outcome': outcome, 'closed': False}
+    assert result['buttonClicks'] == (1 if outcome == 'close_failed' else 0)
+    assert result['closes'] == 0
+
+
+def test_legacy_warning_does_not_confirm_after_binding_changed():
+    result = run_agent(notice=True, legacy=True, dismissExpected={'account': 'WRONG'})
+    assert 'binding changed' in result['error']
+    assert result['buttonClicks'] == 0 and result['closes'] == 0
+
+
+def test_global_warning_does_not_require_legacy_button_exports():
+    result = run_agent(notice=True, missing=['?click@QAbstractButton', '?text@QAbstractButton', '?isEnabled@'])
+    assert result['dismiss'] == {'outcome': 'closed', 'closed': True}
+    assert result['closes'] == 1 and result['buttonClicks'] == 0
 
 
 @pytest.mark.parametrize('qt_version', [(5,6,2), (5,9,9), (5,15,2), (6,5,0)])

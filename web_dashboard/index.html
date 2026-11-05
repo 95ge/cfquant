@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261105_03">
+  <link rel="stylesheet" href="/styles.css?v=web_20261106_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -2490,7 +2490,7 @@ else:
 
                 <article class="tutorial-topic" data-guide-panel="algorithm">
                   <div class="guide-section" id="algo-overview">
-                    <h3>算法交易：TWAP、VWAP、POV</h3>
+                    <h3>算法交易：执行算法、条件单与仓位计划</h3>
                     <p>通过 <code>cftrader.CfQuantTrader</code> 提交一个母单，由 Web 服务按计划拆分并执行子单。无需事先订阅行情：用户订阅、行情诊断和算法任务复用同一行情源的全推订阅及最新缓存，取消其中一个使用者不会中断其他使用者。</p>
                     <p>启动新版 Web 服务、加载新版 QMT 脚本并配置行情与交易账号后即可调用。首版支持 SH/SZ/BJ 的普通买卖；所有子单受买入最高价或卖出最低价约束。以下示例默认 <code>ENABLE_TRADING = False</code>，替换账号及交易参数后再开启。</p>
                     <nav class="python-guide-toc" aria-label="算法交易章节">
@@ -2498,6 +2498,7 @@ else:
                       <a href="#algo-vwap">VWAP 示例</a>
                       <a href="#algo-pov">POV 示例</a>
                       <a href="#algo-controls">查询、暂停、恢复、撤销</a>
+                      <a href="#algo-protection">条件单与风险仓位</a>
                       <a href="#algo-parameters">参数与状态</a>
                       <a href="#algo-http">HTTP 接口</a>
                     </nav>
@@ -2561,6 +2562,13 @@ else:
     print("Preview only; requests are disabled")</pre>
                     <p>暂停会停止新增子单并请求撤销在途子单；恢复仍遵循原截止时间，并等待未确认撤单完成。撤销后可能保持 <code>CANCELLING</code>，直到子单结果全部确认。关闭调用脚本不会撤销任务，需显式调用 <code>cancel_algo()</code>。</p>
                     <p>接口说明：<a href="#python-api=cftrader.query_algo">query_algo</a> · <a href="#python-api=cftrader.list_algos">list_algos</a> · <a href="#python-api=cftrader.pause_algo">pause_algo</a> · <a href="#python-api=cftrader.resume_algo">resume_algo</a> · <a href="#python-api=cftrader.cancel_algo">cancel_algo</a></p>
+                  </div>
+                  <div class="guide-section" id="algo-protection" tabindex="-1">
+                    <h3>条件保护组、仓位计算与下单计划</h3>
+                    <p><a href="#python-api=cftrader.calculate_position">calculate_position</a> 支持固定风险金额、账户风险比例、固定资金、资金比例和目标权重。输入买入价与止损价，计入费用并向下取合法股数；2% 风险预算与投入 2% 资金是两个口径。</p>
+                    <p><a href="#python-api=cftrader.order_condition">order_condition</a> 将止盈、止损、定时 / 持仓期限退出、高点回撤、保本和阶梯保护放入同一组；任一满足即触发，共用一份保护数量。查询返回触发原因、高点、保护价、关联委托和生命周期日志。</p>
+                    <p>使用 <a href="#python-api=cftrader.preview_order_plan">preview_order_plan</a> 查询账户并预览数量，再用 <a href="#python-api=cftrader.submit_order_plan">submit_order_plan</a> 复核并提交。保护只覆盖确认成交的股份；T+1 不可卖时等待。<a href="#python-api=cftrader.cancel_order_plan">cancel_order_plan</a> 撤入场余量，保留已成交股份的保护。</p>
+                    <p>回撤高点来自实际观测到的有效快照；暂停或断线期间无法观测的高点不会补造。止损价和卖出最低接受价分别设置，预计损失不是最大亏损保证。点击接口名称查看参数、Python 和 HTTP 示例。</p>
                   </div>
                   <div class="guide-section" id="algo-parameters">
                     <h3>常用参数与任务状态</h3>
@@ -3453,11 +3461,13 @@ else:
   <script src="/vendor/mermaid.min.js?v=10.9.1"></script>
   <script src="/python-api-data.js?v=20261017_whole_quote_markets_01"></script>
   <script src="/cftrader-api-data.js?v=20261103_algorithm_01"></script>
-  <script src="/api-tester.js?v=20261103_algorithm_01"></script>
-  <script src="/python-api.js?v=20261103_algorithm_01"></script>
-  <script src="/docs.js?v=20261103_algorithm_01"></script>
+  <script src="/smart-order-api-data.js?v=20261105_smart_orders_01"></script>
+  <script src="/qmt-inner-api-data.js?v=20261106_inner_scope_01"></script>
+  <script src="/api-tester.js?v=20261105_inner_01"></script>
+  <script src="/python-api.js?v=20261106_inner_scope_01"></script>
+  <script src="/docs.js?v=20261105_smart_orders_01"></script>
   <script src="/trading-monitor.js?v=20261103_scope_01"></script>
-  <script src="/app.js?v=web_20261105_03"></script>
+  <script src="/app.js?v=web_20261106_01"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

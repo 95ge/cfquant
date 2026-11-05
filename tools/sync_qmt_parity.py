@@ -550,7 +550,11 @@ LITE_OBJECT_QUERY_METHODS = {
         from tools.sync_qmt_shared_quotes import updated_source as update_shared_quotes
     except ImportError:
         from sync_qmt_shared_quotes import updated_source as update_shared_quotes
-    return update_shared_quotes(update_account_timing_source(update_latency_source(source)))
+    try:
+        from tools.sync_qmt_inner import updated_source as update_inner_api
+    except ImportError:
+        from sync_qmt_inner import updated_source as update_inner_api
+    return update_inner_api(update_shared_quotes(update_account_timing_source(update_latency_source(source))), lite=True)
 
 
 def main():

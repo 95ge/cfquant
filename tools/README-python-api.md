@@ -32,3 +32,30 @@ python -m pytest -q cfquant/tests/test_python_api_reference.py cfquant/tests/tes
 字段和枚举表是原版协议参考，不能据此推断当前桥已提供全部字段。
 板块修改及下单、撤单示例默认关闭写入开关。
 提交更新时包含生成的 JS，并更新 `index.html` 中两个 Python 文档脚本的版本参数。
+
+## 大 QMT 内置接口目录
+
+`QmtInnerApi` 的网页目录独立维护在 `web_dashboard/qmt-inner-api-data.js`，同时供“接口”页和 Python API 参考使用。顶层只有“大 QMT 内置接口”，下设系统与会话、行情与数据、交易、交易回调、扩展数据与因子五个子组。源方法清单取自 `cfquant/qmt_inner_catalog.py`，显式签名取自 `cfquant/qmt_inner.py`，项目示例由 `tools/qmt_inner_examples.py` 维护。纳入范围以外部调用价值为准，排除项和理由见 `docs/大QMT内置接口.md`。
+
+将官方 `innerApi` 目录下的 `system_function.html`、`data_function.html`、`trading_function.html`、`callback_function.html`、`quote_function.html` 保存到本地目录后执行：
+
+```powershell
+python -X utf8 tools/build_qmt_inner_reference.py --source-dir runtime/reports/inner_api_docs
+python -X utf8 tools/build_qmt_inner_reference.py --source-dir runtime/reports/inner_api_docs --check
+python -m pytest -q cfquant/tests/test_qmt_inner_reference.py
+```
+
+生成器仅提取原生函数标题与原型，不保存官方文章正文。网页区分“Python 调用示例”和“能力检查示例”；复杂重载或模型接口的具体调用参数需对照链接的原生文档。目录状态为“原生调用 · 依终端能力”，不把已登记等同于全部实测通过。
+
+提交生成数据时同步更新 `index.html` 中相应脚本版本。静态目录从磁盘按请求读取，已有页面刷新即可获得新目录；这与更新 QMT 正在运行的桥接代码需要重启策略是两件事。
+
+## 条件单、仓位计算与下单计划
+
+扩展目录在 `web_dashboard/smart-order-api-data.js`，由接口页、文档页及 Python API 参考共同使用。它在 `cftrader-api-data.js` 之后加载，不改写原生 xtquant 接口目录。业务说明为 `docs/conditional_orders.md`，SDK 方法在 `cfquant/cftrader.py`，纯计算器在 `cfquant/position_sizing.py`。
+
+修改参数时同时更新网页签名、参数帮助、Python 示例和等价 HTTP 请求。`calculate_position` 为静态方法，参数均为关键字；其余条件 / 计划方法通过共享 Web 服务执行。以下测试使用本地假账户、行情和委托，浏览器测试还检查手机布局与复制内容，不向 QMT 下单：
+
+```powershell
+python -m pytest -q cfquant/tests/test_smart_orders.py cfquant/tests/test_smart_orders_api.py
+python -m pytest -q cfquant/tests/test_smart_orders_docs.py cfquant/tests/test_cftrader_tutorial.py
+```

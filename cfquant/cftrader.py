@@ -5,6 +5,7 @@ from .batch_orders import (
     prepare_batch_cancels, prepare_batch_orders, validate_batch_cancel_response, validate_batch_response,
 )
 from .protocol import new_id
+from .position_sizing import calculate_position
 from .xttrader import XtQuantTrader, _account_payload
 import threading
 
@@ -26,7 +27,7 @@ def _algo_rpc(action, params):
     return client.request(action, params)
 
 
-__all__ = ["CfQuantTrader"]
+__all__ = ["CfQuantTrader", "calculate_position"]
 
 class CfQuantTrader:
     """Use CfQuantTrader(trader) with an existing cfquant XtQuantTrader instance.
@@ -56,6 +57,70 @@ class CfQuantTrader:
 
     def order_twap(self, account, stock_code, order_type, order_volume, limit_price, **options):
         return self.order_algo(account, stock_code, order_type, order_volume, "TWAP", limit_price, **options)
+
+    calculate_position = staticmethod(calculate_position)
+
+    def order_condition(self, account, stock_code, conditions, execution, **options):
+        """Create a persistent sell protection group; manage it with query/pause/cancel_algo."""
+        payload = _account_payload(self._trader._resolve_account(account))
+        params = dict(options, account=payload, stock_code=stock_code, conditions=conditions, execution=execution)
+        params.setdefault("request_key", new_id("condition_request"))
+        task_id = _algo_rpc("cftrader.order_condition", params)
+        self._algo_accounts[task_id] = payload
+        return task_id
+
+    def order_stop_loss(self, account, stock_code, order_volume, stop_price, limit_price, **options):
+        return self.order_condition(account, stock_code, [{"type": "stop_loss", "price": stop_price}],
+                                    {"limit_price": limit_price}, order_volume=order_volume, **options)
+
+    def order_take_profit(self, account, stock_code, order_volume, take_profit_price, limit_price, **options):
+        return self.order_condition(account, stock_code, [{"type": "take_profit", "price": take_profit_price}],
+                                    {"limit_price": limit_price}, order_volume=order_volume, **options)
+
+    def order_trailing_stop(self, account, stock_code, order_volume, drawdown_percent, limit_price,
+                            activation_price=None, **options):
+        rule = dict(type="trailing_stop", drawdown_percent=drawdown_percent)
+        if activation_price is not None:
+            rule["activation_price"] = activation_price
+        return self.order_condition(account, stock_code, [rule], {"limit_price": limit_price},
+                                    order_volume=order_volume, **options)
+
+    def order_breakeven_stop(self, account, stock_code, order_volume, reference_price, activation_percent,
+                             limit_price, offset_amount=0, **options):
+        return self.order_condition(account, stock_code,
+            [dict(type="breakeven_stop", activation_percent=activation_percent, offset_amount=offset_amount)],
+            {"limit_price": limit_price}, order_volume=order_volume, reference_price=reference_price, **options)
+
+    def order_time_exit(self, account, stock_code, order_volume, at, limit_price, only_if_loss=False, **options):
+        return self.order_condition(account, stock_code, [dict(type="time_exit", at=at, only_if_loss=only_if_loss)],
+                                    {"limit_price": limit_price}, order_volume=order_volume, **options)
+
+    def preview_order_plan(self, account, stock_code, sizing, **options):
+        """Persist a preview without ordering; account balances are read by the service."""
+        payload = _account_payload(self._trader._resolve_account(account))
+        params = dict(options, account=payload, stock_code=stock_code, sizing=sizing)
+        params.setdefault("request_key", new_id("plan_request"))
+        plan = _algo_rpc("cftrader.preview_order_plan", params)
+        self._algo_accounts[plan["algo_id"]] = payload
+        return plan
+
+    def _plan_control(self, action, plan_id=None, account=None):
+        payload = _account_payload(self._trader._resolve_account(account or self._algo_accounts.get(plan_id)))
+        return _algo_rpc("cftrader." + action, dict(plan_id=plan_id, account=payload))
+
+    def submit_order_plan(self, plan_id, account=None):
+        """Revalidate and submit once. Repeating the same plan_id returns its current state."""
+        return self._plan_control("submit_order_plan", plan_id, account)
+
+    def query_order_plan(self, plan_id, account=None):
+        return self._plan_control("query_order_plan", plan_id, account)
+
+    def list_order_plans(self, account=None):
+        return self._plan_control("list_order_plans", account=account)
+
+    def cancel_order_plan(self, plan_id, account=None):
+        """Cancel the entry remainder; retain protection for confirmed fills."""
+        return self._plan_control("cancel_order_plan", plan_id, account)
 
     def order_vwap(self, account, stock_code, order_type, order_volume, limit_price, **options):
         return self.order_algo(account, stock_code, order_type, order_volume, "VWAP", limit_price, **options)

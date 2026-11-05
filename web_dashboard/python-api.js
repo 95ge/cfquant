@@ -4,10 +4,11 @@
   const data = window.CFQUANT_PYTHON_API;
   if (!data) return;
   const extensions = window.CFQUANT_CFTRADER_API || [];
-  const entries = [...extensions, ...data.entries, ...data.references];
+  const nativeEntries = window.CFQUANT_QMT_INNER_API?.entries || [];
+  const entries = [...nativeEntries, ...extensions, ...data.entries, ...data.references];
   const byId = new Map(entries.map(entry => [entry.id, entry]));
-  const modules = { cftrader: 'cftrader', xtdata: 'XtData 行情', trader: 'XtQuantTrader 交易', callback: 'XtQuantTraderCallback', type: '交易数据结构', reference: '概述与附录' };
-  const labels = { extension: 'cfquant 独立接口', supported: '已适配', partial: '部分适配', unverified: '尚未支持 · 条件待验证', unsupported: '尚未支持', reference: '参考资料' };
+  const modules = { qmt_inner: '大 QMT 内置 · QmtInnerApi', cftrader: 'cftrader', xtdata: 'XtData 行情', trader: 'XtQuantTrader 交易', callback: 'XtQuantTraderCallback', type: '交易数据结构', reference: '概述与附录' };
+  const labels = { native: '原生调用 · 依终端能力', extension: 'cfquant 独立接口', supported: '已适配', partial: '部分适配', unverified: '尚未支持 · 条件待验证', unsupported: '尚未支持', reference: '参考资料' };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const inline = value => esc(value).replace(/`([^`]+)`/g, '<code>$1</code>');
   let root, nav, doc, legacy, article, current = 'guide', query = '', filter = '', codeIndex = 0;
@@ -35,10 +36,12 @@
     codeIndex = 0;
     const api = entry.module !== 'reference';
     const extension = entry.status === 'extension';
-    const supported = ['supported', 'partial', 'extension'].includes(entry.status);
+    const native = entry.module === 'qmt_inner';
+    const supported = ['supported', 'partial', 'extension', 'native'].includes(entry.status);
     let reference = `<p>${inline(entry.description)}</p>`;
-    if (entry.signature) reference += codeBlock(entry.signature, extension ? 'cftrader 接口签名' : '原版接口签名');
-    if (entry.parameters?.length) reference += `<h4>${extension ? '调用参数' : '原版参数'}</h4>` + table(['参数', '默认值', '含义'], entry.parameters.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
+    if (entry.signature) reference += codeBlock(entry.signature, native ? 'QmtInnerApi 调用签名' : extension ? 'cftrader 接口签名' : '原版接口签名');
+    if (entry.nativeSignature) reference += codeBlock(entry.nativeSignature, 'QMT 原生原型');
+    if (entry.parameters?.length) reference += `<h4>${extension || native ? '调用参数' : '原版参数'}</h4>` + table(['参数', '默认值', '含义'], entry.parameters.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
     if (entry.orderFields?.length) reference += '<h4>orders 逐笔字段</h4>' + table(['字段', '默认值', '含义'], entry.orderFields.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
     if (entry.fields?.length) reference += '<h4>原版字段 / 类型</h4>' + table(['字段', '类型 / 含义'], entry.fields.map(row => ['`' + row[0] + '`', row[1]]));
     if (entry.originalReturns) reference += `<h4>原版返回</h4><p>${inline(entry.originalReturns)}</p>`;
@@ -51,7 +54,7 @@
     if (entry.resultHelp) solution += `<h4>返回值与处理</h4><p>${inline(entry.resultHelp)}</p>`;
     if (entry.resultRows?.length) solution += table(['字段 / 状态', '含义'], entry.resultRows);
     solution += `<p>${inline(entry.usage)}</p>`;
-    if (entry.example) solution += codeBlock(entry.example, '现在：cfquant 示例');
+    if (entry.example) solution += codeBlock(entry.example, entry.exampleTitle || '现在：cfquant 示例');
     if (extension) solution += `<button type="button" data-python-cftrader-guide="${entry.operation === 'algorithm' ? 'algorithm' : 'cftrader'}">${entry.operation === 'algorithm' ? '算法交易完整教程' : 'cftrader 完整教程'}</button>`;
     if (api && !supported) solution += '<p class="python-unavailable">尚未支持</p>';
     if (entry.related?.length) solution += `<div class="python-related">${entry.related.map(id => `<button type="button" data-python-entry="${esc(id)}">${esc(byId.get(id)?.name || id)}</button>`).join('')}</div>`;
@@ -91,12 +94,20 @@
   function renderNav() {
     const visible = entries.filter(matches);
     const groups = new Map();
+    const nativeGroups = new Map();
     for (const entry of visible) {
+      if (entry.module === 'qmt_inner') {
+        if (!nativeGroups.has(entry.group)) nativeGroups.set(entry.group, []);
+        nativeGroups.get(entry.group).push(entry);
+        continue;
+      }
       const key = modules[entry.module] + ' / ' + entry.group;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(entry);
     }
-    nav.innerHTML = `<button type="button" class="python-nav-entry ${current === 'guide' ? 'active' : ''}" data-python-entry="guide" ${current === 'guide' ? 'aria-current="page"' : ''}><strong>接入与迁移</strong><span>安装、查询、交易及多账号示例</span></button><p class="python-nav-count" role="status">${visible.length} 个条目</p>` + (visible.length ? [...groups].map(([name, list]) => `<details class="python-nav-group"${groupsExpanded ? ' open' : ''}><summary>${esc(name)} <span>${list.length}</span></summary>${list.map(entry => `<button type="button" class="python-nav-entry ${current === entry.id ? 'active' : ''}" data-python-entry="${esc(entry.id)}" ${current === entry.id ? 'aria-current="page"' : ''}><strong><i class="python-status-dot ${entry.status}" aria-label="${labels[entry.status]}"></i>${esc(entry.name)}</strong><span>${esc(entry.title || entry.description)}</span></button>`).join('')}</details>`).join('') : '<p class="python-empty">没有匹配的接口</p><button type="button" data-python-reset>清除筛选</button>');
+    const groupHtml = ([name, list]) => `<details class="python-nav-group"${groupsExpanded ? ' open' : ''}><summary>${esc(name)} <span>${list.length}</span></summary>${list.map(entry => `<button type="button" class="python-nav-entry ${current === entry.id ? 'active' : ''}" data-python-entry="${esc(entry.id)}" ${current === entry.id ? 'aria-current="page"' : ''}><strong><i class="python-status-dot ${entry.status}" aria-label="${labels[entry.status]}"></i>${esc(entry.name)}</strong><span>${esc(entry.title || entry.description)}</span></button>`).join('')}</details>`;
+    const nativeHtml = nativeGroups.size ? `<details class="python-nav-group python-native-group" data-python-native-group${groupsExpanded ? ' open' : ''}><summary>大 QMT 内置接口 <span>${visible.filter(entry => entry.module === 'qmt_inner').length}</span></summary>${[...nativeGroups].map(groupHtml).join('')}</details>` : '';
+    nav.innerHTML = `<button type="button" class="python-nav-entry ${current === 'guide' ? 'active' : ''}" data-python-entry="guide" ${current === 'guide' ? 'aria-current="page"' : ''}><strong>接入与迁移</strong><span>安装、查询、交易及多账号示例</span></button><p class="python-nav-count" role="status">${visible.length} 个条目</p>` + (visible.length ? nativeHtml + [...groups].map(groupHtml).join('') : '<p class="python-empty">没有匹配的接口</p><button type="button" data-python-reset>清除筛选</button>');
     syncGroupToggle();
   }
 
@@ -187,7 +198,12 @@
     extensionFilter.value = 'extension';
     extensionFilter.textContent = `cfquant 独立接口 (${extensions.length})`;
     root.querySelector('#pythonApiFilter').append(extensionFilter);
-    root.querySelector('.python-reference-scope').append(` cftrader 另提供 ${extensions.length} 个独立接口，包含批量交易，以及 TWAP、VWAP、POV 算法交易与任务管理。`);
+    const nativeFilter = document.createElement('option');
+    nativeFilter.value = 'native';
+    nativeFilter.textContent = `大 QMT 内置接口 (${nativeEntries.length})`;
+    root.querySelector('#pythonApiFilter').append(nativeFilter);
+    root.querySelector('.python-reference-scope').append(` 大 QMT 内置接口提供 ${window.CFQUANT_QMT_INNER_API?.methodCount || 0} 个原生方法、${window.CFQUANT_QMT_INNER_API?.callbackCount || 0} 个回调注册及 3 个会话管理条目，终端支持范围通过 capabilities() 查询。`);
+    root.querySelector('.python-reference-scope').append(` cftrader 另提供 ${extensions.length} 个独立接口，包含批量交易、TWAP / VWAP / POV、条件单、仓位计算与下单计划。`);
     nav = root.querySelector('.python-api-nav');
     doc = root.querySelector('.python-api-document');
     doc.before(legacy);

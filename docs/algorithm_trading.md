@@ -2,6 +2,8 @@
 
 `CfQuantTrader` 提供 TWAP、基础 VWAP 和 POV 执行接口。算法任务运行在 `cfquant_web_server.py` 服务中，自动使用项目共享全推行情，用户无需先调用 `xtdata.subscribe_whole_quote()`。
 
+现在还提供止盈止损、定时 / 持仓期限退出、回撤 / 保本 / 阶梯保护，以及按风险金额、风险比例和资金分配计算仓位的接口。完整参数、保护组和“预览 → 提交 → 保护成交数量”的用法见 [条件单、仓位计算与下单计划](conditional_orders.md)。
+
 网页入口：在 8765 控制台的“接口 → 算法交易 · TWAP / VWAP / POV”或“文档 → 接口分类 → 算法交易”查看各方法的 Python / HTTP 示例；在“教程 → 算法交易 · TWAP / VWAP / POV”阅读完整教程，包含三种算法和任务管理的可复制示例。文档页和 Python API 参考中的算法方法也可直接跳转到此教程。
 
 ## 行情只订阅一份

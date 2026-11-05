@@ -8,6 +8,7 @@ import time
 import uuid
 
 from .protocol import loads_message, pack_event, pack_response
+from .qmt_inner_runtime import dispatch_inner_api
 from .order_identity import prepare_order_remark, order_remark_key, original_order_remark, restore_order_remark, is_unique_order_remark
 from .order_identity import OrderCallbackCache, order_remark_matches_reference
 from .stock_connect import connect_account_type, validate_connect_order, validate_connect_market, query_connect_exchange_rate
@@ -341,6 +342,8 @@ class TxTradeBridge(object):
                 )
 
     def _dispatch(self, action, params, msg):
+        if action.startswith("qmt_inner."):
+            return dispatch_inner_api(self, action, params, msg)
         if action in ("xtdata.get_market_data", "xtdata.get_market_data_ex", "xtdata.get_full_tick"):
             return self._dispatch_timed_market_data(action, params, msg)
         if action == "xttrader.get_hkt_exchange_rate":

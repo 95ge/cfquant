@@ -31,9 +31,9 @@ Python 方法 `runtime.recover_strategy(account_id, account_type=..., bridge_id=
 
 后台每秒轻量检查绑定进程的可见 Qt 消息窗，策略状态常规检查仍为每 20 秒一次。出现候选弹窗时提前检查，以免提示按倒计时自动消失后漏记。
 
-只处理 Qt 类型匹配的 `CGlobalMessageDialog`，通过 QObject 子控件和 `CSimpleTextWidget` 类型查找文本，不读取固定的私有成员偏移，也不校验 `Dialog.dll`、`BaseWidget.dll` 整文件哈希。正文必须完整匹配“[防外接] Python进程访问了网络地址 […]，策略运行中止！”，且只能找到一个匹配文本。读取、关闭前再次核对绑定和正文，其他消息不关闭。缺少消息读取、关闭接口时，仅对应功能不可用；可选消息扫描失败会记录 `notice_error`，策略运行检测继续。
+处理 Qt 类型匹配的 `CGlobalMessageDialog` 和旧版 `CMessageBox`，通过 QObject 子控件和 `CSimpleTextWidget` 类型查找文本，不读取固定的私有成员偏移，也不校验 `Dialog.dll`、`BaseWidget.dll` 整文件哈希。正文必须完整匹配“[防外接] Python进程访问了网络地址 […]，策略运行中止！”或旧版“非法IP:192.0.2.1:18028 198.51.100.2:59782”格式，且只能找到一个匹配文本。旧版地址列表逐项校验 IPv4 和可选端口。读取、关闭前再次核对绑定和正文，其他消息不关闭。缺少消息读取、关闭接口时，仅对应功能不可用；可选消息扫描失败会记录 `notice_error`，策略运行检测继续。
 
-处理时先记录告警原文，再直接调用 `CGlobalMessageDialog::closeMessage`，不模拟鼠标点击，不改变“不再提示”选项。只有窗口确认关闭、绑定模型确认运行，并且独立 Pipe 查询确认进程、角色、部署代次及通信状态均正确后，才记录“非法 IP 弹窗已关闭，绑定策略及通信恢复成功”。
+处理时先记录告警原文。`CGlobalMessageDialog` 调用自身的 `closeMessage`；旧版 `CMessageBox` 查找该窗口内唯一可见、可用的“确定”或“OK”按钮，在 Qt GUI 线程调用按钮的原生 `click()`，不模拟鼠标点击，不改变“不再提示”选项。两类关闭接口分别检测能力，旧版按钮不依赖 `closeMessage`。按钮缺失、禁用或存在歧义时保留警告；调用后确认窗口已隐藏或销毁。即使策略已经恢复运行，也仍会检查并关闭符合条件的告警。只有窗口确认关闭、绑定模型确认运行，并且独立 Pipe 查询确认进程、角色、部署代次及通信状态均正确后，才记录“非法 IP 弹窗已关闭，绑定策略及通信恢复成功”。
 
 日志按本机日期追加到 `runtime/logs/qmt_strategy_recovery/YYYY-MM-DD.jsonl`，采用 UTF-8，一行一个 JSON 事件。包含带时区的时间、账号、模式、QMT PID、部署代次、告警原文和关联事件编号 `event_id`。主要事件为：
 

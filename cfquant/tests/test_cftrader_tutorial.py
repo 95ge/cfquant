@@ -86,7 +86,7 @@ def test_cftrader_reference_search_examples_and_links(page, frontend_url, tmp_pa
     page.locator('[data-python-groups-toggle]').click()
     page.locator('#pythonApiSearch').fill('cftrader')
     page.locator('#pythonApiFilter').select_option('extension')
-    expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(15)
+    expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(27)
     page.locator('#pythonApiSearch').fill('order_stock_batch')
     expect(page.locator('.python-api-nav [data-python-entry^="cftrader."]')).to_have_count(4)
     page.locator('#pythonApiSearch').fill('cancel_order_stock_batch')
@@ -122,10 +122,19 @@ def test_cftrader_reference_search_examples_and_links(page, frontend_url, tmp_pa
     expect(page.locator('.python-document-head h2')).to_have_text('order_stock_batch_async')
 
     entries = page.evaluate('window.CFQUANT_CFTRADER_API')
-    assert len(entries) == 15
+    assert len(entries) == 27
     for entry in entries:
         verify_example(entry['example'])
         method = getattr(CfQuantTrader, entry['name'])
+        if isinstance(inspect.getattr_static(CfQuantTrader, entry['name']), staticmethod):
+            actual_parameters = list(inspect.signature(method).parameters)
+            assert [parameter['name'] for parameter in entry['parameters']] == actual_parameters
+            declaration = ast.parse('def ' + entry['signature'].split('.', 1)[1] + ':\n    pass').body[0]
+            assert [arg.arg for arg in declaration.args.kwonlyargs] == actual_parameters
+            for arg, value in zip(declaration.args.kwonlyargs, declaration.args.kw_defaults):
+                if value is not None:
+                    assert ast.literal_eval(value) == inspect.signature(method).parameters[arg.arg].default
+            continue
         actual_parameters = list(inspect.signature(method).parameters)[1:]
         assert [parameter['name'] for parameter in entry['parameters']] == actual_parameters
         documented = ast.parse(entry['signature']).body[0].value
@@ -154,7 +163,7 @@ def test_web_api_catalog_shows_sdk_and_preserves_http_batch(page, frontend_url, 
     page.keyboard.press('Escape')
     page.locator('.nav-item[data-view="api"]').click()
     expect(page.locator('[data-api-group="cftrader"]')).to_be_visible()
-    expect(page.locator('#apiEndpointList [data-endpoint-id^="cftrader."]')).to_have_count(15)
+    expect(page.locator('#apiEndpointList [data-endpoint-id^="cftrader."]')).to_have_count(27)
     page.locator('[data-api-group="cftrader"]').click()
     for method in ('order_stock_batch', 'order_stock_batch_async', 'cancel_order_stock_batch',
                    'cancel_order_stock_batch_async', 'order_stock', 'order_stock_async'):
@@ -231,7 +240,7 @@ def test_algorithm_examples_are_discoverable_from_api_and_documentation_menus(pa
     docs = page.locator('#cfquantDocs')
     expect(docs.locator('.docs-head h2')).to_have_text('接口文档与调用示例')
     docs.locator('#docsGroup').select_option('algorithm')
-    expect(docs.locator('[data-doc-id]')).to_have_count(9)
+    expect(docs.locator('[data-doc-id]')).to_have_count(21)
     for method in methods:
         docs.locator(f'[data-doc-id="cftrader.{method}"]').click()
         expect(docs.locator('.docs-article h2')).to_have_text(method)

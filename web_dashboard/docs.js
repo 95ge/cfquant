@@ -54,8 +54,8 @@
     host = document.querySelector('#cfquantDocs');
     if (!host) return;
     const list = entries();
-    host.innerHTML = `<header class="docs-head"><div><span class="docs-kicker">CFQUANT API REFERENCE</span><h2>接口文档与调用示例</h2><p>查看 TWAP、VWAP、POV 算法交易、任务管理及行情数据接口的参数、返回值和示例。行情接口可在当前页面测试。</p><button type="button" data-doc-algorithm-intro>算法交易入门与完整示例</button></div><div class="docs-head-meta"><strong>${list.length}</strong><span>个接口</span></div></header>
-      <div class="docs-layout"><aside class="docs-sidebar"><label for="docsGroup">接口分类</label><select id="docsGroup"><option value="all">全部接口</option><option value="algorithm">算法交易 · TWAP / VWAP / POV</option><option value="xtdata">行情 / 数据</option></select><label for="docsSearch">搜索接口</label><input id="docsSearch" type="search" placeholder="TWAP、VWAP、POV 或接口名称"><nav aria-label="算法交易与行情数据接口"></nav></aside><article class="docs-article"><p class="docs-empty">请选择左侧接口</p></article></div>`;
+    host.innerHTML = `<header class="docs-head"><div><span class="docs-kicker">CFQUANT API REFERENCE</span><h2>接口文档与调用示例</h2><p>查看执行算法、止盈止损、仓位计算、下单计划及行情数据接口的参数、返回值和示例。行情接口可在当前页面测试。</p><button type="button" data-doc-algorithm-intro>算法交易入门与完整示例</button></div><div class="docs-head-meta"><strong>${list.length}</strong><span>个接口</span></div></header>
+      <div class="docs-layout"><aside class="docs-sidebar"><label for="docsGroup">接口分类</label><select id="docsGroup"><option value="all">全部接口</option><option value="algorithm">算法交易 · 条件单 / 仓位 / TWAP</option><option value="xtdata">行情 / 数据</option></select><label for="docsSearch">搜索接口</label><input id="docsSearch" type="search" placeholder="止损、仓位、TWAP 或接口名称"><nav aria-label="算法交易与行情数据接口"></nav></aside><article class="docs-article"><p class="docs-empty">请选择左侧接口</p></article></div>`;
     const nav = host.querySelector('nav');
     const drawNav = () => {
       const query = host.querySelector('#docsSearch').value.trim().toLowerCase();
