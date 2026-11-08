@@ -6,6 +6,10 @@ Python 3.6/3.12 运行时。它读取 QMT 官方 `update36.cfg` 或
 断点续传、MD5 校验、压缩包安全解压、旧目录备份、账号运行时切换和 QMT
 重启。下载阶段不会改动正在运行的 `bin.x64/python312`。
 
+此管理接口应在外部 cfquant 服务或 Python 3.8+ 程序中调用。被管理的 QMT
+仍可使用 Python 3.6；QMT 策略加载桥接模块时不会导入或导出这组管理类，
+避免管理模块使用的新版 Python 语法和 `dataclasses` 阻断策略启动。
+
 ```python
 from cfquant import QmtPythonRuntime
 
