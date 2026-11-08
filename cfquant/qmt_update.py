@@ -4,6 +4,8 @@ No mouse/keyboard events, foreground activation, or arbitrary installer discover
 Only an updater belonging to this QMT and its verified installation children are
 eligible. Unknown dialogs are left open and reported for manual attention.
 """
+
+from .diagnostic_context import VersionedErrorMixin
 from dataclasses import dataclass, field
 from pathlib import Path
 import os
@@ -11,7 +13,7 @@ import subprocess
 import time
 
 
-class QmtUpdateError(RuntimeError):
+class QmtUpdateError(VersionedErrorMixin, RuntimeError):
     def __init__(self, outcome):
         self.outcome = outcome
         super().__init__(outcome)

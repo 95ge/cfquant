@@ -16,6 +16,7 @@ from .protocol import loads_message, pack_event, pack_response, pack_quote_laten
 from .protocol import encode_response_result, request_expired
 from .tx_trade_bridge import TxTradeBridge, relay_sync_order_callback
 from .shared_quotes import SharedQuoteFeed
+from .subscription_bridge import push_subscription_event, expire_managed_subscriptions
 
 
 COALESCED_QUERY_ACTIONS = set([
@@ -98,6 +99,26 @@ class NormalQmtBridge(TxTradeBridge):
         self.order_terminal_statuses_lock = threading.RLock()
         self.pending_order_errors = []
         self.pending_order_errors_lock = threading.RLock()
+        # Runtime counters are deliberately cumulative.  The web monitor turns
+        # them into rates between two status samples, while the totals remain
+        # useful when diagnosing a reconnect or a callback storm.
+        self._telemetry_lock = threading.RLock()
+        self._callback_total = 0
+        self._callback_counts = {}
+        self._quote_callback_batches = 0
+        self._quote_callback_symbols = 0
+        self._quote_distribution_batches = 0
+        self._quote_distribution_symbols = 0
+        self._last_callback_at = 0.0
+        self._last_quote_callback_at = 0.0
+        self._telemetry_started_at = time.time()
+        self._request_completed = 0
+        self._request_failed = 0
+        self._request_total_ms = 0.0
+        self._request_max_ms = 0.0
+        self._active_request = None
+        self._quote_callback_total_ms = 0.0
+        self._quote_push_failed = 0
 
     def start(self):
         if self.running:
@@ -139,6 +160,7 @@ class NormalQmtBridge(TxTradeBridge):
             self._start_worker_thread(context)
         if self.schedule_timer:
             self._schedule_timer()
+        self._subscribe_internal_whole_quote()
         if self.dispatch_on_qmt_thread:
             dispatch_source = "QMT timer/handlebar callbacks" if self.schedule_timer else "QMT caller thread callbacks"
             self._log("normal bridge requests are consumed by %s" % dispatch_source)
@@ -502,8 +524,18 @@ class NormalQmtBridge(TxTradeBridge):
                 func = self._get_callable("subscribe_whole_quote")
                 if not callable(func):
                     raise NotImplementedError("QMT subscribe_whole_quote not found")
+                def receive(data):
+                    # This callback belongs to the bridge, even with no
+                    # external consumers. It must keep waking the worker.
+                    started = time.perf_counter()
+                    self._record_quote_callback(data)
+                    try:
+                        self._on_whole_quote(data)
+                        callback(data)
+                    finally:
+                        self._record_quote_callback_duration(started)
                 native_id = self._call_variants(func, [
-                    ((codes,), {"callback": callback}), ((codes, callback), {}),
+                    ((codes,), {"callback": receive}), ((codes, receive), {}),
                 ])
                 if native_id is None or isinstance(native_id, bool) or int(native_id) <= 0:
                     raise RuntimeError("QMT subscribe_whole_quote failed: %r" % (native_id,))
@@ -557,6 +589,7 @@ class NormalQmtBridge(TxTradeBridge):
         def publish(payload, callback_at_ms):
             client_id = sub.get("client_id")
             if client_id:
+                symbols = len(payload) if isinstance(payload, dict) else 0
                 if kind == "whole_quote_latency":
                     payload = {
                         "schema": "cfquant.quote_latency.v1",
@@ -582,12 +615,14 @@ class NormalQmtBridge(TxTradeBridge):
                 if initializing[0]:
                     # Freeze the snapshot before returning to native QMT, which may
                     # reuse/mutate callback objects while subscription completes.
-                    pending.append(event)
+                    pending.append((event, symbols))
                 else:
-                    self.tx.push("event", event, client_id)
+                    self._push_quote_event(event, client_id, symbols)
 
         def callback(data):
             callback_at_ms = time.time() * 1000.0 if kind == "whole_quote_latency" else None
+            if kind not in ("whole_quote", "whole_quote_latency"):
+                self._record_quote_callback(data)
             with callback_lock:
                 self._release_worker("quote")
                 if self.quote_subscriptions.get(sub_id) is not sub or self.tx is None:
@@ -631,8 +666,8 @@ class NormalQmtBridge(TxTradeBridge):
         with callback_lock:
             initializing[0] = False
             try:
-                for event in pending:
-                    self.tx.push("event", event, sub["client_id"])
+                for event, symbols in pending:
+                    self._push_quote_event(event, sub["client_id"], symbols)
             except Exception:
                 self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
                 raise
@@ -798,6 +833,7 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_requests(self, source):
         with self.dispatch_lock:
+            expire_managed_subscriptions(self)
             self._expire_whole_quote_leases()
             self._poll_sync_order_responses()
             start = time.perf_counter()
@@ -810,10 +846,14 @@ class NormalQmtBridge(TxTradeBridge):
                 except queue.Empty:
                     break
                 msg, received_at, coalesce_key = self._queue_item_parts(item)
-                if coalesce_key:
-                    self._drain_coalesced_request(source, msg, received_at, coalesce_key)
-                else:
-                    self._drain_single_request(source, msg, received_at)
+                self._active_request = (str(msg.get("action") or ""), time.perf_counter())
+                try:
+                    if coalesce_key:
+                        self._drain_coalesced_request(source, msg, received_at, coalesce_key)
+                    else:
+                        self._drain_single_request(source, msg, received_at)
+                finally:
+                    self._active_request = None
                 count += 1
             return count
 
@@ -992,7 +1032,7 @@ class NormalQmtBridge(TxTradeBridge):
             return
         try:
             self.whole_quote_sub_id = self._get_whole_quote_feed().acquire(
-                "internal-worker", ["SH", "SZ", "BJ"], self._on_whole_quote, purpose="worker")
+                "internal-worker", ["SH", "SZ", "BJ"], purpose="worker")
             self._log("normal bridge internal whole quote subscribed id=%s" % self.whole_quote_sub_id)
         except Exception as e:
             self._log("normal bridge internal whole quote subscribe failed: %s" % e)
@@ -1014,6 +1054,7 @@ class NormalQmtBridge(TxTradeBridge):
             self._log("normal bridge timer schedule failed: %s" % e)
 
     def _send_response(self, msg, result, encoded_result=None):
+        self._record_request_completed(msg, False)
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
@@ -1021,6 +1062,7 @@ class NormalQmtBridge(TxTradeBridge):
         self.tx.push("response", response, client_id)
 
     def _send_error(self, msg, error):
+        self._record_request_completed(msg, True)
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
@@ -1039,6 +1081,9 @@ class NormalQmtBridge(TxTradeBridge):
         self.tx.push("response", response, client_id)
 
     def publish_callback_event(self, event_name, obj):
+        # Reconciled/delayed errors re-enter this method; they are not new QMT callbacks.
+        if not (isinstance(obj, dict) and obj.get("_cfquant_force_order_error")):
+            self._record_callback(event_name)
         if self.tx is None:
             return
         force_order_error = isinstance(obj, dict) and obj.pop("_cfquant_force_order_error", False)
@@ -1620,7 +1665,97 @@ class NormalQmtBridge(TxTradeBridge):
             "coalesced_waiter_count": coalesced_waiters,
             "coalesce_join_count": self.coalesce_join_count,
             "coalesce_dispatch_count": self.coalesce_dispatch_count,
+            "telemetry": self._telemetry_snapshot(),
         }
+
+    def _record_callback(self, event_name):
+        name = str(event_name or "unknown")
+        now = time.time()
+        with self._telemetry_lock:
+            self._callback_total += 1
+            self._callback_counts[name] = self._callback_counts.get(name, 0) + 1
+            self._last_callback_at = now
+
+    def _record_quote_callback(self, data):
+        symbols = len(data) if isinstance(data, dict) else 0
+        now = time.time()
+        with self._telemetry_lock:
+            self._quote_callback_batches += 1
+            self._quote_callback_symbols += symbols
+            self._last_quote_callback_at = now
+
+    def _push_quote_event(self, event, client_id, symbols):
+        try:
+            result = push_subscription_event(self, event, client_id)
+        except Exception:
+            with self._telemetry_lock:
+                self._quote_push_failed += 1
+            raise
+        failed = isinstance(result, dict) and result.get("code", 0) < 0
+        with self._telemetry_lock:
+            if failed:
+                self._quote_push_failed += 1
+            else:
+                self._quote_distribution_batches += 1
+                self._quote_distribution_symbols += symbols
+        return result
+
+    def _record_quote_callback_duration(self, started):
+        elapsed = (time.perf_counter() - started) * 1000
+        with self._telemetry_lock:
+            self._quote_callback_total_ms += elapsed
+
+    def _record_request_completed(self, msg, failed):
+        if msg.get("action") in ("cfquant.status", "cfquant.ping"):
+            return
+        received = msg.get("_received_monotonic")
+        if received is None:
+            return
+        elapsed = max(0.0, time.perf_counter() - received) * 1000
+        with self._telemetry_lock:
+            self._request_completed += 1
+            self._request_failed += int(failed)
+            self._request_total_ms += elapsed
+            self._request_max_ms = max(self._request_max_ms, elapsed)
+
+    def _telemetry_snapshot(self):
+        with self._telemetry_lock:
+            data = {
+                "schema": 1,
+                "pid": os.getpid(),
+                "started_at": self._telemetry_started_at,
+                "sampled_at": time.time(),
+                "sample_monotonic": time.perf_counter(),
+                "callback_total": self._callback_total,
+                "callback_counts": dict(self._callback_counts),
+                "quote_callback_batches": self._quote_callback_batches,
+                "quote_callback_symbols": self._quote_callback_symbols,
+                "quote_distribution_batches": self._quote_distribution_batches,
+                "quote_distribution_symbols": self._quote_distribution_symbols,
+                "last_callback_at": self._last_callback_at,
+                "last_quote_callback_at": self._last_quote_callback_at,
+                "request_completed": self._request_completed,
+                "request_failed": self._request_failed,
+                "request_total_ms": self._request_total_ms,
+                "request_max_ms": self._request_max_ms,
+                "quote_callback_total_ms": self._quote_callback_total_ms,
+                "quote_push_failed": self._quote_push_failed,
+            }
+        # Only in-memory state is read here, including from the Pipe heartbeat
+        # thread. Never acquire dispatch_lock or invoke a native QMT API.
+        with self.request_queue.mutex:
+            data["request_queue_size"] = len(self.request_queue.queue)
+            first = self.request_queue.queue[0] if self.request_queue.queue else None
+        received = first[0].get("_received_monotonic") if first and isinstance(first[0], dict) else None
+        data["request_oldest_ms"] = max(0.0, time.perf_counter() - received) * 1000 if received is not None else 0
+        active = self._active_request
+        data["active_action"] = active[0] if active else ""
+        data["active_ms"] = max(0.0, time.perf_counter() - active[1]) * 1000 if active else 0
+        tx = self.tx
+        data["send_queue"] = tx.send_status() if hasattr(tx, "send_status") else None
+        data["quote_subscription_count"] = len(self.quote_subscriptions)
+        data["whole_quote_anchor"] = bool(self.whole_quote_sub_id)
+        return data
 
 
 def start_normal_bridge(

@@ -554,7 +554,25 @@ LITE_OBJECT_QUERY_METHODS = {
         from tools.sync_qmt_inner import updated_source as update_inner_api
     except ImportError:
         from sync_qmt_inner import updated_source as update_inner_api
-    return update_inner_api(update_shared_quotes(update_account_timing_source(update_latency_source(source))), lite=True)
+    source = update_inner_api(update_shared_quotes(update_account_timing_source(update_latency_source(source))), lite=True)
+    # Managed subscription recovery is also required by standalone Lite
+    # entries. Embed the small bridge-side protocol instead of importing the
+    # external package, which is unavailable in some QMT installations.
+    managed = (ROOT / "cfquant" / "subscription_bridge.py").read_text(encoding="utf-8")
+    managed = managed.replace("from .protocol import loads_message, dumps_message\n", "")
+    marker_begin = "# BEGIN GENERATED MANAGED SUBSCRIPTIONS\n"
+    marker_end = "# END GENERATED MANAGED SUBSCRIPTIONS\n"
+    block = marker_begin + managed.rstrip() + "\n" + marker_end + "\n"
+    if marker_begin in source:
+        begin = source.index(marker_begin)
+        end = source.index(marker_end, begin) + len(marker_end)
+        source = source[:begin] + source[end:]
+    # Keep it after the TxTradeBridge class. The inner-API synchronizer
+    # inserts its own block immediately before that class; placing this block
+    # after the class keeps both generators idempotent.
+    source = source.replace("class NormalQmtBridge(", block + "class NormalQmtBridge(", 1)
+    source = source.replace("\n\n\n" + marker_begin, "\n\n" + marker_begin)
+    return source
 
 
 def main():

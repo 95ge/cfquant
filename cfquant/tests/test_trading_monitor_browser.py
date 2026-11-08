@@ -27,6 +27,17 @@ def test_monitor_filters_history_paging_errors_and_narrow_layout(page, frontend_
         route.fulfill(json={'ok':True,'data':result})
     page.route('**/api/monitor?*', respond)
     page.route('**/api/monitor/settings', lambda route: route.fulfill(json={'ok':True, 'data':monitor.settings()}))
+    page.route('**/api/monitor/runtime?*', lambda route: route.fulfill(json={'ok':True, 'data':{
+        'start':'2026-11-03', 'end':'2026-11-03', 'retention_days':30, 'samples':[{
+            'sampled_at':NOW - 60, 'normal':{
+                'process':{'pid':123, 'name':'qmt.exe', 'cpu_percent':12.5, 'rss_bytes':104857600, 'memory_percent':1.2},
+                'rates':{'callback_total_per_second':2.0, 'quote_callback_batches_per_second':1.0,
+                         'quote_distribution_batches_per_second':0.5, 'request_completed_per_second':0.25},
+                'qmt_callback_total':20, 'quote_callback_batches':10, 'quote_distribution_batches':5,
+                'request_completed':3,
+            }, 'trade':{}, 'process':{}}
+        ]
+    }}))
     try:
         page.evaluate("() => { hideOnboardingModal({force:true}); setView('monitor'); }")
         expect(page.locator('#viewTitle')).to_have_text('交易监控')
@@ -36,6 +47,33 @@ def test_monitor_filters_history_paging_errors_and_narrow_layout(page, frontend_
         page.locator('#monitorFilters [type=submit]').click()
         expect(page.locator('#monitorStats')).to_contain_text('64')
         expect(page.locator('#monitorError')).not_to_be_visible()
+        expect(page.locator('#monitorTradingPanel')).to_be_visible()
+        expect(page.locator('#monitorRuntimePanel')).not_to_be_visible()
+        page.locator('#monitorTabRuntime').click()
+        expect(page.locator('#monitorRuntimePanel')).to_be_visible()
+        expect(page.locator('#monitorTabRuntime')).to_have_attribute('aria-selected', 'true')
+        page.locator('#monitorRuntimeTargets .monitor-runtime-target').first.click()
+        expect(page.locator('#monitorRuntimeDetail')).to_be_visible()
+        dialog_box = page.locator('#monitorRuntimeDetail').bounding_box()
+        viewport = page.viewport_size
+        assert dialog_box and viewport
+        assert abs((dialog_box['x'] + dialog_box['width'] / 2) - viewport['width'] / 2) <= 2
+        dialog_layout = page.locator('#monitorRuntimeDetail').evaluate('(node) => ({width: node.clientWidth, scroll: node.scrollWidth})')
+        assert dialog_layout['scroll'] <= dialog_layout['width'] + 1
+        metric_card_bottom = page.locator('#monitorRuntimeMetricCards .monitor-runtime-metric-card').first.evaluate('(node) => node.getBoundingClientRect().bottom')
+        toolbar_top = page.locator('.monitor-runtime-chart-toolbar').evaluate('(node) => node.getBoundingClientRect().top')
+        assert toolbar_top >= metric_card_bottom
+        expect(page.locator('#monitorRuntimeMetricCards .monitor-runtime-metric-card')).to_have_count(5)
+        expect(page.locator('#monitorRuntimeCharts .monitor-runtime-chart-card')).to_have_count(5)
+        expect(page.locator('#monitorRuntimeCharts svg')).to_have_count(5)
+        page.locator('#monitorRuntimeCharts [data-runtime-chart="cpu"] svg').hover(position={'x': 220, 'y': 80})
+        expect(page.locator('.monitor-runtime-chart-tooltip:visible')).to_have_count(1)
+        expect(page.locator('#monitorRuntimeSamples')).to_contain_text('qmt.exe')
+        page.locator('#monitorRuntimeDetailClose').click()
+        expect(page.locator('#monitorRuntimeDetail')).not_to_be_visible()
+        page.locator('#monitorTabTrading').click()
+        expect(page.locator('#monitorTradingPanel')).to_be_visible()
+        expect(page.locator('#monitorRuntimePanel')).not_to_be_visible()
         assert page.locator('#monitorAuto').bounding_box()['width'] <= 20
         expect(page.locator('#monitorNodes')).to_contain_text('沪深主账户')
         expect(page.locator('#monitorChart svg')).to_have_count(1)
@@ -120,6 +158,7 @@ def test_monitor_default_off_toggle_history_and_save_failure(page, frontend_url,
         page.get_by_role('radio', name='指定账号', exact=True).check()
         page.locator('[name=monitorAccount]').nth(1).uncheck()
         page.locator('[name=monitorAccount]').nth(2).uncheck()
+        page.locator('#monitorRuntimeRetentionDays').fill('7')
         assert monitor.account_keys is None  # Draft changes do not apply before save.
         target = Path(__file__).resolve().parents[2] / 'runtime' / 'reports' / f'monitor-settings-{page.viewport_size["width"]}.png'
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +168,7 @@ def test_monitor_default_off_toggle_history_and_save_failure(page, frontend_url,
         page.locator('#monitorDialogSave').click()
         expect(dialog).not_to_be_visible()
         assert monitor.account_keys == [bound_accounts()[0]['account_key']]
+        assert monitor.runtime_retention_days == 7
         page.locator('#monitorSettings').click()
         expect(page.get_by_role('radio', name='指定账号', exact=True)).to_be_checked()
         expect(page.locator('[name=monitorAccount]').nth(0)).to_be_checked()

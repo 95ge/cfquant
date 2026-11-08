@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import atexit
-import logging
+from .diagnostic_context import get_logger
 from concurrent.futures import ThreadPoolExecutor
 
 from .client import CfquantError, create_rpc_client
@@ -619,7 +619,7 @@ class XtQuantTrader(object):
                                 details={"code": "ACCOUNT_SUBSCRIPTION_REJECTED",
                                          "stage": "subscription_recovery", "dispatched": False})
                         if self._subscription_errors.pop(key, None) is not None:
-                            logging.getLogger(__name__).info("account callback subscription restored account=%s", key)
+                            get_logger(__name__).info("account callback subscription restored account=%s", key)
                         self._subscription_retries.pop(key, None)
                     except Exception as error:
                         if not stop.is_set():
@@ -629,12 +629,24 @@ class XtQuantTrader(object):
                             delay = min(30.0, self._subscription_interval * (2 ** (failures - 1)))
                             logged_at = retry.get('logged_at', 0)
                             if key not in self._subscription_errors or now - logged_at >= 30:
-                                logging.getLogger(__name__).warning(
+                                error_details = getattr(error, "error_details", {}) or {}
+                                missing_bridge = (error_details.get("code") == "QMT_BRIDGE_NOT_CONNECTED" or
+                                                  "QMT pipe bridge not connected for channel=" in str(error))
+                                request_channel = error_details.get("request_channel", "")
+                                if not request_channel and "not connected for channel=" in str(error):
+                                    request_channel = str(error).split("not connected for channel=", 1)[1].split()[0].rstrip(";")
+                                channel_state = error_details.get("channel_state") or {}
+                                get_logger(__name__).warning(
                                     "account callback subscription recovery failed account=%s; retry in %.1fs: %s "
-                                    "action=%s request_id=%s timeout=%.1fs rpc=%s web=%s",
+                                    "action=%s request_id=%s timeout=%.1fs rpc=%s web=%s "
+                                    "code=%s request_channel=%s state=%s bridge_state=%s%s",
                                     key, delay, detail, diagnostics.get("action", "connect"),
                                     diagnostics.get("request_id", "-"), self._subscription_timeout,
-                                    diagnostics.get("rpc", {}), diagnostics.get("web", {}))
+                                    diagnostics.get("rpc", {}), diagnostics.get("web", {}),
+                                    error_details.get("code") or ("QMT_BRIDGE_NOT_CONNECTED" if missing_bridge else "-"),
+                                    request_channel or "-", "waiting_bridge" if missing_bridge else "retrying",
+                                    channel_state.get("status", "unknown") if isinstance(channel_state, dict) else "unknown",
+                                    "; check the bound QMT strategy and its request channel registration" if missing_bridge else "")
                                 logged_at = now
                             self._subscription_errors[key] = detail
                             self._subscription_retries[key] = {
@@ -674,7 +686,7 @@ class XtQuantTrader(object):
         is not supported. It must not restore the receive-thread deadlock.
         """
         if not enabled:
-            logging.getLogger(__name__).warning(
+            get_logger(__name__).warning(
                 "cfquant always enables relaxed response ordering; False is ignored"
             )
         self.relaxed_response_order_enabled = True
@@ -1376,7 +1388,7 @@ class XtQuantTrader(object):
         try:
             result = function(*args)
         except Exception:
-            logging.getLogger(__name__).exception("asynchronous query failed seq=%s", seq)
+            get_logger(__name__).exception("asynchronous query failed seq=%s", seq)
             return
         finally:
             del self._query_context.generation
@@ -1392,7 +1404,7 @@ class XtQuantTrader(object):
         try:
             callback(result)
         except Exception:
-            logging.getLogger(__name__).exception("asynchronous query callback failed seq=%s", seq)
+            get_logger(__name__).exception("asynchronous query callback failed seq=%s", seq)
 
     def _stop_query_workers(self):
         with self._query_lock:

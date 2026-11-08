@@ -1,5 +1,7 @@
 """In-memory managed strategy control over the existing Pipe connection (QMT 3.6+)."""
 
+from .diagnostic_context import VersionedErrorMixin, versioned_message
+
 import functools as _cq_functools
 import os as _cq_os
 import sys as _cq_sys
@@ -8,7 +10,7 @@ import time as _cq_time
 import uuid as _cq_uuid
 
 
-class ManagedStrategyError(RuntimeError):
+class ManagedStrategyError(VersionedErrorMixin, RuntimeError):
     """A rejection made before entering any QMT business dispatcher."""
 
     def __init__(self, message, code, runtime_instance_id, retry_when=""):
@@ -212,4 +214,4 @@ class ManagedPipeRuntime(object):
                     self.release_if_idle()
         if errors:
             self.failure = "; ".join(errors)
-            print("cfquant strategy shutdown failed: %s" % self.failure)
+            print(versioned_message("cfquant strategy shutdown failed: %s" % self.failure))

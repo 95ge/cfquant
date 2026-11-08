@@ -5,6 +5,8 @@ The service has its own source directory. Updating it never installs packages
 into, or reloads modules in, the calling application's Python environment.
 """
 
+from .diagnostic_context import VersionedErrorMixin
+
 import importlib.util
 import json
 import os
@@ -23,7 +25,7 @@ import urllib.request
 _UNSET = object()
 
 
-class ManagementError(RuntimeError):
+class ManagementError(VersionedErrorMixin, RuntimeError):
     """Management failure, including the server's status and response details."""
 
     def __init__(self, message, code="management_error", status=None, details=None):

@@ -9,8 +9,26 @@ window.CFQUANT_QMT_INNER_API = {
   },
   "methodCount": 80,
   "callbackCount": 8,
+  "sessionHelp": "以下参数在创建 QmtInnerApi(...) 时传入，该会话下的所有接口共用。account_id 可省略；省略时 Web 路由使用当前设置的行情源。填写时请使用 cfquant“账号绑定”中的券商资金账号。",
+  "sessionParameters": [
+    {
+      "name": "account_id",
+      "default": "None",
+      "help": "可选字符串，填写 cfquant“账号绑定”中登记的券商资金账号。例如 \"12345678\"（仅格式示例），请保留账号的前导零；省略时使用当前设置的行情源。"
+    },
+    {
+      "name": "account_type",
+      "default": "'STOCK'",
+      "help": "账号类型：普通证券账户填 \"STOCK\"，信用账户填 \"CREDIT\"；应与 cfquant“账号绑定”中的类型一致。"
+    },
+    {
+      "name": "account_key",
+      "default": "None",
+      "help": "可选的完整绑定键；同一资金账号有多个绑定时，用它指定具体绑定。通常填写 account_id 和 account_type 即可。"
+    }
+  ],
   "catalogSha256": "f03025f6c3330cc3fd9af2bdc3e4ae3c8b72fb6fe8a2dbe964d21492d6cac896",
-  "sdkSha256": "12c99efe1bf33b9c7b194ba47ac5f509bd428e5aff6f7d86817e25a3638525d2",
+  "sdkSha256": "5c4ac7504e44c37260014dd2631088abfe554274ffabe8d135074b307d1b7f53",
   "entries": [
     {
       "id": "qmt_inner.system.QmtInnerApi",
@@ -22,28 +40,23 @@ window.CFQUANT_QMT_INNER_API = {
       "description": "连接大 QMT 内置接口",
       "status": "native",
       "source": "https://dict.thinktrader.net/innerApi/start_now.html",
-      "signature": "QmtInnerApi(bridge_id=None, account_id=None, account_type='STOCK', account_key=None, transport=None, request_channel=None, timeout=12.0, client=None)",
+      "signature": "QmtInnerApi(account_id=None, account_type='STOCK', account_key=None, transport=None, request_channel=None, timeout=12.0, client=None, recovery=None, *, bridge_id=None)",
       "nativeSignature": "",
       "parameters": [
         {
-          "name": "bridge_id",
-          "default": "None",
-          "help": "桥接标识；省略时使用当前配置，通常为 default。"
-        },
-        {
           "name": "account_id",
           "default": "None",
-          "help": "Web 路由使用的绑定账号；与交易函数传入的账号分别填写。"
+          "help": "可选字符串，填写 cfquant“账号绑定”中登记的券商资金账号。例如 \"12345678\"（仅格式示例），请保留账号的前导零；省略时使用当前设置的行情源。"
         },
         {
           "name": "account_type",
           "default": "'STOCK'",
-          "help": "绑定类型，例如 STOCK、CREDIT；应与 Web 中的账号绑定一致。"
+          "help": "账号类型：普通证券账户填 \"STOCK\"，信用账户填 \"CREDIT\"；应与 cfquant“账号绑定”中的类型一致。"
         },
         {
           "name": "account_key",
           "default": "None",
-          "help": "完整绑定键；用于区分同账号的不同绑定。"
+          "help": "可选的完整绑定键；同一资金账号有多个绑定时，用它指定具体绑定。通常填写 account_id 和 account_type 即可。"
         },
         {
           "name": "transport",
@@ -53,7 +66,7 @@ window.CFQUANT_QMT_INNER_API = {
         {
           "name": "request_channel",
           "default": "None",
-          "help": "需要明确指定普通桥频道时填写；通常由 bridge_id 推导。"
+          "help": "直连时需要明确指定普通桥频道；Web 路由通常自动选择。"
         },
         {
           "name": "timeout",
@@ -64,11 +77,16 @@ window.CFQUANT_QMT_INNER_API = {
           "name": "client",
           "default": "None",
           "help": "可注入已有 RPC 客户端；关闭会话时不关闭外部传入的连接。"
+        },
+        {
+          "name": "recovery",
+          "default": "None",
+          "help": "含义与取值沿用对应的大 QMT 原型。"
         }
       ],
       "usage": "from cfquant import QmtInnerApi；独立于 XtQuantTrader 使用。",
       "note": "面向外部数据查询、研究和实盘交易。已登记 80 个原生方法及 8 个回调；核心查询、行情订阅和定时器已通过华泰模拟终端实测，未对全部方法实测。",
-      "resultHelp": "默认自动选择通信方式。account_id / account_type 用于选择 Web 账号绑定；交易函数仍按原生要求传入账号。",
+      "resultHelp": "默认自动选择通信方式。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
       "resultRows": [
         [
           "capabilities()",
@@ -84,7 +102,7 @@ window.CFQUANT_QMT_INNER_API = {
         ]
       ],
       "orderFields": [],
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    capabilities = qmt.capabilities()\n    print(capabilities)\n    print(qmt.market.get_full_tick([\"000001.SZ\"]))",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    capabilities = qmt.capabilities()\n    print(capabilities)\n    print(qmt.market.get_full_tick([\"000001.SZ\"]))",
       "exampleTitle": "连接与能力查询示例",
       "related": [
         "qmt_inner.market.get_full_tick",
@@ -117,7 +135,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_stock_name(\"000001.SZ\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_stock_name(\"000001.SZ\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -162,7 +180,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_open_date(\"000001.SZ\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_open_date(\"000001.SZ\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -222,7 +240,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\nfrom datetime import datetime, timedelta\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    task_id = qmt.system.schedule_run(\n        lambda C: print(C.barpos), datetime.now(), -1, timedelta(seconds=2), \"external_timer\")\n    try:\n        threading.Event().wait(6)\n    finally:\n        qmt.system.cancel_schedule_run(task_id)",
+      "example": "from cfquant import QmtInnerApi\nimport threading\nfrom datetime import datetime, timedelta\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    task_id = qmt.system.schedule_run(\n        lambda C: print(C.barpos), datetime.now(), -1, timedelta(seconds=2), \"external_timer\")\n    try:\n        threading.Event().wait(6)\n    finally:\n        qmt.system.cancel_schedule_run(task_id)",
       "exampleTitle": "定时回调与清理示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -262,7 +280,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\nfrom datetime import datetime, timedelta\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    task_id = qmt.system.schedule_run(\n        lambda C: print(C.barpos), datetime.now(), -1, timedelta(seconds=2), \"external_timer\")\n    try:\n        threading.Event().wait(6)\n    finally:\n        qmt.system.cancel_schedule_run(task_id)",
+      "example": "from cfquant import QmtInnerApi\nimport threading\nfrom datetime import datetime, timedelta\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    task_id = qmt.system.schedule_run(\n        lambda C: print(C.barpos), datetime.now(), -1, timedelta(seconds=2), \"external_timer\")\n    try:\n        threading.Event().wait(6)\n    finally:\n        qmt.system.cancel_schedule_run(task_id)",
       "exampleTitle": "定时回调与清理示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -302,7 +320,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"set_account\"]\n    print(\"system.set_account\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"set_account\"]\n    print(\"system.set_account\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -347,7 +365,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"set_universe\"]\n    print(\"system.set_universe\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"set_universe\"]\n    print(\"system.set_universe\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -392,7 +410,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_universe()\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_universe()\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -437,7 +455,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"create_sector\"]\n    print(\"system.create_sector\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"create_sector\"]\n    print(\"system.create_sector\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -482,7 +500,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"create_sector_folder\"]\n    print(\"system.create_sector_folder\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"create_sector_folder\"]\n    print(\"system.create_sector_folder\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -527,7 +545,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_sector_list(\"\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.system.get_sector_list(\"\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -572,7 +590,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"reset_sector_stock_list\"]\n    print(\"system.reset_sector_stock_list\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"reset_sector_stock_list\"]\n    print(\"system.reset_sector_stock_list\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -617,7 +635,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"remove_stock_from_sector\"]\n    print(\"system.remove_stock_from_sector\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"remove_stock_from_sector\"]\n    print(\"system.remove_stock_from_sector\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -662,7 +680,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"add_stock_to_sector\"]\n    print(\"system.add_stock_to_sector\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"system\"][\"add_stock_to_sector\"]\n    print(\"system.add_stock_to_sector\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -742,7 +760,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_market_data_ex([\"close\", \"volume\"], [\"000001.SZ\"], period=\"1d\", count=3, subscribe=False)\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_market_data_ex([\"close\", \"volume\"], [\"000001.SZ\"], period=\"1d\", count=3, subscribe=False)\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -782,7 +800,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_full_tick([\"000001.SZ\", \"600000.SH\"])\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_full_tick([\"000001.SZ\", \"600000.SH\"])\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -842,7 +860,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    sub_id = qmt.market.subscribe_quote(\"000001.SZ\", period=\"tick\", callback=print)\n    try:\n        threading.Event().wait(10)\n    finally:\n        qmt.market.unsubscribe_quote(sub_id)",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    sub_id = qmt.market.subscribe_quote(\"000001.SZ\", period=\"tick\", callback=print)\n    try:\n        threading.Event().wait(10)\n    finally:\n        qmt.market.unsubscribe_quote(sub_id)",
       "exampleTitle": "行情订阅与清理示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -887,7 +905,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    sub_id = qmt.market.subscribe_whole_quote([\"000001.SZ\"], callback=print)\n    try:\n        threading.Event().wait(10)\n    finally:\n        qmt.market.unsubscribe_quote(sub_id)",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    sub_id = qmt.market.subscribe_whole_quote([\"000001.SZ\"], callback=print)\n    try:\n        threading.Event().wait(10)\n    finally:\n        qmt.market.unsubscribe_quote(sub_id)",
       "exampleTitle": "行情订阅与清理示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -927,7 +945,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    sub_id = qmt.market.subscribe_quote(\"000001.SZ\", period=\"tick\", callback=print)\n    try:\n        threading.Event().wait(10)\n    finally:\n        qmt.market.unsubscribe_quote(sub_id)",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    sub_id = qmt.market.subscribe_quote(\"000001.SZ\", period=\"tick\", callback=print)\n    try:\n        threading.Event().wait(10)\n    finally:\n        qmt.market.unsubscribe_quote(sub_id)",
       "exampleTitle": "行情订阅与清理示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -972,7 +990,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_svol\"]\n    print(\"market.get_svol\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_svol\"]\n    print(\"market.get_svol\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1017,7 +1035,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_bvol\"]\n    print(\"market.get_bvol\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_bvol\"]\n    print(\"market.get_bvol\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1062,7 +1080,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_turnover_rate\"]\n    print(\"market.get_turnover_rate\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_turnover_rate\"]\n    print(\"market.get_turnover_rate\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1107,7 +1125,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_longhubang\"]\n    print(\"market.get_longhubang\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_longhubang\"]\n    print(\"market.get_longhubang\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1152,7 +1170,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_north_finance_change\"]\n    print(\"market.get_north_finance_change\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_north_finance_change\"]\n    print(\"market.get_north_finance_change\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1197,7 +1215,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_hkt_details\"]\n    print(\"market.get_hkt_details\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_hkt_details\"]\n    print(\"market.get_hkt_details\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1242,7 +1260,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_hkt_statistics\"]\n    print(\"market.get_hkt_statistics\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_hkt_statistics\"]\n    print(\"market.get_hkt_statistics\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1287,7 +1305,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_local_data\"]\n    print(\"market.get_local_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_local_data\"]\n    print(\"market.get_local_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1332,7 +1350,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_financial_data\"]\n    print(\"market.get_financial_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_financial_data\"]\n    print(\"market.get_financial_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1377,7 +1395,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_raw_financial_data\"]\n    print(\"market.get_raw_financial_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_raw_financial_data\"]\n    print(\"market.get_raw_financial_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1422,7 +1440,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_last_volume\"]\n    print(\"market.get_last_volume\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_last_volume\"]\n    print(\"market.get_last_volume\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1467,7 +1485,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_total_share\"]\n    print(\"market.get_total_share\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_total_share\"]\n    print(\"market.get_total_share\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1512,7 +1530,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_instrument_detail(\"000001.SZ\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_instrument_detail(\"000001.SZ\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1557,7 +1575,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_his_st_data\"]\n    print(\"market.get_his_st_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_his_st_data\"]\n    print(\"market.get_his_st_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1602,7 +1620,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_main_contract\"]\n    print(\"market.get_main_contract\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_main_contract\"]\n    print(\"market.get_main_contract\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1647,7 +1665,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_contract_multiplier\"]\n    print(\"market.get_contract_multiplier\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_contract_multiplier\"]\n    print(\"market.get_contract_multiplier\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1692,7 +1710,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_contract_expire_date\"]\n    print(\"market.get_contract_expire_date\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_contract_expire_date\"]\n    print(\"market.get_contract_expire_date\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1737,7 +1755,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_his_contract_list\"]\n    print(\"market.get_his_contract_list\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_his_contract_list\"]\n    print(\"market.get_his_contract_list\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1782,7 +1800,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_option_detail_data\"]\n    print(\"market.get_option_detail_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_option_detail_data\"]\n    print(\"market.get_option_detail_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1827,7 +1845,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_option_list\"]\n    print(\"market.get_option_list\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_option_list\"]\n    print(\"market.get_option_list\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1872,7 +1890,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_option_undl_data\"]\n    print(\"market.get_option_undl_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_option_undl_data\"]\n    print(\"market.get_option_undl_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1917,7 +1935,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"bsm_price\"]\n    print(\"market.bsm_price\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"bsm_price\"]\n    print(\"market.bsm_price\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -1962,7 +1980,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"bsm_iv\"]\n    print(\"market.bsm_iv\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"bsm_iv\"]\n    print(\"market.bsm_iv\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2007,7 +2025,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_divid_factors(\"000001.SZ\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_divid_factors(\"000001.SZ\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2052,7 +2070,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_weight_in_index\"]\n    print(\"market.get_weight_in_index\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_weight_in_index\"]\n    print(\"market.get_weight_in_index\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2097,7 +2115,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_stock_list_in_sector(\"沪深A股\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_stock_list_in_sector(\"沪深A股\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2157,7 +2175,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_trading_dates(\"000001.SZ\", \"20261101\", \"20261105\", 5)\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_trading_dates(\"000001.SZ\", \"20261101\", \"20261105\", 5)\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2202,7 +2220,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"download_history_data\"]\n    print(\"market.download_history_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"download_history_data\"]\n    print(\"market.download_history_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2247,7 +2265,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_etf_info(\"510050.SH\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.market.get_etf_info(\"510050.SH\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2292,7 +2310,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_etf_iopv\"]\n    print(\"market.get_etf_iopv\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_etf_iopv\"]\n    print(\"market.get_etf_iopv\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2337,7 +2355,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_st_status\"]\n    print(\"market.get_st_status\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"market\"][\"get_st_status\"]\n    print(\"market.get_st_status\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2382,7 +2400,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_smart_algo_param\"]\n    print(\"trade.get_smart_algo_param\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_smart_algo_param\"]\n    print(\"trade.get_smart_algo_param\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2427,7 +2445,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_basket\"]\n    print(\"trade.get_basket\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_basket\"]\n    print(\"trade.get_basket\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2472,7 +2490,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"set_basket\"]\n    print(\"trade.set_basket\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"set_basket\"]\n    print(\"trade.set_basket\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2527,7 +2545,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    rows = qmt.trade.get_trade_detail_data(\"YOUR_ACCOUNT_ID\", \"stock\", \"position\")\n    for row in rows:\n        print(row.m_strInstrumentID, row.m_nVolume)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    rows = qmt.trade.get_trade_detail_data(\"YOUR_ACCOUNT_ID\", \"stock\", \"position\")\n    for row in rows:\n        print(row.m_strInstrumentID, row.m_nVolume)",
       "exampleTitle": "原生持仓查询示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2572,7 +2590,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_history_trade_detail_data\"]\n    print(\"trade.get_history_trade_detail_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_history_trade_detail_data\"]\n    print(\"trade.get_history_trade_detail_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2617,7 +2635,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.trade.get_ipo_data()\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.trade.get_ipo_data()\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2662,7 +2680,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    result = qmt.trade.get_new_purchase_limit(\"YOUR_ACCOUNT_ID\")\n    print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    result = qmt.trade.get_new_purchase_limit(\"YOUR_ACCOUNT_ID\")\n    print(result)",
       "exampleTitle": "Python 调用示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2707,7 +2725,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_value_by_order_id\"]\n    print(\"trade.get_value_by_order_id\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_value_by_order_id\"]\n    print(\"trade.get_value_by_order_id\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2762,7 +2780,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_last_order_id\"]\n    print(\"trade.get_last_order_id\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_last_order_id\"]\n    print(\"trade.get_last_order_id\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2807,7 +2825,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_assure_contract\"]\n    print(\"trade.get_assure_contract\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_assure_contract\"]\n    print(\"trade.get_assure_contract\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2852,7 +2870,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_enable_short_contract\"]\n    print(\"trade.get_enable_short_contract\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_enable_short_contract\"]\n    print(\"trade.get_enable_short_contract\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2897,7 +2915,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_option_subject_position\"]\n    print(\"trade.get_option_subject_position\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_option_subject_position\"]\n    print(\"trade.get_option_subject_position\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2942,7 +2960,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_comb_option\"]\n    print(\"trade.get_comb_option\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_comb_option\"]\n    print(\"trade.get_comb_option\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -2987,7 +3005,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_unclosed_compacts\"]\n    print(\"trade.get_unclosed_compacts\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_unclosed_compacts\"]\n    print(\"trade.get_unclosed_compacts\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3032,7 +3050,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_closed_compacts\"]\n    print(\"trade.get_closed_compacts\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_closed_compacts\"]\n    print(\"trade.get_closed_compacts\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3077,7 +3095,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_hkt_exchange_rate\"]\n    print(\"trade.get_hkt_exchange_rate\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"get_hkt_exchange_rate\"]\n    print(\"trade.get_hkt_exchange_rate\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3157,7 +3175,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    ENABLE_TRADING = False\n    if ENABLE_TRADING:\n        result = qmt.trade.passorder(23, 1101, \"YOUR_ACCOUNT_ID\", \"000001.SZ\", 11, 10.0, 100)\n        print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    ENABLE_TRADING = False\n    if ENABLE_TRADING:\n        result = qmt.trade.passorder(23, 1101, \"YOUR_ACCOUNT_ID\", \"000001.SZ\", 11, 10.0, 100)\n        print(result)",
       "exampleTitle": "交易调用示例（默认关闭）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3202,7 +3220,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"algo_passorder\"]\n    print(\"trade.algo_passorder\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"algo_passorder\"]\n    print(\"trade.algo_passorder\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3247,7 +3265,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"smart_algo_passorder\"]\n    print(\"trade.smart_algo_passorder\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"smart_algo_passorder\"]\n    print(\"trade.smart_algo_passorder\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3297,7 +3315,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    ENABLE_TRADING = False\n    if ENABLE_TRADING:\n        result = qmt.trade.cancel(\"ORDER_ID_FROM_QUERY\", \"YOUR_ACCOUNT_ID\", \"stock\")\n        print(result)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    ENABLE_TRADING = False\n    if ENABLE_TRADING:\n        result = qmt.trade.cancel(\"ORDER_ID_FROM_QUERY\", \"YOUR_ACCOUNT_ID\", \"stock\")\n        print(result)",
       "exampleTitle": "交易调用示例（默认关闭）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3342,7 +3360,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"cancel_task\"]\n    print(\"trade.cancel_task\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"cancel_task\"]\n    print(\"trade.cancel_task\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3387,7 +3405,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"pause_task\"]\n    print(\"trade.pause_task\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"pause_task\"]\n    print(\"trade.pause_task\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3432,7 +3450,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"resume_task\"]\n    print(\"trade.resume_task\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"resume_task\"]\n    print(\"trade.resume_task\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3477,7 +3495,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"query_credit_account\"]\n    print(\"trade.query_credit_account\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"query_credit_account\"]\n    print(\"trade.query_credit_account\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3522,7 +3540,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"query_credit_opvolume\"]\n    print(\"trade.query_credit_opvolume\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"trade\"][\"query_credit_opvolume\"]\n    print(\"trade.query_credit_opvolume\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3567,7 +3585,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。 需要 QMT 端已配置对应扩展数据或因子；K 线偏移相对于桥接策略当前上下文。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data\"]\n    print(\"reference.ext_data\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data\"]\n    print(\"reference.ext_data\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3612,7 +3630,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。 需要 QMT 端已配置对应扩展数据或因子；K 线偏移相对于桥接策略当前上下文。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data_rank\"]\n    print(\"reference.ext_data_rank\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data_rank\"]\n    print(\"reference.ext_data_rank\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3657,7 +3675,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。 需要 QMT 端已配置对应扩展数据或因子；K 线偏移相对于桥接策略当前上下文。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data_rank_range\"]\n    print(\"reference.ext_data_rank_range\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data_rank_range\"]\n    print(\"reference.ext_data_rank_range\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3702,7 +3720,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。 需要 QMT 端已配置对应扩展数据或因子；K 线偏移相对于桥接策略当前上下文。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data_range\"]\n    print(\"reference.ext_data_range\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"ext_data_range\"]\n    print(\"reference.ext_data_range\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3747,7 +3765,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。 需要 QMT 端已配置对应扩展数据或因子；K 线偏移相对于桥接策略当前上下文。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"get_factor_value\"]\n    print(\"reference.get_factor_value\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"get_factor_value\"]\n    print(\"reference.get_factor_value\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3792,7 +3810,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 ContextInfo 可省略，由桥接端补入。 需要 QMT 端已配置对应扩展数据或因子；K 线偏移相对于桥接策略当前上下文。",
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"get_factor_rank\"]\n    print(\"reference.get_factor_rank\", available)",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    available = qmt.capabilities()[\"reference\"][\"get_factor_rank\"]\n    print(\"reference.get_factor_rank\", available)",
       "exampleTitle": "能力检查示例（不执行该函数）",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3832,7 +3850,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.account_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"account_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.account_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"account_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3872,7 +3890,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.task_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"task_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.task_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"task_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3912,7 +3930,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.order_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"order_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.order_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"order_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3952,7 +3970,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.deal_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"deal_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.deal_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"deal_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -3992,7 +4010,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.position_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"position_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.position_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"position_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -4032,7 +4050,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.orderError_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"orderError_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.orderError_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"orderError_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -4072,7 +4090,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.credit_account_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"credit_account_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.credit_account_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"credit_account_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -4112,7 +4130,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "函数名和交易枚举沿用大 QMT，返回值保留原生语义。",
       "note": "QMT 已登录并运行更新后的 cfquant 桥接策略时可调用；是否存在请用 qmt.capabilities() 查询。 只接收当前桥接策略订阅账号产生的回报；注册不会生成交易事件。",
-      "example": "from cfquant import QmtInnerApi\nimport threading\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.credit_opvolume_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"credit_opvolume_callback\")",
+      "example": "from cfquant import QmtInnerApi\nimport threading\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    def on_event(C, *native_args):\n        print(native_args)\n\n    qmt.callbacks.credit_opvolume_callback(on_event)\n    try:\n        threading.Event().wait(60)\n    finally:\n        qmt.callbacks.unregister(\"credit_opvolume_callback\")",
       "exampleTitle": "原生回调注册示例",
       "resultHelp": "原生交易对象保留 m_ 字段，支持属性和字典访问；DataFrame、Series、NumPy 数组通过协议恢复。",
       "resultRows": [
@@ -4146,7 +4164,7 @@ window.CFQUANT_QMT_INNER_API = {
       "parameters": [],
       "usage": "from cfquant import QmtInnerApi；独立于 XtQuantTrader 使用。",
       "note": "面向外部数据查询、研究和实盘交易。已登记 80 个原生方法及 8 个回调；核心查询、行情订阅和定时器已通过华泰模拟终端实测，未对全部方法实测。",
-      "resultHelp": "默认自动选择通信方式。account_id / account_type 用于选择 Web 账号绑定；交易函数仍按原生要求传入账号。",
+      "resultHelp": "默认自动选择通信方式。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
       "resultRows": [
         [
           "capabilities()",
@@ -4162,7 +4180,7 @@ window.CFQUANT_QMT_INNER_API = {
         ]
       ],
       "orderFields": [],
-      "example": "from cfquant import QmtInnerApi\n\nwith QmtInnerApi(bridge_id=\"default\", account_id=\"YOUR_ACCOUNT_ID\",\n                 account_type=\"STOCK\") as qmt:\n    capabilities = qmt.capabilities()\n    print(capabilities)\n    print(qmt.market.get_full_tick([\"000001.SZ\"]))",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nwith QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\") as qmt:\n    capabilities = qmt.capabilities()\n    print(capabilities)\n    print(qmt.market.get_full_tick([\"000001.SZ\"]))",
       "exampleTitle": "连接与能力查询示例",
       "related": [
         "qmt_inner.market.get_full_tick",
@@ -4184,7 +4202,7 @@ window.CFQUANT_QMT_INNER_API = {
       "parameters": [],
       "usage": "from cfquant import QmtInnerApi；独立于 XtQuantTrader 使用。",
       "note": "面向外部数据查询、研究和实盘交易。已登记 80 个原生方法及 8 个回调；核心查询、行情订阅和定时器已通过华泰模拟终端实测，未对全部方法实测。",
-      "resultHelp": "默认自动选择通信方式。account_id / account_type 用于选择 Web 账号绑定；交易函数仍按原生要求传入账号。",
+      "resultHelp": "默认自动选择通信方式。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
       "resultRows": [
         [
           "capabilities()",
@@ -4200,7 +4218,7 @@ window.CFQUANT_QMT_INNER_API = {
         ]
       ],
       "orderFields": [],
-      "example": "from cfquant import QmtInnerApi\n\nqmt = QmtInnerApi(bridge_id=\"default\")\ntry:\n    print(qmt.capabilities())\nfinally:\n    qmt.close()",
+      "example": "from cfquant import QmtInnerApi\n\n# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\nqmt = QmtInnerApi(account_id=\"YOUR_ACCOUNT_ID\", account_type=\"STOCK\")\ntry:\n    print(qmt.capabilities())\nfinally:\n    qmt.close()",
       "exampleTitle": "会话清理示例",
       "related": [
         "qmt_inner.market.get_full_tick",

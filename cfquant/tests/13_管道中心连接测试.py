@@ -165,6 +165,48 @@ def test_pipe_hub_status_marks_ready_qmt_connected():
     assert status["qmt_channel_states"]["ready"]["status"] == "ready"
 
 
+def test_request_route_waits_for_second_qmt_endpoint():
+    hub = CfquantPipeHub(pipe_name="unit_pipe", show=False)
+    hub._write_status = lambda: None
+    hub.running = True
+    hub.qmt_ready_wait_seconds = 0.5
+    rx_conn = FakePipeConn("qmt-rx")
+    tx_conn = FakePipeConn("qmt-tx")
+    hub._handle_hello(rx_conn, qmt_hello("qmt_rx", channel="warming"), "api")
+
+    def register_tx():
+        time.sleep(0.05)
+        hub._handle_hello(tx_conn, qmt_hello("qmt_tx", channel="warming"), "api")
+
+    thread = threading.Thread(target=register_tx)
+    thread.start()
+    try:
+        result, state = hub._wait_qmt_ready_conn("warming")
+        assert result is rx_conn
+        assert state["status"] == "ready"
+        assert state["rx_connected"] is True
+        assert state["tx_connected"] is True
+    finally:
+        thread.join(1)
+        hub.running = False
+
+
+def test_missing_qmt_route_reports_channel_state():
+    hub = CfquantPipeHub(pipe_name="unit_pipe", show=False)
+    hub.qmt_ready_wait_seconds = 0
+    result, state = hub._wait_qmt_ready_conn("missing")
+    assert result is None
+    assert state == {
+        "channel": "missing",
+        "status": "degraded",
+        "ready": False,
+        "rx_connected": False,
+        "tx_connected": False,
+        "rx": None,
+        "tx": None,
+    }
+
+
 def test_pipe_hub_stale_qmt_heartbeat_drops_connection_pair():
     hub = CfquantPipeHub(pipe_name="unit_pipe", show=False)
     hub._write_status = lambda: None

@@ -26,29 +26,30 @@ def test_smart_reference_examples_navigation_and_copy(page, frontend_url, tmp_pa
     page.locator('#closeOnboardingBtn').click()
     page.mouse.move(page.viewport_size['width'] - 1, page.viewport_size['height'] - 1)
     page.keyboard.press('Escape')
-    page.locator('.nav-item[data-view="docs"]').click()
-    docs = page.locator('#cfquantDocs')
-    docs.locator('#docsGroup').select_option('algorithm')
+    page.locator('.nav-item[data-view="api"]').click()
+    docs = page.locator('#apiDocDetail')
+    group = page.locator('[data-api-group="algorithm"]')
+    if group.get_attribute('aria-expanded') != 'true':
+        group.click()
     entries = page.evaluate("window.CFQUANT_CFTRADER_API.filter(x => x.group === '条件单与仓位计划')")
     assert len(entries) == 12
     for entry in entries:
         assert hasattr(CfQuantTrader, entry['name'])
-        docs.locator('#docsSearch').fill(entry['name'])
-        docs.locator(f'[data-doc-id="{entry["id"]}"]').click()
+        page.locator(f'[data-endpoint-id="{entry["id"]}"]').click()
         code = docs.locator('pre[data-language="python"]').inner_text()
         tree = verify_example(code)
         for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
             if isinstance(call.func, ast.Name) and call.func.id == 'calculate_position':
                 inspect.signature(calculate_position).bind(**{kw.arg: None for kw in call.keywords})
-        docs.locator('[data-doc-copy="python"]').click()
+        docs.locator('[data-api-copy-example="python"]').click()
         assert page.evaluate('window.copiedText') == code
         http = docs.locator('pre[data-language="http"]').inner_text()
         assert json.loads(http.split('\n\n', 1)[1]) == entry['http']['body']
-        docs.locator('[data-doc-copy="http"]').click()
+        docs.locator('[data-api-copy-example="http"]').click()
         assert page.evaluate('window.copiedText') == http
         assert docs.evaluate('node => node.scrollWidth <= node.clientWidth')
-    docs.locator('#docsSearch').fill('order_condition')
-    page.screenshot(path=str(tmp_path / 'smart-orders-docs.png'))
+    page.locator('[data-endpoint-id="cftrader.order_condition"]').click()
+    page.screenshot(path=str(tmp_path / 'smart-orders-api.png'))
     page.locator('.nav-item[data-view="api"]').click()
     group = page.locator('[data-api-group="algorithm"]')
     if group.get_attribute('aria-expanded') != 'true':

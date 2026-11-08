@@ -12,7 +12,15 @@ from pathlib import Path
 if __package__:
     from .qmt_dependencies import FRIDA_REQUIREMENT, FRIDA_VERSION, report_startup_dependencies
 else:
-    from qmt_dependencies import FRIDA_REQUIREMENT, FRIDA_VERSION, report_startup_dependencies
+    # The Windows launcher executes this file by path (``python
+    # cfquant\\_editable_install.py``), so Python puts the package directory on
+    # sys.path and leaves ``__package__`` empty.  Import through the package in
+    # that mode as well; qmt_dependencies uses relative imports and cannot be
+    # loaded as a top-level module.
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+    if str(_PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(_PROJECT_ROOT))
+    from cfquant.qmt_dependencies import FRIDA_REQUIREMENT, FRIDA_VERSION, report_startup_dependencies
 
 
 PACKAGE_NAME = "cfquant"

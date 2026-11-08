@@ -129,3 +129,43 @@ def test_web_retains_failure_request_id_and_logs_without_inventing_qmt_time(rpc,
     row = web.query_account_live("offline", "normal", "paper", ["asset"], account_key="paper:STOCK")["asset"]
     assert row["ok"] is True
     assert row["request_timings"][0]["qmt"]["reason"] == "bridge_timing_unavailable"
+
+
+def test_configured_pipe_account_fails_fast_when_channel_is_not_ready(monkeypatch):
+    config = SimpleNamespace(
+        account_config=lambda **kwargs: {
+            "account_key": "acct:STOCK:paper",
+            "account_id": "paper",
+            "account_type": "STOCK",
+            "bridge_id": "acct",
+            "mode": "ctypes",
+            "enabled": True,
+        },
+    )
+    monkeypatch.setattr(web, "WEB_CONFIG", config)
+    monkeypatch.setattr(web, "resolve_account_mode", lambda *args, **kwargs: "ctypes")
+    monkeypatch.setattr(web, "bridge_channels", lambda bridge_id: {
+        "normal": "cfquant.acct.normal.request",
+        "trade": "cfquant.acct.trade.request",
+    })
+    monkeypatch.setattr(web, "PIPE_HUB", SimpleNamespace(status=lambda: {
+        "status": {"qmt_ready_channels": [], "qmt_channel_states": {}},
+    }))
+
+    def unexpected_request(*args, **kwargs):
+        raise AssertionError("offline account must not reach the RPC client")
+
+    monkeypatch.setattr(web, "account_request", unexpected_request)
+    row = web.query_account_live(
+        "acct",
+        "normal",
+        "paper",
+        ["asset"],
+        account_key="acct:STOCK:paper",
+    )["asset"]
+
+    assert row["ok"] is False
+    assert row["error_code"] == "QMT_BRIDGE_NOT_CONNECTED"
+    assert row["bridge_ready"] is False
+    assert row["request_timings"][0]["qmt"]["reason"] == "bridge_not_ready"
+    assert row["refresh_latency_ms"] < 100

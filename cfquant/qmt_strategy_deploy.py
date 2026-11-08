@@ -5,7 +5,7 @@ import copy
 import hashlib
 import io
 import json
-import logging
+from .diagnostic_context import get_logger
 import os
 from pathlib import Path
 import re
@@ -17,9 +17,49 @@ import uuid
 from xml.dom import minidom
 
 from .qmt_strategy_package import build_package
+from .version import __version__
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
+
+
+def _strategy_pipe_timeout_seconds():
+    try:
+        # PipeHub waits up to 1.5 seconds for the two QMT endpoints during a
+        # restart. Leave enough margin for the response to reach the API
+        # client instead of letting the client close the pipe first.
+        ready_wait = max(0.0, float(os.environ.get("CFQUANT_PIPE_QMT_READY_WAIT", "1.5")))
+        configured = float(os.environ.get("CFQUANT_STRATEGY_PIPE_TIMEOUT", "3.0"))
+        return max(2.0, ready_wait + 0.5, configured)
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _strategy_pipe_connect_timeout_ms():
+    try:
+        return max(300, int(float(os.environ.get("CFQUANT_STRATEGY_PIPE_CONNECT_TIMEOUT_MS", "500"))))
+    except (TypeError, ValueError):
+        return 500
+
+
+def _is_pipe_sync_retryable(error):
+    """Identify an unavailable PipeHub/QMT endpoint for retry throttling."""
+    text = str(error or "").lower()
+    return (
+        isinstance(error, TimeoutError)
+        or "cfquant pipe request timeout" in text
+        or "qmt pipe bridge not connected" in text
+        or "pipe connection closed" in text
+    )
+
+
+def _pipe_sync_retry_delay(failures):
+    failures = max(1, int(failures or 1))
+    if failures == 1:
+        return 5.0
+    if failures == 2:
+        return 15.0
+    return 60.0
 
 
 SCRIPTS = {"ctypes": "CFQUANT_CTYPE_ALL_LOWLAT.py", "lite": "CFQUANT_LITE.py",
@@ -430,7 +470,8 @@ class PipeStrategyController:
         client = self.clients.get(key)
         if client is None:
             client = self.clients[key] = PipeRpcClient(pipe_name=key[0], request_channel=channel,
-                                                       timeout=0.5, connect_timeout_ms=150)
+                                                       timeout=_strategy_pipe_timeout_seconds(),
+                                                       connect_timeout_ms=_strategy_pipe_connect_timeout_ms())
         try:
             return client.request("cfquant.strategy.control", desired)
         except Exception:
@@ -704,7 +745,8 @@ class QmtStrategyManager:
                     descriptor = {"mode": job["mode"], "generation": generation, "role": role["role"],
                                   "runtime_key": _digest([os.path.normcase(job["root"]), job["account_id"]])[:24],
                                   "control_path": job["control_path"], "lease_dir": str(directory / "leases"),
-                                  "runtime_status_path": role["runtime_status_path"]}
+                                  "runtime_status_path": role["runtime_status_path"],
+                                  "cfquant_version": __version__}
                     source = managed_source(Path(role["source"]), role["identity_path"], role["identity"], descriptor)
                     package = build_package(role["name"], source, _role_stock(settings, role["role"]), settings["period"])
                     role["package_path"] = str(directory / (role["name"] + ".rzrk"))
@@ -756,6 +798,15 @@ class QmtStrategyManager:
             identity = role["identity"]
             sync = role.setdefault("control_sync", {})
             previous_error = sync.get("last_error", "")
+            desired_key = json.dumps(desired, sort_keys=True, ensure_ascii=True)
+            retry_key = sync.get("retry_key")
+            retry_at = float(sync.get("retry_at") or 0)
+            if retry_key == desired_key and retry_at > time.time():
+                # A missing QMT endpoint is an expected transient state while
+                # QMT is restarting. Do not reconnect a new client every two
+                # seconds; the next scheduled retry will still recover it.
+                sync["next_retry_at"] = retry_at
+                continue
             sync.update(last_attempt_at=time.time(), pipe_name=identity.get("pipe_name"),
                         request_channel=((identity.get("channels") or {}).get("normal")
                                          or identity.get("normal_channel")
@@ -769,6 +820,8 @@ class QmtStrategyManager:
                 # ready bridge: QMT may still be binding its trading context.
                 sync.update(last_success_at=time.time(), state=report.get("state"),
                             pid=report.get("pid"), generation=report.get("generation"), last_error="")
+                for key in ("retry_at", "next_retry_at", "retry_key", "failure_count"):
+                    sync.pop(key, None)
                 # Only the external manager writes status files.
                 _write_json(role["runtime_status_path"], report)
             except Exception as error:
@@ -777,6 +830,19 @@ class QmtStrategyManager:
                 # why a restarted strategy is still awaiting confirmation.
                 detail = "%s: %s" % (type(error).__name__, str(error))
                 sync["last_error"] = detail
+                if _is_pipe_sync_retryable(error):
+                    failures = int(sync.get("failure_count") or 0) + 1
+                    delay = _pipe_sync_retry_delay(failures)
+                    retry_at = time.time() + delay
+                    sync.update(
+                        failure_count=failures,
+                        retry_key=desired_key,
+                        retry_at=retry_at,
+                        next_retry_at=retry_at,
+                    )
+                else:
+                    for key in ("retry_at", "next_retry_at", "retry_key", "failure_count"):
+                        sync.pop(key, None)
                 if detail != previous_error:
                     logger.warning("QMT strategy control sync failed account=%s role=%s pipe=%s channel=%s: %s",
                                    job["account_key"], role["role"], sync["pipe_name"],
@@ -864,6 +930,25 @@ class QmtStrategyManager:
                 for job in jobs:
                     if job.get("enabled") and self._prepare_generation_transition(job):
                         self._control(job)
+                    # QMT can consume a .rzrk import queue and exit before it
+                    # writes the FormulaCatalog/Python registration.  This is
+                    # common when Web startup first stops an old QMT process.
+                    # Once the process is confirmed stopped, a missing queue is
+                    # recoverable for our managed CFQ slots: clear the stale
+                    # queued marker so _advance() recreates the package before
+                    # the next QMT launch.
+                    recovered_queue = False
+                    for role in job.get("roles", []):
+                        name = str(role.get("name") or "")
+                        queue = root / "formulas" / (name + ".rzrk")
+                        if (role.get("queued") and not role.get("imported")
+                                and not queue.exists() and _valid_managed_strategy_name(name)):
+                            role["queued"] = False
+                            recovered_queue = True
+                    if recovered_queue:
+                        # Clear an exhausted deployment retry gate left by the
+                        # failed startup before asking _advance() to rebuild it.
+                        self._state(job, "waiting_exit")
                     try:
                         self._advance(job)
                     except Exception as error:

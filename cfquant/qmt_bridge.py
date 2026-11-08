@@ -1,3 +1,4 @@
+from .diagnostic_context import versioned_message
 # -*- coding: utf-8 -*-
 import os
 import queue
@@ -389,6 +390,9 @@ class CfquantQmtBridge(object):
             self._quote_bridge._log = self._log
         bridge = self._quote_bridge
         bridge.context, bridge.tx = self.context, self.tx
+        # Keep one bridge-owned whole-quote callback alive independently of
+        # external logical subscribers. External leases only control delivery.
+        bridge._subscribe_internal_whole_quote()
         result = bridge._dispatch(action, params, msg)
         if action not in ("xtdata.unsubscribe_quote", "cfquant.shared_quote_status", "cfquant.quote_heartbeat"):
             self._remember_subscription(result["subscribe_id"], msg.get("client_id"), action, params)
@@ -1740,7 +1744,7 @@ class CfquantQmtBridge(object):
             raise RuntimeError("无法导入 LTtx txl，请确认 cfquant 包完整或 tx.py 在 QMT Python 路径中: %s; fallback: %s" % (package_error, path_error))
 
     def _log(self, msg):
-        msg = translate_log(msg)
+        msg = versioned_message(translate_log(msg))
         line = "%s %s" % (self._timestamp_ms(), msg)
         try:
             self.log_queue.put_nowait(line)

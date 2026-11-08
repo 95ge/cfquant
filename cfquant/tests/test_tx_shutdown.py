@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from cfquant.tx import txl, _ReceiveQueue
+from cfquant.diagnostic_context import versioned_message
 
 
 @pytest.fixture
@@ -285,7 +286,7 @@ def test_sdk_close_cancels_startup_without_waiting_for_start_lock():
         client.close()
         worker.join(1)
         assert not worker.is_alive()
-        assert errors == ['closed']
+        assert errors == [versioned_message('closed')]
         assert client._closed
     finally:
         cancelled.set()

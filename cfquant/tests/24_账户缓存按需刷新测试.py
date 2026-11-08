@@ -398,6 +398,29 @@ def test_failed_queries_back_off_despite_readers_and_callbacks_then_reset(enviro
     assert len(environment.calls) == before + 1
 
 
+def test_pipe_channel_failure_uses_long_retry_backoff(environment, monkeypatch):
+    cache = environment.cache
+
+    def offline_query(bridge_id, channel, account_id, sections, **kwargs):
+        return {
+            name: {
+                "ok": False,
+                "error": "QMT pipe bridge not connected",
+                "error_code": "QMT_BRIDGE_NOT_CONNECTED",
+            }
+            for name in sections
+        }
+
+    monkeypatch.setattr(web, "query_account_live", offline_query)
+    get(cache)
+
+    failure = cache._refresh_failures[KEY + ("asset",)]
+    assert failure["retry_delay_seconds"] >= 60
+    environment.clock[0] += 30
+    cache._refresh_subscriptions()
+    assert cache._refresh_failures[KEY + ("asset",)]["consecutive_failures"] == 1
+
+
 def test_inactive_or_disabled_accounts_stop_retrying(environment, monkeypatch):
     calls = fail_queries(environment, monkeypatch)
     get(environment.cache)

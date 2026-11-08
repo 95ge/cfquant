@@ -3,6 +3,9 @@
 No mouse/keyboard events, order calls, whitelist changes, or terminal restarts.
 The command line defaults to inspection; --ensure/--watch enable recovery.
 """
+
+from .diagnostic_context import VersionedErrorMixin, versioned_message
+from .version import __version__
 import argparse
 import copy
 import datetime
@@ -46,7 +49,7 @@ class RecoveryJournal:
 
     def __call__(self, event):
         stamp = datetime.datetime.now().astimezone()
-        event = dict(event, timestamp=stamp.isoformat(timespec="milliseconds"))
+        event = dict(event, timestamp=stamp.isoformat(timespec="milliseconds"), cfquant_version=__version__)
         with self.lock:
             self.directory.mkdir(parents=True, exist_ok=True)
             path = self.directory / (stamp.strftime("%Y-%m-%d") + ".jsonl")
@@ -73,11 +76,11 @@ def confirm_recovery_bridge(job, pid):
         controller.close()
 
 
-class UnsupportedQmt(RuntimeError):
+class UnsupportedQmt(VersionedErrorMixin, RuntimeError):
     pass
 
 
-class StrategyRecoveryBusy(RuntimeError):
+class StrategyRecoveryBusy(VersionedErrorMixin, RuntimeError):
     pass
 
 
@@ -524,7 +527,8 @@ def main():
         while True:
             if parent is not None and not parent.is_running():
                 return 0
-            output = {"account_id": args.account_id, "checked_at": time.time(), "targets": {}}
+            output = {"account_id": args.account_id, "checked_at": time.time(), "targets": {},
+                      "cfquant_version": __version__}
             try:
                 for key, original in jobs().items():
                     if original.get("account_id") != args.account_id:
@@ -537,7 +541,7 @@ def main():
             except Exception as error:
                 if not args.watch:
                     raise
-                output.update(targets=states, error=str(error))
+                output.update(targets=states, error=versioned_message(error))
             states = output["targets"]
             text = json.dumps(output, ensure_ascii=False, indent=2)
             if args.report:

@@ -1,4 +1,6 @@
 """Read-only checks and repair instructions for optional QMT login components."""
+
+from .diagnostic_context import VersionedErrorMixin
 import copy
 import importlib
 import importlib.metadata
@@ -145,7 +147,7 @@ def check_login_dependencies(python_exe=None, refresh=False, timeout=15):
         return copy.deepcopy(_CACHE[executable])
 
 
-class QmtDependencyError(RuntimeError):
+class QmtDependencyError(VersionedErrorMixin, RuntimeError):
     pass
 
 

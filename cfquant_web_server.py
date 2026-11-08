@@ -22,6 +22,8 @@ from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_run
 from cfquant.qmt_dependencies import check_login_dependencies, report_startup_dependencies
 from cfquant import remote_management as remote_agent_module
 from cfquant.trading_monitor import TradingMonitor, monitored_request
+from cfquant.monitor_notifications import MonitorNotificationService
+from cfquant.monitor_performance import PerformanceSampler
 import posixpath
 import queue
 import re
@@ -134,6 +136,9 @@ from cfquant.algo_broker import RoutedAlgoBroker
 from cfquant.smart_orders import SMART_ACTIONS, SmartOrderEngine
 from cfquant.planning_broker import PlanningBroker
 from cfquant.position_sizing import calculate_position
+from cfquant.subscription_store import SubscriptionStore
+from cfquant.subscription_manager import SubscriptionManager
+from cfquant.qmt_python_runtime import QmtPythonRuntime
 
 ALGO_ACTIONS = ALGO_ACTIONS | SMART_ACTIONS
 from cfquant.flow_control import KeyedExecutor, OrderedSender
@@ -141,6 +146,7 @@ from cfquant.quote_history import QuoteHistory
 from cfquant.runtime_report import read_qmt_runtime_markers as read_qmt_runtime_marker_files
 from cfquant.runtime_report import module_source_state
 from cfquant.version import WEB_VERSION, __version__ as CORE_VERSION
+from cfquant.diagnostic_context import versioned_message
 from cfquant.build_info import build_identity
 from tx import txl
 
@@ -4389,7 +4395,9 @@ class GlobalTxClient(object):
         mark_offline_on_timeout=False, ignore_cooldown=False, mode=None,
     ):
         monitor = TRADING_MONITOR
-        if not monitor.enabled or not monitored_request(action):
+        notification_service = globals().get("MONITOR_NOTIFICATIONS")
+        notification_enabled = bool(notification_service and notification_service.is_enabled())
+        if not monitored_request(action) or (not monitor.enabled and not notification_enabled):
             return self._request(bridge_id, channel_key, action, params, timeout,
                                  mark_offline_on_timeout, ignore_cooldown, mode)
         started = time.perf_counter()
@@ -4406,8 +4414,12 @@ class GlobalTxClient(object):
                 try:
                     monitor_params = dict(params or {}, account_id=_external_account_id(params),
                                           account_type=_external_account_type(params))
-                    monitor.record_request(bridge_id, action, monitor_params,
-                        (time.perf_counter() - started) * 1000, result=result, error=error)
+                    elapsed_ms = (time.perf_counter() - started) * 1000
+                    if monitor.enabled:
+                        monitor.record_request(bridge_id, action, monitor_params,
+                            elapsed_ms, result=result, error=error)
+                    _record_monitor_notification("record_request", bridge_id, action, monitor_params,
+                        elapsed_ms, result=result, error=error)
                 except Exception as exc:
                     safe_print("trading monitor request capture failed: %s" % exc)
 
@@ -4691,8 +4703,10 @@ def account_request(
     )
     if getattr(last_error, "dispatched", None) is False:
         raise last_error
-    raise RuntimeError(
-        "%s failed for account %s: %s" % (action, account_id or "--", detail or "no route attempted")
+    raise CfquantError(
+        "%s failed for account %s: %s" % (action, account_id or "--", detail or "no route attempted"),
+        details=dict(getattr(last_error, "error_details", {}) or {},
+                     action=action, bridge_id=bridge_id, account_id=account_id, attempts=attempts),
     )
 
 
@@ -5751,11 +5765,63 @@ def build_lttx_registry():
     }
 
 
+class _WebSubscriptionAdapter(object):
+    """Route durable subscription control to the selected normal QMT bridge."""
+    def prepare(self, spec):
+        params = dict(spec.get("params") or {})
+        account = params.get("account") if isinstance(params.get("account"), dict) else {}
+        account_id = str(params.get("account_id") or account.get("account_id") or configured_default_account_id() or "")
+        account_type = params.get("account_type") or account.get("account_type") or "STOCK"
+        # An account or account_key is enough to resolve the owning QMT. Keep
+        # bridge_id empty unless the caller explicitly selected one; filling in
+        # DEFAULT_BRIDGE_ID here would turn an account route into a forced
+        # internal-channel route during managed subscription recovery.
+        bridge_id = params.get("bridge_id") or account.get("bridge_id") or ""
+        route = dict(account_id=account_id, account_type=account_type, account_key=params.get("account_key") or account.get("account_key") or "", bridge_id=bridge_id)
+        result = dict(spec)
+        result["route"] = route
+        return result
+
+    def control(self, spec, **params):
+        route = spec.get("route") or self.prepare(spec)["route"]
+        payload = dict(params)
+        if "spec_payload" in payload:
+            payload["spec"] = payload.pop("spec_payload")
+        payload.update(route)
+        return account_request(route["account_id"], route["bridge_id"], "normal",
+                               "cfquant.managed_subscription", payload,
+                               default_channel="normal", timeout=12.0,
+                               mark_offline_on_timeout=False,
+                               account_type=route["account_type"], account_key=route["account_key"])["result"]
+
+    def emit(self, client, event, payload, subscription_id):
+        # LTTX route owns the external response channel; it will reject stale
+        # client IDs after a connection generation changes.
+        LTTX_WEB_ROUTE._push_event(client, event, payload, subscription_id)
+
+
+_SUBSCRIPTION_MANAGER = None
+_SUBSCRIPTION_MANAGER_LOCK = threading.Lock()
+
+
+def _subscription_manager():
+    global _SUBSCRIPTION_MANAGER
+    with _SUBSCRIPTION_MANAGER_LOCK:
+        if _SUBSCRIPTION_MANAGER is None:
+            path = os.path.join(RUNTIME_DB_DIR, "subscriptions.sqlite3")
+            store = SubscriptionStore(path)
+            _SUBSCRIPTION_MANAGER = SubscriptionManager(store, _WebSubscriptionAdapter())
+        return _SUBSCRIPTION_MANAGER
+
+
 def route_external_lttx_request(msg):
     action = str(msg.get("action") or "")
     params = msg.get("params") or {}
     if not isinstance(params, dict):
         params = {}
+    if action == "cfquant.subscriptions":
+        manager = _subscription_manager()
+        return manager.handle(params, msg.get("client_id") or msg.get("reply_channel")), {"route": "subscription_manager"}
     if action in ALGO_ACTIONS:
         return algorithm_request(action, params), {"route": "algorithm_service"}
     if action in ("cfquant.registry", "cfquant.discovery", "cfquant.runtime"):
@@ -5786,6 +5852,17 @@ def route_external_lttx_request(msg):
         # Bind event forwarding to the actual external requester, never a
         # caller-supplied destination. Native APIs always use the normal strategy.
         params = dict(params, _inner_client_id=msg.get("client_id") or msg.get("reply_channel"))
+        # An omitted account means "use the current quote source". Resolve the
+        # provider before account_request so native QMT calls follow the same
+        # source selection as the shared行情/data services. An explicit
+        # account, account_key or bridge remains an intentional route override.
+        if not account_id and not account_key and not params.get("bridge_id"):
+            provider = next(iter(data_provider_candidates()), None)
+            if provider:
+                account_id = str(provider.get("account_id") or "").strip()
+                account_type = normalize_account_type(provider.get("account_type") or "STOCK")
+                account_key = str(provider.get("account_key") or "").strip()
+                params.update(account_id=account_id, account_type=account_type, account_key=account_key)
         route = account_request(account_id, params.get("bridge_id"), "normal", action, params,
                                 default_channel="normal", timeout=timeout,
                                 account_type=account_type, account_key=account_key)
@@ -6257,6 +6334,14 @@ class LttxWebRouteServer(object):
         if not isinstance(msg, dict):
             return
         event = str(msg.get("event") or "")
+        if event == "cfquant.managed_subscription":
+            data = msg.get("data")
+            if isinstance(data, dict):
+                try:
+                    _subscription_manager().on_event(data)
+                except Exception as error:
+                    safe_print("cfquant managed subscription event failed: %s" % error)
+            return
         if event.startswith("qmt_inner:"):
             client_id = (msg.get("meta") or {}).get("inner_client_id")
             if client_id:
@@ -6342,7 +6427,7 @@ LTTX_WEB_ROUTE = LttxWebRouteServer()
 
 
 def safe_print(message):
-    line = str(message)
+    line = versioned_message(message)
     printed_to_log = False
     try:
         print(line)
@@ -6715,6 +6800,15 @@ def ctypes_bridge_status(bridge_id=DEFAULT_BRIDGE_ID):
     }
     for channel_name in ("normal", "trade"):
         row = result[channel_name]
+        channel_state = (hub_status.get("qmt_channel_states") or {}).get(row.get("channel")) or {}
+        tx_meta = channel_state.get("tx") or {}
+        telemetry = tx_meta.get("telemetry")
+        if isinstance(telemetry, dict):
+            row["telemetry"] = dict(telemetry)
+        if tx_meta.get("process_id"):
+            row["process_id"] = tx_meta.get("process_id")
+        if tx_meta.get("telemetry_error"):
+            row["telemetry_error"] = tx_meta.get("telemetry_error")
         row["latency_ms"] = 0
         if not row["online"]:
             row["error"] = "ctypes PipeHub channel is offline"
@@ -7432,6 +7526,8 @@ class CallbackEventStore(object):
                 self._start_pipe_clients(stop_event)
             except Exception as error:
                 safe_print("cfquant callback listener recovery failed: %s" % error)
+                _record_monitor_notification("record_system_error", "callback listener recovery failed: %s" % error,
+                                              {"component": "callback_listener"})
             retry_event.wait(self._retry_interval)
 
     def attach_pipe_client(self, client):
@@ -7518,6 +7614,8 @@ class CallbackEventStore(object):
             except Exception as e:
                 if not stop_event.is_set():
                     safe_print("callback listener error: %s" % e)
+                    _record_monitor_notification("record_system_error", "callback listener error: %s" % e,
+                                                  {"component": "callback_listener"})
                 stop_event.wait(0.2)
 
     def _parse(self, raw):
@@ -7580,6 +7678,7 @@ class CallbackEventStore(object):
             TRADING_MONITOR.record_callback(row)
         except Exception as e:
             safe_print("trading monitor callback capture failed: %s" % e)
+        _record_monitor_notification("record_callback", row)
         WS_CALLBACKS.broadcast(row)
         if source == "channel":
             self._forward_to_lttx_route(row)
@@ -7807,6 +7906,48 @@ TRADING_MONITOR = TradingMonitor(os.path.join(RUNTIME_DB_DIR, "trading_monitor.s
     account_type_normalizer=normalize_account_type)
 
 
+def _monitor_notification_heartbeat():
+    """Return a small, credential-free snapshot for optional heartbeat notices."""
+    snapshot = {"timestamp": time.time()}
+    try:
+        snapshot["trading_monitor"] = TRADING_MONITOR.health()
+    except Exception:
+        pass
+    pipe_hub = globals().get("PIPE_HUB")
+    if pipe_hub is not None:
+        try:
+            snapshot["pipe_hub"] = pipe_hub.status()
+        except Exception:
+            pass
+    status_monitor = globals().get("STATUS_MONITOR")
+    if status_monitor is not None:
+        try:
+            snapshot["channels"] = {
+                bridge_id: status_monitor.latest(bridge_id)
+                for bridge_id in current_bridges()
+            }
+        except Exception:
+            pass
+    return snapshot
+
+
+MONITOR_NOTIFICATIONS = MonitorNotificationService(
+    os.path.join(RUNTIME_CONFIG_DIR, "monitor_notifications.json"),
+    heartbeat_provider=_monitor_notification_heartbeat,
+)
+
+
+def _record_monitor_notification(method, *args, **kwargs):
+    service = globals().get("MONITOR_NOTIFICATIONS")
+    if service is None:
+        return False
+    try:
+        return bool(getattr(service, method)(*args, **kwargs))
+    except Exception as error:
+        safe_print("monitor notification event failed method=%s error=%s" % (method, error))
+        return False
+
+
 def refresh_monitor_accounts(configs=None):
     """Publish only binding identities; never expose paths or credentials to monitoring."""
     if configs is None:
@@ -7963,7 +8104,7 @@ def ok(data=None):
 
 
 def fail(error, status=400):
-    result = {"ok": False, "error": str(error), "status": status}
+    result = {"ok": False, "error": versioned_message(error), "status": status, "cfquant_version": CORE_VERSION}
     timing = getattr(error, "market_timing", None)
     if timing is not None:
         result["timing"] = timing
@@ -11494,6 +11635,34 @@ def qmt_process_preflight(body=None, row=None):
     return snapshots
 
 
+def qmt_python_runtime_binding_status(qmt_dir, account_id=""):
+    """Read the account's selected QMT Python runtime without network I/O."""
+    configured = normalize_optional_path(qmt_dir)
+    if not configured:
+        return {
+            "state": "qmt_directory_missing",
+            "account_id": str(account_id or ""),
+            "python_library_downloaded": False,
+            "selected_runtime": None,
+            "runtimes": {},
+        }
+    try:
+        return QmtPythonRuntime(configured, account_id=account_id or None).binding_status()
+    except Exception as error:
+        # Binding should still be able to save a row when an old or partially
+        # removed QMT directory cannot be inspected.  Surface the diagnostic
+        # in the response instead of turning a read-only check into a save
+        # failure.
+        return {
+            "state": "inspection_failed",
+            "account_id": str(account_id or ""),
+            "python_library_downloaded": False,
+            "selected_runtime": None,
+            "runtimes": {},
+            "error": str(error),
+        }
+
+
 class QmtRunningError(RuntimeError):
     """A caller must close QMT or explicitly opt in to auto_close_qmt."""
 
@@ -12036,6 +12205,7 @@ def _qmt_auto_login_first_pid(processes, launch=None):
 
 def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="save", strategy_deploy=None):
     row = row or {}
+    requested_restart = bool(restart)
     settings = normalize_qmt_auto_login_settings(request, existing=row.get("qmt_auto_login"))
     policy = management_qmt_start_policy()
     if policy is not None:
@@ -12118,6 +12288,17 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 raise RuntimeError("旧 QMT 进程未完全退出，已停止重启，避免重复启动")
             launch = None
             if not running:
+                if (requested_restart and os.path.exists(paths.get("exe_path") or "")
+                        and (row.get("qmt_strategy") or {}).get("enabled")):
+                    # A manual or scheduled QMT restart must rebuild the
+                    # managed package after the old process has exited.  This
+                    # keeps the injected strategy code in lockstep with the
+                    # current Web source even when no Web restart occurred.
+                    identity = write_qmt_bridge_identity(row)
+                    identity["market_identities"] = write_qmt_market_bridge_identities(row)
+                    deployment = configure_account_qmt_strategies(row, identity, force=True)
+                    if deployment.get("error"):
+                        raise RuntimeError(deployment["error"])
                 # Startup refresh may have rebuilt a managed package while the
                 # old QMT was still running. The background deployer cannot
                 # catch an immediate stop/start, so finish offline work here.
@@ -12210,9 +12391,21 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
 
 def qmt_auto_login_restart_for_account(row, request=None, reason="manual"):
     row = row or {}
+    account_key = _qmt_auto_login_session_key(row)
+    _record_monitor_notification("record_qmt_restart", account_key, "started",
+                                 {"reason": reason})
     settings = normalize_qmt_auto_login_settings(request, existing=row.get("qmt_auto_login"))
     settings["enabled"] = True
-    return qmt_auto_login_apply_for_account(row, settings, restart=True, reason=reason)
+    try:
+        result = qmt_auto_login_apply_for_account(row, settings, restart=True, reason=reason)
+    except Exception as error:
+        _record_monitor_notification("record_qmt_restart", account_key, "failed",
+                                     {"reason": reason, "error": str(error)})
+        raise
+    phase = "success" if result.get("configured") and not result.get("error") else "failed"
+    _record_monitor_notification("record_qmt_restart", account_key, phase,
+                                 {"reason": reason, "result": result})
+    return result
 
 
 class QmtAutoLoginRestartScheduler:
@@ -13240,6 +13433,8 @@ class ChannelStatusMonitor(object):
         self._thread = None
         self._running = False
         self._stop_event = threading.Event()
+        self._performance_sampler = PerformanceSampler(psutil)
+        self._notification_online = {}
 
     def start(self):
         if self._running:
@@ -13356,12 +13551,31 @@ class ChannelStatusMonitor(object):
                                     "probe_ms": round((time.time() - bridge_started) * 1000, 2),
                                 },
                             }
+                        self._performance_sampler.decorate(snapshot)
                         snapshots[mode] = snapshot
-                        TRADING_MONITOR.record_snapshot(snapshot)
+                        try:
+                            TRADING_MONITOR.record_snapshot(snapshot)
+                        except Exception as error:
+                            safe_print("trading monitor status capture failed: %s" % error)
+                        for channel_key in ("normal", "trade"):
+                            channel = snapshot.get(channel_key) if isinstance(snapshot, dict) else None
+                            if not isinstance(channel, dict):
+                                continue
+                            state_key = (bridge_id, mode, channel_key)
+                            online = bool(channel.get("online"))
+                            if state_key in self._notification_online:
+                                _record_monitor_notification(
+                                    "record_status", bridge_id, channel_key,
+                                    self._notification_online[state_key], online,
+                                    mode,
+                                )
+                            self._notification_online[state_key] = online
                     with self._lock:
                         self._snapshots[bridge_id] = snapshots
             except Exception as e:
                 safe_print("channel status monitor probe failed: %s" % e)
+                _record_monitor_notification("record_system_error", "channel status monitor probe failed: %s" % e,
+                                              {"component": "channel_status_monitor"})
             elapsed = time.time() - started
             delay = max(0.5, self.interval - elapsed)
             self._stop_event.wait(delay)
@@ -13480,6 +13694,88 @@ class LogCleanupManager(object):
 LOG_CLEANUP = LogCleanupManager()
 
 
+def _account_pipe_channel_state(bridge_id, channel, account_id, account_type, account_key, action):
+    """Return a fast readiness failure for configured Pipe QMT accounts.
+
+    The normal RPC path already reports a structured error when a channel is
+    absent, but it waits for PipeHub's startup grace period first. Account
+    pages poll frequently, so use the hub's readiness snapshot to avoid
+    spending that grace period on every request while QMT is offline.
+    """
+    try:
+        effective_bridge_id = resolve_bridge_id(
+            account_id=account_id,
+            bridge_id=bridge_id,
+            account_type=account_type,
+            account_key=account_key,
+        )
+        mode = resolve_account_mode(
+            account_id,
+            account_type=account_type,
+            bridge_id=effective_bridge_id,
+            account_key=account_key,
+        )
+        if not is_ctypes_transport_mode(mode):
+            return None
+        config_getter = getattr(WEB_CONFIG, "account_config", None) if WEB_CONFIG is not None else None
+        if not callable(config_getter):
+            return None
+        config = config_getter(
+            account_id=account_id,
+            account_type=account_type,
+            bridge_id=effective_bridge_id,
+            account_key=account_key,
+        )
+        # Do not gate ad-hoc SDK/test requests which are not bound to a Web
+        # account. They still need the normal RPC error semantics.
+        if not isinstance(config, dict) or not config:
+            return None
+        channels = bridge_channels(effective_bridge_id)
+        if channel in channels.values():
+            expected_channel = channel
+            channel_key = next((key for key, value in channels.items() if value == channel), "normal")
+        else:
+            channel_key = route_channel_for_account(
+                account_id,
+                requested_channel=channel,
+                default="normal",
+                mode=mode,
+                account_type=account_type,
+                bridge_id=effective_bridge_id,
+                account_key=account_key,
+                action=action,
+            )
+            expected_channel = channels.get(channel_key)
+        if not expected_channel:
+            return None
+        hub = PIPE_HUB.status()
+        hub_status = hub.get("status") if isinstance(hub, dict) else None
+        hub_status = hub_status if isinstance(hub_status, dict) else {}
+        ready_channels = hub_status.get("qmt_ready_channels")
+        # Older hubs do not publish directional readiness. Keep compatibility
+        # with them and let the existing RPC path handle the request.
+        if not isinstance(ready_channels, list):
+            return None
+        if expected_channel in ready_channels:
+            return None
+        channel_state = (hub_status.get("qmt_channel_states") or {}).get(expected_channel)
+        return {
+            "code": "QMT_BRIDGE_NOT_CONNECTED",
+            "stage": "readiness",
+            "dispatched": False,
+            "safe_to_retry": True,
+            "retry_when": "bridge_connected",
+            "request_channel": expected_channel,
+            "channel_key": channel_key,
+            "channel_state": channel_state if isinstance(channel_state, dict) else None,
+            "bridge_ready": False,
+        }
+    except Exception:
+        # Readiness is an optimization. A malformed/stale status snapshot must
+        # never prevent the established RPC path from making the request.
+        return None
+
+
 def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT_QUERY_TIMEOUT_SECONDS, account_type="STOCK", account_key=None):
     account_type = normalize_account_type(account_type)
     payload = account_payload(account_id, account_type)
@@ -13500,6 +13796,19 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
         timings = []
         timing_token = _account_timing_attempts.set(timings)
         try:
+            readiness_error = _account_pipe_channel_state(
+                bridge_id,
+                channel,
+                account_id,
+                account_type,
+                account_key,
+                action,
+            )
+            if readiness_error:
+                raise CfquantError(
+                    "QMT pipe bridge not connected for channel=%s" % readiness_error["request_channel"],
+                    details=readiness_error,
+                )
             route = account_request(
                 account_id,
                 bridge_id,
@@ -13529,12 +13838,23 @@ def query_account_live(bridge_id, channel, account_id, sections, timeout=ACCOUNT
             }
         except Exception as e:
             refresh_latency_ms = round((time.perf_counter() - started) * 1000, 2)
+            error_details = getattr(e, "error_details", {})
             result[section] = {
                 "ok": False,
                 "error": str(e),
                 "latency_ms": refresh_latency_ms,
                 "refresh_latency_ms": refresh_latency_ms,
             }
+            if isinstance(error_details, dict):
+                for name in ("code", "stage", "retry_when", "dispatched", "safe_to_retry", "bridge_ready", "request_channel"):
+                    if name in error_details:
+                        result[section]["error_" + name if name == "code" else name] = error_details[name]
+                if error_details.get("code") == "QMT_BRIDGE_NOT_CONNECTED":
+                    timings.append({
+                        "request_id": None,
+                        "qmt": {"available": False, "reason": "bridge_not_ready"},
+                        "rpc": {"response_received": False, "response_wait_ms": 0.0},
+                    })
         finally:
             _account_timing_attempts.reset(timing_token)
             row = result.get(section)
@@ -14358,7 +14678,14 @@ class AccountDataCache(object):
                     failures = previous.get("consecutive_failures", 0) + 1
                     # Two short retries, then low-frequency probes while the
                     # account remains subscribed. Never launch overlapping RPCs.
-                    delay = (5.0, 15.0)[failures - 1] if failures <= 2 else max(60.0, self.interval)
+                    if stored.get("error_code") == "QMT_BRIDGE_NOT_CONNECTED":
+                        # A missing named-pipe endpoint cannot recover within
+                        # the normal short retry window. Keep the page served
+                        # from cache and probe at most once per minute until
+                        # PipeHub reports the channel again.
+                        delay = max(60.0, self.interval)
+                    else:
+                        delay = (5.0, 15.0)[failures - 1] if failures <= 2 else max(60.0, self.interval)
                     self._refresh_failures[cache_key] = dict(
                         stored, consecutive_failures=failures,
                         retry_monotonic=time.monotonic() + delay,
@@ -15025,6 +15352,7 @@ def save_account_runtime_config(body):
     bridge_id = body.get("bridge_id")
     display_name = body.get("display_name") if "display_name" in body else body.get("account_name")
     qmt_dir = body.get("qmt_dir") or body.get("python_dir")
+    qmt_python_runtime = qmt_python_runtime_binding_status(qmt_dir, account_id)
     qmt_trade_dir = (
         body.get("qmt_trade_dir")
         or body.get("trade_qmt_dir")
@@ -15079,6 +15407,7 @@ def save_account_runtime_config(body):
         "qmt_bridge_identity": identity,
         "qmt_strategy_deploy": qmt_strategy_deploy,
         "qmt_auto_login": qmt_auto_login,
+        "qmt_python_runtime": qmt_python_runtime,
         "runtime": runtime,
         "setup": WEB_CONFIG.setup_info(),
         "account_pairs": WEB_CONFIG.account_pairs(),
@@ -16995,6 +17324,166 @@ def emit_download_progress(job_id, download_type, stage, data=None, bridge_id=""
     return event
 
 
+# QMT's Python package download is long-running, so it is exposed as a small
+# job API.  The package itself is downloaded outside the live runtime and the
+# activation thread stops/restarts only the selected QMT installation.
+QMT_PYTHON_RUNTIME_JOBS = {}
+QMT_PYTHON_RUNTIME_JOBS_LOCK = threading.RLock()
+
+
+def _qmt_python_runtime_row(body):
+    body = body or {}
+    qmt_dir = str(body.get("qmt_dir") or body.get("path") or "").strip()
+    account_id = str(body.get("account_id") or "").strip()
+    if not qmt_dir and account_id and WEB_CONFIG is not None:
+        matches = [row for row in WEB_CONFIG.account_configs().values()
+                   if str(row.get("account_id") or "") == account_id and row.get("qmt_dir")]
+        if len(matches) == 1:
+            qmt_dir = str(matches[0]["qmt_dir"])
+    if not qmt_dir:
+        raise ValueError("qmt_dir or an unambiguous account_id is required")
+    runtime = str(body.get("runtime") or "py312").strip().lower()
+    if runtime in ("36", "3.6", "python36"):
+        runtime = "py36"
+    elif runtime in ("312", "3.12", "python312"):
+        runtime = "py312"
+    if runtime not in ("py36", "py312"):
+        raise ValueError("runtime must be py36 or py312")
+    return QmtPythonRuntime(qmt_dir, account_id=account_id or None), runtime
+
+
+def qmt_python_runtime_status(body):
+    manager, runtime = _qmt_python_runtime_row(body)
+    result = manager.inspect(runtime, refresh_remote=parse_bool((body or {}).get("refresh", True)))
+    if manager.account_id:
+        # Keep the package-level response backwards compatible while exposing
+        # the account's version-gated runtime choice to callers that query a
+        # specific binding.
+        result["binding"] = manager.binding_status()
+    return result
+
+
+def _qmt_python_job_snapshot(job_id):
+    with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+        job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
+        return dict(job) if job else None
+
+
+def _run_qmt_python_runtime_job(job_id, body):
+    manager, runtime = _qmt_python_runtime_row(body)
+    account_id = str(body.get("account_id") or manager.account_id or "")
+    last_emit = [0.0]
+
+    def progress(item):
+        now = time.monotonic()
+        terminal = item.get("phase") in ("download_verified", "installed")
+        if not terminal and now - last_emit[0] < 0.5:
+            return
+        last_emit[0] = now
+        with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+            job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
+            if job is not None:
+                job["progress"] = dict(item)
+                job["updated_at"] = time.time()
+        emit_download_progress(job_id, "qmt_python", item.get("phase", "progress"), item,
+                               account_id=account_id)
+
+    with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+        job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
+        if job is not None:
+            job.update(state="running", updated_at=time.time())
+    try:
+        def restart_qmt():
+            # When the web service owns this binding, reuse its credential and
+            # strategy recovery flow.  A plain client launch remains the safe
+            # fallback for installations that are not configured as bindings.
+            row = None
+            if WEB_CONFIG is not None and account_id:
+                for candidate in WEB_CONFIG.account_configs().values():
+                    if str(candidate.get("account_id") or "") == account_id:
+                        try:
+                            candidate_dir = Path(str(candidate.get("qmt_dir") or "")).resolve()
+                            if candidate_dir == manager.qmt_dir or candidate_dir == manager.bin_dir:
+                                row = candidate
+                                break
+                        except (OSError, ValueError):
+                            continue
+            if row is not None:
+                result = qmt_auto_login_restart_for_account(
+                    row, row.get("qmt_auto_login"), reason="python-runtime-switch")
+                if manager._qmt_processes():
+                    return result
+                # A stale strategy deployment may reject the automatic
+                # startup before it launches XtItClient.  Start the selected
+                # client, then invoke the same credential injector directly;
+                # this keeps runtime switching independent of old strategy
+                # queue state while preserving the normal login mechanism.
+            restart_result = manager.restart_qmt()
+            if row is None:
+                return restart_result
+            try:
+                from cfquant.qmt_component_login import login_running_qmt
+                from cfquant.qmt_credentials import QmtCredentialStore
+                paths = _qmt_auto_login_paths(row.get("qmt_dir"))
+                processes = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+                if not processes:
+                    return restart_result
+                pid = int(processes[0]["pid"])
+                settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+                account = settings.get("login_account") or str(row.get("account_id") or "")
+                login = login_running_qmt(
+                    paths["bin_dir"], account,
+                    lambda: QmtCredentialStore(WEB_CONFIG.path).password(paths["bin_dir"], account),
+                    expected_pid=pid, startup_timeout=120,
+                )
+                return dict(restart_result, login=login)
+            except Exception as exc:
+                return dict(restart_result, login_error=str(exc))
+
+        result = manager.download_and_switch(
+            runtime,
+            restart=bool(body.get("restart", True)),
+            account_id=account_id or None,
+            progress_callback=progress,
+            restart_callback=restart_qmt if bool(body.get("restart", True)) else None,
+        )
+    except Exception as exc:
+        with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+            job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
+            if job is not None:
+                job.update(state="error", error=str(exc), updated_at=time.time())
+        emit_download_progress(job_id, "qmt_python", "error", {"error": str(exc)}, account_id=account_id)
+        return
+    with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+        job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
+        if job is not None:
+            job.update(state="done", result=result, updated_at=time.time())
+    emit_download_progress(job_id, "qmt_python", "done", {"result": result}, account_id=account_id)
+
+
+def start_qmt_python_runtime_job(body):
+    if not isinstance(body, dict):
+        raise ValueError("request body must be an object")
+    manager, runtime = _qmt_python_runtime_row(body)
+    job_id = str(body.get("job_id") or new_id("qmt_python"))
+    with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+        if job_id in QMT_PYTHON_RUNTIME_JOBS and QMT_PYTHON_RUNTIME_JOBS[job_id].get("state") in ("queued", "running"):
+            raise ValueError("a QMT Python runtime job with this id is already running")
+        QMT_PYTHON_RUNTIME_JOBS[job_id] = {
+            "job_id": job_id, "state": "queued", "runtime": runtime,
+            "qmt_dir": str(manager.qmt_dir), "account_id": manager.account_id or "",
+            "restart": bool(body.get("restart", True)), "progress": {},
+            "created_at": time.time(), "updated_at": time.time(),
+        }
+    threading.Thread(target=_run_qmt_python_runtime_job, args=(job_id, dict(body)),
+                     name="qmt-python-runtime-%s" % job_id, daemon=True).start()
+    return {"job_id": job_id, "state": "queued", "runtime": runtime,
+            "qmt_dir": str(manager.qmt_dir), "account_id": manager.account_id or "",
+            "callback_event": DOWNLOAD_CALLBACK_EVENT,
+            "progress_event_prefix": DOWNLOAD_EVENT_PREFIX,
+            "progress_ws_path": download_progress_path(job_id, account_id=manager.account_id or "")}
+
+
 def download_cached_event_count(job_id, bridge_id="", account_id=""):
     return len(CALLBACKS.latest(
         since=0,
@@ -17264,12 +17753,43 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if not self._authorized(parsed):
             self._write_json(fail("invalid credentials", 401), status=401)
             return
+        if parsed.path == "/api/monitor/runtime/cleanup":
+            try:
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    raise ValueError("参数格式无效")
+                scope = body.get("scope", "all")
+                self._write_json(ok(TRADING_MONITOR.clear_runtime_history(scope)))
+            except Exception as error:
+                self._write_json(fail(error, 400), status=400)
+            return
+        if parsed.path == "/api/monitor/notifications/test":
+            try:
+                body = self._read_json_body()
+                if body is None:
+                    body = {}
+                if not isinstance(body, dict):
+                    raise ValueError("notification test body must be an object")
+                channel_id = str(body.get("channel_id") or "").strip()
+                self._write_json(ok(MONITOR_NOTIFICATIONS.test_channel(channel_id)))
+            except Exception as error:
+                self._write_json(fail(error, 400), status=400)
+            return
+        if parsed.path == "/api/monitor/notifications":
+            try:
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    raise ValueError("notification settings must be an object")
+                self._write_json(ok(MONITOR_NOTIFICATIONS.configure(body)))
+            except Exception as error:
+                self._write_json(fail(error, 400), status=400)
+            return
         if parsed.path == "/api/monitor/settings":
             try:
                 body = self._read_json_body()
                 if (not isinstance(body, dict) or 'enabled' not in body or
-                        set(body) - {'enabled', 'account_keys'}):
-                    raise ValueError("请提供 enabled 开关，可选 account_keys 账号范围")
+                        set(body) - {'enabled', 'account_keys', 'runtime_retention_days'}):
+                    raise ValueError("请提供 enabled 开关，可选 account_keys 账号范围和 runtime_retention_days 保留天数")
                 refresh_monitor_accounts()
                 TRADING_MONITOR.configure(**body)
                 self._write_json(ok(TRADING_MONITOR.settings()))
@@ -17375,6 +17895,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(save_qmt_log_language(body)))
             elif parsed.path == "/api/python-environment":
                 self._write_json(ok(save_python_environment(body)))
+            elif parsed.path == "/api/qmt/python-runtime/download":
+                self._write_json(ok(start_qmt_python_runtime_job(body)))
             elif parsed.path == "/api/log-cleanup/run":
                 self._write_json(ok(run_log_cleanup(body)))
             elif parsed.path == "/api/updates/github":
@@ -17982,12 +18504,38 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     kind=(query.get("kind") or [""])[0],
                     page=(query.get("page") or [1])[0],
                 )))
+            elif parsed.path == "/api/monitor/runtime":
+                self._write_json(ok(TRADING_MONITOR.query_runtime(
+                    start=(query.get("start") or [None])[0],
+                    end=(query.get("end") or [None])[0],
+                    bridge_id=(query.get("bridge_id") or [""])[0],
+                    mode=(query.get("mode") or [""])[0],
+                    limit=(query.get("limit") or [5000])[0],
+                )))
             elif parsed.path == "/api/monitor/settings":
                 refresh_monitor_accounts()
                 self._write_json(ok(TRADING_MONITOR.settings()))
+            elif parsed.path == "/api/monitor/notifications":
+                self._write_json(ok(MONITOR_NOTIFICATIONS.settings()))
             elif parsed.path == "/api/qmt/processes":
                 qmt_dir = (query.get("qmt_dir") or query.get("path") or [""])[0]
                 self._write_json(ok(qmt_process_snapshot(qmt_dir)))
+            elif parsed.path == "/api/qmt/python-runtime":
+                self._write_json(ok(qmt_python_runtime_status({
+                    "qmt_dir": (query.get("qmt_dir") or query.get("path") or [""])[0],
+                    "account_id": (query.get("account_id") or [""])[0],
+                    "runtime": (query.get("runtime") or ["py312"])[0],
+                    "refresh": parse_bool((query.get("refresh") or ["1"])[0]),
+                })))
+            elif parsed.path == "/api/qmt/python-runtime/jobs":
+                job_id = str((query.get("job_id") or [""])[0] or "").strip()
+                if not job_id:
+                    raise ValueError("job_id is required")
+                snapshot = _qmt_python_job_snapshot(job_id)
+                if snapshot is None:
+                    self._write_json(fail("job not found", 404), status=404)
+                else:
+                    self._write_json(ok(snapshot))
             elif parsed.path == "/api/bindings/status":
                 self._write_json(ok(binding_status_snapshot()))
             elif parsed.path == "/api/callbacks":
@@ -18518,12 +19066,17 @@ def main(argv=None):
     # Older updater processes only copied raw entries. Refresh managed sources
     # before auto-login so QMT imports the selected mode's current package.
     if os.environ.pop("CFQUANT_REMOTE_PRESERVE_QMT", "") != "1":
-        for result in refresh_bound_qmt_strategies():
+        # Every Web start must rebuild managed strategy packages before QMT is
+        # launched.  This re-injects the current bridge code into bindings that
+        # were created by an older process or whose previous import was only
+        # partially consumed.
+        for result in refresh_bound_qmt_strategies(force=True):
             if result.get("error"):
                 safe_print("cfquant managed QMT strategy refresh failed: %s" % result["error"])
         start_configured_qmt_on_web_startup()
     server = ThreadingHTTPServer((args.host, args.port), CfquantWebHandler)
     TRADING_MONITOR.restore()
+    MONITOR_NOTIFICATIONS.restore()
     try:
         internal_api_key()
         if "lttx" in configured_modes:
@@ -18548,6 +19101,7 @@ def main(argv=None):
         CLIENTS.close()
         safe_print("cfquant web global tx start failed: %s" % e)
     STATUS_MONITOR.start()
+    MONITOR_NOTIFICATIONS.start()
     QMT_STRATEGIES.reconcile(WEB_CONFIG.account_configs())
     QMT_STRATEGIES.start()
     QMT_STRATEGY_RECOVERY.start()
@@ -18573,6 +19127,7 @@ def main(argv=None):
         MANAGEMENT_READY = False
         LOG_CLEANUP.close()
         STATUS_MONITOR.close()
+        MONITOR_NOTIFICATIONS.close()
         QMT_AUTO_LOGIN_RESTART_SCHEDULER.close()
         QMT_STRATEGY_RECOVERY.close()
         QMT_STRATEGIES.close()
@@ -18583,6 +19138,10 @@ def main(argv=None):
             _ALGO_ENGINE.close()
         QUOTES.close()
         LATENCY_QUOTES.close()
+        global _SUBSCRIPTION_MANAGER
+        if _SUBSCRIPTION_MANAGER is not None:
+            _SUBSCRIPTION_MANAGER.close()
+            _SUBSCRIPTION_MANAGER = None
         LTTX_WEB_ROUTE.close()
         PROJECT_QUOTES.close()
         CLIENTS.close()

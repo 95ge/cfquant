@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Serial user callbacks, independent of the RPC receive thread."""
 from collections import deque
-import logging
+from .diagnostic_context import get_logger
 import os
 import tempfile
 import threading
@@ -90,7 +90,7 @@ class CallbackDispatcher(object):
             item[1] = item[3] = None
         if self._queue and len(self._queue) >= 1000 and time.monotonic() - self._last_warning >= 5:
             self._last_warning = time.monotonic()
-            logging.getLogger(__name__).warning("callback backlog count=%s oldest_ms=%.1f spooled_bytes=%s",
+            get_logger(__name__).warning("callback backlog count=%s oldest_ms=%.1f spooled_bytes=%s",
                                                len(self._queue), (time.monotonic() - self._queue[0][2]) * 1000, self._spool_live)
 
     def _take_message(self, item):
@@ -168,7 +168,7 @@ class CallbackDispatcher(object):
                     if message is None:
                         raise ValueError("invalid preserved callback message")
             except Exception as error:
-                logging.getLogger(__name__).exception("callback backlog failed; connection must be restarted")
+                get_logger(__name__).exception("callback backlog failed; connection must be restarted")
                 with self._condition:
                     if generation != self._generation:
                         continue  # An old connection must not close its replacement.
@@ -185,7 +185,7 @@ class CallbackDispatcher(object):
                 if self.is_current_callback():
                     self._dispatch(message)
             except Exception:
-                logging.getLogger(__name__).exception("callback dispatch failed event=%s", message.get("event"))
+                get_logger(__name__).exception("callback dispatch failed event=%s", message.get("event"))
             finally:
                 self._last_callback_ms = (time.monotonic() - started) * 1000
                 del self._context.generation
@@ -215,4 +215,4 @@ def dispatch_callbacks(callbacks, message, is_current):
             try:
                 callback(payload)
             except Exception:
-                logging.getLogger(__name__).exception("user callback failed event=%s", event)
+                get_logger(__name__).exception("user callback failed event=%s", event)

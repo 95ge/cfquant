@@ -4,7 +4,7 @@ Delegated execution uses AlgoEngine's durable child intents and reconciliation.
 All state transitions for an account share its execution lock.
 """
 import copy
-import logging
+from .diagnostic_context import get_logger
 import uuid
 
 from .algo import AlgoEngine, TERMINAL, positive
@@ -43,7 +43,7 @@ class SmartOrderEngine(AlgoEngine):
         event.update(details)
         task["events"].append(event)
         task["events"] = task["events"][-200:]
-        logging.getLogger(__name__).info("smart_order %s %s %s", task["algo_id"], event_type, details)
+        get_logger(__name__).info("smart_order %s %s %s", task["algo_id"], event_type, details)
 
     def _save(self, task):
         try:

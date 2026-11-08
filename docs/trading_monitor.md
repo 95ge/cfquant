@@ -4,7 +4,7 @@
 
 监控默认关闭。点击左侧「监控」时先读取开关状态；未开启则弹窗说明采集与延迟影响，点击「开启并进入」保存成功后才进入监控页，取消或开启失败留在原页面。已开启时直接进入。恢复上次停留的监控页面也遵循同样流程。
 
-监控页右上角「监控设置」可开启/关闭采集、选择全部或指定的已绑定 QMT 账号；默认全部，包含后续新增绑定。指定账号可多选，以部署、账号类型、账号号共同区分，同号不同部署/类型独立选择；包括所选账号的沪深等市场路由子部署。选择范围会实际过滤新增委托、成交、异常、请求记录及相关 QMT 通道采样。解绑后停止对应账号采集，不会自动回退到全部账号。开启指定范围时至少选择一个账号；暂无绑定时可选择全部，等待新增绑定。
+监控页右上角「监控设置」可开启/关闭采集、选择全部或指定的已绑定 QMT 账号，并设置运行时序保留天数（1–3650 天，默认 30 天）；默认全部，包含后续新增绑定。指定账号可多选，以部署、账号类型、账号号共同区分，同号不同部署/类型独立选择；包括所选账号的沪深等市场路由子部署。选择范围会实际过滤新增委托、成交、异常、请求记录及相关 QMT 通道采样。解绑后停止对应账号采集，不会自动回退到全部账号。开启指定范围时至少选择一个账号；暂无绑定时可选择全部，等待新增绑定。
 
 设置保存后立即生效，保存在 `runtime/config/trading_monitor.json`，Web 服务重启后沿用；没有配置或配置无效时保持关闭。旧版本只有 `enabled` 的配置兼容为全部已绑定账号。开启后页面关闭也会持续采集，「自动刷新」只控制页面显示更新。开关和账号范围仅影响新增采集，不删除已有数据；已接收的队列记录继续保存，历史记录仍按日期、账号查询。在页面内关闭后可继续查看历史；离开后再次进入会提示开启。
 
@@ -53,7 +53,8 @@
 - 成交回报早于委托回报时，后续委托仍能关联已保存的成交。状态回报乱序不会清除已有成交、撤成或废单标记。
 - 异步写入使用有界队列、单写入线程、SQLite WAL 和批量事务。数据库锁定时后台重试；队列满或事件损坏时显式展示丢失数量，避免阻塞交易线程。
 - 只保存统计所需字段，不保存完整请求参数或认证凭据。监控接口沿用现有 Web 登录/API Key 鉴权。
-- 关闭监控或停机期间没有主动采集或历史补录；监控数据不等同于券商对账。历史 QMT 状态是所选日期内最后一次采样。节点状态按部署筛选，不受查询表单中的交易账号筛选影响；设置中的账号范围决定哪些部署继续采样。移出范围的历史节点标记「未纳入采集」，不计入当前在线率或过期告警。
+- 关闭监控或停机期间没有主动采集或历史补录；监控数据不等同于券商对账。交易历史查询单次最多 31 天，历史 QMT 状态是所选日期内最后一次采样；运行时序详情支持更长范围和全部历史。节点状态按部署筛选，不受查询表单中的交易账号筛选影响；设置中的账号范围决定哪些部署继续采样。移出范围的历史节点标记「未纳入采集」，不计入当前在线率或过期告警。
+- 「运行诊断」页可点击 QMT 运行实例打开居中的时序弹窗，弹窗用指标卡片汇总 CPU、RSS 内存、回调速率、请求速率和行情分发速率，并将这 5 项指标同时分卡绘制；鼠标移动到任一曲线上可查看对应时间点的数值。页面支持当前查询、7/30/90 天、1 年和全部历史范围。时序全天写入（交易时段和休市时段均采集），同一分钟按 QMT 部署和运行模式覆盖更新；默认保留 30 天，超过设置的保留天数由后台自动清理，选择全部保留则不自动删除。弹窗可手动清理过期时序或清空全部时序。
 - 本功能提供观测与历史留痕，不修改现有交易风控、下单、撤单或自动重试策略。
 
 ## 查询接口
@@ -62,6 +63,15 @@
 
 `start`、`end` 默认今天；其余筛选项可省略。`kind` 支持 `order`、`trade`、`abnormal`、`order_request`、`cancel_request`。返回标准 `{ok, data}` 包装，`data` 包含 `stats`、`series`、`nodes`、`events`、分页信息与 `collector` 采集健康状态。
 
-`GET /api/monitor/settings` 返回采集开关、运行状态、`account_keys` 与 `accounts` 已绑定账号列表，不依赖数据库可读，不返回路径、密码或其他绑定私密配置。`POST /api/monitor/settings` 接收严格布尔值 `enabled`，可选 `account_keys`；例如 `{"enabled":true,"account_keys":null}` 表示全部，`{"enabled":true,"account_keys":["qmt-one:STOCK:paper"]}` 表示指定账号。省略 `account_keys` 保留原选择；未知账号、无效类型或开启时空列表会被拒绝。接口均沿用现有鉴权，`enabled`、`running`、`draining` 分别表示采集开启、线程运行、关闭后正在保存队列。
+`GET /api/monitor/settings` 返回采集开关、运行状态、`account_keys`、`runtime_retention_days` 与 `accounts` 已绑定账号列表，不依赖数据库可读，不返回路径、密码或其他绑定私密配置。`POST /api/monitor/settings` 接收严格布尔值 `enabled`，可选 `account_keys` 和 `runtime_retention_days`；例如 `{"enabled":true,"account_keys":null,"runtime_retention_days":30}` 表示采集全部账号并保留 30 天，`{"enabled":true,"account_keys":["qmt-one:STOCK:paper"],"runtime_retention_days":7}` 表示指定账号并保留 7 天，`runtime_retention_days:0` 表示全部保留。省略可选字段保留原设置；未知账号、无效类型、无效保留天数或开启时空列表会被拒绝。`GET /api/monitor/runtime?start=2026-11-03&end=2026-11-03&bridge_id=qmt-one&mode=lite` 返回所选 QMT 运行实例的分钟样本，`start=all` 可查询全部历史（最多返回 10000 条样本）。`POST /api/monitor/runtime/cleanup` 接收 `{"scope":"expired"}` 清理已过期时序，或 `{"scope":"all"}` 清空全部时序并尝试压缩数据库。接口均沿用现有鉴权，`enabled`、`running`、`draining` 分别表示采集开启、线程运行、关闭后正在保存队列。
 
 验证：`python -m pytest cfquant/tests/test_trading_monitor.py cfquant/tests/test_trading_monitor_browser.py -q`。浏览器测试使用现有 Playwright/Chromium 环境与独立临时 SQLite 数据库，不连接实际交易服务。
+
+
+## Notification settings
+
+The monitor page has a separate notification settings dialog. It stores its policy in `runtime/config/monitor_notifications.json` and keeps SMTP passwords, webhook URLs, and secrets out of API responses. Delivery runs on a background queue, so callback and QMT status threads never wait on SMTP or HTTP.
+
+`GET /api/monitor/notifications` returns the masked notification policy. `POST /api/monitor/notifications` accepts `enabled`, `event_types`, `email`, `webhooks`, `heartbeat`, and `schedule`. Webhook types are `generic`, `dingtalk`, `wecom`, and `feishu`. `POST /api/monitor/notifications/test` accepts an optional `{"channel_id":"email"}` or webhook id and sends a test message directly to the configured target.
+
+Event types are `order`, `trade`, `order_error`, `cancel_error`, `qmt_reconnect`, `qmt_restart`, `qmt_unresponsive`, `system_error`, and `heartbeat`. The schedule modes are `always`, `trading_days`, `trading_hours`, and `custom`; custom schedules use weekday numbers (`0` for Monday) and `HH:MM` windows. Identical events are deduplicated for the configured `dedup_seconds` period.

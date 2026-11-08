@@ -21,6 +21,7 @@ class ProjectQuoteService:
         self._source = {}
         self._route = None
         self._pending = None
+        self._health_error = ""
         self._started = False
         self._stop = threading.Event()
         self._thread = None
@@ -86,6 +87,7 @@ class ProjectQuoteService:
         result = self.feed.status()
         with self._lock:
             route = dict(self._route or {})
+            result["health_error"] = self._health_error
         route.pop("result", None)
         route.pop("shared_lease_key", None)
         result["source"] = route
@@ -161,11 +163,27 @@ class ProjectQuoteService:
             state = self._probe_rpc(handle)
             if not isinstance(state, dict) or not state.get("ready"):
                 raise RuntimeError("quote provider is not ready")
-            exists = handle["shared_lease_key"] in state.get("lease_keys", [])
+            keys = state.get("lease_keys")
+            if not isinstance(keys, list):
+                raise RuntimeError("quote provider returned no valid lease list")
+        except Exception as error:
+            # A late acknowledgement does not prove that QMT lost its lease.
+            # Keep receiving callbacks and verify again on the next probe.
+            with self._lock:
+                self._health_error = str(error)
+            return
+        with self._lock:
+            if self._route is not handle:
+                return
+            self._health_error = ""
+        try:
+            exists = handle["shared_lease_key"] in keys
             if not exists or self.feed.status()["state"] != "live":
                 self.feed.upstream_lost()
                 self.feed.reconnect()
-        except Exception:
+        except Exception as error:
+            with self._lock:
+                self._health_error = str(error)
             self.feed.upstream_lost()
 
     def _monitor(self):

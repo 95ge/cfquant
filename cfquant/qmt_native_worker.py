@@ -3,6 +3,8 @@
 Credentials only travel over the child's stdin, never argv, files or logs.
 Requests are not replayed after a crash or timeout: a native action may have run.
 """
+
+from .diagnostic_context import VersionedErrorMixin
 import json
 import os
 from pathlib import Path
@@ -21,7 +23,7 @@ STRATEGY_METHODS = frozenset(("snapshot", "start_strategy", "notices", "dismiss_
 MAX_MESSAGE = 4 * 1024 * 1024
 
 
-class QmtAutomationError(RuntimeError):
+class QmtAutomationError(VersionedErrorMixin, RuntimeError):
     """A failed native worker; safe to display without native exception contents."""
 
 
@@ -31,7 +33,7 @@ class QmtAutomationCancelled(QmtAutomationError):
 
 class NativeWorker:
     def __init__(self, kind, directory, *, timeout=40, expected_pid=None,
-                 should_cancel=lambda: False, command=None):
+                 should_cancel=lambda: False, command=None, executable_path=None):
         if os.environ.get("CFQUANT_QMT_AUTOMATION", "1").lower() in ("0", "false", "off"):
             raise QmtAutomationError("QMT 原生自动化已关闭，请手动登录并启动策略；Web 服务及行情交易接口仍可使用。")
         self.should_cancel = should_cancel
@@ -45,12 +47,16 @@ class NativeWorker:
         self.files = NativeWorkerFiles()
         env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
         env.update(self.files.environment())
+        worker_command = command
+        if worker_command is None:
+            worker_command = ([sys.executable, "--cfquant-native-worker"] if getattr(sys, "frozen", False)
+                              else [sys.executable, "-u", "-m", "cfquant.qmt_native_worker"])
         try:
             self.process = subprocess.Popen(
-                command or [sys.executable, "-u", "-m", "cfquant.qmt_native_worker"],
+                worker_command,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
-                cwd=str(Path(__file__).resolve().parents[1]),
+                cwd=None if getattr(sys, "frozen", False) else str(Path(__file__).resolve().parents[1]),
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
             )
             try:
@@ -72,8 +78,11 @@ class NativeWorker:
         for thread in self._readers:
             thread.start()
         try:
-            info = self.call("open", kind=kind, directory=str(directory), timeout=timeout,
-                             expected_pid=expected_pid)
+            open_kwargs = dict(kind=kind, directory=str(directory), timeout=timeout,
+                               expected_pid=expected_pid)
+            if executable_path:
+                open_kwargs["executable_path"] = str(executable_path)
+            info = self.call("open", **open_kwargs)
             self.pid = info.get("pid")
             self.main_hwnd = info.get("main_hwnd")
         except BaseException:
@@ -262,8 +271,10 @@ class _StrategyWorkerLease:
 
 
 class IsolatedLoginBackend(NativeWorker):
-    def __init__(self, directory, timeout=40, expected_pid=None, *, should_cancel=lambda: False):
-        super().__init__("login", directory, timeout=timeout, expected_pid=expected_pid, should_cancel=should_cancel)
+    def __init__(self, directory, timeout=40, expected_pid=None, *, should_cancel=lambda: False,
+                 executable_path=None):
+        super().__init__("login", directory, timeout=timeout, expected_pid=expected_pid,
+                         should_cancel=should_cancel, executable_path=executable_path)
 
 
 class IsolatedStrategyBackend(NativeWorker):
@@ -271,18 +282,19 @@ class IsolatedStrategyBackend(NativeWorker):
         super().__init__("strategy", directory, timeout=15)
 
 
-def verify_environment_isolated(directory):
-    worker = NativeWorker("verify", directory, timeout=5)
+def verify_environment_isolated(directory, executable_path=None):
+    worker = NativeWorker("verify", directory, timeout=5, executable_path=executable_path)
     worker.close()
 
 
-def _open_backend(kind, directory, timeout=40, expected_pid=None):
+def _open_backend(kind, directory, timeout=40, expected_pid=None, executable_path=None):
     from .qmt_component_login import QtLoginBackend, _verify_environment_native
     if kind == "verify":
-        _verify_environment_native(directory)
+        _verify_environment_native(directory, executable_path=executable_path)
         return None
     if kind == "login":
-        return QtLoginBackend(Path(directory), timeout, expected_pid=expected_pid)
+        return QtLoginBackend(Path(directory), timeout, expected_pid=expected_pid,
+                              executable_path=executable_path)
     if kind == "strategy":
         from .qmt_strategy_recovery import QtStrategyBackend
         return QtStrategyBackend(directory)

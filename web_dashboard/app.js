@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261106_01';
+const FRONTEND_VERSION = 'web_20261108_01';
 
 const state = {
   accountId: '',
@@ -112,10 +112,6 @@ const state = {
   onboardingStep: 'intro',
   tutorialReaderSession: null,
   onboardingDoneSteps: new Set(),
-  lastLogKey: '',
-  lastLogAt: 0,
-  lastLogNode: null,
-  lastLogRepeat: 0,
   statusRefreshInFlight: false,
   callbackRefreshInFlight: false,
   bindingStatusRefreshInFlight: null,
@@ -128,6 +124,13 @@ const state = {
   bindingVerifyBusyKey: '',
   bindingActionBusyKey: '',
   bindingActionBusyType: '',
+  bindingPythonRuntime: null,
+  bindingPythonRuntimeCheckToken: 0,
+  bindingPythonRuntimeCheckTimer: null,
+  bindingPythonRuntimeSocket: null,
+  bindingPythonRuntimePollTimer: null,
+  bindingPythonRuntimeJobId: '',
+  bindingPythonRuntimeProgress: null,
   bindingNoticeTimer: null,
   tests: [],
   testSourceId: '',
@@ -1580,8 +1583,6 @@ const DEFAULT_UPDATE_REF = 'main';
 const QUOTE_RENDER_INTERVAL_MS = 500;
 const QUOTE_RESPONSE_LOG_LIMIT = 20;
 const QUOTE_EVENT_PROCESS_LIMIT = 160;
-const LOG_ENTRY_LIMIT = 180;
-const LOG_REPEAT_WINDOW_MS = 5000;
 const STATUS_REFRESH_INTERVAL_MS = 30000;
 const ACCOUNT_CACHE_POLL_INTERVAL_MS = 15000;
 const BINDING_POLL_INTERVAL_MS = 5000;
@@ -1590,6 +1591,7 @@ const CALLBACK_POLL_INTERVAL_MS = 3000;
 const ORDER_SNAPSHOT_LIMIT = 500;
 const ORDER_HIGHLIGHT_MS = 6500;
 const DOWNLOAD_EVENT_PREFIX = 'xtdata:download';
+const DOWNLOAD_CALLBACK_EVENT = 'xtdata:download_progress';
 const DOWNLOAD_EVENT_LIMIT = 80;
 
 const API_GROUPS = [
@@ -2110,6 +2112,16 @@ const API_ENDPOINTS = [
     desc: '查看 LTtx 服务是否运行。',
     fields: [],
   },
+  {
+    id: 'qmt_python_runtime_download',
+    group: 'system',
+    title: 'QMT Python 库下载',
+    method: 'POST',
+    path: '/api/qmt/python-runtime/download',
+    desc: '检测并下载指定 QMT 版本支持的 Python 库。任务会通过网页进度面板实时显示下载字节数、百分比、速度和阶段；旧版 QMT 会自动限制为 py36。',
+    defaults: { runtime: 'py312', restart: true },
+    fields: ['qmt_dir', 'account_id', 'qmt_runtime', 'qmt_runtime_restart'],
+  },
 ];
 
 const API_FIELD_META = {
@@ -2121,6 +2133,9 @@ const API_FIELD_META = {
   sdk_confirm_text: { label: '操作确认', type: 'text', param: 'confirm_text', wide: true },
   bridge_id: { label: '内部通道', type: 'bridge' },
   account_id: { label: '账号', type: 'text', placeholder: '请输入资金账号' },
+  qmt_dir: { label: 'QMT 安装目录或核心目录', type: 'text', placeholder: 'D:\\国金证券QMT交易端 或 D:\\国金证券QMT交易端\\bin.x64', wide: true },
+  qmt_runtime: { label: 'Python 运行时', type: 'qmt_runtime', param: 'runtime' },
+  qmt_runtime_restart: { label: '完成后自动重启 QMT', type: 'checkbox', param: 'restart' },
   account_type: { label: '账户类型', type: 'account_type' },
   credit_query_action: { label: '信用查询', type: 'credit_query_action', param: 'action' },
   credit_order_action: { label: '信用业务', type: 'credit_order_action', param: 'credit_action' },
@@ -2170,6 +2185,9 @@ const API_PARAM_DOCS = {
   bridge_id: '内部通道 ID。账号接口通常不用填，会按账号配置自动决定。',
   account_id: '资金账号。',
   account_type: '账户类型。普通证券账户填 STOCK，信用账户填 CREDIT，期货填 FUTURE，期货期权填 FUTURE_OPTION，股票期权填 STOCK_OPTION，沪港通填 HUGANGTONG（如 00700.HGT），深港通填 SHENGANGTONG（如 00700.SGT）。',
+  qmt_dir: 'QMT 安装目录或 bin.x64 核心目录。只填写本机路径，不会上传到外部服务。',
+  runtime: 'Python 运行时。py36 适用于旧版 QMT；py312 仅适用于版本 2.1.33.0 及以上。',
+  restart: '下载并安装后是否自动停止、切换并重启对应 QMT。',
   action: '信用查询动作，detail/subjects/slo_code/assure/compacts。',
   credit_action: '信用委托动作，例如 credit_buy、credit_fin_buy、credit_slo_sell、credit_direct_cash_repay。',
   order_action: '期货、期货期权或股票期权委托动作，例如 future_open_long、future_open_short、stock_option_buy_open。',
@@ -2265,6 +2283,13 @@ const API_RETURN_DOCS = {
     ['progress_ws_path', '本次任务对应的 WebSocket 进度地址'],
     ['result', '下载任务返回值'],
     ['latency_ms', '请求耗时'],
+  ],
+  qmt_python_runtime_download: [
+    ['job_id', 'QMT Python 库任务 ID'],
+    ['runtime', '实际使用的 Python 运行时；旧版 QMT 固定为 py36'],
+    ['progress', '当前下载阶段、百分比、字节数、速度和预计剩余时间'],
+    ['callback_event', '下载进度事件名，当前为 xtdata:download_progress'],
+    ['progress_ws_path', '本次任务对应的 WebSocket 进度地址'],
   ],
   financial_data: [
     ['result', '财务数据结果'],
@@ -2697,44 +2722,37 @@ function apiWsUrl(path, options = {}) {
   return url.toString();
 }
 
-function log(message, data) {
-  const box = $('logBox');
-  if (!box) return;
-  let suffix = '';
-  if (data !== undefined) {
-    try {
-      suffix = ` ${JSON.stringify(data)}`;
-    } catch (error) {
-      suffix = ` ${String(data)}`;
-    }
-    if (suffix.length > 1200) {
-      suffix = `${suffix.slice(0, 1200)}...`;
-    }
-  }
-  const key = `${message}${suffix}`;
-  const now = Date.now();
-  if (
-    state.lastLogKey === key
-    && state.lastLogNode
-    && state.lastLogNode.parentNode === box
-    && now - state.lastLogAt <= LOG_REPEAT_WINDOW_MS
-  ) {
-    state.lastLogRepeat += 1;
-    state.lastLogAt = now;
-    state.lastLogNode.textContent = `[${nowText()}] ${message}${suffix}（重复 ${state.lastLogRepeat} 次）`;
-    return;
-  }
-  const line = document.createElement('div');
-  line.className = 'log-entry';
-  line.textContent = `[${nowText()}] ${message}${suffix}`;
-  box.prepend(line);
-  state.lastLogKey = key;
-  state.lastLogAt = now;
-  state.lastLogNode = line;
-  state.lastLogRepeat = 1;
-  while (box.children.length > LOG_ENTRY_LIMIT) {
-    box.removeChild(box.lastElementChild);
-  }
+function logAccountContext(data = {}, identity = null) {
+  const type = identity?.[1] || data.account_type || selectedAccountType();
+  const bridge = identity?.[2] || data.bridge_id || selectedBridge();
+  const key = identity?.[0] || data.account_key
+    || (data.account_id ? makeAccountKey(data.account_id, type, bridge) : selectedAccountKey());
+  const config = findAccountConfigByKey(key);
+  const id = data.account_id || config?.account_id || (identity ? String(key).split(':').pop() : selectedAccount());
+  return {
+    key, id, type, bridge, channel: identity?.[3] || '',
+    label: [config?.display_name || config?.account_name, id, accountTypeLabel(type)].filter(Boolean).join(' · '),
+  };
+}
+
+function syncActivityLogContext() {
+  window.CfquantActivityLog?.setContext({ view: state.currentView, account: logAccountContext() });
+}
+
+function log(message, data, options = {}) {
+  const category = options.category || (/回调/.test(message) ? 'callbacks'
+    : /(?:资产|持仓|委托|成交)(?:查询|刷新)|账户缓存|账号数据/.test(message) ? 'account'
+      : /委托|撤单/.test(message) ? 'trade' : 'system');
+  const account = options.account || (category !== 'system' || data?.account_key || data?.account_id
+    ? logAccountContext(data || {}) : {});
+  window.CfquantActivityLog?.add(message, data, { ...options, category, account });
+}
+
+function logRequestError(message, error, data = {}, options = {}) {
+  // refreshAccount records transport failures with the request's original
+  // account. Its callers must not report them again as callback/order failures.
+  if (error.accountQueryLogged) return;
+  log(message, { ...data, error: error.message }, options);
 }
 
 function setBindingNotice(message = '', level = 'info', options = {}) {
@@ -4135,7 +4153,7 @@ function isQuoteEndpoint(endpoint) {
 }
 
 function isDownloadEndpoint(endpoint) {
-  return !!endpoint && (endpoint.id === 'history_download' || endpoint.id === 'financial_download');
+  return !!endpoint && ['history_download', 'financial_download', 'qmt_python_runtime_download'].includes(endpoint.id);
 }
 
 function isExportEndpoint(endpoint) {
@@ -4769,6 +4787,7 @@ function renderApiDocDetail(endpoint) {
   if (endpoint.sdkEntry || endpoint.nativeEntry) {
     const entry = endpoint.sdkEntry || endpoint.nativeEntry;
     const native = Boolean(endpoint.nativeEntry);
+    const nativeSession = native ? window.CFQUANT_QMT_INNER_API : null;
     const algorithm = entry.operation === 'algorithm';
     const httpExample = entry.http ? `${entry.http.method} ${entry.http.path}\nContent-Type: application/json\nX-API-Key: YOUR_API_KEY\n\n${JSON.stringify(entry.http.body, null, 2)}` : '';
     box.innerHTML = `
@@ -4781,6 +4800,7 @@ function renderApiDocDetail(endpoint) {
         <pre class="guide-code" tabindex="0"><code>${esc(entry.signature)}</code></pre>
         ${native && entry.nativeSignature ? `<h4>QMT 原生原型</h4><pre class="guide-code" tabindex="0"><code>${esc(entry.nativeSignature)}</code></pre>` : ''}
       </div>
+      ${nativeSession?.sessionHelp ? `<div class="api-doc-extra" data-qmt-session-params><h3>账号路由参数 · QmtInnerApi</h3><p>${esc(nativeSession.sessionHelp)}</p>${entry.name === 'QmtInnerApi' ? '' : apiDocTable(nativeSession.sessionParameters.map(p => [p.name, `${p.help} 默认值：${p.default}`]))}</div>` : ''}
       <div><h3>调用参数</h3>${apiDocTable(entry.parameters.map(p => [p.name, `${p.help} 默认值：${p.default}`]))}</div>
       <div><h3>返回值与状态</h3>${apiDocTable(entry.resultRows)}</div>
       ${entry.orderFields.length ? `<div class="api-doc-extra"><h3>orders 逐笔字段</h3>${apiDocTable(entry.orderFields.map(p => [p.name, `${p.help} 默认值：${p.default}`]))}</div>` : ''}
@@ -7397,6 +7417,9 @@ function apiFieldHtml(fieldName) {
   if (meta.type === 'transport_mode') {
     return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="ctypes">通用模式（ctypes 单桥）</option><option value="lite">极致模式（纯 ctypes 自包含）</option><option value="lttx">高级模式（两个 QMT）</option></select></label>`;
   }
+  if (meta.type === 'qmt_runtime') {
+    return `<label class="field${wide}"><span>${esc(meta.label)}</span><select name="${esc(name)}" data-field="${esc(fieldName)}"><option value="py312">py3.12（QMT 2.1.33.0+）</option><option value="py36">py3.6（旧版/默认）</option></select></label>`;
+  }
   if (meta.type === 'account_type') {
     const options = ACCOUNT_TYPE_OPTIONS
       .map((item) => `<option value="${esc(item.value)}">${esc(item.label)}</option>`)
@@ -7548,6 +7571,9 @@ function setApiDefaults(endpoint, form = $('apiForm')) {
     account_id: selectedAccount(),
     account_type: selectedAccountType(),
     account_key: selectedAccountKey(),
+    qmt_dir: selectedAccountInfo().config?.qmt_dir || '',
+    qmt_runtime: 'py312',
+    qmt_runtime_restart: true,
     channel: endpointChannel || selectedChannel(),
     whole_quote_channel: 'normal',
     trade_channel: endpointChannel || selectedTradeChannel(),
@@ -8430,6 +8456,9 @@ function scheduleQuoteRender(force = false) {
 
 let viewNavigation = 0;
 function setView(view, monitorAuthorized = false) {
+  // The API test workbench replaced the old documentation shortcut. Redirect
+  // persisted links and bookmarks so existing sessions land on the new entry.
+  if (view === 'docs') view = 'api';
   if (!document.querySelector(`.nav-item[data-view="${view}"]`)) {
     view = 'overview';
   }
@@ -8446,27 +8475,36 @@ function setView(view, monitorAuthorized = false) {
     stopQuoteLive();
   }
   state.currentView = view;
+  syncActivityLogContext();
   if (state.appStarted) refreshVisibleAccountCache();
   localStorage.setItem('cfquant.view', view);
   document.body.dataset.view = view;
   const titleMap = {
     overview: '首页',
-    trade: '交易',
-    orders: '委托',
-    status: '状态',
+    trade: '交易下单',
+    orders: '委托查询',
+    status: '运行状态',
     monitor: '交易监控',
-    bindings: '绑定',
-    callbacks: '回调',
-    api: '接口',
-    tests: '测试',
-    docs: '文档',
-    settings: '设置',
-    tutorial: '教程',
+    bindings: '账号绑定',
+    callbacks: '回调事件',
+    api: '接口测试',
+    tests: '测试示例',
+    settings: '系统设置',
+    tutorial: '使用教程',
   };
   $('viewTitle').textContent = titleMap[view] || view;
   document.querySelectorAll('.nav-item').forEach((node) => {
-    node.classList.toggle('active', node.dataset.view === view);
+    const active = node.dataset.view === view;
+    node.classList.toggle('active', active);
+    if (active) node.setAttribute('aria-current', 'page');
+    else node.removeAttribute('aria-current');
   });
+  document.querySelectorAll('.nav-section').forEach((section) => {
+    section.classList.toggle('current', !!section.querySelector('.nav-item.active'));
+  });
+  const activeNavigation = document.querySelector('.sidebar .nav-item.active');
+  $('viewCategory').textContent = activeNavigation?.dataset.navCategory || activeNavigation?.closest('.nav-section')?.querySelector('.nav-section-title')?.textContent || '工作台';
+  window.CfquantNavigation?.revealActive();
   document.querySelectorAll('.view-panel').forEach((node) => {
     node.classList.toggle('hidden', !node.classList.contains(`view-${view}`));
   });
@@ -8523,10 +8561,10 @@ function setDataTab(name, shouldRefresh = true) {
     pane.classList.toggle('active', pane.dataset.pane === name);
   });
   if (shouldRefresh && name === 'trades') {
-    refreshAccount('trades').catch((error) => log('成交刷新失败', { error: error.message }));
+    refreshAccount('trades').catch((error) => logRequestError('成交刷新失败', error));
   }
   if (shouldRefresh && name === 'orders') {
-    refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('委托刷新失败', { error: error.message }));
+    refreshAccount('orders', { force: true, subscribe: false }).catch((error) => logRequestError('委托刷新失败', error));
   }
 }
 
@@ -9895,6 +9933,7 @@ function applyAccountPair(accountKeyOrId) {
     state.accountType = normalizeAccountType(entry.accountType || 'STOCK');
   }
   selectedBridge();
+  syncActivityLogContext();
   refreshTestsIfVisible();
   return !!entry || !!loadAccountPairs()[value];
 }
@@ -9937,6 +9976,11 @@ function closeBindingDialog() {
   const overlay = $('bindingDialogOverlay');
   if (!overlay) return;
   closeHelpTooltips();
+  if (state.bindingPythonRuntimeCheckTimer) {
+    window.clearTimeout(state.bindingPythonRuntimeCheckTimer);
+    state.bindingPythonRuntimeCheckTimer = null;
+  }
+  state.bindingPythonRuntimeCheckToken += 1;
   resetQmtLoginPassword('binding');
   overlay.classList.add('hidden');
   overlay.setAttribute('aria-hidden', 'true');
@@ -10019,6 +10063,12 @@ function openBindingDialog(options = {}) {
   overlay.classList.remove('hidden');
   overlay.setAttribute('aria-hidden', 'false');
   document.body.classList.add('binding-dialog-open');
+  if (!state.bindingPythonRuntimeJobId) {
+    state.bindingPythonRuntime = null;
+    state.bindingPythonRuntimeProgress = null;
+  }
+  renderBindingPythonRuntimeStatus();
+  scheduleBindingPythonRuntimeCheck(0);
   window.setTimeout(() => form.account_id && form.account_id.focus(), 0);
 }
 
@@ -10040,9 +10090,9 @@ function selectAccountPair(accountId, bridgeId, accountType = 'STOCK', accountKe
   refreshTestsIfVisible();
   restartOrderCallbackSocket();
   refreshStatus().catch((error) => log('账号配置状态刷新失败', { error: error.message }));
-  refreshAccount('asset,positions').catch((error) => log('账号配置资产刷新失败', { error: error.message }));
-  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('账号配置委托刷新失败', { error: error.message }));
-  refreshAccount('trades').catch((error) => log('账号配置成交刷新失败', { error: error.message }));
+  refreshAccount('asset,positions').catch((error) => logRequestError('账号配置资产刷新失败', error));
+  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => logRequestError('账号配置委托刷新失败', error));
+  refreshAccount('trades').catch((error) => logRequestError('账号配置成交刷新失败', error));
 }
 
 function renderBridgeConfigList() {
@@ -10282,6 +10332,263 @@ async function ensureBindingQmtStopped(targets, options = {}) {
   return showBindingQmtProcessPrompt(results.map((item, index) => ({
     ...item, qmt_dir: item.qmt_dir || targets[index].path,
   })));
+}
+
+function bindingPythonRuntimeFormValues() {
+  const form = $('bindingForm');
+  const qmtDir = form && form.qmt_dir ? qmtDeploymentPath(form.qmt_dir.value) : '';
+  const accountId = form && form.account_id ? form.account_id.value.trim() : '';
+  return { qmtDir, accountId };
+}
+
+function closeBindingPythonRuntimeSocket() {
+  if (state.bindingPythonRuntimeSocket) {
+    try {
+      state.bindingPythonRuntimeSocket.close();
+    } catch (error) {
+      // Ignore a stale socket while the binding dialog is being closed.
+    }
+  }
+  state.bindingPythonRuntimeSocket = null;
+}
+
+function clearBindingPythonRuntimePoll() {
+  if (state.bindingPythonRuntimePollTimer) {
+    window.clearInterval(state.bindingPythonRuntimePollTimer);
+    state.bindingPythonRuntimePollTimer = null;
+  }
+}
+
+function bindingPythonRuntimeBinding(status = state.bindingPythonRuntime) {
+  return status && status.binding ? status.binding : (status || {});
+}
+
+function renderBindingPythonRuntimeProgress() {
+  const wrap = $('bindingPythonRuntimeProgressWrap');
+  const bar = $('bindingPythonRuntimeProgressBar');
+  const meta = $('bindingPythonRuntimeProgressMeta');
+  const text = $('bindingPythonRuntimeProgressText');
+  const event = state.bindingPythonRuntimeProgress;
+  if (!wrap || !bar || !meta || !text) return;
+  if (!event) {
+    wrap.classList.add('hidden');
+    text.textContent = '';
+    return;
+  }
+  wrap.classList.remove('hidden');
+  const data = event.data && typeof event.data === 'object' ? event.data : event;
+  const phase = data.phase || event.meta?.stage || 'progress';
+  const percent = downloadEventPercent(event);
+  const done = Number(data.bytes_done ?? data.done ?? 0);
+  const total = Number(data.bytes_total ?? data.total ?? 0);
+  const speed = Number(data.speed || 0);
+  const eta = Number(data.eta);
+  bar.style.width = percent === null ? '0%' : `${percent.toFixed(0)}%`;
+  bar.classList.toggle('is-indeterminate', percent === null && !['installed', 'download_verified', 'done', 'error'].includes(phase));
+  bar.classList.toggle('is-done', ['installed', 'done'].includes(phase));
+  bar.classList.toggle('is-error', phase === 'error');
+  const bytes = total > 0 ? `，${(done / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB` : '';
+  const speedText = speed > 0 ? `，${(speed / 1048576).toFixed(2)} MB/s` : '';
+  const etaText = Number.isFinite(eta) && eta >= 0 ? `，剩余约 ${Math.ceil(eta)} 秒` : '';
+  meta.textContent = `${phase}${percent === null ? '' : `，${percent.toFixed(0)}%`}${bytes}${speedText}${etaText}`;
+  text.textContent = data.message || data.error || (phase === 'error' ? '下载失败' : '任务进行中');
+}
+
+function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, error = null) {
+  const statusNode = $('bindingPythonRuntimeStatus');
+  const hint = $('bindingPythonRuntimeHint');
+  const button = $('bindingPythonRuntimeDownloadBtn');
+  if (!statusNode || !hint || !button) return;
+  const { qmtDir } = bindingPythonRuntimeFormValues();
+  const binding = bindingPythonRuntimeBinding(status);
+  const runtime = binding.selected_runtime || (binding.py312_supported ? 'py312' : 'py36');
+  const selected = binding.selected || (binding.runtimes && binding.runtimes[runtime]) || {};
+  const running = !!state.bindingPythonRuntimeJobId;
+  if (error) {
+    statusNode.textContent = `检测失败：${error.message || error}`;
+    hint.textContent = '检测失败不会阻止保存绑定，请检查目录后重试。';
+    button.disabled = true;
+    button.textContent = '下载并安装 Python 库';
+    renderBindingPythonRuntimeProgress();
+    return;
+  }
+  if (!qmtDir) {
+    statusNode.textContent = '填写 QMT 目录后自动检测版本和 Python 库。';
+    hint.textContent = '仅读取本机文件，不会上传账号或目录。';
+    button.disabled = true;
+    button.textContent = '下载并安装 Python 库';
+    renderBindingPythonRuntimeProgress();
+    return;
+  }
+  const versionText = binding.qmt_version ? `QMT ${binding.qmt_version}` : 'QMT 版本未知';
+  const selectionText = binding.runtime_selection === 'fixed_py36'
+    ? '固定默认 py36'
+    : `当前选择 ${runtime}`;
+  const ready = !!selected.installed && binding.state === 'ready';
+  if (ready) {
+    statusNode.textContent = `${versionText}，${selectionText}，Python 库已就绪。`;
+    hint.textContent = binding.py312_supported ? '该版本支持 py36 和 py3.12。' : '该版本没有 py3.12 选项，只使用 py36。';
+  } else if (binding.state === 'account_config_missing' || binding.state === 'python_library_missing' || binding.state === 'runtime_not_selected') {
+    statusNode.textContent = `${versionText}，${selectionText}，尚未检测到可用 Python 库。`;
+    hint.textContent = '点击下载并安装；安装完成后会按任务设置重启 QMT。';
+  } else {
+    statusNode.textContent = `${versionText}，${selectionText}，状态：${binding.state || '待检测'}。`;
+    hint.textContent = '可以重新检测或保存绑定。';
+  }
+  button.disabled = !qmtDir || ready || running;
+  button.textContent = running ? 'Python 库任务进行中...' : (ready ? 'Python 库已就绪' : `下载并安装 ${runtime}`);
+  renderBindingPythonRuntimeProgress();
+}
+
+function bindingPythonRuntimeProgressEvent(event) {
+  if (!event || (state.bindingPythonRuntimeJobId && downloadEventJobId(event) !== state.bindingPythonRuntimeJobId)) return;
+  state.bindingPythonRuntimeProgress = event;
+  const stage = downloadEventStage(event);
+  if (['done', 'installed'].includes(stage)) {
+    clearBindingPythonRuntimePoll();
+    state.bindingPythonRuntimeJobId = '';
+    renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
+    scheduleBindingPythonRuntimeCheck(250);
+  } else if (['error', 'failed', 'fail'].includes(stage)) {
+    clearBindingPythonRuntimePoll();
+    state.bindingPythonRuntimeJobId = '';
+    renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
+  } else {
+    renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
+  }
+}
+
+function handleBindingPythonRuntimeSocketPayload(payload) {
+  if (!payload || payload.type === 'hello') return;
+  if (payload.type === 'history' && Array.isArray(payload.events)) {
+    payload.events.slice().reverse().forEach((event) => bindingPythonRuntimeProgressEvent(event));
+  } else if (payload.type === 'callback' && payload.event) {
+    bindingPythonRuntimeProgressEvent(payload.event);
+  }
+}
+
+function startBindingPythonRuntimeSocket(jobId, body) {
+  closeBindingPythonRuntimeSocket();
+  const params = new URLSearchParams({ event_prefix: DOWNLOAD_EVENT_PREFIX, job_id: jobId });
+  if (body.account_id) params.set('account_id', body.account_id);
+  const socket = new WebSocket(apiWsUrl(`/ws/callbacks?${params.toString()}`));
+  state.bindingPythonRuntimeSocket = socket;
+  socket.onmessage = (event) => {
+    if (state.bindingPythonRuntimeSocket !== socket) return;
+    try {
+      handleBindingPythonRuntimeSocketPayload(JSON.parse(event.data));
+    } catch (error) {
+      // The job polling fallback still reports progress if a proxy sends a non-JSON frame.
+    }
+  };
+  socket.onclose = () => {
+    if (state.bindingPythonRuntimeSocket === socket) state.bindingPythonRuntimeSocket = null;
+  };
+  socket.onerror = () => {
+    if (state.bindingPythonRuntimeSocket === socket) state.bindingPythonRuntimeSocket = null;
+  };
+}
+
+function pollBindingPythonRuntimeJob(jobId) {
+  clearBindingPythonRuntimePoll();
+  state.bindingPythonRuntimePollTimer = window.setInterval(async () => {
+    try {
+      const job = await api(`/api/qmt/python-runtime/jobs?job_id=${encodeURIComponent(jobId)}`);
+      if (!job) return;
+      const progress = job.progress || {};
+      if (Object.keys(progress).length) {
+        bindingPythonRuntimeProgressEvent({
+          event: DOWNLOAD_CALLBACK_EVENT,
+          meta: { job_id: jobId, stage: progress.phase || job.state },
+          data: progress,
+        });
+      }
+      if (job.state === 'error') {
+        bindingPythonRuntimeProgressEvent({
+          event: DOWNLOAD_CALLBACK_EVENT,
+          meta: { job_id: jobId, stage: 'error' },
+          data: { error: job.error || 'QMT Python 库任务失败' },
+        });
+      } else if (job.state === 'done') {
+        bindingPythonRuntimeProgressEvent({
+          event: DOWNLOAD_CALLBACK_EVENT,
+          meta: { job_id: jobId, stage: 'done' },
+          data: { message: 'Python 库已安装并完成 QMT 重启' },
+        });
+      }
+    } catch (error) {
+      const text = $('bindingPythonRuntimeProgressText');
+      if (text) text.textContent = `进度查询失败：${error.message}`;
+    }
+  }, 1000);
+}
+
+async function refreshBindingPythonRuntime(options = {}) {
+  const token = ++state.bindingPythonRuntimeCheckToken;
+  const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
+  if (!qmtDir) {
+    state.bindingPythonRuntime = null;
+    state.bindingPythonRuntimeProgress = null;
+    renderBindingPythonRuntimeStatus(null);
+    return null;
+  }
+  const hint = $('bindingPythonRuntimeHint');
+  if (hint) hint.textContent = '正在检测 QMT 版本和本地 Python 库...';
+  try {
+    const query = new URLSearchParams({ qmt_dir: qmtDir, account_id: accountId, runtime: 'py36', refresh: '0' });
+    const data = await api(`/api/qmt/python-runtime?${query.toString()}`);
+    if (token !== state.bindingPythonRuntimeCheckToken) return data;
+    state.bindingPythonRuntime = data;
+    renderBindingPythonRuntimeStatus(data);
+    return data;
+  } catch (error) {
+    if (token === state.bindingPythonRuntimeCheckToken) renderBindingPythonRuntimeStatus(null, error);
+    if (options.throwOnError) throw error;
+    return null;
+  }
+}
+
+function scheduleBindingPythonRuntimeCheck(delay = 350) {
+  if (state.bindingPythonRuntimeCheckTimer) window.clearTimeout(state.bindingPythonRuntimeCheckTimer);
+  state.bindingPythonRuntimeCheckTimer = window.setTimeout(() => {
+    state.bindingPythonRuntimeCheckTimer = null;
+    refreshBindingPythonRuntime();
+  }, delay);
+}
+
+async function downloadBindingPythonRuntime() {
+  if (state.bindingPythonRuntimeJobId) return;
+  const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
+  if (!qmtDir) {
+    renderBindingPythonRuntimeStatus(null, new Error('请先填写 QMT 目录'));
+    return;
+  }
+  const binding = bindingPythonRuntimeBinding(state.bindingPythonRuntime);
+  const runtime = binding.selected_runtime || (binding.py312_supported ? 'py312' : 'py36');
+  const jobId = `binding_qmt_python_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+  const body = { job_id: jobId, qmt_dir: qmtDir, account_id: accountId, runtime, restart: true };
+  state.bindingPythonRuntimeJobId = jobId;
+  state.bindingPythonRuntimeProgress = {
+    event: DOWNLOAD_CALLBACK_EVENT,
+    meta: { job_id: jobId, stage: 'queued' },
+    data: { phase: 'queued', message: '正在提交 QMT Python 库任务' },
+  };
+  renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
+  startBindingPythonRuntimeSocket(jobId, body);
+  pollBindingPythonRuntimeJob(jobId);
+  try {
+    await api('/api/qmt/python-runtime/download', { method: 'POST', body: JSON.stringify(body) });
+  } catch (error) {
+    clearBindingPythonRuntimePoll();
+    closeBindingPythonRuntimeSocket();
+    state.bindingPythonRuntimeJobId = '';
+    state.bindingPythonRuntimeProgress = {
+      event: DOWNLOAD_CALLBACK_EVENT,
+      meta: { job_id: jobId, stage: 'error' },
+      data: { phase: 'error', error: error.message },
+    };
+    renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
+  }
 }
 
 async function submitBindingForm(event) {
@@ -11327,7 +11634,7 @@ async function refreshInitialAccountData() {
     try {
       await refreshAccount(request.sections, request.options);
     } catch (error) {
-      log(request.error, { error: error.message });
+      logRequestError(request.error, error, {}, { category: 'account' });
     }
   }
 }
@@ -11491,6 +11798,7 @@ function selectedTradeChannel() {
 }
 
 function resetSelectionState() {
+  syncActivityLogContext();
   state.callbackSeq = 0;
   state.callbackEvents = [];
   state.callbackLastEventAt = '';
@@ -11517,9 +11825,9 @@ function resetSelectionState() {
 function refreshCurrentSelection(reason) {
   restartOrderCallbackSocket();
   refreshStatus().catch((error) => log(`${reason}状态刷新失败`, { error: error.message }));
-  refreshAccount('asset,positions').catch((error) => log(`${reason}资产刷新失败`, { error: error.message }));
-  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log(`${reason}委托刷新失败`, { error: error.message }));
-  refreshAccount('trades').catch((error) => log(`${reason}成交刷新失败`, { error: error.message }));
+  refreshAccount('asset,positions').catch((error) => logRequestError(`${reason}资产刷新失败`, error));
+  refreshAccount('orders', { force: true, subscribe: false }).catch((error) => logRequestError(`${reason}委托刷新失败`, error));
+  refreshAccount('trades').catch((error) => logRequestError(`${reason}成交刷新失败`, error));
 }
 
 function handleBridgeChange() {
@@ -12494,7 +12802,7 @@ function runOrderCallbackRefresh() {
     snapshots.length && accountSnapshotVisible() ? refreshVisibleAccountCache() : Promise.resolve(),
     live.length ? refreshAccount(live.join(','), { force: true, subscribe: false }) : Promise.resolve(),
   ])
-    .catch((error) => log('回调刷新交易数据失败', { sections, error: error.message }))
+    .catch((error) => logRequestError('回调刷新交易数据失败', error, { sections }, { category: 'account' }))
     .finally(() => {
       state.orderCallbackRefreshInFlight = false;
       if (state.orderCallbackRefreshPending || state.orderCallbackRefreshSections.size) {
@@ -12604,25 +12912,28 @@ function connectOrderCallbackSocket(options = {}) {
   if (accountKey) params.set('account_key', accountKey);
   params.set('event_prefix', 'trader:');
   const socket = new WebSocket(apiWsUrl(`/ws/callbacks?${params.toString()}`));
+  const logAccount = logAccountContext({ account_id: accountId, account_key: accountKey, account_type: accountType, bridge_id: bridgeId });
   state.orderCallbackSocket = socket;
   state.orderCallbackKey = socketKey;
   setOrderCallbackSocketState('connecting', `${accountTypeLabel(accountType)} ${accountId}`);
   socket.onopen = () => {
     if (state.orderCallbackSocket !== socket) return;
     setOrderCallbackSocketState('open', `${accountTypeLabel(accountType)} ${accountId}`);
+    logCallbackResult(logAccount, 'socket');
   };
   socket.onmessage = (event) => {
     if (state.orderCallbackSocket !== socket) return;
     try {
       handleOrderCallbackPayload(JSON.parse(event.data));
+      logCallbackResult(logAccount, 'parse');
     } catch (error) {
-      log('委托回调消息解析失败', { error: error.message });
+      logCallbackResult(logAccount, 'parse', error);
     }
   };
   socket.onerror = () => {
     if (state.orderCallbackSocket === socket) {
       setOrderCallbackSocketState('error', 'WebSocket 异常');
-      log('委托回调 WebSocket 异常');
+      logCallbackResult(logAccount, 'socket', new Error('WebSocket 连接异常'));
     }
   };
   socket.onclose = () => {
@@ -12643,18 +12954,33 @@ function restartOrderCallbackSocket() {
   connectOrderCallbackSocket({ force: true });
 }
 
+function logCallbackResult(account, operation, error = null) {
+  const labels = { poll: '回调拉取', socket: '实时回调连接', parse: '回调消息解析' };
+  log(`${labels[operation]}${error ? '失败' : '已恢复'}`, error ? { error: error.message } : undefined, {
+    category: 'callbacks', account,
+    incident: {
+      operation, label: labels[operation], resolved: !error,
+      reason: JSON.stringify([operation, error?.message]),
+      recoveredSummary: `${labels[operation]}已恢复`,
+      summary: `${labels[operation]}失败：${error?.message || ''}`, attempt: performance.now(),
+    },
+  });
+}
+
 async function refreshCallbacks() {
+  const account = logAccountContext();
   try {
     const params = new URLSearchParams();
-    params.set('bridge_id', selectedBridge());
-    params.set('account_id', selectedAccount());
-    params.set('account_type', selectedAccountType());
-    const accountKey = selectedAccountKey();
-    if (accountKey) params.set('account_key', accountKey);
+    params.set('bridge_id', account.bridge);
+    params.set('account_id', account.id);
+    params.set('account_type', account.type);
+    if (account.key) params.set('account_key', account.key);
     params.set('event_prefix', 'trader:');
     params.set('since', state.callbackSeq);
     params.set('limit', 200);
     const payload = await api(`/api/callbacks?${params.toString()}`);
+    logCallbackResult(account, 'poll');
+    if (selectedAccountKey() !== account.key || selectedBridge() !== account.bridge) return;
     const events = payload.events || [];
     if (!events.length) return;
     events.forEach((event) => handleOrderCallbackEvent(event, { render: false }));
@@ -12662,7 +12988,7 @@ async function refreshCallbacks() {
       renderCallbacks();
     }
   } catch (error) {
-    log('回调拉取失败', { error: error.message });
+    logCallbackResult(account, 'poll', error);
   }
 }
 
@@ -12792,6 +13118,38 @@ function accountFailureSignature(section) {
   return JSON.stringify([section.checked_at, section.error, section.partial_errors, children]);
 }
 
+function accountQueryLogOptions(name, section, identity, resolved = false) {
+  const labels = { asset: '资产', positions: '持仓', orders: '委托', trades: '成交' };
+  const error = String(section.error || '');
+  const disconnected = section.error_code === 'QMT_BRIDGE_NOT_CONNECTED' || /QMT pipe bridge not connected/.test(error);
+  const awaitingMode = /awaiting account mode confirmation/.test(error);
+  const markets = Object.entries(section.market_results || {}).filter(([, row]) => row.error || row.refresh_ok === false)
+    .map(([market, row]) => [market, row.error_code, row.error]).sort();
+  return {
+    category: 'account', account: logAccountContext(section, identity),
+    incident: {
+      operation: name, label: labels[name], resolved,
+      reason: JSON.stringify([
+        disconnected ? 'QMT_BRIDGE_NOT_CONNECTED' : awaitingMode ? 'QMT_MODE_PENDING' : section.error_code || error,
+        section.request_channel || '', markets, section.partial_errors || [],
+      ]),
+      summary: disconnected ? 'QMT 通道未连接，账号查询失败'
+        : awaitingMode ? 'QMT 策略等待运行模式确认' : `账号查询失败：${error || (section.partial_errors || []).join('；') || '部分来源未返回数据'}`,
+      attempt: accountFailureSignature(section),
+    },
+  };
+}
+
+function accountQueryLogDetails(section, identity) {
+  const fields = ['error', 'error_code', 'checked_at_text', 'next_retry_at', 'request_channel', 'partial_errors'];
+  const details = { account_key: identity[0], channel: identity[3] };
+  for (const field of fields) if (section[field] !== undefined) details[field] = section[field];
+  details.market_results = Object.fromEntries(Object.entries(section.market_results || {}).map(([market, row]) => [market,
+    Object.fromEntries(fields.filter(field => row[field] !== undefined).map(field => [field, row[field]])),
+  ]));
+  return details;
+}
+
 function renderAccountSection(name, section, identity) {
   const labels = { asset: '资产', positions: '持仓', orders: '委托', trades: '成交' };
   const renderers = { asset: renderAsset, positions: renderPositions, orders: renderOrders, trades: renderTrades };
@@ -12810,7 +13168,11 @@ function renderAccountSection(name, section, identity) {
   }
   let notice = '';
   if (failed) {
-    if (section.stale && hasData) {
+    if (section.error_code === 'QMT_BRIDGE_NOT_CONNECTED') {
+      notice = hasData
+        ? 'QMT \u901a\u9053\u672a\u8fde\u63a5\uff0c\u663e\u793a\u4e0a\u6b21\u6210\u529f\u6570\u636e'
+        : 'QMT \u901a\u9053\u672a\u8fde\u63a5\uff0c\u7b49\u5f85\u6062\u590d';
+    } else if (section.stale && hasData) {
       notice = `刷新失败，数据已过期；最近完整查询：${section.data_checked_at_text || '时间未知'}。`;
     } else if (hasData) {
       notice = '部分来源刷新失败，当前数据可能不完整。';
@@ -12827,11 +13189,12 @@ function renderAccountSection(name, section, identity) {
   const previous = accountRefreshStates.get(key);
   const signature = accountFailureSignature(section);
   if (failed && !section.warming_up && (!previous || !previous.failed || previous.signature !== signature)) {
-    log(`${labels[name]}查询失败`, section);
+    log(`${labels[name]}查询失败`, accountQueryLogDetails(section, identity), accountQueryLogOptions(name, section, identity));
   } else if (!failed && previous && previous.failed) {
-    log(`${labels[name]}查询已恢复`, { account_key: section.account_key || identity[0], checked_at: section.checked_at });
+    log(`${labels[name]}查询已恢复`, { account_key: section.account_key || identity[0], checked_at: section.checked_at },
+      accountQueryLogOptions(name, section, identity, true));
   }
-  accountRefreshStates.set(key, { failed: failed && !section.warming_up, signature });
+  if (!section.warming_up) accountRefreshStates.set(key, { failed, signature });
   if (accountRefreshStates.size > 500) accountRefreshStates.delete(accountRefreshStates.keys().next().value);
 }
 
@@ -12854,7 +13217,30 @@ async function refreshAccount(sections = 'asset,positions', options = {}) {
   params.set('sections', sections);
   if (options.force) params.set('force', '1');
   if (options.subscribe === false) params.set('subscribe', '0');
-  const data = await api(`/api/account?${params.toString()}`);
+  const account = logAccountContext({ account_id: accountId }, [accountKey || accountId, accountType, bridgeId, channel]);
+  const logTransport = error => {
+    const labels = { asset: '资产', positions: '持仓', orders: '委托', trades: '成交' };
+    for (const section of sections.split(',')) {
+      log(error ? '账号查询接口访问失败' : '账号查询接口已恢复', error ? { error: error.message } : undefined, {
+        category: 'account', account,
+        incident: {
+          operation: `http:${section}`, label: `${labels[section] || section}接口`, resolved: !error,
+          reason: `http:${error?.message || ''}`, summary: `账号查询接口访问失败：${error?.message || ''}`,
+          recoveredSummary: '账号查询接口访问已恢复',
+          attempt: performance.now(),
+        },
+      });
+    }
+  };
+  let data;
+  try {
+    data = await api(`/api/account?${params.toString()}`);
+    logTransport(null);
+  } catch (error) {
+    logTransport(error);
+    error.accountQueryLogged = true;
+    throw error;
+  }
   if (selectedAccount() !== accountId || selectedAccountType() !== accountType || selectedAccountKey() !== accountKey
       || selectedBridge() !== bridgeId || selectedChannel() !== channel) return;
   for (const name of ['asset', 'positions', 'orders', 'trades']) {
@@ -12935,7 +13321,7 @@ async function submitOrder(event) {
     await refreshAccount('asset,positions', { force: true });
     await refreshAccount('orders', { force: true, subscribe: false });
   } catch (error) {
-    log('委托失败', { error: error.message });
+    logRequestError('委托失败', error);
   }
 }
 
@@ -13013,7 +13399,7 @@ async function submitBatchOrders(event) {
     await refreshAccount('asset,positions', { force: true });
     await refreshAccount('orders', { force: true, subscribe: false });
   } catch (error) {
-    log('批量委托失败', { error: error.message });
+    logRequestError('批量委托失败', error);
   }
 }
 
@@ -13038,7 +13424,7 @@ async function cancelOrder(event) {
   try {
     await sendCancel(form.order_id.value.trim(), form.channel.value);
   } catch (error) {
-    log('撤单失败', { error: error.message });
+    logRequestError('撤单失败', error);
   }
 }
 
@@ -13052,7 +13438,7 @@ async function cancelOrderFromRow(row) {
   try {
     await sendCancel(orderId, channel);
   } catch (error) {
-    log('双击撤单失败', { order_id: orderId, error: error.message });
+    logRequestError('双击撤单失败', error, { order_id: orderId });
   }
 }
 
@@ -13070,7 +13456,7 @@ async function cancelSelectedOrders() {
     try {
       await sendCancel(orderId, channel);
     } catch (error) {
-      log('批量撤单失败', { order_id: orderId, error: error.message });
+      logRequestError('批量撤单失败', error, { order_id: orderId });
     }
   }
   await refreshAccount('orders', { force: true, subscribe: false });
@@ -14554,7 +14940,7 @@ async function refreshVisibleAccountCache() {
   try {
     await refreshAccount('asset,positions');
   } catch (error) {
-    log('账户缓存读取失败', { error: error.message });
+    logRequestError('账户缓存读取失败', error);
   } finally {
     state.accountCacheRefreshInFlight = false;
   }
@@ -14647,7 +15033,7 @@ async function boot() {
       await refreshAccount('orders', { force: true, subscribe: false });
       await refreshAccount('trades', { force: true });
     } catch (error) {
-      log('刷新失败', { error: error.message });
+      logRequestError('刷新失败', error, {}, { category: 'account' });
     }
   });
   $('switchAccountBtn').addEventListener('click', switchAccountFromToolbar);
@@ -14760,6 +15146,20 @@ async function boot() {
   if (closeBindingDialogBtn) closeBindingDialogBtn.addEventListener('click', closeBindingDialog);
   const cancelBindingDialogBtn = $('cancelBindingDialogBtn');
   if (cancelBindingDialogBtn) cancelBindingDialogBtn.addEventListener('click', closeBindingDialog);
+  const bindingPythonRuntimeRefreshBtn = $('bindingPythonRuntimeRefreshBtn');
+  if (bindingPythonRuntimeRefreshBtn) bindingPythonRuntimeRefreshBtn.addEventListener('click', () => {
+    refreshBindingPythonRuntime({ throwOnError: false });
+  });
+  const bindingPythonRuntimeDownloadBtn = $('bindingPythonRuntimeDownloadBtn');
+  if (bindingPythonRuntimeDownloadBtn) bindingPythonRuntimeDownloadBtn.addEventListener('click', () => {
+    downloadBindingPythonRuntime();
+  });
+  ['bindingQmtDir', 'bindingAccountId'].forEach((id) => {
+    const input = $(id);
+    if (!input) return;
+    input.addEventListener('input', () => scheduleBindingPythonRuntimeCheck());
+    input.addEventListener('change', () => scheduleBindingPythonRuntimeCheck(0));
+  });
   const bindingDialogOverlay = $('bindingDialogOverlay');
   if (bindingDialogOverlay) {
     bindingDialogOverlay.addEventListener('click', (event) => {
@@ -15058,7 +15458,7 @@ async function boot() {
       if (apiToggle) apiToggle.checked = overviewRemoteToggle.checked;
     });
   }
-  $('ordersBtn').addEventListener('click', () => refreshAccount('orders', { force: true, subscribe: false }).catch((error) => log('委托刷新失败', { error: error.message })));
+  $('ordersBtn').addEventListener('click', () => refreshAccount('orders', { force: true, subscribe: false }).catch((error) => logRequestError('委托刷新失败', error)));
   const realtimeOrdersToggle = $('autoRefresh');
   if (realtimeOrdersToggle) {
     realtimeOrdersToggle.addEventListener('change', () => {
@@ -15084,7 +15484,16 @@ async function boot() {
       renderCallbacks();
     });
   }
-  $('clearLogBtn').addEventListener('click', () => { $('logBox').innerHTML = ''; });
+  $('clearLogBtn').addEventListener('click', () => {
+    const removed = window.CfquantActivityLog?.clearVisible() || [];
+    for (const key of accountRefreshStates.keys()) {
+      const [identity] = JSON.parse(key);
+      if (removed.some(row => row.category === 'account' && row.account.key === identity[0]
+        && row.account.type === identity[1] && row.account.bridge === identity[2] && row.account.channel === identity[3])) {
+        accountRefreshStates.delete(key);
+      }
+    }
+  });
   $('bridgeSelect').addEventListener('change', handleBridgeChange);
   $('accountInput').addEventListener('change', handleAccountChange);
   $('queryChannel').addEventListener('change', selectedChannel);

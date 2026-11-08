@@ -7,7 +7,7 @@ from datetime import datetime
 
 import pytest
 
-from cfquant.trading_monitor import TradingMonitor, SHANGHAI, day_text
+from cfquant.trading_monitor import TradingMonitor, SHANGHAI, day_text, is_trading_time
 
 
 NOW = datetime(2026, 11, 3, 10, 0, tzinfo=SHANGHAI).timestamp()
@@ -201,6 +201,79 @@ def test_web_callback_integration(monkeypatch, monitor):
     assert snapshot(monitor)['stats']['order_count'] == 1
 
 
+def test_runtime_samples_are_minute_deduplicated_and_collect_all_hours(monitor):
+    assert is_trading_time(NOW)
+    assert not is_trading_time(datetime(2026, 11, 3, 20, 0, tzinfo=SHANGHAI).timestamp())
+    performance = {'available': True, 'qmt_callback_total': 12,
+                   'quote_callback_batches': 4, 'quote_distribution_batches': 3,
+                   'request_completed': 2, 'process': {'pid': 123, 'cpu_percent': 7.5}}
+    monitor.record_snapshot({'bridge_id': 'qmt-one', 'bridge_name': '主账号',
+                            'checked_at': NOW, 'monitor': {'transport_mode': 'ctypes'},
+                            'normal': {'online': True, 'performance': performance},
+                            'trade': {'online': True, 'performance': performance}})
+    monitor.record_snapshot({'bridge_id': 'qmt-one', 'bridge_name': '主账号',
+                            'checked_at': NOW + 20, 'monitor': {'transport_mode': 'ctypes'},
+                            'normal': {'online': True, 'performance': dict(performance, qmt_callback_total=13)},
+                            'trade': {'online': True, 'performance': performance}})
+    monitor.record_snapshot({'bridge_id': 'qmt-one', 'checked_at': datetime(2026, 11, 3, 20, 0, tzinfo=SHANGHAI).timestamp(),
+                            'monitor': {'transport_mode': 'ctypes'}, 'normal': {'online': True}, 'trade': {'online': True}})
+    assert monitor.flush()
+    result = monitor.query_runtime('2026-11-03', '2026-11-03', bridge_id='qmt-one', now=NOW)
+    assert len(result['samples']) == 2
+    assert result['samples'][0]['normal']['qmt_callback_total'] == 13
+    assert result['samples'][0]['process']['normal']['pid'] == 123
+    assert result['samples'][1]['normal'] == {}
+
+
+def test_runtime_retention_setting_and_cleanup(tmp_path):
+    instance = TradingMonitor(tmp_path / 'runtime.sqlite3')
+    instance.configure(False, runtime_retention_days=2)
+    assert instance.settings()['runtime_retention_days'] == 2
+    conn = instance._connect()
+    try:
+        conn.execute("INSERT INTO monitor_runtime_samples VALUES (?,?,?,?,?,?,?,?,?)",
+                     ('old', NOW - 4 * 86400, int(NOW // 60) * 60, 'qmt-one', '', 'ctypes', '{}', '{}', '{}'))
+        conn.commit()
+        instance._last_runtime_cleanup = 0
+        instance._cleanup_runtime_samples(conn, force=True)
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM monitor_runtime_samples").fetchone()[0] == 0
+    finally:
+        conn.close()
+        instance.close()
+
+
+def test_runtime_all_history_query_and_manual_cleanup(tmp_path):
+    instance = TradingMonitor(tmp_path / 'runtime-all.sqlite3')
+    instance.configure(False, runtime_retention_days=0)
+    conn = instance._connect()
+    try:
+        rows = [
+            ('old', NOW - 400 * 86400, int((NOW - 400 * 86400) // 60) * 60,
+             'qmt-one', '', 'ctypes', '{}', '{}', '{}'),
+            ('new', NOW - 2 * 86400, int((NOW - 2 * 86400) // 60) * 60,
+             'qmt-one', '', 'ctypes', '{}', '{}', '{}'),
+            ('lite', NOW - 1 * 86400, int((NOW - 1 * 86400) // 60) * 60,
+             'qmt-one', '', 'lite', '{}', '{}', '{}'),
+        ]
+        conn.executemany("INSERT INTO monitor_runtime_samples VALUES (?,?,?,?,?,?,?,?,?)", rows)
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        result = instance.query_runtime('all', '2026-11-03', bridge_id='qmt-one', now=NOW)
+        assert result['retention_days'] == 0 and len(result['samples']) == 3
+        assert result['mode'] == ''
+        assert len(instance.query_runtime('all', '2026-11-03', bridge_id='qmt-one', mode='ctypes', now=NOW)['samples']) == 2
+        assert len(instance.query_runtime('all', '2026-11-03', bridge_id='qmt-one', mode='lite', now=NOW)['samples']) == 1
+        expired = instance.clear_runtime_history('expired')
+        assert expired['deleted'] == 0 and expired['remaining'] == 3
+        cleared = instance.clear_runtime_history('all')
+        assert cleared['deleted'] == 3 and cleared['remaining'] == 0
+    finally:
+        instance.close()
+
+
 @pytest.mark.parametrize('trade_first', [False, True])
 def test_fill_ratio_uses_trade_callbacks_even_before_order(monitor, trade_first):
     order = callback()
@@ -240,6 +313,9 @@ def test_monitor_endpoint_requires_authorization_and_validates_filters(monkeypat
     assert written[-1][1]['data']['stats']['order_count'] == 1
     handler._handle_api_get(urlparse('/api/monitor?start=not-a-date'))
     assert written[-1][0] == 400
+    handler._handle_api_get(urlparse('/api/monitor/runtime?start=2026-11-03&end=2026-11-03&bridge_id=qmt-one'))
+    assert written[-1][0] == 200
+    assert 'samples' in written[-1][1]['data']
 
 
 def test_full_queue_reports_loss_without_blocking(monitor, monkeypatch):
@@ -391,6 +467,22 @@ def test_settings_http_authentication_validation_and_toggle(monkeypatch, tmp_pat
         handler._read_json_body = lambda: {'enabled':False}
         handler.do_POST()
         assert written[-1][0] == 200 and not instance.enabled
+        handler.path = '/api/monitor/runtime/cleanup'
+        handler._authorized = lambda parsed: False
+        handler._read_json_body = lambda: {'scope':'all'}
+        handler.do_POST()
+        assert written[-1][0] == 401
+        handler._authorized = lambda parsed: True
+        handler._read_json_body = lambda: []
+        handler.do_POST()
+        assert written[-1][0] == 400
+        handler._read_json_body = lambda: {'scope':'invalid'}
+        handler.do_POST()
+        assert written[-1][0] == 400
+        handler._read_json_body = lambda: {'scope':'all'}
+        handler.do_POST()
+        assert written[-1][0] == 200
+        assert written[-1][1]['data']['scope'] == 'all'
     finally:
         instance.close()
 
@@ -529,5 +621,8 @@ def test_settings_api_validates_bound_keys_and_roundtrips_selected_scope(monkeyp
         handler._read_json_body = lambda: {'enabled':True, 'account_keys':None}
         handler.do_POST()
         assert written[-1][0] == 200 and instance.account_keys is None
+        handler._read_json_body = lambda: {'enabled':True, 'runtime_retention_days':7}
+        handler.do_POST()
+        assert written[-1][0] == 200 and written[-1][1]['data']['runtime_retention_days'] == 7
     finally:
         instance.close()

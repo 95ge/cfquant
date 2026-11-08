@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 from .flow_control import OrderedSender
+from .diagnostic_context import versioned_message
 
 from .pipe_transport import (
     DEFAULT_PIPE_NAME,
@@ -52,6 +53,12 @@ class CfquantPipeHub(object):
         self.qmt_conn_meta_by_conn = {}
         self.qmt_registration_conflicts = []
         self.qmt_lock = threading.RLock()
+        try:
+            self.qmt_ready_wait_seconds = max(
+                0.0, float(os.environ.get("CFQUANT_PIPE_QMT_READY_WAIT", "1.5"))
+            )
+        except (TypeError, ValueError):
+            self.qmt_ready_wait_seconds = 1.5
         self.pending = {}
         self.client_by_id = {}
         self.client_tx_by_id = {}
@@ -268,6 +275,8 @@ class CfquantPipeHub(object):
             "last_seen_at": now,
             "_last_seen_mono": time.monotonic(),
             "channels": list(channels or []),
+            "telemetry": dict(envelope.get("telemetry") or {}),
+            "telemetry_error": str(envelope.get("telemetry_error") or ""),
         }
 
     def _same_qmt_instance(self, left, right):
@@ -317,6 +326,10 @@ class CfquantPipeHub(object):
                     meta["instance_id"] = str(envelope.get("instance_id"))
                 if envelope.get("process_id") or envelope.get("pid"):
                     meta["process_id"] = str(envelope.get("process_id") or envelope.get("pid"))
+                if isinstance(envelope.get("telemetry"), dict):
+                    meta["telemetry"] = dict(envelope.get("telemetry") or {})
+                if envelope.get("telemetry_error") is not None:
+                    meta["telemetry_error"] = str(envelope.get("telemetry_error") or "")
                 try:
                     heartbeat_interval = float(envelope.get("heartbeat_interval") or meta.get("heartbeat_interval") or 0)
                     meta["heartbeat_interval"] = max(0.0, heartbeat_interval)
@@ -347,14 +360,19 @@ class CfquantPipeHub(object):
                     "qmt_conn": None,
                     "action": msg.get("action"),
                     "request_channel": request_channel,
+                    "client_id": client_id,
                     "api_received_at": api_received_at,
                     "forward_done_at": None,
                 }
-        qmt = self._qmt_rx_conn(request_channel)
+        qmt, channel_state = self._wait_qmt_ready_conn(request_channel)
         if qmt is None:
             with self.state_lock:
                 self.pending.pop(request_id, None)
-            self._send_error(response_conn, request_id, "QMT pipe bridge not connected for channel=%s" % request_channel)
+            self._send_error(
+                response_conn, request_id, "QMT pipe bridge not connected for channel=%s" % request_channel,
+                code="QMT_BRIDGE_NOT_CONNECTED", request_channel=request_channel,
+                retry_when="bridge_connected", channel_state=channel_state,
+            )
             return
         with self.state_lock:
             pending = self.pending.get(request_id)
@@ -362,7 +380,15 @@ class CfquantPipeHub(object):
                 pending["qmt_conn"] = qmt
         forward_start = time.perf_counter()
         try:
-            self._send_delivery(qmt, raw, request_channel=request_channel, client_id=client_id)
+            self._send_delivery(
+                qmt,
+                raw,
+                request_channel=request_channel,
+                client_id=client_id,
+                action=msg.get("action"),
+                request_id=request_id,
+                delivery_kind="request",
+            )
         except Exception as e:
             self._drop_conn(qmt)
             with self.state_lock:
@@ -430,6 +456,7 @@ class CfquantPipeHub(object):
                     self._log("pipe raw qmt callback pack failed: %s" % e)
             return
         msg_type = msg.get("type")
+        pending = None
         if msg_type == "response":
             request_id = msg.get("id")
             with self.state_lock:
@@ -461,7 +488,18 @@ class CfquantPipeHub(object):
                 )
         if target is not None:
             try:
-                self._send_delivery(target, raw)
+                if pending:
+                    self._send_delivery(
+                        target,
+                        raw,
+                        request_channel=pending.get("request_channel"),
+                        client_id=pending.get("client_id"),
+                        action=pending.get("action"),
+                        request_id=request_id,
+                        delivery_kind="response",
+                    )
+                else:
+                    self._send_delivery(target, raw, delivery_kind="event")
             except Exception as e:
                 self._log("pipe response/event delivery failed: %s" % e)
                 self._drop_conn(target)
@@ -484,17 +522,33 @@ class CfquantPipeHub(object):
             subscription_id=payload.get("subscription_id") or payload.get("subscribe_id"),
         )
 
-    def _send_error(self, conn, request_id, message):
+    def _send_error(self, conn, request_id, message, **details):
         try:
             self._send_delivery(
                 conn,
-                pack_response(request_id, ok=False, error={"type": "ConnectionError", "message": message}),
+                pack_response(request_id, ok=False, error=dict(details, type="ConnectionError", message=message)),
             )
         except Exception as e:
             self._log("pipe error delivery failed: %s" % e)
             self._drop_conn(conn)
 
-    def _send_delivery(self, conn, payload, request_channel=None, client_id=None):
+    def _send_delivery(
+        self,
+        conn,
+        payload,
+        request_channel=None,
+        client_id=None,
+        action=None,
+        request_id=None,
+        delivery_kind="delivery",
+    ):
+        delivery_context = {
+            "kind": delivery_kind,
+            "action": action,
+            "request_id": request_id,
+            "request_channel": request_channel,
+            "client_id": client_id,
+        }
         envelope = {
             "type": "delivery",
             "payload": payload,
@@ -504,18 +558,85 @@ class CfquantPipeHub(object):
         with self._senders_lock:
             sender = self._senders.get(conn)
             if sender is None:
+                sender_context = {}
+
                 def failed(error):
-                    self._log("pipe delivery failed: %s" % error)
+                    self._log(
+                        "pipe delivery failed kind=%s action=%s id=%s channel=%s client_id=%s error=%s"
+                        % (
+                            sender_context.get("kind") or "delivery",
+                            sender_context.get("action") or "",
+                            sender_context.get("request_id") or "",
+                            sender_context.get("request_channel") or "",
+                            sender_context.get("client_id") or "",
+                            error,
+                        )
+                    )
                     self._drop_conn(conn)
                     conn.close()
                 sender = OrderedSender(lambda item: conn.write_frame(dumps_pipe_message(item)),
                                        failed, max_bytes=self.send_max_bytes)
+                sender._cfquant_delivery_context = sender_context
                 self._senders[conn] = sender
+            else:
+                # OrderedSender reports only the write error. Keep the latest
+                # request metadata alongside the sender so a closed API pipe
+                # can still be correlated with the request that was in flight.
+                sender_context = getattr(sender, "_cfquant_delivery_context", None)
+                if sender_context is None:
+                    sender_context = {}
+                    try:
+                        sender._cfquant_delivery_context = sender_context
+                    except Exception:
+                        pass
+            try:
+                if isinstance(sender_context, dict):
+                    sender_context.clear()
+                    sender_context.update(delivery_context)
+            except Exception:
+                pass
         sender.submit(envelope, size=sys.getsizeof(payload or "") + 1024)
 
     def _qmt_rx_conn(self, request_channel):
         with self.qmt_lock:
             return self.qmt_rx_by_channel.get(request_channel)
+
+    def _qmt_channel_state(self, request_channel):
+        """Return a serializable readiness snapshot for one request route."""
+        with self.qmt_lock:
+            rx_conn = self.qmt_rx_by_channel.get(request_channel)
+            tx_conn = self.qmt_tx_by_channel.get(request_channel)
+            rx_meta = dict(self.qmt_conn_meta_by_conn.get(rx_conn) or {})
+            tx_meta = dict(self.qmt_conn_meta_by_conn.get(tx_conn) or {})
+        tx_stale = bool(tx_conn is not None and self._qmt_meta_stale(tx_meta))
+        ready = bool(rx_conn is not None and tx_conn is not None and not tx_stale)
+        return {
+            "channel": request_channel,
+            "status": "ready" if ready else ("stale" if tx_stale else "degraded"),
+            "ready": ready,
+            "rx_connected": rx_conn is not None,
+            "tx_connected": tx_conn is not None,
+            "rx": self._public_qmt_meta(rx_meta) if rx_meta else None,
+            "tx": self._public_qmt_meta(tx_meta) if tx_meta else None,
+        }
+
+    def _wait_qmt_ready_conn(self, request_channel, timeout=None):
+        """Wait briefly for both QMT endpoints before forwarding a request.
+
+        QMT opens its receive and send named pipes independently. A request
+        arriving between those registrations used to be forwarded into a
+        half-connected bridge or rejected immediately during normal startup.
+        """
+        wait_seconds = self.qmt_ready_wait_seconds if timeout is None else max(0.0, float(timeout))
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            state = self._qmt_channel_state(request_channel)
+            if state["ready"]:
+                with self.qmt_lock:
+                    return self.qmt_rx_by_channel.get(request_channel), state
+            if wait_seconds <= 0.0 or time.monotonic() >= deadline or not self.running:
+                return None, state
+            time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
 
     def _client_rx_conn(self, client_id):
         if not client_id:
@@ -787,7 +908,7 @@ class CfquantPipeHub(object):
         if not self.verbose_rpc and msg.startswith(("pipe forwarded request", "pipe got qmt response")):
             return
         if self.show:
-            print("%s %s" % (self._timestamp_ms(), msg), flush=True)
+            print("%s %s" % (self._timestamp_ms(), versioned_message(msg)), flush=True)
 
     def _timestamp_ms(self):
         now = time.time()
@@ -839,6 +960,8 @@ class CfquantPipeHub(object):
             "stale_after_seconds": round(deadline, 1) if deadline else 0,
             "stale": self._qmt_meta_stale(meta, now_mono),
             "channels": list(meta.get("channels") or []),
+            "telemetry": dict(meta.get("telemetry") or {}),
+            "telemetry_error": meta.get("telemetry_error") or "",
         }
 
     def _status_snapshot(self):

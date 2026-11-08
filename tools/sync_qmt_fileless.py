@@ -18,6 +18,29 @@ except ImportError:
 ROOT = Path(__file__).resolve().parents[1]
 BEGIN = '# BEGIN GENERATED PIPE RUNTIME\n'
 END = '# END GENERATED PIPE RUNTIME\n'
+DIAGNOSTIC_BEGIN = '# BEGIN GENERATED DIAGNOSTIC CONTEXT\n'
+DIAGNOSTIC_END = '# END GENERATED DIAGNOSTIC CONTEXT\n'
+
+
+def update_diagnostics_source(source, lite):
+    if lite:
+        helper = (ROOT / 'cfquant/diagnostic_context.py').read_text(encoding='utf-8')
+        helper = helper.replace('from .version import __version__ as CFQUANT_VERSION',
+                                'CFQUANT_VERSION = CORE_VERSION')
+    else:
+        helper = 'from cfquant.diagnostic_context import versioned_message\n'
+    block = DIAGNOSTIC_BEGIN + helper.rstrip() + '\n' + DIAGNOSTIC_END
+    if DIAGNOSTIC_BEGIN in source:
+        start, end = source.index(DIAGNOSTIC_BEGIN), source.index(DIAGNOSTIC_END) + len(DIAGNOSTIC_END)
+        return source[:start] + block + source[end:]
+    if lite:
+        assignment = next(node for node in parse_source(source).body
+                          if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'CORE_VERSION'
+                                                                  for t in node.targets))
+        lines = source.splitlines(True)
+        lines.insert(assignment.end_lineno, '\n' + block + '\n')
+        return ''.join(lines)
+    return source.replace('def _print_log(', block + '\ndef _print_log(', 1)
 
 
 def replace_functions(source, replacements, class_name=None):
@@ -35,6 +58,7 @@ def replace_functions(source, replacements, class_name=None):
 
 def updated_source(source, lite):
     source = source.replace('\r\n', '\n')
+    source = update_diagnostics_source(source, lite)
     if 'EMBEDDED_RUNTIME_CONFIG = ' not in source:
         source = source.replace('RUNTIME_CONFIG = {}', 'EMBEDDED_RUNTIME_CONFIG = {}\nRUNTIME_CONFIG = {}', 1)
     replacements = {
@@ -61,7 +85,11 @@ def updated_source(source, lite):
         '_write_runtime_log': '''def _write_runtime_log(message):
     enabled = globals().get("get_log_enabled")
     if not callable(enabled) or enabled():
-        print(message)
+        print(versioned_message(message))
+''',
+        '_print_log': '''def _print_log(message):
+    if get_log_enabled():
+        print(versioned_message(translate_log(message)))
 ''',
         '_load_runtime_config': '''def _load_runtime_config():
     if EMBEDDED_RUNTIME_CONFIG:
@@ -118,7 +146,7 @@ def updated_source(source, lite):
             '_default_log_file': 'def _default_log_file(self):\n    return ""\n',
             '_log': '''def _log(self, msg, force=False):
     if self.show and (force or get_log_enabled()):
-        print(translate_log(msg))
+        print(versioned_message(translate_log(msg)))
 ''',
             '_cleanup_qmt_userdata_logs': '''def _cleanup_qmt_userdata_logs(self, params):
     raise NotImplementedError("QMT file IO is disabled; clean logs from the external Web process.")
@@ -133,6 +161,19 @@ def updated_source(source, lite):
         source = replace_functions(source, {'_handle_raw_from_thread': replacement}, 'NormalQmtBridge')
     helper = ((ROOT / 'cfquant/qmt_pipe_runtime.py').read_text(encoding='utf-8') if lite
               else 'from cfquant.qmt_pipe_runtime import ManagedPipeRuntime\n')
+    if lite:
+        helper = helper.replace(
+            'from .diagnostic_context import VersionedErrorMixin, versioned_message\n',
+            'CFQUANT_VERSION = CORE_VERSION\n'
+            'def versioned_message(message):\n'
+            '    text = str(message)\n'
+            '    tag = "[cfquant %s]" % CFQUANT_VERSION\n'
+            '    return text if tag in text else "%s %s" % (text, tag)\n'
+            'class VersionedErrorMixin:\n'
+            '    cfquant_version = CFQUANT_VERSION\n'
+            '    def __str__(self):\n'
+            '        return versioned_message(super(VersionedErrorMixin, self).__str__())\n'
+        )
     block = BEGIN + helper.rstrip() + '\n' + END
     if BEGIN in source:
         start, end = source.index(BEGIN), source.index(END) + len(END)

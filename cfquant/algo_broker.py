@@ -1,4 +1,6 @@
 """Existing cfquant account/market routes adapted to the execution engine."""
+
+from .diagnostic_context import VersionedErrorMixin
 import datetime as dt
 import math
 import threading
@@ -10,7 +12,7 @@ from .xttype import XtAsset, XtOrder, XtPosition
 from .batch_orders import prepare_batch_orders, prepare_batch_cancels
 
 
-class AlgoOrderRejected(RuntimeError):
+class AlgoOrderRejected(VersionedErrorMixin, RuntimeError):
     dispatched = False
 
 

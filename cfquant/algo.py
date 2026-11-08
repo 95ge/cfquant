@@ -2,7 +2,7 @@
 import copy
 import datetime as dt
 import json
-import logging
+from .diagnostic_context import get_logger
 import math
 import os
 import sqlite3
@@ -488,7 +488,7 @@ class AlgoEngine:
                 except Exception:
                     # Persistence is a prerequisite for further order submission.
                     task["status"] = "PAUSED"
-                    logging.getLogger(__name__).exception("algorithm persistence failed")
+                    get_logger(__name__).exception("algorithm persistence failed")
         finally:
             with self._lock:
                 self._busy.discard(algo_id)

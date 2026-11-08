@@ -4,6 +4,8 @@ Run with --binding NAME. Password is requested only if needed, using --prompt
 or stdin. This tool never starts/stops QMT; it replaces the login form contents.
 The web auto-start service also uses login_running_qmt after starting a process.
 """
+
+from .diagnostic_context import VersionedErrorMixin
 import argparse
 import getpass
 import json
@@ -14,20 +16,20 @@ import time
 from .qmt_native_worker import IsolatedLoginBackend, QmtAutomationCancelled, verify_environment_isolated
 
 
-class QmtNotReady(RuntimeError):
+class QmtNotReady(VersionedErrorMixin, RuntimeError):
     pass
 
 
-class QmtProcessExited(RuntimeError):
+class QmtProcessExited(VersionedErrorMixin, RuntimeError):
     pass
 
 
-def verify_environment(directory):
+def verify_environment(directory, executable_path=None):
     """Validate dependencies and native ABI before stopping a running terminal."""
-    verify_environment_isolated(directory)
+    verify_environment_isolated(directory, executable_path=executable_path)
 
 
-def _verify_environment_native(directory, *, strategy=False):
+def _verify_environment_native(directory, *, strategy=False, executable_path=None):
     """Only invoked inside the native worker or the standalone login CLI."""
     try:
         from .qmt_dependencies import LOGIN_MODULES, import_login_module
@@ -43,7 +45,8 @@ def _verify_environment_native(directory, *, strategy=False):
                 raise RuntimeError("QMT 策略检测需要兼容的 Qt 5 接口，当前组件 ABI 不受支持")
         elif (version["FileVersionMS"], version["FileVersionLS"]) != ((5 << 16) | 6, 2 << 16):
             raise RuntimeError("QMT 组件自动登录当前仅支持 Qt 5.6.2，请先适配此客户端版本")
-    with (directory / "XtItClient.exe").open("rb") as stream:
+    executable = Path(executable_path) if executable_path else directory / "XtItClient.exe"
+    with executable.open("rb") as stream:
         stream.seek(0x3C)
         offset = int.from_bytes(stream.read(4), "little")
         stream.seek(offset + 4)
@@ -135,7 +138,8 @@ def select_binding(config_path, name):
 
 
 class QtLoginBackend:
-    def __init__(self, directory, timeout=40, expected_pid=None, *, agent_extension="", strategy=False):
+    def __init__(self, directory, timeout=40, expected_pid=None, *, agent_extension="", strategy=False,
+                 executable_path=None):
         try:
             from .qmt_dependencies import import_login_module
         except ImportError:
@@ -156,7 +160,7 @@ class QtLoginBackend:
         self.messages = []
         self.should_cancel = lambda: False
         self.foreground_before = win32gui.GetForegroundWindow()
-        expected = (directory / "XtItClient.exe").resolve()
+        expected = Path(executable_path or (directory / "XtItClient.exe")).resolve()
         matches = []
         for process in psutil.process_iter(["name"]):
             try:
@@ -174,9 +178,9 @@ class QtLoginBackend:
         if expected_pid is not None and self.pid != expected_pid:
             raise RuntimeError("QMT process changed; stopping this login attempt")
         if strategy:
-            _verify_environment_native(directory, strategy=True)
+            _verify_environment_native(directory, strategy=True, executable_path=executable_path)
         else:
-            _verify_environment_native(directory)
+            _verify_environment_native(directory, executable_path=executable_path)
         self.mutex = win32event.CreateMutex(None, False, "Local\\CFQuantQmtComponentLogin_" + str(self.pid))
         acquired = win32event.WaitForSingleObject(self.mutex, 0)
         if acquired not in (0, 0x80):
@@ -366,7 +370,7 @@ def main():
 
 def login_running_qmt(directory, login_account="", password_provider=lambda: "", expected_pid=None,
                       startup_timeout=60, timeout=40, *, should_cancel=lambda: False,
-                      on_wait=lambda phase: None, before_poll=lambda: None):
+                      on_wait=lambda phase: None, before_poll=lambda: None, executable_path=None):
     """Wait for QMT startup/updates and observe login until success or rejection.
 
     The web worker uses startup_timeout=None to wait while its process is alive.
@@ -385,8 +389,10 @@ def login_running_qmt(directory, login_account="", password_provider=lambda: "",
         if should_cancel():
             return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
         try:
-            backend = IsolatedLoginBackend(Path(directory), timeout, expected_pid=expected_pid,
-                                           should_cancel=should_cancel)
+            backend_kwargs = dict(expected_pid=expected_pid, should_cancel=should_cancel)
+            if executable_path:
+                backend_kwargs["executable_path"] = executable_path
+            backend = IsolatedLoginBackend(Path(directory), timeout, **backend_kwargs)
             break
         except QmtAutomationCancelled:
             return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}

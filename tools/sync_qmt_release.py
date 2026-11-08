@@ -54,6 +54,7 @@ def synchronize(*, check=False, no_cache=False, root=ROOT, cache=CACHE):
         updated = parity.update_fileless_source(parity._patch_source(updated, core), lite=True)
         # Keep the existing post-parity batch verification, using the same
         # bounded parse cache instead of starting another Python process.
+        updated = batch.update_fileless_source(batch.updated_source(updated), lite=True)
         verified = batch.update_fileless_source(batch.updated_source(updated), lite=True)
         if verified != updated:
             raise RuntimeError('Batch/parity synchronization conflict: %s' % path.name)

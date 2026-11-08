@@ -301,6 +301,7 @@ class OrderCallbackCache(object):
 
 import math
 import os
+import re
 import time
 from collections.abc import Mapping
 from numbers import Integral, Real
@@ -316,6 +317,13 @@ _BATCH_ORDER_FIELDS = {"stock_code", "order_type", "order_volume", "price_type",
                        "strategy_name", "order_remark", "cfquant_order_remark"}
 _BATCH_REQUIRED_FIELDS = {"stock_code", "order_type", "order_volume", "price_type", "price"}
 _BATCH_CANCEL_FIELDS = {"order_id", "stock_code", "market", "order_remark"}
+_VERSION_SUFFIX = re.compile(r"\s+\[cfquant\s+[^\]]+\]\s*$")
+
+
+def _batch_error_text(error):
+    """Keep row-level compatibility while request errors retain diagnostics."""
+    text = str(error) or type(error).__name__
+    return _VERSION_SUFFIX.sub("", text)
 
 
 def batch_positive_id(value):
@@ -503,14 +511,14 @@ def batch_result(account, batch_id, asynchronous, results, operation="order"):
 
 def batch_unknown(rows, error):
     for row in rows:
-        row.update(status="unknown", ok=None, error=str(error) or type(error).__name__)
+        row.update(status="unknown", ok=None, error=_batch_error_text(error))
 
 
 def batch_rejected(rows, error):
     """Mark a rejection known to happen before QMT dispatch."""
     details = getattr(error, "error_details", None)
     details = details if isinstance(details, dict) else {}
-    message = str(error) or type(error).__name__
+    message = _batch_error_text(error)
     for row in rows:
         row.update(status="failed", ok=False, error=message, dispatched=False,
                    safe_to_retry=details.get("safe_to_retry") is True,
@@ -715,7 +723,46 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.64"
+CORE_VERSION = "0.2.65"
+
+# BEGIN GENERATED DIAGNOSTIC CONTEXT
+"""Version context for cfquant diagnostics without changing application logging."""
+import logging
+
+CFQUANT_VERSION = CORE_VERSION
+
+
+def versioned_message(message):
+    text = str(message)
+    tag = "[cfquant %s]" % CFQUANT_VERSION
+    return text if tag in text else "%s %s" % (text, tag)
+
+
+class VersionedErrorMixin:
+    cfquant_version = CFQUANT_VERSION
+
+    def __str__(self):
+        # Keep .args and structured error codes intact for existing callers.
+        return versioned_message(super(VersionedErrorMixin, self).__str__())
+
+
+class _VersionFilter(logging.Filter):
+    def filter(self, record):
+        record.msg = versioned_message(record.getMessage())
+        record.args = ()
+        record.cfquant_version = CFQUANT_VERSION
+        return True
+
+
+_VERSION_FILTER = _VersionFilter()
+
+
+def get_logger(name):
+    logger = logging.getLogger(name)
+    logger.addFilter(_VERSION_FILTER)
+    return logger
+# END GENERATED DIAGNOSTIC CONTEXT
+
 LITE_ENTRY_VERSION = "lite_20261014_03"
 
 _CANCELABLE_ORDER_STATUS_VALUES = set([48, 49, 50, 55])
@@ -1433,11 +1480,15 @@ def encode_error(error):
     if error is None:
         return None
     if isinstance(error, dict):
-        return error
-    details = getattr(error, "error_details", None)
-    result = dict(details) if isinstance(details, dict) else {}
-    result.setdefault("type", type(error).__name__)
-    result["message"] = str(error)
+        result = dict(error)
+    else:
+        details = getattr(error, "error_details", None)
+        result = dict(details) if isinstance(details, dict) else {}
+        result.setdefault("type", type(error).__name__)
+        result["message"] = str(error)
+    if "message" in result:
+        result["message"] = versioned_message(result["message"])
+    result.setdefault("cfquant_version", CFQUANT_VERSION)
     return result
 
 
@@ -2239,6 +2290,7 @@ def pack_whole_quote_event(event, data, client_id=None, subscription_id=None):
                            "subscription_id": subscription_id, "meta": {"quote_json_plain": True}})
     return header[:-1] + ',"data":' + quotes_json + '}'
 
+
 # BEGIN CFQUANT INNER API
 """Allowlisted built-in QMT API, grouped like the official innerApi manual.
 
@@ -2631,6 +2683,8 @@ class TxTradeBridge(object):
                 action, msg.get("id"), timing["queue_ms"], timing["native_ms"], timing["execute_ms"]))
 
     def _dispatch(self, action, params, msg):
+        if action == 'cfquant.managed_subscription':
+            return dispatch_managed_subscription(self, params, msg)
         if action.startswith("qmt_inner."):
             return dispatch_inner_api(self, action, params, msg)
         if action in ("xtdata.get_market_data", "xtdata.get_market_data_ex", "xtdata.get_full_tick"):
@@ -6108,7 +6162,7 @@ class TxTradeBridge(object):
 
     def _log(self, msg, force=False):
         if self.show and (force or self._get_log_enabled()):
-            print(translate_log(msg))
+            print(versioned_message(translate_log(msg)))
 
 
 def start_tx_trade_bridge(
@@ -6158,7 +6212,15 @@ called here. A cache is shared by all leases; callbacks receive private copies.
 """
 
 import copy
-import logging
+try:
+    from .diagnostic_context import get_logger
+except (ImportError, KeyError, ValueError):
+    # The same source is embedded into standalone QMT entries. Those entries
+    # already provide the generated diagnostic helper before this block.
+    get_logger = globals().get("get_logger")
+    if get_logger is None:
+        import logging
+        get_logger = logging.getLogger
 import threading
 import time
 
@@ -6225,7 +6287,7 @@ class _QuoteListener:
         try:
             self.callback(copy.deepcopy(data))
         except Exception:
-            logging.getLogger(__name__).exception("shared quote listener failed")
+            get_logger(__name__).exception("shared quote listener failed")
 
     def _run(self):
         while True:
@@ -6436,6 +6498,12 @@ class SharedQuoteFeed:
                 return
             now = self._clock()
             self._last_received = now
+            listeners = [(row["listener"], row["codes"]) for row in self._leases.values()
+                         if row["listener"].callback is not None]
+            if not self._cache_latest and not listeners:
+                # The bridge-owned subscription still drives the QMT callback,
+                # but there is no recipient to copy, filter or encode data for.
+                return
             changed = {}
             for code, quote in data.items():
                 if not isinstance(code, str) or not isinstance(quote, dict):
@@ -6457,7 +6525,6 @@ class SharedQuoteFeed:
                     self._cache[code] = dict(quote=merged, received_at=time.time(), monotonic_at=now,
                                              generation=generation, sequence=self._quote_sequence)
                 changed[code] = merged
-            listeners = [(row["listener"], row["codes"]) for row in self._leases.values()]
             if changed:
                 self.changed.set()
         for listener, codes in listeners:
@@ -6499,6 +6566,174 @@ class SharedQuoteFeed:
                 self._keys.clear()
                 self._state = "closed"
 # END GENERATED SHARED QUOTES
+
+# BEGIN GENERATED MANAGED SUBSCRIPTIONS
+"""Fileless, Python 3.6 compatible subscription ownership in the QMT pump."""
+import json as _sub_json
+import time as _sub_time
+import uuid as _sub_uuid
+
+
+MANAGED_SUBSCRIPTION_ACTION = 'cfquant.managed_subscription'
+_SUB_PREFIX = 'cfq_sub:'
+_SUB_QUOTES = ('xtdata.subscribe_quote', 'xtdata.subscribe_whole_quote',
+               'xtdata.subscribe_whole_quote_latency', 'xtdata.subscribe_l2thousand',
+               'xtdata.subscribe_l2thousand_queue')
+
+
+def validate_subscription_spec(spec):
+    action, params = spec.get('action'), spec.get('params')
+    if not isinstance(params, dict):
+        raise ValueError('subscription params must be an object')
+    allowed = action in _SUB_QUOTES or action == 'xttrader.subscribe'
+    if action == 'qmt_inner.call':
+        allowed = (params.get('category') == 'market' and
+                   params.get('method') in ('subscribe_quote', 'subscribe_whole_quote'))
+    if action == 'qmt_inner.callbacks':
+        allowed = bool(params.get('token'))
+    if not allowed:
+        raise ValueError('action is not a recoverable subscription: %s' % action)
+    raw = _sub_json.dumps(spec, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    if len(raw.encode('utf-8')) > 65536:
+        raise ValueError('subscription specification exceeds 64 KiB')
+    return raw
+
+
+def _subscription_state(bridge):
+    state = getattr(bridge, '_managed_subscriptions', None)
+    if state is None:
+        state = dict(generation=_sub_uuid.uuid4().hex, rows={})
+        bridge._managed_subscriptions = state
+    return state
+
+
+def _subscription_release(bridge, key, row):
+    row['active'] = False
+    action, params = row['spec']['action'], dict(row['spec']['params'])
+    msg = {'client_id': _SUB_PREFIX + key}
+    if action in _SUB_QUOTES:
+        if row['native_id'] is None:
+            raise RuntimeError('native subscription result unknown; bridge restart required')
+        result = bridge._dispatch('xtdata.unsubscribe_quote', {'subscribe_id': row['native_id']}, msg)
+    elif action == 'xttrader.subscribe':
+        result = bridge._dispatch('xttrader.unsubscribe', params, msg)
+    else:
+        result = bridge._dispatch('qmt_inner.close', {'session_id': key}, msg)
+    if result is False or (isinstance(result, (int, float)) and result < 0):
+        raise RuntimeError('native subscription cleanup failed')
+
+
+def expire_managed_subscriptions(bridge, close=False):
+    state = getattr(bridge, '_managed_subscriptions', None)
+    if not state:
+        return
+    now = _sub_time.monotonic()
+    # Bounded cleanup in the QMT request pump; failed cleanup remains fenced.
+    for key, row in list(state['rows'].items())[:]:
+        if not close and row['deadline'] > now:
+            continue
+        try:
+            _subscription_release(bridge, key, row)
+        except Exception as error:
+            row['error'] = str(error)
+            row['deadline'] = now + 10
+        else:
+            del state['rows'][key]
+        if not close:
+            break
+
+
+def dispatch_managed_subscription(bridge, params, msg):
+    state = _subscription_state(bridge)
+    op = params.get('op')
+    reply = msg.get('client_id') or msg.get('reply_channel')
+    if op == 'capabilities':
+        return {'version': 1, 'generation': state['generation']}
+    epoch = params.get('epoch')
+    if type(epoch) is not int or epoch < 1 or not reply:
+        raise ValueError('subscription manager epoch and reply channel required')
+    if op == 'probe':
+        keys = params.get('keys', [])
+        if not isinstance(keys, list) or len(keys) > 200:
+            raise ValueError('at most 200 subscription keys per probe')
+        result = {}
+        for key in keys:
+            row = state['rows'].get(key)
+            if row is None:
+                result[key] = {'state': 'missing'}
+                continue
+            if epoch < row['epoch']:
+                raise ValueError('stale subscription manager epoch')
+            row['epoch'], row['reply'] = epoch, reply
+            if row['active']:
+                row['deadline'] = _sub_time.monotonic() + 45
+            result[key] = dict(state='active' if row['active'] else 'uncertain',
+                               native_id=row.get('native_id'), error=row.get('error', ''))
+        return {'generation': state['generation'], 'resources': result}
+    key = params.get('key')
+    if not isinstance(key, str) or len(key) > 128 or not key:
+        raise ValueError('invalid subscription key')
+    row = state['rows'].get(key)
+    if row and epoch < row['epoch']:
+        raise ValueError('stale subscription manager epoch')
+    if op == 'release':
+        if row:
+            _subscription_release(bridge, key, row)
+            del state['rows'][key]
+        return {'state': 'released', 'generation': state['generation']}
+    if op != 'ensure':
+        raise ValueError('unsupported subscription operation')
+    spec = params.get('spec') or {}
+    signature = validate_subscription_spec(spec)
+    if row:
+        if row['signature'] != signature:
+            raise ValueError('subscription key reused with different parameters')
+        if not row['active']:
+            raise RuntimeError('subscription result uncertain; awaiting resource cleanup')
+        row.update(reply=reply, epoch=epoch, deadline=_sub_time.monotonic() + 45)
+        return {'state': 'active', 'native_id': row.get('native_id'), 'generation': state['generation']}
+    if len(state['rows']) >= 5000:
+        raise RuntimeError('bridge managed subscription limit reached')
+    row = dict(spec=spec, signature=signature, reply=reply, epoch=epoch, active=True,
+               deadline=_sub_time.monotonic() + 45, native_id=None)
+    state['rows'][key] = row  # Route synchronous first callbacks before native creation.
+    native_params = dict(spec['params'])
+    native_params.pop('_managed_recovery', None)
+    native_params.pop('lease_timeout', None)  # This registry owns the lease.
+    if spec['action'].startswith('qmt_inner.'):
+        native_params['session_id'] = key
+    try:
+        value = bridge._dispatch(spec['action'], native_params, {'client_id': _SUB_PREFIX + key})
+        if spec['action'] in _SUB_QUOTES:
+            value = value.get('subscribe_id') if isinstance(value, dict) else value
+        if spec['action'] in _SUB_QUOTES or spec['action'] == 'qmt_inner.call':
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                raise RuntimeError('invalid native subscription ID')
+        elif value is False or (isinstance(value, (int, float)) and value < 0):
+            raise RuntimeError('native subscription rejected')
+        row['native_id'] = value
+    except Exception as error:
+        # Do not re-execute a native call after an ambiguous failure.
+        row.update(active=False, error=str(error))
+        raise
+    return {'state': 'active', 'native_id': value, 'generation': state['generation']}
+
+
+def push_subscription_event(bridge, payload, client_id):
+    """Forward an already encoded event without a second value encoding pass."""
+    if not str(client_id).startswith(_SUB_PREFIX):
+        return bridge.tx.push('event', payload, client_id)
+    key = client_id[len(_SUB_PREFIX):]
+    state = getattr(bridge, '_managed_subscriptions', {})
+    row = state.get('rows', {}).get(key)
+    if not row or not row['active'] or row['deadline'] <= _sub_time.monotonic():
+        return
+    event = loads_message(payload)
+    event['data'] = dict(key=key, generation=state['generation'], epoch=row['epoch'],
+                         event=event['event'], payload=event.get('data'))
+    event['event'], event['client_id'] = MANAGED_SUBSCRIPTION_ACTION, row['reply']
+    return bridge.tx.push('event', dumps_message(event), row['reply'])
+# END GENERATED MANAGED SUBSCRIPTIONS
 
 class NormalQmtBridge(TxTradeBridge):
     def __init__(
@@ -6552,6 +6787,23 @@ class NormalQmtBridge(TxTradeBridge):
         self.bridge_id = bridge_id or "default"
         self.schedule_timer = bool(schedule_timer)
         self.dispatch_lock = threading.RLock()
+        self._telemetry_lock = threading.RLock()
+        self._callback_total = 0
+        self._callback_counts = {}
+        self._quote_callback_batches = 0
+        self._quote_callback_symbols = 0
+        self._quote_distribution_batches = 0
+        self._quote_distribution_symbols = 0
+        self._last_callback_at = 0.0
+        self._last_quote_callback_at = 0.0
+        self._telemetry_started_at = time.time()
+        self._request_completed = 0
+        self._request_failed = 0
+        self._request_total_ms = 0.0
+        self._request_max_ms = 0.0
+        self._active_request = None
+        self._quote_callback_total_ms = 0.0
+        self._quote_push_failed = 0
 
     def start(self):
         if self.running:
@@ -6582,6 +6834,7 @@ class NormalQmtBridge(TxTradeBridge):
             self._start_worker_thread(context)
         if self.schedule_timer:
             self._schedule_timer()
+        self._subscribe_internal_whole_quote()
         if self.dispatch_on_qmt_thread:
             dispatch_source = "QMT timer/handlebar callbacks" if self.schedule_timer else "QMT caller thread callbacks"
             self._log("normal bridge requests are consumed by %s" % dispatch_source)
@@ -6821,6 +7074,7 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _drain_requests(self, source):
         with self.dispatch_lock:
+            expire_managed_subscriptions(self)
             self._expire_whole_quote_leases()
             self._poll_sync_order_responses()
             start = time.perf_counter()
@@ -6833,10 +7087,14 @@ class NormalQmtBridge(TxTradeBridge):
                 except queue.Empty:
                     break
                 msg, received_at, coalesce_key = self._queue_item_parts(item)
-                if coalesce_key:
-                    self._drain_coalesced_request(source, msg, received_at, coalesce_key)
-                else:
-                    self._drain_single_request(source, msg, received_at)
+                self._active_request = (str(msg.get("action") or ""), time.perf_counter())
+                try:
+                    if coalesce_key:
+                        self._drain_coalesced_request(source, msg, received_at, coalesce_key)
+                    else:
+                        self._drain_single_request(source, msg, received_at)
+                finally:
+                    self._active_request = None
                 count += 1
             return count
 
@@ -7017,7 +7275,7 @@ class NormalQmtBridge(TxTradeBridge):
             return
         try:
             self.whole_quote_sub_id = self._get_whole_quote_feed().acquire(
-                "internal-worker", ["SH", "SZ", "BJ"], self._on_whole_quote, purpose="worker")
+                "internal-worker", ["SH", "SZ", "BJ"], purpose="worker")
             self._log("normal bridge internal whole quote subscribed id=%s" % self.whole_quote_sub_id)
         except Exception as e:
             self._log("normal bridge internal whole quote subscribe failed: %s" % e)
@@ -7040,6 +7298,7 @@ class NormalQmtBridge(TxTradeBridge):
             self._log("normal bridge timer schedule failed: %s" % e)
 
     def _send_response(self, msg, result, encoded_result=None):
+        self._record_request_completed(msg, False)
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
@@ -7048,6 +7307,7 @@ class NormalQmtBridge(TxTradeBridge):
 
 
     def _send_error(self, msg, error):
+        self._record_request_completed(msg, True)
         client_id = msg.get("client_id") or msg.get("reply_channel")
         if not client_id:
             return
@@ -7388,6 +7648,7 @@ class NormalQmtBridge(TxTradeBridge):
             "coalesced_waiter_count": coalesced_waiters,
             "coalesce_join_count": self.coalesce_join_count,
             "coalesce_dispatch_count": self.coalesce_dispatch_count,
+            "telemetry": self._telemetry_snapshot(),
         }
 
 
@@ -7481,6 +7742,7 @@ class NormalQmtBridge(TxTradeBridge):
         def publish(payload, callback_at_ms):
             client_id = sub.get("client_id")
             if client_id:
+                symbols = len(payload) if isinstance(payload, dict) else 0
                 if kind == "whole_quote_latency":
                     payload = {
                         "schema": "cfquant.quote_latency.v1",
@@ -7506,12 +7768,14 @@ class NormalQmtBridge(TxTradeBridge):
                 if initializing[0]:
                     # Freeze the snapshot before returning to native QMT, which may
                     # reuse/mutate callback objects while subscription completes.
-                    pending.append(event)
+                    pending.append((event, symbols))
                 else:
-                    self.tx.push("event", event, client_id)
+                    self._push_quote_event(event, client_id, symbols)
 
         def callback(data):
             callback_at_ms = time.time() * 1000.0 if kind == "whole_quote_latency" else None
+            if kind not in ("whole_quote", "whole_quote_latency"):
+                self._record_quote_callback(data)
             with callback_lock:
                 self._release_worker("quote")
                 if self.quote_subscriptions.get(sub_id) is not sub or self.tx is None:
@@ -7555,8 +7819,8 @@ class NormalQmtBridge(TxTradeBridge):
         with callback_lock:
             initializing[0] = False
             try:
-                for event in pending:
-                    self.tx.push("event", event, sub["client_id"])
+                for event, symbols in pending:
+                    self._push_quote_event(event, sub["client_id"], symbols)
             except Exception:
                 self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
                 raise
@@ -7581,8 +7845,18 @@ class NormalQmtBridge(TxTradeBridge):
                 func = self._get_callable("subscribe_whole_quote")
                 if not callable(func):
                     raise NotImplementedError("QMT subscribe_whole_quote not found")
+                def receive(data):
+                    # This callback belongs to the bridge, even with no
+                    # external consumers. It must keep waking the worker.
+                    started = time.perf_counter()
+                    self._record_quote_callback(data)
+                    try:
+                        self._on_whole_quote(data)
+                        callback(data)
+                    finally:
+                        self._record_quote_callback_duration(started)
                 native_id = self._call_variants(func, [
-                    ((codes,), {"callback": callback}), ((codes, callback), {}),
+                    ((codes,), {"callback": receive}), ((codes, receive), {}),
                 ])
                 if native_id is None or isinstance(native_id, bool) or int(native_id) <= 0:
                     raise RuntimeError("QMT subscribe_whole_quote failed: %r" % (native_id,))
@@ -7612,6 +7886,101 @@ class NormalQmtBridge(TxTradeBridge):
                 self._handle_quote_unsubscribe({"params": {"subscribe_id": sub_id}})
             except Exception as error:
                 self._log("expired quote lease cleanup failed: %s" % error)
+
+
+    def _record_callback(self, event_name):
+        name = str(event_name or "unknown")
+        now = time.time()
+        with self._telemetry_lock:
+            self._callback_total += 1
+            self._callback_counts[name] = self._callback_counts.get(name, 0) + 1
+            self._last_callback_at = now
+
+
+    def _record_quote_callback(self, data):
+        symbols = len(data) if isinstance(data, dict) else 0
+        now = time.time()
+        with self._telemetry_lock:
+            self._quote_callback_batches += 1
+            self._quote_callback_symbols += symbols
+            self._last_quote_callback_at = now
+
+
+    def _push_quote_event(self, event, client_id, symbols):
+        try:
+            result = push_subscription_event(self, event, client_id)
+        except Exception:
+            with self._telemetry_lock:
+                self._quote_push_failed += 1
+            raise
+        failed = isinstance(result, dict) and result.get("code", 0) < 0
+        with self._telemetry_lock:
+            if failed:
+                self._quote_push_failed += 1
+            else:
+                self._quote_distribution_batches += 1
+                self._quote_distribution_symbols += symbols
+        return result
+
+
+    def _record_quote_callback_duration(self, started):
+        elapsed = (time.perf_counter() - started) * 1000
+        with self._telemetry_lock:
+            self._quote_callback_total_ms += elapsed
+
+
+    def _record_request_completed(self, msg, failed):
+        if msg.get("action") in ("cfquant.status", "cfquant.ping"):
+            return
+        received = msg.get("_received_monotonic")
+        if received is None:
+            return
+        elapsed = max(0.0, time.perf_counter() - received) * 1000
+        with self._telemetry_lock:
+            self._request_completed += 1
+            self._request_failed += int(failed)
+            self._request_total_ms += elapsed
+            self._request_max_ms = max(self._request_max_ms, elapsed)
+
+
+    def _telemetry_snapshot(self):
+        with self._telemetry_lock:
+            data = {
+                "schema": 1,
+                "pid": os.getpid(),
+                "started_at": self._telemetry_started_at,
+                "sampled_at": time.time(),
+                "sample_monotonic": time.perf_counter(),
+                "callback_total": self._callback_total,
+                "callback_counts": dict(self._callback_counts),
+                "quote_callback_batches": self._quote_callback_batches,
+                "quote_callback_symbols": self._quote_callback_symbols,
+                "quote_distribution_batches": self._quote_distribution_batches,
+                "quote_distribution_symbols": self._quote_distribution_symbols,
+                "last_callback_at": self._last_callback_at,
+                "last_quote_callback_at": self._last_quote_callback_at,
+                "request_completed": self._request_completed,
+                "request_failed": self._request_failed,
+                "request_total_ms": self._request_total_ms,
+                "request_max_ms": self._request_max_ms,
+                "quote_callback_total_ms": self._quote_callback_total_ms,
+                "quote_push_failed": self._quote_push_failed,
+            }
+        # Only in-memory state is read here, including from the Pipe heartbeat
+        # thread. Never acquire dispatch_lock or invoke a native QMT API.
+        with self.request_queue.mutex:
+            data["request_queue_size"] = len(self.request_queue.queue)
+            first = self.request_queue.queue[0] if self.request_queue.queue else None
+        received = first[0].get("_received_monotonic") if first and isinstance(first[0], dict) else None
+        data["request_oldest_ms"] = max(0.0, time.perf_counter() - received) * 1000 if received is not None else 0
+        active = self._active_request
+        data["active_action"] = active[0] if active else ""
+        data["active_ms"] = max(0.0, time.perf_counter() - active[1]) * 1000 if active else 0
+        tx = self.tx
+        data["send_queue"] = tx.send_status() if hasattr(tx, "send_status") else None
+        data["quote_subscription_count"] = len(self.quote_subscriptions)
+        data["whole_quote_anchor"] = bool(self.whole_quote_sub_id)
+        return data
 
 
 def start_normal_bridge(
@@ -8017,6 +8386,11 @@ class PipeTxClient(object):
         self._connecting_conns = set()
         self.send_max_bytes = int(os.environ.get("CFQUANT_PIPE_SEND_MAX_BYTES", 128 * 1024 * 1024))
         self.send_timeout = float(os.environ.get("CFQUANT_PIPE_SEND_TIMEOUT", "15"))
+        # QMT bridge instances may attach a lightweight status provider.  The
+        # provider is included in heartbeat envelopes so the web process can
+        # observe callback/quote counters without issuing a request on the
+        # already busy QMT thread.
+        self.status_provider = None
 
     def start(self):
         with self.conn_lock:
@@ -8295,6 +8669,13 @@ class PipeTxClient(object):
             "process_id": self.process_id,
             "heartbeat_interval": self.heartbeat_interval,
         }
+        if msg_type in ("hello", "heartbeat") and callable(self.status_provider):
+            try:
+                telemetry = self.status_provider()
+                if isinstance(telemetry, dict):
+                    data["telemetry"] = telemetry.get("telemetry", telemetry)
+            except Exception as error:
+                data["telemetry_error"] = str(error)
         if extra:
             data.update(extra)
         return data
@@ -8305,7 +8686,7 @@ class PipeTxClient(object):
 
     def _log(self, msg):
         if self.show and get_log_enabled():
-            print("cfquant pipe tx %s" % translate_log(msg))
+            print(versioned_message("cfquant pipe tx %s" % translate_log(msg)))
 
     def _normalize_channels(self, channels):
         result = []
@@ -8403,6 +8784,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             connect_timeout_ms=self.connect_timeout_ms,
         )
         self.tx._log = self._log
+        self.tx.status_provider = self._telemetry_snapshot
         self.tx.start()
         self.tx.start_txg(self.request_channel)
         self.recv_thread = threading.Thread(target=self._recv_loop)
@@ -8653,7 +9035,7 @@ def _entry_base_dir():
 def _write_runtime_log(message):
     enabled = globals().get("get_log_enabled")
     if not callable(enabled) or enabled():
-        print(message)
+        print(versioned_message(message))
 
 
 def _ensure_path():
@@ -8740,10 +9122,8 @@ def _apply_runtime_config():
 
 
 def _print_log(message):
-    if not get_log_enabled():
-        return
-    translated = translate_log(message)
-    print(translated)
+    if get_log_enabled():
+        print(versioned_message(translate_log(message)))
 
 
 # BEGIN GENERATED BINDING SETTINGS
@@ -8795,6 +9175,16 @@ for _channel_key in ("normal", "trade", "callback"):
 # BEGIN GENERATED PIPE RUNTIME
 """In-memory managed strategy control over the existing Pipe connection (QMT 3.6+)."""
 
+CFQUANT_VERSION = CORE_VERSION
+def versioned_message(message):
+    text = str(message)
+    tag = "[cfquant %s]" % CFQUANT_VERSION
+    return text if tag in text else "%s %s" % (text, tag)
+class VersionedErrorMixin:
+    cfquant_version = CFQUANT_VERSION
+    def __str__(self):
+        return versioned_message(super(VersionedErrorMixin, self).__str__())
+
 import functools as _cq_functools
 import os as _cq_os
 import sys as _cq_sys
@@ -8803,7 +9193,7 @@ import time as _cq_time
 import uuid as _cq_uuid
 
 
-class ManagedStrategyError(RuntimeError):
+class ManagedStrategyError(VersionedErrorMixin, RuntimeError):
     """A rejection made before entering any QMT business dispatcher."""
 
     def __init__(self, message, code, runtime_instance_id, retry_when=""):
@@ -9007,7 +9397,7 @@ class ManagedPipeRuntime(object):
                     self.release_if_idle()
         if errors:
             self.failure = "; ".join(errors)
-            print("cfquant strategy shutdown failed: %s" % self.failure)
+            print(versioned_message("cfquant strategy shutdown failed: %s" % self.failure))
 # END GENERATED PIPE RUNTIME
 
 _managed_runtime = ManagedPipeRuntime(RUNTIME_CONFIG.get("managed_strategy")).acquire()

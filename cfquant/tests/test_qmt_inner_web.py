@@ -40,6 +40,43 @@ def test_external_native_call_keeps_bridge_normal_channel_and_real_client(routin
     assert kwargs['mode'] == 'lttx'
 
 
+def test_external_native_call_resolves_bridge_from_account_without_bridge_id(routing):
+    _, calls = routing
+    params = dict(session_id='session', account_id='55009948', account_type='STOCK',
+                  category='market', method='get_bvol', args=['000001.SZ'])
+    result, meta = web.route_external_lttx_request(dict(action='qmt_inner.call', params=params,
+                                                        client_id='real-client'))
+    assert result == {'native': True}
+    assert meta['route'] == 'qmt_inner'
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:3] == ('test_bridge', 'normal', 'qmt_inner.call')
+    assert args[3]['account_id'] == '55009948'
+    assert not args[3].get('bridge_id')
+    assert kwargs['mode'] == 'lttx'
+
+
+def test_external_native_call_without_account_uses_current_data_provider(routing, monkeypatch):
+    _, calls = routing
+    monkeypatch.setattr(web, 'data_provider_candidates', lambda: [{
+        'account_id': 'provider-account', 'account_type': 'STOCK',
+        'account_key': 'provider-key', 'bridge_id': 'provider-bridge',
+    }])
+    params = dict(session_id='session', category='market', method='get_bvol', args=['000001.SZ'])
+    result, meta = web.route_external_lttx_request(dict(action='qmt_inner.call', params=params,
+                                                        client_id='real-client'))
+    assert result == {'native': True}
+    assert meta['route'] == 'qmt_inner'
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[:3] == ('test_bridge', 'normal', 'qmt_inner.call')
+    assert args[3]['account_id'] == 'provider-account'
+    assert args[3]['account_type'] == 'STOCK'
+    assert args[3]['account_key'] == 'provider-key'
+    assert not args[3].get('bridge_id')
+    assert kwargs['mode'] == 'lttx'
+
+
 def test_web_does_not_fallback_after_ambiguous_native_order_timeout(routing):
     clients, calls = routing
     def request(*args, **kwargs):

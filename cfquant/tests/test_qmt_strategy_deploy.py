@@ -161,6 +161,25 @@ def test_restart_prepares_replacement_before_background_worker_runs(deployment):
     assert job["state"] == "running" and not job.get("control_generation")
 
 
+def test_start_preparation_requeues_consumed_managed_import(deployment):
+    manager, row, infos, running, root = deployment
+    manager.configure(row, infos)
+    job = next(iter(manager.jobs.values()))
+    role = job["roles"][0]
+    queue = root / "formulas" / (role["name"] + ".rzrk")
+    assert queue.is_file()
+
+    # QMT may consume the queue before it writes the catalog/container.  The
+    # next Web startup must regenerate it after the terminal has stopped.
+    queue.unlink()
+    role["queued"] = True
+    manager._state(job, "error", "consumed without registration")
+    manager.prepare_for_start(root / "bin.x64")
+
+    assert queue.is_file()
+    assert job["state"] == "waiting_import"
+
+
 def test_start_preparation_refuses_running_terminal_without_writes(deployment):
     manager, row, infos, running, root = deployment
     running[0] = True

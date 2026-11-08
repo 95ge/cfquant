@@ -10,14 +10,16 @@ from .config import get_config
 from .callback_dispatcher import CallbackDispatcher, dispatch_callbacks
 from .protocol import decode_value, dumps_message, loads_message, new_id, pack_request
 from .rpc_timing import RpcTiming
+from .diagnostic_context import CFQUANT_VERSION, VersionedErrorMixin
 
 
-class CfquantError(RuntimeError):
+class CfquantError(VersionedErrorMixin, RuntimeError):
     """RPC failure retaining the server's structured rejection details."""
 
     def __init__(self, message="", details=None):
         super(CfquantError, self).__init__(message)
         self.error_details = dict(details) if isinstance(details, dict) else {}
+        self.error_details.setdefault("cfquant_version", CFQUANT_VERSION)
         self.code = self.error_details.get("code", "")
         self.stage = self.error_details.get("stage", "")
         self.dispatched = self.error_details.get("dispatched")
@@ -25,7 +27,7 @@ class CfquantError(RuntimeError):
         self.retry_when = self.error_details.get("retry_when", "")
 
 
-class CfquantTimeout(TimeoutError):
+class CfquantTimeout(VersionedErrorMixin, TimeoutError):
     pass
 
 
@@ -157,7 +159,7 @@ class LTtxRpcClient(object):
                 if not getattr(self._tx, "run_on", True):
                     raise CfquantError("cfquant client closed during connection startup")
             except BaseException:
-                self.close()
+                LTtxRpcClient.close(self)
                 raise
             self._started = True
             self._closed = False
@@ -286,7 +288,7 @@ class LTtxRpcClient(object):
                     break
         with self._lock:
             if self._tx is expected_tx:
-                self.close()
+                LTtxRpcClient.close(self)
 
     def _dispatch_event(self, msg):
         dispatch_callbacks(self._callbacks, msg, self._event_dispatcher.is_current_callback)
@@ -355,6 +357,38 @@ class WebLttxRpcClient(LTtxRpcClient):
             timeout=timeout,
             client_id=client_id,
         )
+        self._subscription_session = None
+        self._subscription_protocol = None
+        self._subscription_init_lock = threading.Lock()
+
+    def _subscription_raw_request(self, action, params, timeout=None):
+        return super(WebLttxRpcClient, self).request(action, params, timeout=timeout)
+
+    def request(self, action, params=None, timeout=None, request_channel=None, response_meta=None):
+        from .subscription_client import managed_request
+        handled, result = managed_request(self, self._subscription_raw_request, action, params, timeout)
+        if handled:
+            return result
+        return super(WebLttxRpcClient, self).request(action, params, timeout, request_channel, response_meta)
+
+    def _dispatch_event(self, msg):
+        if msg.get('event') == 'cfquant.managed_subscription':
+            data = msg.get('data')
+            if isinstance(data, dict):
+                if self._subscription_session is None or data.get('key') not in self._subscription_session.specs:
+                    return
+                msg = dict(msg, event=data.get('event'), data=data.get('payload'))
+        sid = (msg.get('meta') or {}).get('managed_subscription_id')
+        if sid is not None and (self._subscription_session is None or str(sid) not in self._subscription_session.specs):
+            return
+        super(WebLttxRpcClient, self)._dispatch_event(msg)
+
+    def close(self):
+        session = getattr(self, '_subscription_session', None)
+        if session is not None:
+            self._subscription_session = None
+            session.close()
+        super(WebLttxRpcClient, self).close()
 
 
 def _registry_has_web_route(registry):

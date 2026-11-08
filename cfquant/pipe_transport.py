@@ -1,3 +1,4 @@
+from .diagnostic_context import versioned_message
 # -*- coding: utf-8 -*-
 import ctypes
 import json
@@ -379,6 +380,11 @@ class PipeTxClient(object):
         self._connecting_conns = set()
         self.send_max_bytes = int(os.environ.get("CFQUANT_PIPE_SEND_MAX_BYTES", 128 * 1024 * 1024))
         self.send_timeout = float(os.environ.get("CFQUANT_PIPE_SEND_TIMEOUT", "15"))
+        # QMT bridge instances may attach a lightweight status provider.  The
+        # provider is included in heartbeat envelopes so the web process can
+        # observe callback/quote counters without issuing a request on the
+        # already busy QMT thread.
+        self.status_provider = None
 
     def start(self):
         with self.conn_lock:
@@ -657,6 +663,13 @@ class PipeTxClient(object):
             "process_id": self.process_id,
             "heartbeat_interval": self.heartbeat_interval,
         }
+        if msg_type in ("hello", "heartbeat") and callable(self.status_provider):
+            try:
+                telemetry = self.status_provider()
+                if isinstance(telemetry, dict):
+                    data["telemetry"] = telemetry.get("telemetry", telemetry)
+            except Exception as error:
+                data["telemetry_error"] = str(error)
         if extra:
             data.update(extra)
         return data
@@ -667,7 +680,7 @@ class PipeTxClient(object):
 
     def _log(self, msg):
         if self.show and get_log_enabled():
-            print("cfquant pipe tx %s" % translate_log(msg))
+            print(versioned_message("cfquant pipe tx %s" % translate_log(msg)))
 
     def _normalize_channels(self, channels):
         result = []

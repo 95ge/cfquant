@@ -34,7 +34,12 @@ def updated_source(source):
     normal_class = next(n for n in parse_source(normal).body if isinstance(n, ast.ClassDef) and n.name == 'NormalQmtBridge')
     methods = {n.name: ''.join(normal_lines[n.lineno-1:n.end_lineno]) + '\n'
                for n in normal_class.body if isinstance(n, ast.FunctionDef)
-               and n.name in {'_drain_coalesced_request', '_send_response', '_drain_single_request', '_status_extra', '_worker_loop'}}
+               and n.name in {
+                   '_drain_coalesced_request', '_send_response', '_drain_single_request',
+                   '_status_extra', '_worker_loop', '_record_callback', '_record_quote_callback',
+                   '_push_quote_event', '_record_quote_callback_duration',
+                   '_record_request_completed', '_telemetry_snapshot',
+               }}
     lite_class = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'NormalQmtBridge')
     for node in lite_class.body:
         if isinstance(node, ast.FunctionDef) and node.name in methods:
@@ -45,6 +50,21 @@ def updated_source(source):
     for start, end, text in sorted(edits, reverse=True):
         lines[start:end] = [text]
     source = ''.join(lines)
+    lite_tree = parse_source(source)
+    lite_class = next(n for n in lite_tree.body if isinstance(n, ast.ClassDef) and n.name == 'NormalQmtBridge')
+    existing_methods = {n.name for n in lite_class.body if isinstance(n, ast.FunctionDef)}
+    missing_methods = [text for name, text in methods.items() if name not in existing_methods]
+    if missing_methods:
+        lines = source.splitlines(True)
+        lines[lite_class.end_lineno:lite_class.end_lineno] = ['\n' + '\n'.join(missing_methods)]
+        source = ''.join(lines)
+    # Lite constructors intentionally differ from the full bridge constructor,
+    # but they still need the same counter state used by the copied telemetry
+    # methods. Keep this small initialization block generator-owned.
+    telemetry_init = '''        self._telemetry_lock = threading.RLock()\n        self._callback_total = 0\n        self._callback_counts = {}\n        self._quote_callback_batches = 0\n        self._quote_callback_symbols = 0\n        self._quote_distribution_batches = 0\n        self._quote_distribution_symbols = 0\n        self._last_callback_at = 0.0\n        self._last_quote_callback_at = 0.0\n        self._telemetry_started_at = time.time()\n        self._request_completed = 0\n        self._request_failed = 0\n        self._request_total_ms = 0.0\n        self._request_max_ms = 0.0\n        self._active_request = None\n        self._quote_callback_total_ms = 0.0\n        self._quote_push_failed = 0\n'''
+    if 'self._telemetry_lock = threading.RLock()' not in source:
+        source = source.replace('        self.dispatch_lock = threading.RLock()\n',
+                                '        self.dispatch_lock = threading.RLock()\n' + telemetry_init, 1)
     if 'from collections import deque\n' not in source:
         source = source.replace('import threading\n', 'import threading\nfrom collections import deque\n', 1)
     source = source.replace('pump_max_ms=0,', 'pump_max_ms=5,')

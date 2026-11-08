@@ -200,7 +200,7 @@ def test_web_api_catalog_shows_sdk_and_preserves_http_batch(page, frontend_url, 
     assert errors == []
 
 
-def test_algorithm_examples_are_discoverable_from_api_and_documentation_menus(page, frontend_url, tmp_path):
+def test_algorithm_examples_are_discoverable_from_api_and_tutorial_menus(page, frontend_url, tmp_path):
     import json
     page.add_init_script("Object.defineProperty(navigator, 'clipboard', {value: {writeText: async text => { window.copiedText = text; }}})")
     requests, errors = open_app(page, frontend_url, setup_required=False)
@@ -236,34 +236,12 @@ def test_algorithm_examples_are_discoverable_from_api_and_documentation_menus(pa
         assert page.evaluate('window.copiedText') == http
         expect(page.locator('#apiForm button[type="submit"]')).to_have_count(0)
         assert page.locator('.api-workbench').evaluate('node => node.scrollWidth <= node.clientWidth')
-    page.locator('.nav-item[data-view="docs"]').click()
-    docs = page.locator('#cfquantDocs')
-    expect(docs.locator('.docs-head h2')).to_have_text('接口文档与调用示例')
-    docs.locator('#docsGroup').select_option('algorithm')
-    expect(docs.locator('[data-doc-id]')).to_have_count(21)
-    for method in methods:
-        docs.locator(f'[data-doc-id="cftrader.{method}"]').click()
-        expect(docs.locator('.docs-article h2')).to_have_text(method)
-        example = docs.locator('pre[data-language="python"]').inner_text()
-        verify_example(example)
-        assert f'orders_api.{method}(' in example
-        docs.locator('[data-doc-copy="python"]').click()
-        expect(docs.locator('[data-doc-copy="python"]')).to_have_text('已复制')
-        assert page.evaluate('window.copiedText') == example
-        expect(docs.locator('[data-python-test]')).to_have_count(0)
-    docs.locator('[data-doc-copy="http"]').click()
-    expect(docs.locator('[data-doc-copy="http"]')).to_have_text('已复制')
-    assert page.evaluate('window.copiedText').startswith('POST /api/trade/algo/cancel\n')
-    docs.locator('#docsSearch').fill('order_twap')
-    expect(docs.locator('[data-doc-id]')).to_have_count(1)
-    expect(docs.locator('.docs-article h2')).to_have_text('order_twap')
-    assert docs.evaluate('node => node.scrollWidth <= node.clientWidth')
-    page.screenshot(path=str(tmp_path / 'algorithm-main-docs.png'))
-    docs.locator('#docsGroup').select_option('xtdata')
-    docs.locator('#docsSearch').fill('get_full_tick')
-    expect(docs.locator('.docs-article h2')).to_have_text('get_full_tick')
-    expect(docs.locator('[data-python-test]')).to_be_visible()
-    docs.locator('[data-doc-algorithm-intro]').click()
+    # Persisted documentation navigation now opens the same API workbench.
+    page.evaluate("setView('docs')")
+    expect(page.locator('body')).to_have_attribute('data-view', 'api')
+    expect(page.locator('#primarySidebar [aria-current="page"]')).to_have_attribute('data-view', 'api')
+    page.screenshot(path=str(tmp_path / 'algorithm-api.png'))
+    page.locator('[data-api-algorithm-guide]').click()
     panel = page.locator('[data-guide-panel="algorithm"]')
     expect(panel).to_be_visible()
     expect(page.locator('.tutorial-menu-item[data-guide="algorithm"]')).to_be_visible()

@@ -5,7 +5,15 @@ called here. A cache is shared by all leases; callbacks receive private copies.
 """
 
 import copy
-import logging
+try:
+    from .diagnostic_context import get_logger
+except (ImportError, KeyError, ValueError):
+    # The same source is embedded into standalone QMT entries. Those entries
+    # already provide the generated diagnostic helper before this block.
+    get_logger = globals().get("get_logger")
+    if get_logger is None:
+        import logging
+        get_logger = logging.getLogger
 import threading
 import time
 
@@ -72,7 +80,7 @@ class _QuoteListener:
         try:
             self.callback(copy.deepcopy(data))
         except Exception:
-            logging.getLogger(__name__).exception("shared quote listener failed")
+            get_logger(__name__).exception("shared quote listener failed")
 
     def _run(self):
         while True:
@@ -283,6 +291,12 @@ class SharedQuoteFeed:
                 return
             now = self._clock()
             self._last_received = now
+            listeners = [(row["listener"], row["codes"]) for row in self._leases.values()
+                         if row["listener"].callback is not None]
+            if not self._cache_latest and not listeners:
+                # The bridge-owned subscription still drives the QMT callback,
+                # but there is no recipient to copy, filter or encode data for.
+                return
             changed = {}
             for code, quote in data.items():
                 if not isinstance(code, str) or not isinstance(quote, dict):
@@ -304,7 +318,6 @@ class SharedQuoteFeed:
                     self._cache[code] = dict(quote=merged, received_at=time.time(), monotonic_at=now,
                                              generation=generation, sequence=self._quote_sequence)
                 changed[code] = merged
-            listeners = [(row["listener"], row["codes"]) for row in self._leases.values()]
             if changed:
                 self.changed.set()
         for listener, codes in listeners:

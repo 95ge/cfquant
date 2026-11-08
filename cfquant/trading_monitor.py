@@ -18,6 +18,21 @@ CALLBACKS = {"trader:on_stock_order": "order", "trader:on_stock_trade": "trade",
              "trader:on_order_error": "order_error", "trader:on_cancel_error": "cancel_error"}
 CANCELED = {53, 54}  # 52 is a pending cancellation, not a confirmed cancellation.
 _UNCHANGED = object()
+DEFAULT_RUNTIME_RETENTION_DAYS = 30
+MAX_RUNTIME_RETENTION_DAYS = 3650
+RUNTIME_RETENTION_ALL = 0
+
+
+def is_trading_time(timestamp=None):
+    """Return whether a timestamp falls in a mainland China stock session."""
+    value = time.time() if timestamp is None else number(timestamp, None)
+    if value is None:
+        return False
+    current = datetime.fromtimestamp(value, SHANGHAI)
+    if current.weekday() >= 5:
+        return False
+    minute = current.hour * 60 + current.minute
+    return 570 <= minute < 690 or 780 <= minute < 900
 
 
 def day_text(timestamp=None):
@@ -86,7 +101,8 @@ def request_failed(result):
 
 
 class TradingMonitor:
-    def __init__(self, path, queue_size=20000, settings_path=None, account_type_normalizer=None):
+    def __init__(self, path, queue_size=20000, settings_path=None, account_type_normalizer=None,
+                 runtime_retention_days=DEFAULT_RUNTIME_RETENTION_DAYS):
         self.path = Path(path).resolve()
         self.settings_path = Path(settings_path).resolve() if settings_path else self.path.with_suffix('.settings.json')
         self.enabled = False
@@ -102,6 +118,8 @@ class TradingMonitor:
         self._accounts = None  # Standalone collectors may have no binding registry.
         self._scope = (None, None)
         self._account_type = account_type_normalizer or (lambda value: str(value or '').strip().upper())
+        self.runtime_retention_days = self._validate_retention_days(runtime_retention_days)
+        self._last_runtime_cleanup = 0.0
 
     @staticmethod
     def _validate_keys(keys):
@@ -109,6 +127,12 @@ class TradingMonitor:
                 any(not isinstance(key, str) or not key.strip() for key in keys)):
             raise ValueError('account_keys 必须为 null（全部账号）或绑定账号标识列表')
         return None if keys is None else sorted(set(keys))
+
+    @staticmethod
+    def _validate_retention_days(days):
+        if type(days) is not int or not RUNTIME_RETENTION_ALL <= days <= MAX_RUNTIME_RETENTION_DAYS:
+            raise ValueError('runtime_retention_days 必须为 1 到 %d 的整数，或为 0 表示全部保留' % MAX_RUNTIME_RETENTION_DAYS)
+        return days
 
     def update_accounts(self, accounts):
         """Rebuild immutable lookup sets outside the trading path when bindings change."""
@@ -166,6 +190,8 @@ class TradingMonitor:
             if not isinstance(saved, dict) or type(saved.get('enabled')) is not bool:
                 raise ValueError('invalid enabled setting')
             keys = self._validate_keys(saved.get('account_keys'))
+            retention_days = self._validate_retention_days(
+                saved.get('runtime_retention_days', DEFAULT_RUNTIME_RETENTION_DAYS))
             if saved['enabled'] and keys == []:
                 raise ValueError('enabled scope cannot be empty')
         except FileNotFoundError:
@@ -175,16 +201,20 @@ class TradingMonitor:
             return self.health()
         with self._lifecycle_lock:
             self.account_keys = keys
+            self.runtime_retention_days = retention_days
+            self._last_runtime_cleanup = 0.0
             self._rebuild_scope()
             if saved['enabled']:
                 self.start()
         return self.health()
 
-    def configure(self, enabled, account_keys=_UNCHANGED):
+    def configure(self, enabled, account_keys=_UNCHANGED, runtime_retention_days=_UNCHANGED):
         if type(enabled) is not bool:
             raise ValueError('enabled 必须为 true 或 false')
         with self._lifecycle_lock:
             keys = self.account_keys if account_keys is _UNCHANGED else self._validate_keys(account_keys)
+            retention_days = (self.runtime_retention_days if runtime_retention_days is _UNCHANGED
+                              else self._validate_retention_days(runtime_retention_days))
             if account_keys is not _UNCHANGED and keys is not None and self._accounts is not None:
                 if set(keys) - self._accounts.keys():
                     raise ValueError('所选账号绑定已变更，请重新打开设置后选择')
@@ -198,12 +228,15 @@ class TradingMonitor:
                 with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=str(self.settings_path.parent),
                                                  prefix='.monitor-', suffix='.tmp', delete=False) as stream:
                     temporary = stream.name
-                    json.dump({'enabled': enabled, 'account_keys': keys}, stream)
+                    json.dump({'enabled': enabled, 'account_keys': keys,
+                               'runtime_retention_days': retention_days}, stream)
                 os.replace(temporary, str(self.settings_path))
             finally:
                 if temporary and os.path.exists(temporary):
                     os.unlink(temporary)
             self.account_keys = keys
+            self.runtime_retention_days = retention_days
+            self._last_runtime_cleanup = 0.0
             self._rebuild_scope()
             if enabled:
                 self.start()
@@ -217,7 +250,7 @@ class TradingMonitor:
                 "draining": bool(self._thread and self._thread.is_alive() and self._stop.is_set()),
                 "pending": self._queue.unfinished_tasks, "dropped": self.dropped,
                 "error": self.last_error, "last_saved_at": self.last_saved_at,
-                "database": self.path.name}
+                "database": self.path.name, "runtime_retention_days": self.runtime_retention_days}
 
     def _submit(self, kind, data):
         if not self.enabled:
@@ -311,8 +344,16 @@ class TradingMonitor:
                 latency_ms REAL, message TEXT NOT NULL, interval_seconds REAL NOT NULL);
             CREATE INDEX IF NOT EXISTS monitor_nodes_time ON monitor_nodes(checked_at, bridge_id);
             CREATE INDEX IF NOT EXISTS monitor_nodes_identity ON monitor_nodes(bridge_id, mode, channel, checked_at);
+            CREATE TABLE IF NOT EXISTS monitor_runtime_samples (
+                runtime_key TEXT PRIMARY KEY, sampled_at REAL NOT NULL, sample_minute INTEGER NOT NULL,
+                bridge_id TEXT NOT NULL, name TEXT NOT NULL, mode TEXT NOT NULL,
+                normal_json TEXT NOT NULL, trade_json TEXT NOT NULL, process_json TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS monitor_runtime_time ON monitor_runtime_samples(sampled_at, bridge_id);
+            CREATE INDEX IF NOT EXISTS monitor_runtime_identity ON monitor_runtime_samples(bridge_id, sample_minute);
             CREATE TABLE IF NOT EXISTS monitor_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """)
+        if "performance_json" not in {row[1] for row in conn.execute("PRAGMA table_info(monitor_nodes)")}:
+            conn.execute("ALTER TABLE monitor_nodes ADD COLUMN performance_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute("INSERT OR IGNORE INTO monitor_meta VALUES ('started_at', ?)", (str(time.time()),))
         conn.commit()
         return conn
@@ -446,15 +487,166 @@ class TradingMonitor:
 
     def _write_snapshot(self, conn, snapshot):
         monitor = snapshot.get("monitor") or {}
+        checked_at = number(snapshot.get("checked_at"), time.time())
+        normal = snapshot.get("normal") or {}
+        trade = snapshot.get("trade") or {}
         for channel in ("normal", "trade"):
             item = snapshot.get(channel) or {}
             # Pipe status is a connectivity observation; its file-read time is not QMT RTT.
-            conn.execute("INSERT INTO monitor_nodes (bridge_id,name,mode,channel,checked_at,online,latency_ms,message,interval_seconds) VALUES (?,?,?,?,?,?,?,?,?)",
+            conn.execute("INSERT INTO monitor_nodes (bridge_id,name,mode,channel,checked_at,online,latency_ms,message,interval_seconds,performance_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (str(snapshot.get("bridge_id") or ""), str(snapshot.get("bridge_name") or ""),
-                 str(monitor.get("transport_mode") or ""), channel, number(snapshot.get("checked_at"), time.time()),
+                 str(monitor.get("transport_mode") or ""), channel, checked_at,
                  int(bool(item.get("online"))),
                  None if monitor.get("transport_mode") == "ctypes" else number(item.get("latency_ms"), None),
-                 str(item.get("error") or "")[:1000], number(monitor.get("interval_seconds"), 10)))
+                 str(item.get("error") or "")[:1000], number(monitor.get("interval_seconds"), 10),
+                 json.dumps(item.get("performance") or {}, ensure_ascii=True)))
+        # Runtime diagnostics are useful outside trading hours too: they show
+        # whether the QMT bridge, process and pipes remain healthy while idle.
+        # Keep one sample per minute so all-day collection remains bounded.
+        bridge_id = str(snapshot.get("bridge_id") or "")
+        mode = str(monitor.get("transport_mode") or "")
+        sample_minute = int(checked_at // 60) * 60
+        runtime_key = "%s|%s|%d" % (bridge_id, mode, sample_minute)
+        normal_performance = normal.get("performance") or {}
+        trade_performance = trade.get("performance") or {}
+        conn.execute("""INSERT INTO monitor_runtime_samples
+            (runtime_key,sampled_at,sample_minute,bridge_id,name,mode,normal_json,trade_json,process_json)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(runtime_key) DO UPDATE SET
+            sampled_at=excluded.sampled_at, name=excluded.name,
+            normal_json=excluded.normal_json, trade_json=excluded.trade_json,
+            process_json=excluded.process_json""",
+            (runtime_key, checked_at, sample_minute, bridge_id,
+             str(snapshot.get("bridge_name") or ""), mode,
+             json.dumps(normal_performance, ensure_ascii=True),
+             json.dumps(trade_performance, ensure_ascii=True),
+             json.dumps({"normal": normal_performance.get("process") or {},
+                         "trade": trade_performance.get("process") or {}}, ensure_ascii=True)))
+        # Cleanup is checked on every status snapshot, including while idle,
+        # so expired history does not wait for a trading session.
+        self._cleanup_runtime_samples(conn)
+
+    def _cleanup_runtime_samples(self, conn, force=False):
+        now = time.monotonic()
+        if not force and now - self._last_runtime_cleanup < 3600:
+            return
+        if self.runtime_retention_days == RUNTIME_RETENTION_ALL:
+            self._last_runtime_cleanup = now
+            return
+        cutoff = time.time() - self.runtime_retention_days * 86400
+        conn.execute("DELETE FROM monitor_runtime_samples WHERE sampled_at < ?", (cutoff,))
+        self._last_runtime_cleanup = now
+
+    @staticmethod
+    def _runtime_dates(start, end, now, max_days=31, allow_all=False):
+        all_history = allow_all and str(start or '').strip().lower() in ('all', '*', 'history')
+        if all_history:
+            end = end or day_text(now)
+            try:
+                finish = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=SHANGHAI) + timedelta(days=1)
+            except (ValueError, TypeError):
+                raise ValueError("日期格式应为 YYYY-MM-DD")
+            if end != (finish - timedelta(days=1)).strftime("%Y-%m-%d"):
+                raise ValueError("日期格式应为 YYYY-MM-DD")
+            return "all", end, datetime(1970, 1, 1, tzinfo=SHANGHAI), finish
+        start, end = start or day_text(now), end or start or day_text(now)
+        try:
+            begin = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=SHANGHAI)
+            finish = datetime.strptime(end, "%Y-%m-%d").replace(tzinfo=SHANGHAI) + timedelta(days=1)
+        except (ValueError, TypeError):
+            raise ValueError("日期格式应为 YYYY-MM-DD")
+        if start != begin.strftime("%Y-%m-%d") or end != (finish - timedelta(days=1)).strftime("%Y-%m-%d"):
+            raise ValueError("日期格式应为 YYYY-MM-DD")
+        if not 0 < (finish - begin).days <= max_days:
+            raise ValueError("开始日期不能晚于结束日期，单次最多查询 %d 天" % max_days)
+        return start, end, begin, finish
+
+    def query_runtime(self, start=None, end=None, bridge_id="", mode="", limit=5000, now=None):
+        now = time.time() if now is None else now
+        start, end, begin, finish = self._runtime_dates(
+            start, end, now, max_days=MAX_RUNTIME_RETENTION_DAYS, allow_all=True)
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            raise ValueError("limit 必须为整数")
+        if not 1 <= limit <= 10000:
+            raise ValueError("limit 超出范围")
+        result = {"start": start, "end": end, "timezone": "Asia/Shanghai", "bridge_id": str(bridge_id or ""),
+                  "mode": str(mode or ""),
+                  "samples": [], "retention_days": self.runtime_retention_days, "generated_at": now}
+        if not self.path.exists():
+            return result
+        conn = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=3)
+        conn.row_factory = sqlite3.Row
+        try:
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitor_runtime_samples'").fetchone():
+                return result
+            clauses = ["sampled_at>=?", "sampled_at<?"]
+            args = [begin.timestamp(), finish.timestamp()]
+            if bridge_id:
+                clauses.append("bridge_id=?")
+                args.append(str(bridge_id))
+            if mode:
+                clauses.append("mode=?")
+                args.append(str(mode))
+            rows = conn.execute("SELECT * FROM monitor_runtime_samples WHERE %s ORDER BY sampled_at DESC LIMIT ?" %
+                                " AND ".join(clauses), args + [limit]).fetchall()
+            samples = []
+            for row in reversed(rows):
+                item = dict(row)
+                for source, target in (("normal_json", "normal"), ("trade_json", "trade"), ("process_json", "process")):
+                    try:
+                        item[target] = json.loads(item.pop(source) or "{}")
+                    except (ValueError, TypeError):
+                        item[target] = {}
+                samples.append(item)
+            result["samples"] = samples
+            return result
+        finally:
+            conn.close()
+
+    def clear_runtime_history(self, scope="all"):
+        """Delete persisted runtime samples without touching trading records."""
+        scope = str(scope or "all").strip().lower()
+        if scope not in ("all", "expired"):
+            raise ValueError("scope 必须为 all 或 expired")
+        if not self.path.exists():
+            return {"scope": scope, "deleted": 0, "remaining": 0,
+                    "retention_days": self.runtime_retention_days, "vacuumed": False}
+        if not self.flush(timeout=10):
+            raise RuntimeError("运行时序仍有待写入记录，请稍后重试")
+        conn = sqlite3.connect(str(self.path), timeout=10)
+        try:
+            conn.row_factory = sqlite3.Row
+            if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitor_runtime_samples'").fetchone():
+                return {"scope": scope, "deleted": 0, "remaining": 0,
+                        "retention_days": self.runtime_retention_days, "vacuumed": False}
+            if scope == "expired":
+                if self.runtime_retention_days == RUNTIME_RETENTION_ALL:
+                    remaining = conn.execute("SELECT COUNT(*) FROM monitor_runtime_samples").fetchone()[0]
+                    return {"scope": scope, "deleted": 0, "remaining": remaining,
+                            "retention_days": self.runtime_retention_days, "vacuumed": False}
+                cutoff = time.time() - self.runtime_retention_days * 86400
+                cursor = conn.execute("DELETE FROM monitor_runtime_samples WHERE sampled_at < ?", (cutoff,))
+            else:
+                cursor = conn.execute("DELETE FROM monitor_runtime_samples")
+            deleted = max(0, int(cursor.rowcount or 0))
+            conn.commit()
+            vacuumed = False
+            if scope == "all" and deleted:
+                try:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.execute("VACUUM")
+                    vacuumed = True
+                except sqlite3.Error:
+                    # Deletion is complete even if compaction is temporarily locked.
+                    pass
+            remaining = conn.execute("SELECT COUNT(*) FROM monitor_runtime_samples").fetchone()[0]
+            self._last_runtime_cleanup = time.monotonic()
+            return {"scope": scope, "deleted": deleted, "remaining": remaining,
+                    "retention_days": self.runtime_retention_days, "vacuumed": vacuumed}
+        finally:
+            conn.close()
 
     def query(self, start=None, end=None, bridge_id="", account_id="", account_type="", kind="", page=1, now=None):
         now = time.time() if now is None else now
@@ -532,6 +724,10 @@ class TradingMonitor:
             nodes = [dict(row) for row in conn.execute("SELECT * FROM monitor_nodes WHERE id IN (SELECT MAX(id) FROM monitor_nodes WHERE " + node_where + " GROUP BY bridge_id,mode,channel)", node_args)]
             scope_bridges = self._scope[1]
             for node in nodes:
+                try:
+                    node["performance"] = json.loads(node.pop("performance_json", "{}"))
+                except (ValueError, TypeError):
+                    node["performance"] = {}
                 node["stale"] = bool(live and now - node["checked_at"] > max(30, node["interval_seconds"] * 3))
                 node['collecting'] = bool(self.enabled and (scope_bridges is None or node['bridge_id'] in scope_bridges))
             options = [dict(row) for row in conn.execute("SELECT DISTINCT bridge_id,account_id,account_type FROM monitor_events WHERE trade_date BETWEEN ? AND ? ORDER BY bridge_id,account_id", [start, end])]

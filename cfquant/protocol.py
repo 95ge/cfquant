@@ -4,6 +4,7 @@ import json
 import math
 import time
 import uuid
+from .diagnostic_context import CFQUANT_VERSION, versioned_message
 
 
 PROTOCOL_VERSION = 1
@@ -215,11 +216,15 @@ def encode_error(error):
     if error is None:
         return None
     if isinstance(error, dict):
-        return error
-    details = getattr(error, "error_details", None)
-    result = dict(details) if isinstance(details, dict) else {}
-    result.setdefault("type", type(error).__name__)
-    result["message"] = str(error)
+        result = dict(error)
+    else:
+        details = getattr(error, "error_details", None)
+        result = dict(details) if isinstance(details, dict) else {}
+        result.setdefault("type", type(error).__name__)
+        result["message"] = str(error)
+    if "message" in result:
+        result["message"] = versioned_message(result["message"])
+    result.setdefault("cfquant_version", CFQUANT_VERSION)
     return result
 
 

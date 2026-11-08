@@ -1,3 +1,4 @@
+from .diagnostic_context import versioned_message
 # -*- coding: utf-8 -*-
 import os
 import inspect
@@ -9,6 +10,7 @@ import uuid
 
 from .protocol import loads_message, pack_event, pack_response
 from .qmt_inner_runtime import dispatch_inner_api
+from .subscription_bridge import dispatch_managed_subscription, push_subscription_event, expire_managed_subscriptions
 from .order_identity import prepare_order_remark, order_remark_key, original_order_remark, restore_order_remark, is_unique_order_remark
 from .order_identity import OrderCallbackCache, order_remark_matches_reference
 from .stock_connect import connect_account_type, validate_connect_order, validate_connect_market, query_connect_exchange_rate
@@ -283,6 +285,7 @@ class TxTradeBridge(object):
         return self
 
     def close(self):
+        expire_managed_subscriptions(self, close=True)
         self.running = False
         self._release_auto_trade_callback()
         _unregister_sync_order_callback_relay(self)
@@ -342,6 +345,8 @@ class TxTradeBridge(object):
                 )
 
     def _dispatch(self, action, params, msg):
+        if action == 'cfquant.managed_subscription':
+            return dispatch_managed_subscription(self, params, msg)
         if action.startswith("qmt_inner."):
             return dispatch_inner_api(self, action, params, msg)
         if action in ("xtdata.get_market_data", "xtdata.get_market_data_ex", "xtdata.get_full_tick"):
@@ -4137,7 +4142,7 @@ class TxTradeBridge(object):
         if not client_id or self.tx is None:
             return
         event = pack_event(name, data=data, client_id=client_id, subscription_id=subscription_id, meta=meta)
-        self.tx.push("event", event, client_id)
+        push_subscription_event(self, event, client_id)
 
     def _call_variants(self, func, variants):
         last_error = None
@@ -4204,7 +4209,7 @@ class TxTradeBridge(object):
     def _log(self, msg, force=False):
         if not force and not self._get_log_enabled():
             return
-        msg = translate_log(msg)
+        msg = versioned_message(translate_log(msg))
         line = "%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg)
         if getattr(self, "file_io_enabled", True):
             try:

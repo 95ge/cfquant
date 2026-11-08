@@ -7,6 +7,7 @@ import threading
 import time
 
 from .protocol import loads_message
+from .diagnostic_context import versioned_message
 
 
 def default_status_file(filename):
@@ -263,7 +264,7 @@ class CfquantHub(object):
 
     def _log(self, msg):
         if self.show:
-            print("%s %s" % (self._timestamp_ms(), msg), flush=True)
+            print("%s %s" % (self._timestamp_ms(), versioned_message(msg)), flush=True)
 
     def _timestamp_ms(self):
         now = time.time()

@@ -64,6 +64,24 @@ def test_market_uses_native_parameters_and_dataframe_roundtrip():
     assert not client.closed
 
 
+def test_account_bound_session_leaves_bridge_resolution_to_web_router():
+    client = Loopback(SimpleNamespace(get_full_tick=lambda codes: {'codes': codes}))
+    with QmtInnerApi(client=client, account_id='55009948', account_type='STOCK') as qmt:
+        assert qmt.market.get_full_tick(['000001.SZ']) == {'codes': ['000001.SZ']}
+    params = client.calls[0]['params']
+    assert params['account_id'] == '55009948'
+    assert params['account_type'] == 'STOCK'
+    assert params['bridge_id'] == ''
+
+
+def test_unbound_session_leaves_bridge_resolution_to_current_web_provider():
+    client = Loopback(SimpleNamespace(get_full_tick=lambda codes: {'codes': codes}))
+    with QmtInnerApi(client=client) as qmt:
+        qmt.market.get_full_tick(['000001.SZ'])
+    assert client.calls[0]['params']['account_id'] == ''
+    assert client.calls[0]['params']['bridge_id'] == ''
+
+
 def test_native_owner_is_not_shadowed_by_global_or_context():
     client = Loopback(SimpleNamespace(get_full_tick=lambda codes: 'context',
                                       get_trade_detail_data=lambda *args: 'wrong'),

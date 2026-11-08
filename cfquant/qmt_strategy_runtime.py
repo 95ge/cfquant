@@ -9,6 +9,17 @@ import threading as _cq_threading
 import time as _cq_time
 
 
+def _cq_version():
+    descriptor = globals().get("_cq_descriptor") or {}
+    return str(descriptor.get("cfquant_version") or "unknown")
+
+
+def _cq_versioned_message(message):
+    text = str(message)
+    tag = "[cfquant %s]" % _cq_version()
+    return text if tag in text else "%s %s" % (text, tag)
+
+
 def _cq_lock(path):
     stream = _cq_io.open(path, "a+b")
     try:
@@ -62,7 +73,8 @@ class _CqStrategyLease(object):
         temporary = path + ".%s.%s.pending" % (_cq_os.getpid(), _cq_threading.get_ident())
         try:
             payload = {"state": state, "error": error, "generation": self.descriptor["generation"],
-                       "pid": _cq_os.getpid(), "updated_at": _cq_time.time()}
+                       "pid": _cq_os.getpid(), "updated_at": _cq_time.time(),
+                       "cfquant_version": self.descriptor.get("cfquant_version") or _cq_version()}
             with _cq_io.open(temporary, "w", encoding="utf-8") as stream:
                 _cq_json.dump(payload, stream, ensure_ascii=True)
             _cq_os.replace(temporary, path)
@@ -183,7 +195,7 @@ class _CqStrategyLease(object):
         except Exception as error:
             self.failure = str(error)
             self.report("error", self.failure)
-            print("cfquant strategy shutdown failed; account lease retained: %s" % error)
+            print(_cq_versioned_message("cfquant strategy shutdown failed; account lease retained: %s" % error))
 
     def bind(self, namespace):
         self.namespace = namespace

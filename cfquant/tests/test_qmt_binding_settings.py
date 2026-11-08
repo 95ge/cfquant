@@ -9,6 +9,7 @@ import pytest
 import cfquant_web_server as web
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
 from cfquant.pipe_bridge import PipeNormalQmtBridge
+from cfquant.diagnostic_context import versioned_message
 from cfquant.tests.test_lite_deployment_paths import web_deployment, assert_lite_package, package_source
 from cfquant.tests.test_qmt_strategy_deploy import deployment
 
@@ -120,7 +121,7 @@ def test_common_bridges_in_one_process_have_independent_log_switches(capsys):
     verbose = PipeNormalQmtBridge(None, globals_dict=namespace(True))
     quiet._log('QUIET')
     verbose._log('VERBOSE')
-    assert capsys.readouterr().out.strip() == 'VERBOSE'
+    assert capsys.readouterr().out.strip() == versioned_message('VERBOSE')
     verbose._set_log_enabled({'enabled': False})
     quiet._set_log_enabled({'enabled': True})
     assert verbose._status()['log_enabled'] is False

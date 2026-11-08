@@ -12,6 +12,7 @@ cfquant: 面向 QMT 的 xtquant 兼容层。
 from . import xtconstant, xtdata, xttrader, xttype
 from . import cftrader
 from .qmt_inner import QmtInnerApi
+from .qmt_python_runtime import QmtPythonRuntime, QmtPythonRuntimeError, QmtPythonPackage, QmtPythonProgress
 from .client import CfquantError, CfquantTimeout, configure, get_client
 from .version import __version__
 from .build_info import build_identity, get_git_commit
@@ -27,6 +28,10 @@ __all__ = [
     "xttrader",
     "cftrader",
     "QmtInnerApi",
+    "QmtPythonRuntime",
+    "QmtPythonRuntimeError",
+    "QmtPythonPackage",
+    "QmtPythonProgress",
     "xttype",
     "configure",
     "get_client",

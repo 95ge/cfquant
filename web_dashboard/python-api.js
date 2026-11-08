@@ -41,6 +41,12 @@
     let reference = `<p>${inline(entry.description)}</p>`;
     if (entry.signature) reference += codeBlock(entry.signature, native ? 'QmtInnerApi 调用签名' : extension ? 'cftrader 接口签名' : '原版接口签名');
     if (entry.nativeSignature) reference += codeBlock(entry.nativeSignature, 'QMT 原生原型');
+    const nativeSession = native ? window.CFQUANT_QMT_INNER_API : null;
+    if (nativeSession?.sessionHelp) {
+      reference += `<div data-qmt-session-params><h4>账号路由参数 · QmtInnerApi</h4><p>${inline(nativeSession.sessionHelp)}</p>`;
+      if (entry.name !== 'QmtInnerApi') reference += table(['参数', '默认值', '含义'], nativeSession.sessionParameters.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
+      reference += '</div>';
+    }
     if (entry.parameters?.length) reference += `<h4>${extension || native ? '调用参数' : '原版参数'}</h4>` + table(['参数', '默认值', '含义'], entry.parameters.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
     if (entry.orderFields?.length) reference += '<h4>orders 逐笔字段</h4>' + table(['字段', '默认值', '含义'], entry.orderFields.map(p => ['`' + p.name + '`', '`' + p.default + '`', p.help]));
     if (entry.fields?.length) reference += '<h4>原版字段 / 类型</h4>' + table(['字段', '类型 / 含义'], entry.fields.map(row => ['`' + row[0] + '`', row[1]]));

@@ -20,6 +20,8 @@ from cfquant.callback_dispatcher import dispatch_callbacks
 from cfquant.protocol import encode_response_result, request_expired
 from cfquant.tx_trade_bridge import TxTradeBridge
 from cfquant.quote_service import ProjectQuoteService
+from cfquant.shared_quotes import SharedQuoteFeed
+from cfquant.subscription_bridge import push_subscription_event, expire_managed_subscriptions
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +38,9 @@ def lite_bridge_class(path):
                      encode_response_result=encode_response_result, request_expired=request_expired,
                      pack_quote_latency_event=pack_quote_latency_event,
                      pack_whole_quote_event=pack_whole_quote_event,
+                     SharedQuoteFeed=SharedQuoteFeed,
+                     push_subscription_event=push_subscription_event,
+                     expire_managed_subscriptions=expire_managed_subscriptions,
                      COALESCED_QUERY_ACTIONS=COALESCED_QUERY_ACTIONS,
                      DEFAULT_PIPE_NAME="offline-test")
     namespace.update({key: value for key, value in vars(level2).items() if not key.startswith("__")})
@@ -129,6 +134,59 @@ def test_subscriptions_and_callbacks_are_independent(bridge):
     bridge.context.callbacks[second["internal_subscribe_id"]](payload)
     assert bridge.tx.messages[-1][1]["data"] == payload
     assert bridge.tx.messages[-1][2] == "client-b"
+
+
+def test_context_keeps_one_native_feed_across_subscriber_lifetimes(bridge, monkeypatch):
+    bridge.dispatch_on_qmt_thread = True
+    monkeypatch.setattr(bridge, "_publish_runtime_report", lambda reason: None)
+    bridge.set_context(bridge.context)
+    bridge.set_context(bridge.context)
+    assert bridge.context.subscribed == [["SH", "SZ", "BJ"]]
+    assert bridge.quote_subscriptions == {}
+
+    class IdleBatch(dict):
+        def items(self):
+            raise AssertionError("idle full-market quotes must not be traversed")
+
+    bridge.worker_event.clear()
+    bridge.context.callbacks[100](IdleBatch({"600000.SH": {"lastPrice": 10}}))
+    assert bridge.worker_event.is_set()
+    assert bridge.tx.messages == []
+
+    first = rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": ["SH"]})
+    second = rpc(bridge, "xtdata.subscribe_whole_quote_latency", {"code_list": ["SH"]}, client="client-b")
+    rpc(bridge, "xtdata.unsubscribe_quote", {"subscribe_id": first["subscribe_id"]})
+    bridge.context.callbacks[100]({"600000.SH": {"lastPrice": 11}})
+    assert len(bridge.tx.messages) == 1
+    assert bridge.tx.messages[-1][2] == "client-b"
+    assert bridge.tx.messages[-1][1]["subscription_id"] == second["subscribe_id"]
+    rpc(bridge, "xtdata.unsubscribe_quote", {"subscribe_id": second["subscribe_id"]})
+    bridge.tx.messages.clear()
+    bridge.context.callbacks[100](IdleBatch())
+    assert bridge.tx.messages == []
+    assert bridge.context.unsubscribed == []
+
+    resumed = rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": ["SH"]})
+    assert resumed["internal_subscribe_id"] == 100
+    assert bridge.context.subscribed == [["SH", "SZ", "BJ"]]
+    bridge.close()
+    bridge.close()
+    assert bridge.context.unsubscribed == [100]
+
+
+def test_client_lease_expiry_keeps_qmt_callback_active(bridge, monkeypatch):
+    bridge.dispatch_on_qmt_thread = True
+    monkeypatch.setattr(bridge, "_publish_runtime_report", lambda reason: None)
+    bridge.set_context(bridge.context)
+    reply = rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": ["SH"], "lease_timeout": 45})
+    bridge.quote_subscriptions[reply["subscribe_id"]]["lease_deadline"] = 0
+    bridge._expire_whole_quote_leases()
+    assert bridge.quote_subscriptions == {}
+    assert bridge.context.unsubscribed == []
+    bridge.worker_event.clear()
+    bridge.context.callbacks[100]({"600000.SH": {"lastPrice": 11}})
+    assert bridge.worker_event.is_set()
+    assert bridge.tx.messages == []
 
 
 def test_unsubscribe_releases_native_id_and_ignores_late_callbacks(bridge):

@@ -3,6 +3,8 @@
 Credentials and launch settings use Windows DPAPI. Remote tasks are journaled
 before execution; an interrupted task is reconciled or reported as unknown.
 """
+
+from .diagnostic_context import VersionedErrorMixin
 import argparse
 import base64
 from contextlib import contextmanager
@@ -33,7 +35,7 @@ ACTIONS = {"positions": "queries", "orders": "queries", "trades": "queries",
 FINAL = {"succeeded", "failed", "expired", "cancelled", "outcome_unknown"}
 
 
-class RemoteError(RuntimeError):
+class RemoteError(VersionedErrorMixin, RuntimeError):
     def __init__(self, code, message):
         super().__init__(message)
         self.code = code

@@ -1,6 +1,6 @@
 """Ordered, bounded background work. No QMT API calls run in these workers."""
 from collections import deque
-import logging
+from .diagnostic_context import get_logger
 import threading
 import time
 
@@ -163,7 +163,7 @@ class KeyedExecutor(object):
         try:
             item[2](error)
         except Exception:
-            logging.getLogger(__name__).exception("Web route could not deliver request failure")
+            get_logger(__name__).exception("Web route could not deliver request failure")
 
     def status(self):
         with self._condition:

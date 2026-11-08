@@ -22,6 +22,8 @@ from cfquant.pipe_bridge import PipeNormalQmtBridge
 from cfquant.protocol import decode_value, encode_value, loads_message, pack_event, pack_request, pack_response
 from cfquant.qmt_bridge import CfquantQmtBridge
 from cfquant.tx_trade_bridge import TxTradeBridge
+from cfquant.shared_quotes import SharedQuoteFeed
+from cfquant.subscription_bridge import push_subscription_event, expire_managed_subscriptions
 
 ROOT = Path(__file__).resolve().parents[2]
 LITE_PATHS = sorted((ROOT / "qmt_scripts").rglob("CFQUANT_LITE*.py"))
@@ -51,6 +53,9 @@ def lite_namespace(path):
     ns = dict(BaseTradeBridge=TxTradeBridge, queue=queue, threading=threading, time=time,
               dt=dt, json=json, math=math, base64=base64, loads_message=loads_message,
               pack_event=pack_event, pack_response=pack_response,
+              SharedQuoteFeed=SharedQuoteFeed,
+              push_subscription_event=push_subscription_event,
+              expire_managed_subscriptions=expire_managed_subscriptions,
               COALESCED_QUERY_ACTIONS=COALESCED_QUERY_ACTIONS, DEFAULT_PIPE_NAME="offline")
     exec(compile(ast.fix_missing_locations(tree), str(path), "exec"), ns)
     return ns

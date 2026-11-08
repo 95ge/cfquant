@@ -76,6 +76,7 @@ class PipeNormalQmtBridge(NormalQmtBridge):
             connect_timeout_ms=self.connect_timeout_ms,
         )
         self.tx._log = self._log
+        self.tx.status_provider = self._telemetry_snapshot
         self.tx.start()
         self.tx.start_txg(self.request_channel)
         self.recv_thread = threading.Thread(target=self._recv_loop)

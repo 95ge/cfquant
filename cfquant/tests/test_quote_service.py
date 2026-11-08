@@ -27,6 +27,7 @@ def service(monkeypatch):
                 callback(loads_message(payload))
     bridge.tx = SimpleNamespace(push=push, close=lambda: None)
     bridge.running = True
+    bridge._subscribe_internal_whole_quote()
     requests = []
     lose_ack = [False]
     def upstream(params, source):
@@ -78,6 +79,11 @@ def test_web_sdk_and_algorithm_share_source_and_independent_lifetimes(service):
         service.callbacks[100]({"600000.SH": {"time": 1, "lastPrice": 10, "volume": 100}})
         assert project.snapshot("600000.SH")["quote"]["volume"] == 100
         project.release(algo)
+        # The QMT bridge owns the native subscription; Web only owns delivery.
+        assert not service.unsubscribed
+        project.close()
+        assert not service.unsubscribed
+        service.bridge.close()
         assert service.unsubscribed == [100]
     finally:
         web_store.close()
@@ -119,6 +125,77 @@ def test_viewer_idle_release_cannot_release_algo_reference(service):
     assert service.project.status()["consumers"] == 1
     assert not service.unsubscribed
     store.close()
+
+
+def test_last_viewer_disconnect_keeps_upstream_without_delivering_to_closed_viewer(service):
+    seen = []
+    project = service.project
+    lease = project.acquire("viewer", ["SH"], seen.append)
+    project.release(lease)
+    assert project.status()["consumers"] == 0
+    assert project.status()["leases"] == []
+    assert project.status()["state"] == "idle"
+    assert service.subscribed == [["SH", "SZ", "BJ"]]
+    assert service.unsubscribed == []
+
+    service.callbacks[100]({"600000.SH": {"time": 2, "lastPrice": 12}})
+    assert seen == []
+    assert project.snapshot("600000.SH") is None
+    assert service.bridge.worker_event.is_set()
+    assert service.bridge.quote_subscriptions == {}
+
+    # A later viewer reuses the existing native subscription rather than
+    # cancelling and re-creating it.
+    next_lease = project.acquire("viewer-again", ["SH"], seen.append)
+    assert len(service.subscribed) == 1
+    assert service.unsubscribed == []
+    project.release(next_lease)
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("probe timed out"),
+                                    {"ready": False}, {"ready": True},
+                                    {"ready": True, "lease_keys": None}])
+def test_uncertain_probe_does_not_stop_delivery_or_recreate_a_healthy_lease(service, failure):
+    project = service.project
+    project.acquire("viewer", ["SH"])
+    service.callbacks[100]({"600000.SH": {"time": 1, "lastPrice": 10}})
+    generation = project.snapshot("600000.SH")["generation"]
+    original_probe = project._probe_rpc
+    def failed_probe(handle):
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+    project._probe_rpc = failed_probe
+    try:
+        project.check_connection()
+        assert project.status()["health_error"]
+        assert project.status()["state"] == "live"
+        service.callbacks[100]({"600000.SH": {"time": 2, "lastPrice": 12}})
+        assert project.snapshot("600000.SH")["quote"]["lastPrice"] == 12
+    finally:
+        project._probe_rpc = original_probe
+    project.check_connection()
+    assert project.status()["health_error"] == ""
+    assert project.snapshot("600000.SH")["generation"] == generation
+    assert len(service.requests) == 1
+    assert service.unsubscribed == []
+
+
+def test_confirmed_missing_delivery_lease_recovers_without_replacing_native_feed(service):
+    project = service.project
+    project.acquire("viewer", ["SH"])
+    row = next(iter(service.bridge.quote_subscriptions.values()))
+    row["lease_deadline"] = 0
+    service.bridge._expire_whole_quote_leases()
+    assert service.bridge.quote_subscriptions == {}
+    assert service.unsubscribed == []
+    project.check_connection()
+    assert project.status()["consumers"] == 1
+    assert project.status()["state"] == "live"
+    assert len(service.requests) == 2
+    assert len(service.bridge.quote_subscriptions) == 1
+    assert len(service.subscribed) == 1
+    assert service.unsubscribed == []
 
 
 def test_provider_conflict_does_not_replace_active_algorithms_source(service):

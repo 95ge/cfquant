@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261106_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20261108_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -269,15 +269,20 @@
     </div>
   </div>
   <div class="admin-layout">
-    <aside class="sidebar">
+    <aside id="primarySidebar" class="sidebar" aria-label="控制台导航">
       <div class="side-brand">
-        <div class="brand-mark">cf</div>
-        <div class="brand-copy">
-          <strong>cfquant</strong>
-          <span>QMT Bridge</span>
-        </div>
+        <a class="side-home" href="https://cfquant.org" target="_blank" rel="noopener noreferrer" aria-label="打开 cfquant 官网（新窗口）" title="打开 cfquant 官网">
+          <div class="brand-mark">cf</div>
+          <div class="brand-copy">
+            <strong>cfquant</strong>
+            <span>QMT Bridge</span>
+          </div>
+        </a>
+        <button id="sidebarCompactBtn" class="sidebar-tool sidebar-compact" type="button" aria-label="收起为图标导航" title="收起为图标导航" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16m7-12-4 4 4 4"/></svg>
+        </button>
         <div id="versionWidget" class="version-widget" tabindex="0" aria-label="版本信息">
-          <button id="versionBadge" class="version-badge" type="button" aria-describedby="versionPopover" aria-expanded="false">
+          <button id="versionBadge" class="version-badge" type="button" aria-label="查看版本与更新" aria-describedby="versionPopover" aria-expanded="false">
             <span class="version-badge-head">
               <span class="version-badge-state">
                 <span id="versionBadgeDot" class="version-dot"></span>
@@ -308,27 +313,98 @@
           </div>
         </div>
       </div>
-      <nav class="side-nav">
-        <button class="nav-item active" data-view="overview">首页</button>
-        <button class="nav-item" data-view="trade">交易</button>
-        <button class="nav-item" data-view="orders">委托</button>
-        <button class="nav-item" data-view="status">状态</button>
-        <button class="nav-item" data-view="monitor">监控</button>
-        <button class="nav-item" data-view="bindings">绑定</button>
-        <button class="nav-item" data-view="callbacks">回调</button>
-        <button class="nav-item" data-view="api">接口</button>
-        <button class="nav-item" data-view="tests">测试</button>
-        <button class="nav-item" data-view="docs">文档</button>
-        <button class="nav-item" data-view="settings">设置</button>
-        <button class="nav-item" data-view="tutorial">教程</button>
+      <nav id="primaryNavigation" class="side-nav" aria-label="主导航">
+        <button type="button" class="nav-item nav-overview active" data-view="overview" aria-current="page">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span>首页概览</span>
+        </button>
+        <section class="nav-section" aria-labelledby="navTradingTitle">
+          <h2 id="navTradingTitle" class="nav-section-title">交易管理</h2>
+          <div class="nav-section-items">
+            <button type="button" class="nav-item" data-view="trade">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16m-4-4 4 4-4 4M20 17H4m4-4-4 4 4 4"/></svg>
+              <span>交易下单</span>
+            </button>
+            <button type="button" class="nav-item" data-view="orders">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6m-6 4h6m-6 4h3"/></svg>
+              <span>委托查询</span>
+            </button>
+            <button type="button" class="nav-item" data-view="monitor">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4M6 11h3l2-4 3 7 2-3h2"/></svg>
+              <span>交易监控</span>
+            </button>
+          </div>
+        </section>
+        <section class="nav-section" aria-labelledby="navOperationsTitle">
+          <h2 id="navOperationsTitle" class="nav-section-title">运行管理</h2>
+          <div class="nav-section-items">
+            <button type="button" class="nav-item" data-view="bindings">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8" cy="10" r="2"/><path d="M5 16c0-3 6-3 6 0m3-6h4m-4 4h3"/></svg>
+              <span>账号绑定</span>
+            </button>
+            <button type="button" class="nav-item" data-view="status">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+              <span>运行状态</span>
+            </button>
+          </div>
+        </section>
+        <section class="nav-section" aria-labelledby="navDevelopmentTitle">
+          <h2 id="navDevelopmentTitle" class="nav-section-title">开发调试</h2>
+          <div class="nav-section-items">
+            <button type="button" class="nav-item" data-view="callbacks">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7h7a4 4 0 0 1 0 8H4m4-4-4 4 4 4"/><circle cx="5" cy="7" r="2"/></svg>
+              <span>回调事件</span>
+            </button>
+            <button type="button" class="nav-item" data-view="tests">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg>
+              <span>测试示例</span>
+            </button>
+          </div>
+        </section>
       </nav>
+      <div class="sidebar-footer">
+        <nav class="sidebar-shortcuts" aria-label="文档与设置">
+            <button type="button" class="nav-item" data-view="api" data-nav-category="文档帮助">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 7-5 5 5 5m10-10 5 5-5 5m-3-14-4 18"/></svg>
+              <span>接口测试</span>
+            </button>
+            <button type="button" class="nav-item" data-view="tutorial" data-nav-category="文档帮助">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m10 8 6 4-6 4Z"/></svg>
+              <span>使用教程</span>
+            </button>
+            <button type="button" class="nav-item" data-view="settings" data-nav-category="系统管理">
+              <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h6m4 0h6M4 17h10m4 0h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></svg>
+              <span>系统设置</span>
+            </button>
+        </nav>
+        <div class="sidebar-appearance">
+          <button id="sidebarAppearanceBtn" class="sidebar-tool sidebar-appearance-trigger" type="button" aria-expanded="false" aria-controls="sidebarAppearancePanel" aria-label="导航显示方式" title="导航显示方式">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16m4-11h4m-4 4h4"/></svg>
+            <span>导航显示方式</span>
+            <span class="sidebar-appearance-chevron" aria-hidden="true">⌃</span>
+          </button>
+          <div id="sidebarAppearancePanel" class="sidebar-appearance-panel" hidden>
+            <fieldset>
+              <legend>导航显示方式</legend>
+              <label><input type="radio" name="sidebarDisplay" value="full" checked><span>图标＋文字<small>完整显示菜单名称</small></span></label>
+              <label><input type="radio" name="sidebarDisplay" value="text"><span>仅文字<small>隐藏菜单图标</small></span></label>
+              <label><input type="radio" name="sidebarDisplay" value="compact"><span>仅图标<small>收起侧栏，留出更多空间</small></span></label>
+            </fieldset>
+          </div>
+        </div>
+      </div>
     </aside>
 
     <div class="main-area">
       <header class="topbar">
-        <div>
-          <h1 id="viewTitle">首页</h1>
-          <div class="subline" id="clock">--</div>
+        <div class="topbar-navigation">
+          <button id="sidebarVisibilityBtn" class="sidebar-tool" type="button" aria-label="隐藏导航栏" title="隐藏导航栏" aria-expanded="true" aria-controls="primarySidebar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+          </button>
+          <div>
+            <div class="view-heading"><span id="viewCategory" class="view-category">工作台</span><span class="view-heading-divider" aria-hidden="true">/</span><h1 id="viewTitle">首页</h1></div>
+            <div class="subline" id="clock">--</div>
+          </div>
         </div>
       <div class="status-strip">
         <div class="status-pill" id="lttxStatus"><span></span><strong id="lttxStatusLabel">LTtx（库通信）</strong></div>
@@ -818,7 +894,7 @@
           <div class="panel span-12 view-panel view-api api-panel">
             <div class="panel-head">
               <div class="api-title-actions">
-                <h2>接口文档</h2>
+                <h2>接口测试</h2>
                 <button id="apiGroupsToggleBtn" type="button" aria-controls="apiEndpointList">全部展开</button>
               </div>
               <span class="metric-note">HTTP / WebSocket / Python SDK</span>
@@ -1426,7 +1502,7 @@
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="project">
                   <strong>项目架构</strong>
-                  <span>架构、链路和运行目录</span>
+                  <span>交互式架构与调用链路</span>
                 </button>
                 <button class="tutorial-menu-item" type="button" data-guide="quickstart">
                   <strong>快速开始</strong>
@@ -1704,13 +1780,13 @@
                         <div class="onboarding-panel-head">
                           <div class="onboarding-panel-copy">
                             <strong>QMT 已在线，完成接口测试</strong>
-                            <span>可以直接验证资金和持仓，也可以进入接口调试页测试具体接口。</span>
+                            <span>可以直接验证资金和持仓，也可以进入接口测试页测试具体接口。</span>
                           </div>
                           <button type="button" class="help-tooltip-trigger" aria-label="接口测试说明" aria-expanded="false" data-help-text="资金和持仓查询成功，说明账号路由、QMT 通道和基础策略已经基本可用。">?</button>
                         </div>
                         <div class="onboarding-api-ready">
                           <strong>下一步：测试“查资金”接口</strong>
-                          <span>进入接口调试后，账号参数会使用当前绑定账号。点击“发送请求”，能够返回资金数据即表示配置完成。</span>
+                          <span>进入接口测试后，账号参数会使用当前绑定账号。点击“发送请求”，能够返回资金数据即表示配置完成。</span>
                         </div>
                         <div id="onboardingDataSummary" class="onboarding-summary"></div>
                         <div class="onboarding-actions">
@@ -1729,7 +1805,7 @@
                         </div>
                         <div class="onboarding-success-actions">
                           <button id="onboardingSuccessHomeBtn" class="primary" type="button">进入首页</button>
-                          <button id="onboardingSuccessApiBtn" type="button">接口调试</button>
+                          <button id="onboardingSuccessApiBtn" type="button">接口测试</button>
                           <button id="onboardingSuccessBindingsBtn" type="button">继续添加账号</button>
                         </div>
                       </div>
@@ -1750,80 +1826,17 @@
                 </article>
 
                 <article class="tutorial-topic" data-guide-panel="project">
-                  <div class="guide-section">
-                    <h3>项目架构</h3>
-                    <p>cfquant 是本机 QMT 桥接控制台。它把 Web 页面、外部 Python 和大 QMT 策略脚本连在一起，由 Web 统一管理账号、运行模式、回调和更新。</p>
-                    <div class="guide-kv wide">
-                      <span>用户侧</span>
-                      <strong>网页操作，或在外部 Python 中按 xtquant 习惯调用。</strong>
-                      <span>本地服务</span>
-                      <strong>Web Server 管账号路由；PipeHub 管通用/极致模式；LTtx 管高级模式和自动发现。</strong>
-                      <span>QMT 侧</span>
-                      <strong>根据模式加载一个或两个入口脚本，再调用 QMT 原生函数。</strong>
+                  <div class="guide-section project-architecture-section">
+                    <div class="project-architecture-head">
+                      <div>
+                        <h3>项目架构</h3>
+                        <p>与官网相同的交互式架构图。点击节点查看职责，切换引导视图了解主控制链路、QMT 部署和 Python 接入。</p>
+                      </div>
+                      <a class="project-architecture-link" href="/cfquant-architecture.html?v=web_20261108_arch_01" target="_blank" rel="noopener">在新窗口打开</a>
                     </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>三种运行链路</h3>
-                    <div class="guide-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>模式</th>
-                            <th>QMT 入口</th>
-                            <th>适合场景</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td>通用模式</td>
-                            <td><code>CFQUANT_CTYPE_ALL_LOWLAT.py</code></td>
-                            <td>默认推荐。一个 QMT 即可跑通行情、查询、交易和回调。</td>
-                          </tr>
-                          <tr>
-                            <td>极致模式</td>
-                            <td><code>CFQUANT_LITE.py</code></td>
-                            <td>入口自包含，适合国泰君安、国泰海通等导入受限环境。</td>
-                          </tr>
-                          <tr>
-                            <td>高级模式</td>
-                            <td><code>CFQUANT.py</code> + <code>CFQUANT_TRADE_LOWLAT.py</code></td>
-                            <td>两个 QMT，普通端做查询和回调，极速交易端做低延迟交易请求。</td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div class="guide-section">
-                    <h3>关键文件</h3>
-                    <div class="guide-table-wrap">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>位置</th>
-                            <th>作用</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr>
-                            <td><code>runtime/config/cfquant_web_config.json</code></td>
-                            <td>保存账号、QMT 目录、运行模式、共享行情源和市场路由。</td>
-                          </tr>
-                          <tr>
-                            <td><code>qmt_scripts/</code></td>
-                            <td>放给 QMT 加载的入口脚本。</td>
-                          </tr>
-                          <tr>
-                            <td><code>bin.x64/cfquant_bridge_config.json</code></td>
-                            <td>Web 为 QMT 写入的身份文件，用于区分不同 QMT 终端。</td>
-                          </tr>
-                          <tr>
-                            <td><code>log/</code></td>
-                            <td>Web、PipeHub、LTtx 和 QMT 桥接日志。</td>
-                          </tr>
-                        </tbody>
-                      </table>
+                    <!-- Keep this viewer synced with official_site/frontend/assets/cfquant-architecture.html. -->
+                    <div class="project-architecture-frame-wrap">
+                      <iframe class="project-architecture-frame" src="/cfquant-architecture.html?v=web_20261108_arch_01" title="cfquant QMT 量化接入架构" loading="lazy"></iframe>
                     </div>
                   </div>
                 </article>
@@ -3104,16 +3117,31 @@ else:
             </div>
           </div>
 
-          <div class="panel span-12 view-panel view-docs docs-panel hidden">
-            <div id="cfquantDocs" class="cfquant-docs"></div>
-          </div>
-
-          <div class="panel span-12 view-panel view-overview view-trade view-orders view-status view-callbacks">
-            <div class="panel-head">
-              <h2>日志</h2>
-              <button id="clearLogBtn">清空</button>
+          <div id="activityLogPanel" class="panel span-12 view-panel view-overview view-trade view-orders view-status view-callbacks">
+            <div class="panel-head log-panel-head">
+              <h2>运行日志 <small id="logCount"></small></h2>
+              <div class="log-filters">
+                <label for="logCategoryFilter">功能
+                  <select id="logCategoryFilter">
+                    <option value="current">当前页面</option>
+                    <option value="all">全部功能</option>
+                    <option value="callbacks">回调事件</option>
+                    <option value="account">账号查询</option>
+                    <option value="trade">交易操作</option>
+                    <option value="system">系统运行</option>
+                  </select>
+                </label>
+                <label for="logAccountFilter">账号
+                  <select id="logAccountFilter">
+                    <option value="current">当前账号</option>
+                    <option value="all">全部账号</option>
+                  </select>
+                </label>
+                <button id="clearLogBtn" type="button">清空当前结果</button>
+              </div>
             </div>
-            <div id="logBox" class="log-box"></div>
+            <p class="log-hint">本次打开页面的日志；回调页默认仅显示回调记录。同一异常合并计数，受影响项目全部成功后标记已恢复。</p>
+            <div id="logBox" class="log-box" role="region" aria-label="运行日志" tabindex="0"></div>
           </div>
         </section>
       </main>
@@ -3163,6 +3191,24 @@ else:
           <div id="bindingQmtProcessStatus" class="metric-note" role="status" aria-live="polite">输入目录后将检测对应 QMT 进程和 PID。</div>
           <small>保存后自动同步项目代码、QMT 内部策略代码和身份配置到对应目录；无需手工复制。留空时该账号仍可运行，但自动同步、自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
         </label>
+        <section id="bindingPythonRuntimePanel" class="binding-python-runtime-panel binding-dialog-wide-row" aria-labelledby="bindingPythonRuntimeTitle">
+          <div class="binding-python-runtime-head">
+            <div>
+              <strong id="bindingPythonRuntimeTitle">QMT Python 运行库</strong>
+              <span id="bindingPythonRuntimeHint" class="metric-note">填写账号和 QMT 目录后自动检测。</span>
+            </div>
+            <button id="bindingPythonRuntimeRefreshBtn" type="button">重新检测</button>
+          </div>
+          <div id="bindingPythonRuntimeStatus" class="binding-python-runtime-status" role="status" aria-live="polite">尚未检测</div>
+          <div id="bindingPythonRuntimeProgressWrap" class="binding-python-runtime-progress hidden">
+            <div class="download-progress-meter" aria-hidden="true"><span id="bindingPythonRuntimeProgressBar"></span></div>
+            <div id="bindingPythonRuntimeProgressMeta" class="download-progress-meta">等待下载任务</div>
+          </div>
+          <div class="binding-python-runtime-actions">
+            <button id="bindingPythonRuntimeDownloadBtn" class="primary" type="button" disabled>下载并安装 Python 库</button>
+            <span id="bindingPythonRuntimeProgressText" class="metric-note"></span>
+          </div>
+        </section>
         <label class="toggle binding-dialog-wide-row">
           <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox" checked>
           <span>自动启动并按交易日重启 QMT（默认 09:00）</span>
@@ -3465,9 +3511,10 @@ else:
   <script src="/qmt-inner-api-data.js?v=20261106_inner_scope_01"></script>
   <script src="/api-tester.js?v=20261105_inner_01"></script>
   <script src="/python-api.js?v=20261106_inner_scope_01"></script>
-  <script src="/docs.js?v=20261105_smart_orders_01"></script>
-  <script src="/trading-monitor.js?v=20261103_scope_01"></script>
-  <script src="/app.js?v=web_20261106_01"></script>
+  <script src="/trading-monitor.js?v=20261107_runtime_history_05"></script>
+  <script src="/navigation.js?v=web_20261108_nav_03"></script>
+  <script src="/activity-log.js?v=web_20261108_logs_01"></script>
+  <script src="/app.js?v=web_20261108_01"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

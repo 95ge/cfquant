@@ -1,6 +1,6 @@
 """External access to built-in QMT, organized like the official innerApi manual.
 
-    with QmtInnerApi(bridge_id="default") as qmt:
+    with QmtInnerApi(account_id="YOUR_ACCOUNT_ID", account_type="STOCK") as qmt:
         ticks = qmt.market.get_full_tick(["000001.SZ"])
 
 The QMT bridge must be running. ContextInfo always belongs to that strategy;
@@ -163,15 +163,26 @@ class QmtCallbacks:
 
 
 class QmtInnerApi:
-    """Independent native API session over cfquant RPC, always using the normal bridge.
+    """Independent native API session over cfquant RPC and the normal route.
 
-    ``account_id``/``account_type`` select the Web route; native function arguments
-    still specify the trading account. ``client`` may inject an existing RPC client;
-    its connection remains owned by the caller. close() releases this session's
-    native quote subscriptions and schedule_run timers.
+    ``account_id``/``account_type`` select the Web route when supplied. If
+    ``account_id`` is omitted, the Web route uses the currently configured
+    market-data provider. ``bridge_id`` is an internal compatibility override
+    for a direct transport or for disambiguating multiple bindings of one
+    account; it is not sent by default.
+    Native function arguments still specify the trading account where QMT requires
+    one. ``client`` may inject an existing RPC client; its connection remains
+    owned by the caller. close() releases this session's native quote
+    subscriptions and schedule_run timers. ``recovery='lease'`` opts into the
+    Web-managed persistent subscription manifest; it returns stable cfquant
+    subscription IDs and is unavailable on direct transports.
     """
-    def __init__(self, bridge_id=None, account_id=None, account_type='STOCK', account_key=None,
-                 transport=None, request_channel=None, timeout=12.0, client=None):
+    def __init__(self, account_id=None, account_type='STOCK', account_key=None,
+                 transport=None, request_channel=None, timeout=12.0, client=None, recovery=None,
+                 *, bridge_id=None):
+        if recovery not in (None, 'lease'):
+            raise ValueError("recovery must be None or 'lease'")
+        self._recovery = recovery
         self._session_id = uuid.uuid4().hex
         self._event = 'qmt_inner:' + self._session_id
         self._handlers = {}
@@ -181,12 +192,23 @@ class QmtInnerApi:
         self._used = False
         self._owns_client = client is None
         self._timeout = timeout
-        bridge_id = bridge_id or get_config().get('bridge_id') or 'default'
-        channel = request_channel or channels_for_bridge(bridge_id)['normal']
+        explicit_bridge_id = str(bridge_id or '').strip()
+        configured_bridge_id = get_config().get('bridge_id') or 'default'
+        channel_bridge_id = explicit_bridge_id or configured_bridge_id
+        channel = request_channel or channels_for_bridge(channel_bridge_id)['normal']
         self._client = client or create_rpc_client(transport=transport, timeout=timeout,
-                                                   request_channel=channel, bridge_id=bridge_id)
-        self._route = dict(bridge_id=bridge_id, account_id=account_id or '',
-                           account_type=account_type, account_key=account_key or '', default_channel='normal')
+                                                   request_channel=channel, bridge_id=channel_bridge_id)
+        if recovery == 'lease' and not hasattr(self._client, '_subscription_raw_request'):
+            raise ValueError("managed subscription recovery requires the Web transport")
+        account_id = str(account_id or '').strip()
+        account_key = str(account_key or '').strip()
+        # Leave the internal bridge empty unless explicitly overridden. The Web
+        # route then resolves an account binding, or (when no account was
+        # supplied) the currently configured market-data provider. The local
+        # transport still uses channel_bridge_id selected above.
+        route_bridge_id = explicit_bridge_id
+        self._route = dict(bridge_id=route_bridge_id, account_id=account_id,
+                           account_type=account_type, account_key=account_key, default_channel='normal')
         self.context = QmtContext(self)
         self.system, self.market, self.trade = QmtSystem(self), QmtMarket(self), QmtTrade(self)
         self.callbacks = QmtCallbacks(self)
@@ -198,6 +220,8 @@ class QmtInnerApi:
             raise RuntimeError('QmtInnerApi is closed')
         self._used = True
         payload = dict(self._route, session_id=self._session_id, **params)
+        if self._recovery == 'lease':
+            payload['_managed_recovery'] = True
         return _records(self._client.request('qmt_inner.' + action, payload, timeout=self._timeout), self)
 
     def _add_callback(self, callback):
@@ -264,6 +288,15 @@ class QmtInnerApi:
         with self._lock:
             if self._closed:
                 return
+            session = getattr(self._client, '_subscription_session', None)
+            if self._recovery == 'lease' and session is not None:
+                for sid, spec in list(session.specs.items()):
+                    if spec['params'].get('session_id') == self._session_id:
+                        session.remove(sid, synchronize=False)
+                try:
+                    session.sync()
+                except Exception:
+                    pass  # Local cancellation is retained for the next manifest.
             if self._used:
                 self._request('close')
             self._client.remove_callback(self._event, self._on_event)

@@ -36,10 +36,15 @@
 
 先更新 cfquant 核心及 QMT 入口脚本，再重新运行桥接策略。通用入口、高级模式普通入口，以及三个 Lite 单文件入口均包含分发/回调支持。旧的运行中脚本不会因外部包更新而自动获得新接口。
 
+示例中的 `YOUR_ACCOUNT_ID` 是占位符，请替换为 cfquant 网页“账号绑定”中登记的券商资金账号，以字符串传入并保留前导零。例如，绑定中的资金账号是 `12345678`，则填写 `account_id="12345678"`（此号码仅为格式示例）。`account_id` 也可以省略；省略时 Web 路由使用当前设置的行情源。`account_type` 应与该绑定一致：普通证券账户填 `"STOCK"`，信用账户填 `"CREDIT"`。
+
+这些账号路由参数在创建 `QmtInnerApi(...)` 时设置，之后调用 `qmt.market.get_bvol(...)` 等方法共用此账号绑定。接口页面和 Python API 目录中的每个内置接口都提供这段账号说明。
+
 ```python
 from cfquant import QmtInnerApi
 
-with QmtInnerApi(bridge_id="default") as qmt:
+# YOUR_ACCOUNT_ID 替换为“账号绑定”中的券商资金账号
+with QmtInnerApi(account_id="YOUR_ACCOUNT_ID", account_type="STOCK") as qmt:
     print(qmt.capabilities()["market"]["get_market_data_ex"])
     ticks = qmt.market.get_full_tick(["000001.SZ"])
     bars = qmt.market.get_market_data_ex(
@@ -49,14 +54,14 @@ with QmtInnerApi(bridge_id="default") as qmt:
     print(bars["000001.SZ"])  # pandas.DataFrame
 ```
 
-默认沿用 cfquant 的自动通信选择。可传 `transport="ctypes"`、`"lttx"`、`"web_lttx"`，也可注入已有 RPC `client`。实例仅关闭自己创建的连接。请求固定使用普通桥；直连时通过 `bridge_id` 选择普通频道，可用 `request_channel` 指定实际频道。
+默认沿用 cfquant 的自动通信选择。可传 `transport="ctypes"`、`"lttx"`、`"web_lttx"`，也可注入已有 RPC `client`。实例仅关闭自己创建的连接。通过 Web 路由时优先按 `account_id`、`account_type`、`account_key` 选择绑定；直连时才需要用 `bridge_id` 或 `request_channel` 指定内部通道。
 
-通过 Web 路由时，构造参数 `account_id`、`account_type`、`account_key` 用于选择绑定；交易函数中的 `accountid` 等参数仍需按大 QMT 文档传入。会话绑定同一个桥接策略，不自动换行情提供者，也不在失败后换传输重发。
+通过 Web 路由时，构造参数 `account_id`、`account_type`、`account_key` 用于选择绑定，路由层会自动找到对应的 `bridge_id`；`bridge_id` 只作为直连或同账号多绑定时的显式覆盖。交易函数中的 `accountid` 等参数仍需按大 QMT 文档传入。会话按账号绑定选定桥接策略，不自动换行情提供者，也不在失败后换传输重发。
 
 ## 原生参数与 ContextInfo
 
 ```python
-with QmtInnerApi(bridge_id="default", account_id="YOUR_ACCOUNT") as qmt:
+with QmtInnerApi(account_id="YOUR_ACCOUNT", account_type="STOCK") as qmt:
     rows = qmt.trade.get_trade_detail_data("YOUR_ACCOUNT", "stock", "position")
     for row in rows:
         print(row.m_strInstrumentID, row.m_nVolume)
@@ -89,7 +94,7 @@ import threading
 from datetime import datetime, timedelta
 from cfquant import QmtInnerApi
 
-with QmtInnerApi(bridge_id="default") as qmt:
+with QmtInnerApi(account_id="YOUR_ACCOUNT_ID", account_type="STOCK") as qmt:
     qmt.system.set_account("YOUR_ACCOUNT")
 
     def order_callback(C, orderInfo):
@@ -113,6 +118,8 @@ with QmtInnerApi(bridge_id="default") as qmt:
 支持注册 `account_callback`、`task_callback`、`order_callback`、`deal_callback`、`position_callback`、`orderError_callback`、`credit_account_callback`、`credit_opvolume_callback`。回调订阅范围是当前桥接策略接收的原生事件；多账号策略需要自行按原始账号字段筛选。旧的兼容层事件继续独立处理。
 
 `close()` 清理本会话创建的行情订阅、`schedule_run` 定时器及外部回调。清理失败时保留状态并抛出异常，可再次 `close()`。进程被强制终止无法执行清理，需重启对应桥接策略释放遗留资源。外部 Python 定时回调使用 `schedule_run`。
+
+默认 `QmtInnerApi` 保持原生订阅 ID 语义，不会把行情订阅写入持久化清单。默认 Web 路径下如需在 cfquant/QMT 重启后恢复行情订阅，可显式创建 `QmtInnerApi(recovery='lease')`；该模式使用 SQLite 清单和 45 秒租约，重连后按当前会话重新确认并恢复，返回的是稳定的 cfquant 逻辑 ID。数据库不会保存 Python 回调函数；外部程序自身重启后仍需重新注册回调。下单、撤单和 `schedule_run` 不进入自动恢复。
 
 ## 运行边界与维护
 

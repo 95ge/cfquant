@@ -2,6 +2,7 @@
 
 import math
 import os
+import re
 import time
 from collections.abc import Mapping
 from numbers import Integral, Real
@@ -19,6 +20,13 @@ _BATCH_ORDER_FIELDS = {"stock_code", "order_type", "order_volume", "price_type",
                        "strategy_name", "order_remark", "cfquant_order_remark"}
 _BATCH_REQUIRED_FIELDS = {"stock_code", "order_type", "order_volume", "price_type", "price"}
 _BATCH_CANCEL_FIELDS = {"order_id", "stock_code", "market", "order_remark"}
+_VERSION_SUFFIX = re.compile(r"\s+\[cfquant\s+[^\]]+\]\s*$")
+
+
+def _batch_error_text(error):
+    """Keep row-level compatibility while request errors retain diagnostics."""
+    text = str(error) or type(error).__name__
+    return _VERSION_SUFFIX.sub("", text)
 
 
 def batch_positive_id(value):
@@ -206,14 +214,14 @@ def batch_result(account, batch_id, asynchronous, results, operation="order"):
 
 def batch_unknown(rows, error):
     for row in rows:
-        row.update(status="unknown", ok=None, error=str(error) or type(error).__name__)
+        row.update(status="unknown", ok=None, error=_batch_error_text(error))
 
 
 def batch_rejected(rows, error):
     """Mark a rejection known to happen before QMT dispatch."""
     details = getattr(error, "error_details", None)
     details = details if isinstance(details, dict) else {}
-    message = str(error) or type(error).__name__
+    message = _batch_error_text(error)
     for row in rows:
         row.update(status="failed", ok=False, error=message, dispatched=False,
                    safe_to_retry=details.get("safe_to_retry") is True,
