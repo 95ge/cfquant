@@ -655,7 +655,12 @@ class QmtPythonRuntime:
                 if (account_id or self.account_id) else None
             )
         finally:
-            if restart and (not deferred_account_config or was_running):
+            # A managed Web binding can supply a bootstrap callback that starts
+            # QMT, waits for the first login to create Config.xml, and then
+            # performs the final runtime switch/restart.  Keep the standalone
+            # API's old safe behavior (leave a brand-new, unconfigured QMT
+            # stopped) when no callback was supplied.
+            if restart and (not deferred_account_config or was_running or restart_callback):
                 _callback(progress_callback, QmtPythonProgress(runtime, "restarting", message="正在重新启动 QMT"))
                 if restart_callback:
                     restarted = restart_callback()

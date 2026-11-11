@@ -17600,6 +17600,111 @@ def qmt_python_runtime_status(body):
     return result
 
 
+QMT_RUNTIME_BOOTSTRAP_LOGIN_TIMEOUT = 120.0
+
+
+def _qmt_wait_for_runtime_bootstrap_login(row, paths, timeout=QMT_RUNTIME_BOOTSTRAP_LOGIN_TIMEOUT):
+    """Wait until the first managed QMT launch has completed account login."""
+    deadline = time.monotonic() + max(1.0, float(timeout or QMT_RUNTIME_BOOTSTRAP_LOGIN_TIMEOUT))
+    started = time.monotonic()
+    last_session = {}
+    while time.monotonic() < deadline:
+        last_session = _qmt_auto_login_saved_session(row)
+        if last_session.get("login_succeeded") or last_session.get("login_state") in (
+                "logged_in", "already_logged_in"):
+            return last_session
+        if last_session.get("state") == "login_failed" and last_session.get("error"):
+            raise RuntimeError("首次启动 QMT 后自动登录失败: %s" % last_session.get("error"))
+        try:
+            running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+        except Exception:
+            running = None
+        if running == [] and time.monotonic() - started > 3.0:
+            raise RuntimeError("首次启动 QMT 后进程已退出，未完成登录")
+        time.sleep(0.25)
+    detail = last_session.get("message") or last_session.get("error") or "未收到登录完成状态"
+    raise RuntimeError("首次启动 QMT 等待登录超时（%.0f 秒）: %s" % (float(timeout), detail))
+
+
+def _qmt_python_runtime_bootstrap_restart(row, settings, manager, runtime, account_id,
+                                          body=None, progress_callback=None):
+    """Run the one-time first-login QMT cycle required by a fresh binding."""
+    body = body if isinstance(body, dict) else {}
+    settings = normalize_qmt_auto_login_settings(settings, existing=row.get("qmt_auto_login"))
+    strategy_settings = normalize_strategy_settings(row.get("qmt_strategy"))
+    account_key = _qmt_auto_login_session_key(row)
+
+    def phase(name, message):
+        safe_print("QMT Python bootstrap account=%s phase=%s: %s" % (account_key or account_id, name, message))
+        if progress_callback:
+            progress_callback({"phase": "qmt_bootstrap_%s" % name, "message": message})
+
+    # Bindings without a managed cfquant strategy retain the regular restart.
+    if not strategy_settings.get("enabled"):
+        return qmt_auto_login_restart_for_account(
+            row, settings, reason="python-runtime-switch")
+
+    try:
+        binding_before = manager.binding_status(account_id=account_id)
+    except Exception:
+        binding_before = {}
+    needs_bootstrap = bool(parse_bool(body.get("allow_missing_account_config", False)))
+    needs_bootstrap = needs_bootstrap or binding_before.get("state") == "account_config_missing"
+
+    phase("start", "启动首次 QMT，等待账号配置和策略绑定键")
+    first = qmt_auto_login_restart_for_account(
+        row, settings, reason="python-runtime-bootstrap-first")
+    if not first.get("configured") or first.get("error"):
+        raise RuntimeError(first.get("error") or first.get("message") or "QMT 首次启动失败")
+    needs_bootstrap = needs_bootstrap or bool(first.get("strategy_deploy_deferred"))
+    if not needs_bootstrap:
+        return first
+
+    if not settings.get("auto_fill_credentials"):
+        # Without credentials the user must complete QMT's own login window.
+        first.update({
+            "bootstrap_deferred": True,
+            "bootstrap_message": "已启动首次 QMT；自动填写登录未启用，请完成登录后再重新启动以完成策略部署",
+        })
+        phase("deferred", first["bootstrap_message"])
+        return first
+
+    qmt_dir = normalize_optional_path(row.get("qmt_dir") or row.get("python_dir"))
+    paths = _qmt_auto_login_paths(qmt_dir)
+    phase("waiting_login", "等待首次 QMT 自动登录完成并生成账号配置")
+    session = _qmt_wait_for_runtime_bootstrap_login(row, paths)
+
+    phase("stop", "首次登录完成，正在关闭 QMT 以写入账号配置和策略")
+    stop = _qmt_auto_login_stop_xtitclient(row, paths, session=session)
+    try:
+        switched = manager.switch_account(runtime, account_id=account_id)
+    except Exception as error:
+        raise RuntimeError("首次登录后应用 Python 执行器失败: %s" % error) from error
+
+    phase("restart", "账号配置已生成，正在第二次启动 QMT 并部署策略")
+    second = qmt_auto_login_restart_for_account(
+        row, settings, reason="python-runtime-bootstrap-final")
+    if not second.get("configured") or second.get("error"):
+        raise RuntimeError(second.get("error") or second.get("message") or "QMT 第二次启动失败")
+    if second.get("strategy_deploy_deferred"):
+        try:
+            _qmt_auto_login_stop_xtitclient(row, paths, session=_qmt_auto_login_saved_session(row))
+        except Exception as stop_error:
+            safe_print("QMT Python bootstrap account=%s cleanup failed: %s" % (account_key or account_id, stop_error))
+        raise RuntimeError("首次登录后仍未找到模型账号 Key，已停止第二次 QMT 启动；请检查 QMT 账号配置")
+    second.update({
+        "bootstrap_completed": True,
+        "bootstrap_first": {
+            "pid": first.get("pid") or first.get("restart_pid") or 0,
+            "login_state": session.get("login_state") or session.get("state") or "logged_in",
+        },
+        "bootstrap_stop": stop,
+        "runtime_switch": switched,
+    })
+    phase("done", "首次启动、正常关闭和第二次启动均已完成")
+    return second
+
+
 def _qmt_python_job_snapshot(job_id):
     with QMT_PYTHON_RUNTIME_JOBS_LOCK:
         job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
@@ -17655,8 +17760,9 @@ def _run_qmt_python_runtime_job(job_id, body):
                         except (OSError, ValueError):
                             continue
             if row is not None:
-                result = qmt_auto_login_restart_for_account(
-                    row, row.get("qmt_auto_login"), reason="python-runtime-switch")
+                result = _qmt_python_runtime_bootstrap_restart(
+                    row, row.get("qmt_auto_login"), manager, runtime, account_id,
+                    body=body, progress_callback=progress)
                 if result.get("configured") and not result.get("error"):
                     return result
                 raise RuntimeError(result.get("error") or result.get("message") or "QMT 自动启动失败")
@@ -17679,6 +17785,19 @@ def _run_qmt_python_runtime_job(job_id, body):
             reuse_installed=parse_bool(body.get("reuse_installed", False)),
             allow_missing_account_config=parse_bool(body.get("allow_missing_account_config", False)),
         )
+        restarted = result.get("restarted") if isinstance(result, dict) else None
+        if isinstance(restarted, dict) and restarted.get("bootstrap_completed"):
+            # The initial validation necessarily reported a missing Config.xml;
+            # the bootstrap callback has now created it, applied the selected
+            # runtime, and completed the second managed launch.
+            result["account_config_required"] = False
+            result["account_config_bootstrapped"] = True
+            if restarted.get("runtime_switch") is not None:
+                result["switched"] = restarted.get("runtime_switch")
+            result["message"] = "运行库已安装并完成 QMT 首次启动、正常退出及第二次启动"
+        elif isinstance(restarted, dict) and restarted.get("bootstrap_deferred"):
+            result["message"] = ((result.get("message") or "运行库已安装") + "；" +
+                                  str(restarted.get("bootstrap_message") or "请完成首次 QMT 登录后重新启动"))
     except Exception as exc:
         with QMT_PYTHON_RUNTIME_JOBS_LOCK:
             job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))

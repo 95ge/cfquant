@@ -30,6 +30,10 @@ result = qmt.download_and_switch(
 QMT → 原子替换 `bin.x64/python312`（旧目录留在备份目录）→ 修改账号
 `Config.xml` 的 `libs_path` 和 `m_nPythonVersion` → 启动 QMT。账号已有
 cfquant 自动登录配置时，Web 服务会优先使用自动登录/策略恢复回调。
+首次绑定且启用了 cfquant 内置策略时，Web 服务会执行一次初始化引导：
+先启动 QMT 并等待自动登录生成真实的 `Config.xml`/模型账号 Key，随后正常
+关闭 QMT，应用运行时配置并完成策略部署，再第二次启动 QMT。未启用自动
+填写登录时会保留首次启动窗口，用户完成登录后再次启动即可继续部署。
 
 Web 服务提供三个受保护接口：
 
@@ -39,9 +43,10 @@ Web 服务提供三个受保护接口：
   `qmt_dir`（或唯一的 `account_id`），可选 `runtime`、`restart`、`job_id`。
   `reuse_installed=true` 时复用本地已安装的所选运行库，直接切换账号配置并重启；
   缺失时仍执行下载、校验、安装。默认 `false` 保留主动下载更新行为。
-  新账号尚未生成 `Config.xml` 时可传 `allow_missing_account_config=true`，仅下载并
-  安装运行库，待登录 QMT 后再执行账号切换；Python API 的
-  `download_and_switch(..., reuse_installed=True)` 支持相同选项。
+  新账号尚未生成 `Config.xml` 时可传 `allow_missing_account_config=true`。普通
+  Python API 在没有 `restart_callback` 时仅下载并安装运行库并保持 QMT 停止；
+  Web 绑定提供回调时会按上述初始化引导完成首次登录、账号切换和二次启动。
+  Python API 的 `download_and_switch(..., reuse_installed=True)` 支持相同选项。
 * `GET /api/qmt/python-runtime/jobs?job_id=...` 查询任务状态和进度。任务
   也会通过既有 `xtdata:download_progress` 回调事件发送阶段和字节进度。
 
@@ -49,6 +54,9 @@ Web 服务提供三个受保护接口：
 以及 `progress.phase=done`、`progress.percent=100`。`installed` 只表示安装步骤
 完成，后续切换或重启可能仍在执行。`result.account_config_required=true` 表示
 运行库已安装，但账号需要首次登录后才能应用执行器，不表示安装失败。
+Web 初始化引导完成后会返回 `account_config_bootstrapped=true` 并将该字段改为
+`false`。引导的 `result.restarted` 中还会记录 `bootstrap_completed`、首次
+启动 PID、正常退出结果和最终运行时切换结果。
 通知发送失败不会中断安装或改变任务结果，页面通过 HTTP 轮询补齐完成状态；
 保存绑定前还会复查任务，避免页面错过完成通知后一直提示“正在配置”。
 服务重启导致任务记录失效时，页面提示重新检测，不会仅凭文件存在宣告任务成功。

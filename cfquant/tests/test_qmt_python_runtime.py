@@ -250,6 +250,36 @@ def test_missing_account_config_can_install_runtime_before_first_login(tmp_path,
     assert not (root / "userdata" / "users" / "55009948" / "Config.xml").exists()
 
 
+def test_missing_account_config_invokes_managed_restart_callback(tmp_path, monkeypatch):
+    root = tmp_path / "qmt"
+    (root / "bin.x64").mkdir(parents=True)
+    manager = QmtPythonRuntime(root, account_id="55009948")
+    archive = manager.download_dir / "Python36-managed-bootstrap.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("python36.dll", "new-dll")
+        bundle.writestr("Lib/site.py", "# test")
+    package = _package("py36", archive)
+    monkeypatch.setattr(manager, "fetch_package", lambda runtime: package)
+    monkeypatch.setattr(manager, "download", lambda *args, **kwargs: archive)
+    monkeypatch.setattr(manager, "_qmt_processes", lambda: [])
+    calls = []
+
+    def restart_callback():
+        calls.append("restart")
+        return {"started": True, "bootstrap_completed": True}
+
+    result = manager.download_and_switch(
+        "py36", account_id="55009948", restart=True,
+        allow_missing_account_config=True, restart_callback=restart_callback,
+    )
+
+    assert calls == ["restart"]
+    assert result["account_config_required"] is True
+    assert result["restarted"]["bootstrap_completed"] is True
+    assert not (root / "userdata" / "users" / "55009948" / "Config.xml").exists()
+
+
 def test_runtime_status_without_account_still_exposes_capabilities(tmp_path, monkeypatch):
     import cfquant_web_server as web
     manager = runtime_fixture(tmp_path)
@@ -375,3 +405,44 @@ def test_runtime_job_uses_managed_restart_without_inline_login_or_bypassing_erro
     else:
         assert job["result"]["restarted"] == restart
     assert manager.binding_status()["state"] == "ready"
+
+
+def test_runtime_bootstrap_starts_stops_and_starts_managed_qmt(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import cfquant_web_server as web
+
+    row = {
+        "account_key": "bootstrap-account",
+        "account_id": "55009948",
+        "qmt_dir": str(tmp_path / "qmt"),
+        "qmt_strategy": {"enabled": True},
+        "qmt_auto_login": {"enabled": True, "auto_fill_credentials": True},
+    }
+    manager = SimpleNamespace(
+        binding_status=lambda account_id=None: {"state": "account_config_missing"},
+        switch_account=lambda runtime, account_id=None: {"runtime": runtime, "account_id": account_id},
+    )
+    paths = {"bin_dir": str(tmp_path / "qmt" / "bin.x64"), "exe_path": "fixture.exe"}
+    monkeypatch.setattr(web, "_qmt_auto_login_paths", lambda _: paths)
+    monkeypatch.setattr(web, "_qmt_wait_for_runtime_bootstrap_login",
+                        lambda row, paths: {"login_succeeded": True, "login_state": "logged_in"})
+    monkeypatch.setattr(web, "_qmt_auto_login_stop_xtitclient",
+                        lambda *args, **kwargs: {"exit_confirmed": True})
+    calls = []
+
+    def restart(account_row, settings, reason):
+        calls.append(reason)
+        if reason.endswith("first"):
+            return {"configured": True, "pid": 101, "strategy_deploy_deferred": True}
+        return {"configured": True, "pid": 202, "strategy_deploy_deferred": False}
+
+    monkeypatch.setattr(web, "qmt_auto_login_restart_for_account", restart)
+    result = web._qmt_python_runtime_bootstrap_restart(
+        row, row["qmt_auto_login"], manager, "py36", row["account_id"],
+        body={"allow_missing_account_config": True},
+    )
+
+    assert calls == ["python-runtime-bootstrap-first", "python-runtime-bootstrap-final"]
+    assert result["bootstrap_completed"] is True
+    assert result["pid"] == 202
+    assert result["runtime_switch"]["runtime"] == "py36"
