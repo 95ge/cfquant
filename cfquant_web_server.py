@@ -12350,6 +12350,9 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
             "update_process_changed": "QMT 更新进程与绑定不一致，已停止自动操作",
         }
         message = descriptions.get(outcome, "QMT 自动登录未完成")
+        pending = _qmt_auto_login_saved_session(row).get("strategy_deploy_message")
+        if pending and (result.get("login_succeeded") or outcome == "client_login"):
+            message += "；" + pending
         updates = {"state": "logged_in" if result.get("login_succeeded") else "client_login" if outcome == "client_login" else "login_failed",
                    "login_state": outcome, "login_phase": "", "login_succeeded": bool(result.get("login_succeeded")),
                    "login_attempts": result.get("attempts", []), "message": message,
@@ -12492,6 +12495,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             if restart and running:
                 raise RuntimeError("旧 QMT 进程未完全退出，已停止重启，避免重复启动")
             launch = None
+            preparation = {}
             if not running:
                 if (requested_restart and os.path.exists(paths.get("exe_path") or "")
                         and (row.get("qmt_strategy") or {}).get("enabled")):
@@ -12507,7 +12511,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 # Startup refresh may have rebuilt a managed package while the
                 # old QMT was still running. The background deployer cannot
                 # catch an immediate stop/start, so finish offline work here.
-                QMT_STRATEGIES.prepare_for_start(paths["bin_dir"])
+                preparation = QMT_STRATEGIES.prepare_for_start(paths["bin_dir"]) or {}
                 launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
                 running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
             pid = _qmt_auto_login_first_pid(running, launch)
@@ -12545,6 +12549,12 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             if not settings["auto_fill_credentials"]:
                 result["message"] += "；由 QMT 自行登录，未自动填写账号密码或点击登录；若仅记住密码，请手动登录"
             result["login_state"] = login_state
+            result["strategy_deploy_deferred"] = bool(preparation.get("waiting_account"))
+            result["strategy_deploy_message"] = (
+                "策略部署等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成部署"
+                if result["strategy_deploy_deferred"] else "")
+            if result["strategy_deploy_message"]:
+                result["message"] += "；" + result["strategy_deploy_message"]
             _qmt_auto_login_update_session(row, {
                 "enabled": True,
                 "auto_fill_credentials": settings["auto_fill_credentials"],
@@ -12566,6 +12576,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "restart_times": list(settings["restart_times"]),
                 "last_reason": reason,
                 "last_stop": stop,
+                "strategy_deploy_deferred": result["strategy_deploy_deferred"],
+                "strategy_deploy_message": result["strategy_deploy_message"],
                 "message": result["message"],
                 "error": "",
             })
@@ -17595,28 +17607,38 @@ def _qmt_python_job_snapshot(job_id):
 
 
 def _run_qmt_python_runtime_job(job_id, body):
-    manager, runtime = _qmt_python_runtime_row(body)
-    account_id = str(body.get("account_id") or manager.account_id or "")
+    account_id = str(body.get("account_id") or "")
     last_emit = [0.0]
+    notification_failed = [False]
+
+    def notify(stage, data):
+        try:
+            emit_download_progress(job_id, "qmt_python", stage, data, account_id=account_id)
+        except Exception as exc:
+            # HTTP job state is authoritative. Losing a progress subscriber
+            # must not abort installation or prevent a terminal transition.
+            if not notification_failed[0]:
+                safe_print("QMT Python job %s progress notification failed; HTTP polling remains available: %s" % (job_id, exc))
+                notification_failed[0] = True
 
     def progress(item):
         now = time.monotonic()
-        if item.get("phase") == "downloading" and now - last_emit[0] < 0.5:
-            return
-        last_emit[0] = now
         with QMT_PYTHON_RUNTIME_JOBS_LOCK:
             job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
             if job is not None:
                 job["progress"] = dict(item)
                 job["updated_at"] = time.time()
-        emit_download_progress(job_id, "qmt_python", item.get("phase", "progress"), item,
-                               account_id=account_id)
+        if item.get("phase") in ("download", "downloading") and now - last_emit[0] < 0.5:
+            return
+        last_emit[0] = now
+        notify(item.get("phase", "progress"), item)
 
     with QMT_PYTHON_RUNTIME_JOBS_LOCK:
         job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
         if job is not None:
             job.update(state="running", updated_at=time.time())
     try:
+        manager, runtime = _qmt_python_runtime_row(body)
         def restart_qmt():
             # When the web service owns this binding, reuse its credential and
             # strategy recovery flow.  A plain client launch remains the safe
@@ -17635,13 +17657,9 @@ def _run_qmt_python_runtime_job(job_id, body):
             if row is not None:
                 result = qmt_auto_login_restart_for_account(
                     row, row.get("qmt_auto_login"), reason="python-runtime-switch")
-                if manager._qmt_processes():
+                if result.get("configured") and not result.get("error"):
                     return result
-                # A stale strategy deployment may reject the automatic
-                # startup before it launches XtItClient.  Start the selected
-                # client, then invoke the same credential injector directly;
-                # this keeps runtime switching independent of old strategy
-                # queue state while preserving the normal login mechanism.
+                raise RuntimeError(result.get("error") or result.get("message") or "QMT 自动启动失败")
             vm_settings = _qmt_vm_settings_for_qmt_dir(str(manager.bin_dir))
             if qmt_vm_settings_enabled(vm_settings):
                 paths = dict(_qmt_auto_login_paths(str(manager.bin_dir)), qmt_vm=vm_settings)
@@ -17650,26 +17668,7 @@ def _run_qmt_python_runtime_job(job_id, body):
                 restart_result = dict(_qmt_auto_login_start_xtitclient(paths), started=True)
             else:
                 restart_result = manager.restart_qmt()
-            if row is None:
-                return restart_result
-            try:
-                from cfquant.qmt_component_login import login_running_qmt
-                from cfquant.qmt_credentials import QmtCredentialStore
-                paths = _qmt_auto_login_paths(row.get("qmt_dir"))
-                processes = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
-                if not processes:
-                    return restart_result
-                pid = int(processes[0]["pid"])
-                settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
-                account = settings.get("login_account") or str(row.get("account_id") or "")
-                login = login_running_qmt(
-                    paths["bin_dir"], account,
-                    lambda: QmtCredentialStore(WEB_CONFIG.path).password(paths["bin_dir"], account),
-                    expected_pid=pid, startup_timeout=120,
-                )
-                return dict(restart_result, login=login)
-            except Exception as exc:
-                return dict(restart_result, login_error=str(exc))
+            return restart_result
 
         result = manager.download_and_switch(
             runtime,
@@ -17684,14 +17683,19 @@ def _run_qmt_python_runtime_job(job_id, body):
         with QMT_PYTHON_RUNTIME_JOBS_LOCK:
             job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
             if job is not None:
-                job.update(state="error", error=str(exc), updated_at=time.time())
-        emit_download_progress(job_id, "qmt_python", "error", {"error": str(exc)}, account_id=account_id)
+                job.update(state="error", error=str(exc), updated_at=time.time(),
+                           progress=dict(job.get("progress") or {}, phase="error", error=str(exc)))
+        safe_print("QMT Python job %s failed: %s" % (job_id, exc))
+        notify("error", {"phase": "error", "error": str(exc)})
         return
+    completed = {"phase": "done", "percent": 100, "result": result}
     with QMT_PYTHON_RUNTIME_JOBS_LOCK:
         job = QMT_PYTHON_RUNTIME_JOBS.get(str(job_id))
         if job is not None:
-            job.update(state="done", result=result, updated_at=time.time())
-    emit_download_progress(job_id, "qmt_python", "done", {"result": result}, account_id=account_id)
+            job.update(state="done", result=result, progress=completed, updated_at=time.time())
+    safe_print("QMT Python job %s completed; account_config_required=%s" %
+               (job_id, bool(result.get("account_config_required"))))
+    notify("done", completed)
 
 
 def start_qmt_python_runtime_job(body):

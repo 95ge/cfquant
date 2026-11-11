@@ -488,6 +488,25 @@ def test_no_account_binding_is_never_fabricated(deployment):
         _account_binding(document, ACCOUNT, "STOCK", ACCOUNT_KEY)
 
 
+def test_first_login_can_start_and_next_start_prepares_real_binding(deployment):
+    manager, row, infos, running, root = deployment
+    config = root / "config" / "indexUserConfig.xml"
+    config.write_text('<ICUserConfigFile><FormulaCatalog/><strategyTrade/></ICUserConfigFile>', encoding="utf-8")
+    manager.configure(row, infos)
+    prepared = manager.prepare_for_start(root)
+    assert prepared["waiting_account"]
+    assert not models(root)
+    finish_import(manager, root)
+    auth = root / "userdata" / "users" / "test_user" / "authAndConfig.xml"
+    auth.parent.mkdir(parents=True)
+    auth.write_text('<TTAuthAndConfigFile><TTAlgoConfigFile><AccountAuth key="%s" strategys="1"/>'
+                    '</TTAlgoConfigFile></TTAuthAndConfigFile>' % ACCOUNT_KEY, encoding="utf-8")
+    assert not manager.prepare_for_start(root)["waiting_account"]
+    role = next(iter(manager.jobs.values()))["roles"][0]
+    assert role["model_prepared"]
+    assert models(root)[role["name"]].getAttribute("m_strAccountKey") == ACCOUNT_KEY
+
+
 def test_first_start_has_a_credit_model_even_without_an_existing_model(deployment):
     manager, row, infos, running, root = deployment
     config = root / "config" / "indexUserConfig.xml"

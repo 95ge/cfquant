@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261111_02';
+const FRONTEND_VERSION = 'web_20261111_03';
 
 const state = {
   accountId: '',
@@ -422,7 +422,7 @@ function strategyDeployTargetDetail(target = {}) {
     waiting_import_save: '策略已导入但模型配置尚未保存；请退出 QMT，等待配置完成后再启动',
     waiting_start: '策略配置已写入；请启动并登录 QMT，等待托管策略上线',
     waiting_manual_start: '策略已导入；请在 QMT 的模型交易中手动运行托管策略',
-    waiting_account: '未找到该资金账号的 QMT 绑定键；请在绑定页补充模型账号 Key',
+    waiting_account: '等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成策略部署。仍无法识别时再补充模型账号 Key',
   };
   let reason = stateMessages[target.state] || reasons.find((value) => !['error', '策略部署失败'].includes(value))
     || reasons[0] || target.state || '';
@@ -476,7 +476,7 @@ function qmtStartupInstruction(values = {}) {
     return '自动导入并管理 QMT 策略未启用。请返回账号配置，勾选后保存以完成自动部署。';
   }
   if (targets.some((target) => target.state === 'waiting_account')) {
-    return '尚未找到资金账号的 QMT 绑定键，请在账号配置中补充模型账号 Key 后重新保存。';
+    return strategyDeployTargetDetail(targets.find((target) => target.state === 'waiting_account'));
   }
   let message;
   if (targets.some((target) => ['waiting_exit', 'waiting_import_save'].includes(target.state))) {
@@ -10711,25 +10711,28 @@ function renderBindingPythonRuntimeProgress() {
   wrap.classList.remove('hidden');
   const data = event.data && typeof event.data === 'object' ? event.data : event;
   const phase = data.phase || event.meta?.stage || 'progress';
-  const percent = downloadEventPercent(event);
+  const phaseHasPercent = ['download', 'downloading', 'download_verified', 'installed'].includes(phase);
+  const rawPercent = Number(data.percent);
+  const percent = phase === 'done' ? 100 : (phaseHasPercent && Number.isFinite(rawPercent)
+    ? Math.max(0, Math.min(100, rawPercent)) : null);
   const done = Number(data.bytes_done ?? data.done ?? 0);
   const total = Number(data.bytes_total ?? data.total ?? 0);
   const speed = Number(data.speed || 0);
-  const eta = Number(data.eta);
-  bar.style.width = percent === null ? '0%' : `${percent.toFixed(0)}%`;
+  const eta = data.eta == null ? NaN : Number(data.eta);
+  bar.style.width = percent === null ? '' : `${percent.toFixed(0)}%`;
   bar.classList.toggle('is-indeterminate', percent === null && !['installed', 'download_verified', 'done', 'error'].includes(phase));
   bar.classList.toggle('is-done', phase === 'done');
   bar.classList.toggle('is-error', phase === 'error');
   const bytes = total > 0 ? `，${(done / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB` : '';
   const speedText = speed > 0 ? `，${(speed / 1048576).toFixed(2)} MB/s` : '';
   const etaText = Number.isFinite(eta) && eta >= 0 ? `，剩余约 ${Math.ceil(eta)} 秒` : '';
-  const phaseText = ({ queued: '排队中', downloading: '下载中', download_verified: '下载校验完成',
-    installing: '安装中', installed: '安装完成，等待切换', reusing: '使用已安装运行库',
+  const phaseText = ({ queued: '排队中', download: '下载中', downloading: '下载中', download_verified: '下载校验完成',
+    extract: '解压安装中', installing: '安装中', installed: '安装完成，等待切换', reusing: '使用已安装运行库',
     activating: '配置执行器', restarting: '重启 QMT', done: '已完成', error: '任务失败' })[phase] || '处理中';
   meta.textContent = `${phaseText}${percent === null ? '' : `，${percent.toFixed(0)}%`}${bytes}${speedText}${etaText}`;
   const deferred = state.bindingPythonRuntimeDeferred || !!data.result?.account_config_required;
   text.textContent = data.error || (phase === 'done'
-    ? (deferred ? '运行库已安装，请先登录 QMT，再重新检测并应用执行器' : '执行器已配置，QMT 重启流程已完成')
+    ? (deferred ? '运行库已安装，可以保存绑定；首次登录 QMT 后重新检测并应用执行器' : '执行器已配置，QMT 重启流程已完成')
     : phaseText);
 }
 
@@ -10864,41 +10867,50 @@ function startBindingPythonRuntimeSocket(jobId, body) {
   };
 }
 
+async function refreshBindingPythonRuntimeJob(jobId) {
+  if (!jobId || state.bindingPythonRuntimeJobId !== jobId) return;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15000);
+  try {
+    const job = await api(`/api/qmt/python-runtime/jobs?job_id=${encodeURIComponent(jobId)}`, { signal: controller.signal });
+    if (!job || state.bindingPythonRuntimeJobId !== jobId) return;
+    const progress = job.progress || {};
+    // Terminal state/result override stale installed/restarting progress.
+    const stage = ['done', 'error'].includes(job.state) ? job.state : progress.phase || job.state;
+    bindingPythonRuntimeProgressEvent({
+      event: DOWNLOAD_CALLBACK_EVENT,
+      meta: { job_id: jobId, stage },
+      data: { ...progress, phase: stage,
+        ...(job.state === 'done' ? { percent: 100, result: job.result || {} } : {}),
+        ...(job.state === 'error' ? { error: job.error || 'QMT Python 库配置失败' } : {}) },
+    });
+  } catch (error) {
+    if (state.bindingPythonRuntimeJobId !== jobId) return;
+    if (error.status === 404) {
+      bindingPythonRuntimeProgressEvent({ meta: { job_id: jobId, stage: 'error' },
+        data: { phase: 'error', error: '下载任务记录已失效，请重新检测运行库；已安装时可直接应用，无需重新下载。' } });
+      scheduleBindingPythonRuntimeCheck(0);
+      return;
+    }
+    const text = $('bindingPythonRuntimeProgressText');
+    if (text && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
+      text.textContent = `进度查询失败，将自动重试：${controller.signal.aborted ? '请求超时' : error.message}`;
+    }
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 function pollBindingPythonRuntimeJob(jobId) {
   clearBindingPythonRuntimePoll();
-  state.bindingPythonRuntimePollTimer = window.setInterval(async () => {
-    try {
-      const job = await api(`/api/qmt/python-runtime/jobs?job_id=${encodeURIComponent(jobId)}`);
-      if (!job) return;
-      const progress = job.progress || {};
-      if (Object.keys(progress).length) {
-        bindingPythonRuntimeProgressEvent({
-          event: DOWNLOAD_CALLBACK_EVENT,
-          meta: { job_id: jobId, stage: progress.phase || job.state },
-          data: progress,
-        });
-      }
-      if (job.state === 'error') {
-        bindingPythonRuntimeProgressEvent({
-          event: DOWNLOAD_CALLBACK_EVENT,
-          meta: { job_id: jobId, stage: 'error' },
-          data: { error: job.error || 'QMT Python 库任务失败' },
-        });
-      } else if (job.state === 'done') {
-        bindingPythonRuntimeProgressEvent({
-          event: DOWNLOAD_CALLBACK_EVENT,
-          meta: { job_id: jobId, stage: 'done' },
-          data: { message: 'Python 库已安装并完成 QMT 重启' },
-        });
-      }
-    } catch (error) {
-      const text = $('bindingPythonRuntimeProgressText');
-      if (text && state.bindingPythonRuntimeJobId === jobId
-          && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
-        text.textContent = `进度查询失败：${error.message}`;
-      }
-    }
-  }, 1000);
+  let inFlight = false;
+  const poll = async () => {
+    if (inFlight || state.bindingPythonRuntimeJobId !== jobId) return;
+    inFlight = true;
+    try { await refreshBindingPythonRuntimeJob(jobId); } finally { inFlight = false; }
+  };
+  state.bindingPythonRuntimePollTimer = window.setInterval(poll, 1000);
+  poll();
 }
 
 async function refreshBindingPythonRuntime(options = {}) {
@@ -11004,10 +11016,16 @@ async function downloadBindingPythonRuntime() {
     data: { phase: 'queued', message: '正在提交 QMT Python 库任务' },
   };
   renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
-  startBindingPythonRuntimeSocket(jobId, body);
-  pollBindingPythonRuntimeJob(jobId);
   try {
     await api('/api/qmt/python-runtime/download', { method: 'POST', body: JSON.stringify(body) });
+    if (state.bindingPythonRuntimeJobId !== jobId) return;
+    pollBindingPythonRuntimeJob(jobId);
+    try {
+      startBindingPythonRuntimeSocket(jobId, body);
+    } catch (error) {
+      // HTTP polling also works when the browser cannot create a socket.
+      closeBindingPythonRuntimeSocket();
+    }
   } catch (error) {
     clearBindingPythonRuntimePoll();
     closeBindingPythonRuntimeSocket();
@@ -11035,6 +11053,10 @@ async function submitBindingForm(event) {
   const qmtTradeDir = form.qmt_trade_dir ? qmtDeploymentPath(form.qmt_trade_dir.value) : '';
   const mode = form.mode ? form.mode.value : DEFAULT_BINDING_MODE;
   const qmtRuntime = readBindingRuntimeSettings(form);
+  if (state.bindingPythonRuntimeJobId && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
+    await refreshBindingPythonRuntimeJob(state.bindingPythonRuntimeJobId);
+    if (!state.bindingPythonRuntimeJobId) await refreshBindingPythonRuntime();
+  }
   if (state.bindingPythonRuntimeJobId && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
     setBindingNotice('Python 执行器正在配置，请等待任务完成后再保存绑定。', 'warn', { autoHide: false });
     return;

@@ -81,6 +81,15 @@ def test_selected_executor_is_applied_through_existing_job_until_restart_finishe
     expect(button).to_be_disabled()
     assert not page.locator("#bindingPythonRuntimeProgressBar").evaluate("node => node.classList.contains('is-done')")
     expect(page.locator("#bindingPythonRuntimeProgressMeta")).to_contain_text("等待切换")
+    for phase in ("extract", "activating", "restarting"):
+        page.evaluate("""phase => bindingPythonRuntimeProgressEvent({
+            meta: {job_id: state.bindingPythonRuntimeJobId, stage: phase},
+            data: {phase, percent: 0, eta: null}
+        })""", phase)
+        expect(page.locator("#bindingPythonRuntimeProgressMeta")).not_to_contain_text("0%")
+        expect(page.locator("#bindingPythonRuntimeProgressMeta")).not_to_contain_text("剩余约 0")
+        assert page.locator("#bindingPythonRuntimeProgressBar").evaluate("node => node.getBoundingClientRect().width > 0")
+        assert page.evaluate("!!state.bindingPythonRuntimeJobId")
     status["binding"].update(selected_runtime="py312", configured_runtime="py312", state="ready")
     status["binding"]["runtimes"]["py312"]["installed"] = True
     page.evaluate("""bindingPythonRuntimeProgressEvent({
@@ -92,6 +101,45 @@ def test_selected_executor_is_applied_through_existing_job_until_restart_finishe
     page.evaluate("openBindingDialog({accountId: 'TEST_ONLY', qmtDir: 'D:/QMT'})")
     expect(select).to_have_value("py312")
     assert page.locator("#bindingPythonRuntimePanel").evaluate("node => node.scrollWidth <= node.clientWidth")
+    assert not errors
+
+
+def test_lost_job_record_releases_busy_state_without_claiming_success(page, frontend_url):
+    errors = open_runtime(page, frontend_url, runtime_status(config_exists=False))
+    page.route("**/api/qmt/python-runtime/download", lambda route: route.fulfill(json={"ok": True, "data": {"state": "queued"}}))
+    page.route("**/api/qmt/python-runtime/jobs?*", lambda route: route.fulfill(status=404, json={"ok": False, "error": "job not found"}))
+    page.locator("#bindingPythonRuntimeDownloadBtn").click()
+    page.wait_for_function("!state.bindingPythonRuntimeJobId && state.bindingPythonRuntimeProgress?.meta?.stage === 'error'")
+    expect(page.locator("#bindingPythonRuntimeProgressText")).to_contain_text("记录已失效")
+    expect(page.locator("#bindingPythonRuntimeDownloadBtn")).to_be_enabled()
+    assert not errors
+
+
+def test_save_rechecks_completed_runtime_job_even_without_progress_notification(page, frontend_url):
+    errors = open_runtime(page, frontend_url, runtime_status(config_exists=False))
+    page.route("**/api/qmt/python-runtime/jobs?*", lambda route: route.fulfill(json={
+        "ok": True, "data": {"state": "done", "result": {"account_config_required": True}}}))
+    saved = []
+    def save(route):
+        body = route.request.post_data_json
+        saved.append(body)
+        row = dict(body, account_key="TEST_ONLY|STOCK|test", bridge_id="test")
+        route.fulfill(json={"ok": True, "data": {
+            "account": row, "account_configs": {row["account_key"]: row}, "account_pairs": {},
+            "bridges": {"test": {"name": "Test"}}, "qmt_strategy_deploy": {"enabled": False},
+            "qmt_auto_login": {"enabled": False}}})
+    page.route("**/api/account-config", save)
+    page.locator("#bindingQmtAutoLogin").uncheck()
+    page.evaluate("""() => {
+        fillQmtStrategySettings('binding', {enabled: false});
+        state.bindingPythonRuntimeJobId = 'missed-done';
+        state.bindingPythonRuntimeJobContext = bindingPythonRuntimeContextKey();
+        state.bindingPythonRuntimeJobRuntime = 'py36';
+    }""")
+    page.locator('#bindingForm [type="submit"]').click()
+    expect(page.locator("#bindingDialogOverlay")).not_to_be_visible()
+    assert len(saved) == 1
+    assert not page.evaluate("state.bindingPythonRuntimeJobId")
     assert not errors
 
 
@@ -128,4 +176,29 @@ def test_missing_account_config_shows_capabilities_but_requires_login(page, fron
     page.locator("#bindingPythonRuntimeDownloadBtn").click()
     page.wait_for_function("state.bindingPythonRuntimeJobId")
     assert submitted[0]["allow_missing_account_config"] is True
+    assert not errors
+
+
+@pytest.mark.parametrize("socket_throws", [False, True], ids=["socket-disconnected", "socket-unavailable"])
+def test_poll_completion_before_first_login_unlocks_binding(page, frontend_url, socket_throws):
+    status = runtime_status(config_exists=False)
+    errors = open_runtime(page, frontend_url, status)
+    submitted = []
+    page.route("**/api/qmt/python-runtime/download", lambda route: (
+        submitted.append(route.request.post_data_json),
+        route.fulfill(json={"ok": True, "data": {"state": "queued"}})))
+    # The last progress event is not a terminal event. HTTP state/result must
+    # recover completion even if the WebSocket notification never arrived.
+    page.route("**/api/qmt/python-runtime/jobs?*", lambda route: route.fulfill(json={
+        "ok": True, "data": {"state": "done", "progress": {"phase": "installed", "percent": 100},
+        "result": {"account_config_required": True, "restarted": None}}}))
+    if socket_throws:
+        page.evaluate("() => { window.WebSocket = function() { throw new Error('WebSocket unavailable'); }; }")
+    page.locator("#bindingPythonRuntimeDownloadBtn").click()
+    page.wait_for_function("state.bindingPythonRuntimeJobId === '' && state.bindingPythonRuntimeProgress?.meta?.stage === 'done'")
+    assert len(submitted) == 1
+    assert page.evaluate("state.bindingPythonRuntimeDeferred")
+    assert not page.evaluate("state.bindingPythonRuntimeChoiceDirty")
+    expect(page.locator("#bindingPythonRuntimeProgressMeta")).to_contain_text("100%")
+    expect(page.locator("#bindingPythonRuntimeProgressText")).to_contain_text("登录")
     assert not errors

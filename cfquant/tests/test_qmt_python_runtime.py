@@ -307,3 +307,71 @@ def test_runtime_job_rejects_unsupported_selection_before_scheduling(tmp_path, m
     with pytest.raises(QmtPythonRuntimeError, match="only supports"):
         web.start_qmt_python_runtime_job({"qmt_dir": str(manager.qmt_dir), "account_id": "TEST_ONLY", "runtime": "py312"})
     assert not jobs
+
+
+def test_runtime_job_completion_survives_notification_failure(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    manager = runtime_fixture(tmp_path)
+    jobs = {}
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
+    monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("callback transport unavailable")
+    monkeypatch.setattr(web, "emit_download_progress", unavailable)
+    result = {"account_config_required": True, "installed": {"installed": True}, "restarted": None}
+    def switch(self, runtime, **kwargs):
+        kwargs["progress_callback"]({"phase": "download", "percent": 50})
+        kwargs["progress_callback"]({"phase": "installed", "percent": 100})
+        return result
+    monkeypatch.setattr(QmtPythonRuntime, "download_and_switch", switch)
+    body = {"qmt_dir": str(manager.qmt_dir), "account_id": "TEST_ONLY", "runtime": "py36", "job_id": "notify-failure"}
+    web.start_qmt_python_runtime_job(body)
+    web._run_qmt_python_runtime_job(body["job_id"], body)
+    job = web._qmt_python_job_snapshot(body["job_id"])
+    assert job["state"] == "done"
+    assert job["result"] == result
+    assert job["progress"]["phase"] == "done"
+    assert job["progress"]["percent"] == 100
+
+
+def test_runtime_job_initialization_failure_is_terminal(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    manager = runtime_fixture(tmp_path)
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", {})
+    monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
+    monkeypatch.setattr(web, "emit_download_progress", lambda *a, **kw: None)
+    body = {"qmt_dir": str(manager.qmt_dir), "runtime": "py36", "job_id": "init-failure"}
+    web.start_qmt_python_runtime_job(body)
+    def invalid(_):
+        raise ValueError("QMT directory unavailable")
+    monkeypatch.setattr(web, "_qmt_python_runtime_row", invalid)
+    web._run_qmt_python_runtime_job(body["job_id"], body)
+    assert web._qmt_python_job_snapshot(body["job_id"])["state"] == "error"
+
+
+@pytest.mark.parametrize("restart_failed", [False, True])
+def test_runtime_job_uses_managed_restart_without_inline_login_or_bypassing_errors(tmp_path, monkeypatch, restart_failed):
+    from types import SimpleNamespace
+    import cfquant_web_server as web
+    manager = runtime_fixture(tmp_path)
+    row = {"account_id": "TEST_ONLY", "qmt_dir": str(manager.qmt_dir)}
+    monkeypatch.setattr(web, "WEB_CONFIG", SimpleNamespace(account_configs=lambda: {"test": row}))
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", {})
+    monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
+    monkeypatch.setattr(web, "emit_download_progress", lambda *a, **kw: None)
+    monkeypatch.setattr(QmtPythonRuntime, "_qmt_processes", lambda self: [])
+    monkeypatch.setattr(QmtPythonRuntime, "restart_qmt", lambda self: pytest.fail("must not bypass managed restart"))
+    restart = {"configured": False, "error": "deployment write failed"} if restart_failed else {
+        "configured": True, "pid": 456, "login_state": "logging_in"}
+    monkeypatch.setattr(web, "qmt_auto_login_restart_for_account", lambda *a, **kw: restart)
+    body = {"qmt_dir": str(manager.qmt_dir), "account_id": "TEST_ONLY", "runtime": "py36",
+            "reuse_installed": True, "restart": True, "job_id": "managed-restart"}
+    web.start_qmt_python_runtime_job(body)
+    web._run_qmt_python_runtime_job(body["job_id"], body)
+    job = web._qmt_python_job_snapshot(body["job_id"])
+    assert job["state"] == ("error" if restart_failed else "done")
+    if restart_failed:
+        assert "deployment write failed" in job["error"]
+    else:
+        assert job["result"]["restarted"] == restart
+    assert manager.binding_status()["state"] == "ready"

@@ -82,7 +82,7 @@ STATES = {
     "waiting_start": "QMT 已启动，等待托管策略启动及通道连接",
     "waiting_manual_start": "QMT 已启动，自启未开启，请在模型交易中运行托管策略",
     "running": "托管策略已运行",
-    "waiting_account": "未找到此资金账号的 QMT 绑定键，请补充模型账号 Key",
+    "waiting_account": "等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成策略部署。仍无法识别时再补充模型账号 Key",
     "configured": "模型已配置，等待下次启动 QMT 生效",
     "disabled": "自动运行已关闭，托管策略已禁用",
     "error": "策略部署失败",
@@ -915,15 +915,16 @@ class QmtStrategyManager:
                 self._save()
 
     def prepare_for_start(self, directory):
-        """Finish this terminal's offline deployment before allowing launch."""
+        """Finish offline deployment, or allow login to supply a missing key."""
         root = qmt_root(directory)
+        waiting_account = []
         with self.lock:
             if self.load_error:
                 raise ValueError(self.load_error)
             jobs = [job for job in self.jobs.values()
                     if os.path.normcase(str(qmt_root(job["root"]))) == os.path.normcase(str(root))]
             if not jobs:
-                return
+                return {"waiting_account": waiting_account}
             if self.process_checker(root):
                 raise RuntimeError("QMT 尚未完全退出，无法完成启动前策略部署")
             try:
@@ -957,6 +958,12 @@ class QmtStrategyManager:
                         job["deploy_retry_after"] = time.time() + min(10.0, 2.0 * count)
                         self._state(job, "error", str(error))
                         raise
+                    if job.get("state") == "waiting_account":
+                        # QMT creates its account authorization on first login.
+                        # Do not fabricate a model key or make login depend on
+                        # the model that can only be prepared after that login.
+                        waiting_account.append(job["account_id"])
+                        continue
                     if (job.get("state") not in ("configured", "waiting_import", "disabled")
                             or (job.get("enabled") and any(
                                 not role.get("model_prepared") or role.get("reimport_required")
@@ -965,6 +972,7 @@ class QmtStrategyManager:
                                            (job.get("message") or job.get("state", "")))
             finally:
                 self._save()
+        return {"waiting_account": waiting_account}
 
     def _advance(self, job):
         root = qmt_root(job["root"])

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from cfquant.tests.test_qmt_strategy_web import web_config, login_credentials
+from cfquant.tests.test_qmt_strategy_deploy import deployment
 from cfquant.tests.test_management import service
 from cfquant.qmt_credentials import QmtCredentialStore
 from cfquant.trading_calendar import is_trading_day
@@ -284,6 +285,37 @@ def test_failed_offline_deployment_blocks_launch_and_login(web_config, monkeypat
                                                   "qmt_auto_login": {"enabled": True}})
     assert "deployment write failed" in result["error"]
     assert not result["started"] and not result["configured"]
+
+
+@pytest.mark.parametrize("auto_fill", [True, False])
+@pytest.mark.parametrize("restart", [True, False])
+def test_first_login_without_model_key_launches_and_reports_pending_deployment(
+        web_config, deployment, monkeypatch, tmp_path, auto_fill, restart):
+    web, _ = web_config
+    manager, row, infos, running, root = deployment
+    (root / "config" / "indexUserConfig.xml").write_text(
+        '<ICUserConfigFile><FormulaCatalog/><strategyTrade/></ICUserConfigFile>', encoding="utf-8")
+    manager.configure(row, infos)
+    row["qmt_auto_login"] = {"enabled": True, "auto_fill_credentials": auto_fill, "auto_update": True}
+    monkeypatch.setenv("CFQUANT_QMT_AUTO_START", "saved")
+    monkeypatch.setattr(web, "QMT_AUTO_LOGIN_STATE_FILE", str(tmp_path / "sessions.json"))
+    monkeypatch.setattr(web, "QMT_COMPONENT_JOBS", {})
+    monkeypatch.setattr(web, "QMT_STRATEGIES", manager)
+    paths = {"bin_dir": str(root / "bin.x64"), "exe_path": "fixture.exe"}
+    monkeypatch.setattr(web, "_qmt_auto_login_paths", lambda _: paths)
+    monkeypatch.setattr(web, "_qmt_component_login_preflight", lambda *a: None)
+    monkeypatch.setattr(web, "_qmt_auto_login_processes", lambda *a, **k: [])
+    monkeypatch.setattr(web, "_qmt_auto_login_stop_xtitclient", lambda *a, **k: {})
+    calls = []
+    monkeypatch.setattr(web, "_qmt_auto_login_start_xtitclient", lambda *a, **k: calls.append("start") or {"pid": 456})
+    monkeypatch.setattr(web, "_qmt_queue_component_login", lambda *a: calls.append("login"))
+    result = web.qmt_auto_login_apply_for_account(row, restart=restart)
+    assert result["configured"] and not result.get("error")
+    assert result["strategy_deploy_deferred"]
+    assert calls == ["start", "login"]
+    session = web._qmt_auto_login_saved_session(row)
+    assert session["strategy_deploy_deferred"] and not session["error"]
+    assert "首次登录" in session["message"]
 
 
 def test_worker_records_success_and_supplies_saved_password_only_on_request(web_config, monkeypatch, tmp_path):
