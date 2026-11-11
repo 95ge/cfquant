@@ -224,6 +224,32 @@ def test_invalid_config_fails_before_download_or_process_stop(tmp_path, monkeypa
         manager.download_and_switch("py312", reuse_installed=True)
 
 
+def test_missing_account_config_can_install_runtime_before_first_login(tmp_path, monkeypatch):
+    root = tmp_path / "qmt"
+    (root / "bin.x64").mkdir(parents=True)
+    manager = QmtPythonRuntime(root, account_id="55009948")
+    archive = manager.download_dir / "Python36x64-first-login.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("python36.dll", "new-dll")
+        bundle.writestr("Lib/site.py", "# test")
+    package = _package("py36", archive)
+    monkeypatch.setattr(manager, "fetch_package", lambda runtime: package)
+    monkeypatch.setattr(manager, "download", lambda *args, **kwargs: archive)
+    monkeypatch.setattr(manager, "_qmt_processes", lambda: [])
+
+    result = manager.download_and_switch(
+        "py36", account_id="55009948", restart=True,
+        allow_missing_account_config=True,
+    )
+
+    assert result["account_config_required"] is True
+    assert result["switched"] is None
+    assert result["restarted"] is None
+    assert (root / "bin.x64" / "python36.dll").read_bytes() == b"new-dll"
+    assert not (root / "userdata" / "users" / "55009948" / "Config.xml").exists()
+
+
 def test_runtime_status_without_account_still_exposes_capabilities(tmp_path, monkeypatch):
     import cfquant_web_server as web
     manager = runtime_fixture(tmp_path)
@@ -231,6 +257,21 @@ def test_runtime_status_without_account_still_exposes_capabilities(tmp_path, mon
     status = web.qmt_python_runtime_status({"qmt_dir": str(manager.qmt_dir), "runtime": "py36", "refresh": False})
     assert status["binding"]["available_runtimes"] == ["py36", "py312"]
     assert status["binding"]["config_exists"] is False
+
+
+def test_runtime_job_allows_install_before_first_qmt_login(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    root = tmp_path / "qmt"
+    (root / "bin.x64").mkdir(parents=True)
+    jobs = {}
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
+    monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
+    result = web.start_qmt_python_runtime_job({
+        "qmt_dir": str(root), "account_id": "55009948", "runtime": "py36",
+        "allow_missing_account_config": True, "job_id": "first-login",
+    })
+    assert result["state"] == "queued"
+    assert jobs["first-login"]["state"] == "queued"
 
 
 def test_runtime_jobs_forward_reuse_and_reject_concurrent_directory(tmp_path, monkeypatch):

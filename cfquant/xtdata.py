@@ -234,6 +234,7 @@ def download_history_data2(
     incrementally=None,
     job_id=None,
     keep_callback=False,
+    download_batch_size=None,
 ):
     event_name = None
     if callback:
@@ -249,6 +250,7 @@ def download_history_data2(
             "callback_event": event_name,
             "download_job_id": job_id,
             "download_emit_lifecycle": bool(event_name),
+            "download_batch_size": download_batch_size,
         })
     finally:
         if event_name and callback and not keep_callback:

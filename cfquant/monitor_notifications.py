@@ -6,11 +6,9 @@ never perform SMTP or HTTP work on a QMT callback/status thread.
 """
 
 import copy
-import base64
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 import hashlib
-import hmac
 import json
 import os
 from pathlib import Path
@@ -20,9 +18,7 @@ import ssl
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
+from .webhook import send_webhook
 
 
 SHANGHAI = timezone(timedelta(hours=8))
@@ -566,28 +562,5 @@ class MonitorNotificationService:
                 server.send_message(msg)
 
     def _send_webhook(self, config, event):
-        url = str(config.get("url") or "").strip()
-        if not url:
-            raise ValueError("webhook url is required")
-        kind = str(config.get("type") or "generic").lower()
-        if kind == "dingtalk" and config.get("secret"):
-            timestamp = str(int(time.time() * 1000))
-            secret = str(config.get("secret"))
-            raw = "%s\n%s" % (timestamp, secret)
-            sign = base64.b64encode(hmac.new(secret.encode("utf-8"), raw.encode("utf-8"), hashlib.sha256).digest()).decode("ascii")
-            separator = "&" if "?" in url else "?"
-            url = "%s%stimestamp=%s&sign=%s" % (url, separator, urllib.parse.quote(timestamp), urllib.parse.quote(sign))
-        text = self._format_text(event)
-        if kind == "feishu":
-            body = {"msg_type": "text", "content": {"text": text}}
-        elif kind in ("dingtalk", "wecom"):
-            body = {"msgtype": "text", "text": {"content": text}}
-        else:
-            body = {"event_type": event.get("event_type"), "title": event.get("title"),
-                    "message": event.get("message"), "payload": event.get("payload"),
-                    "occurred_at": event.get("occurred_at")}
-        request = urllib.request.Request(url, data=json.dumps(body, ensure_ascii=False, default=str).encode("utf-8"),
-                                         headers={"Content-Type": "application/json; charset=utf-8", "User-Agent": "cfquant-monitor"}, method="POST")
-        with urllib.request.urlopen(request, timeout=8) as response:
-            if int(getattr(response, "status", 200)) >= 400:
-                raise urllib.error.HTTPError(url, response.status, "webhook returned %s" % response.status, response.headers, None)
+        payload = {key: event.get(key) for key in ("event_type", "title", "message", "payload", "occurred_at")}
+        return send_webhook(config, self._format_text(event), payload=payload)

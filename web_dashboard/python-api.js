@@ -3,11 +3,11 @@
   'use strict';
   const data = window.CFQUANT_PYTHON_API;
   if (!data) return;
-  const extensions = window.CFQUANT_CFTRADER_API || [];
+  const extensions = [...(window.CFQUANT_CFTRADER_API || []), ...(window.CFQUANT_NOTIFY_API || [])];
   const nativeEntries = window.CFQUANT_QMT_INNER_API?.entries || [];
   const entries = [...nativeEntries, ...extensions, ...data.entries, ...data.references];
   const byId = new Map(entries.map(entry => [entry.id, entry]));
-  const modules = { qmt_inner: '大 QMT 内置 · QmtInnerApi', cftrader: 'cftrader', xtdata: 'XtData 行情', trader: 'XtQuantTrader 交易', callback: 'XtQuantTraderCallback', type: '交易数据结构', reference: '概述与附录' };
+  const modules = { notify: '消息推送', qmt_inner: '大 QMT 内置 · QmtInnerApi', cftrader: 'cftrader', xtdata: 'XtData 行情', trader: 'XtQuantTrader 交易', callback: 'XtQuantTraderCallback', type: '交易数据结构', reference: '概述与附录' };
   const labels = { native: '原生调用 · 依终端能力', extension: 'cfquant 独立接口', supported: '已适配', partial: '部分适配', unverified: '尚未支持 · 条件待验证', unsupported: '尚未支持', reference: '参考资料' };
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const inline = value => esc(value).replace(/`([^`]+)`/g, '<code>$1</code>');
@@ -61,11 +61,11 @@
     if (entry.resultRows?.length) solution += table(['字段 / 状态', '含义'], entry.resultRows);
     solution += `<p>${inline(entry.usage)}</p>`;
     if (entry.example) solution += codeBlock(entry.example, entry.exampleTitle || '现在：cfquant 示例');
-    if (extension) solution += `<button type="button" data-python-cftrader-guide="${entry.operation === 'algorithm' ? 'algorithm' : 'cftrader'}">${entry.operation === 'algorithm' ? '算法交易完整教程' : 'cftrader 完整教程'}</button>`;
+    if (extension && entry.module === 'cftrader') solution += `<button type="button" data-python-cftrader-guide="${entry.operation === 'algorithm' ? 'algorithm' : 'cftrader'}">${entry.operation === 'algorithm' ? '算法交易完整教程' : 'cftrader 完整教程'}</button>`;
     if (api && !supported) solution += '<p class="python-unavailable">尚未支持</p>';
     if (entry.related?.length) solution += `<div class="python-related">${entry.related.map(id => `<button type="button" data-python-entry="${esc(id)}">${esc(byId.get(id)?.name || id)}</button>`).join('')}</div>`;
     const index = entries.indexOf(entry);
-    doc.innerHTML = `<header class="python-document-head"><div class="python-breadcrumb">${esc(modules[entry.module])} / ${esc(entry.group)}</div><h2 tabindex="-1">${esc(entry.name)}</h2>${entry.title ? `<p>${esc(entry.title)}</p>` : ''}<div class="python-document-meta">${badge(entry)}${extension ? '' : `<a href="${esc(entry.source)}" target="_blank" rel="noopener noreferrer">讯投来源</a>`}<button type="button" data-python-link>复制链接</button></div></header><section class="python-reference-section"><h3>${extension ? 'cftrader 独立接口' : '讯投 API 参考'}</h3>${reference}</section><section class="python-reference-section python-solution">${solution}</section><footer class="python-document-footer">${index > 0 ? `<button type="button" data-python-entry="${esc(entries[index - 1].id)}">上一节：${esc(entries[index - 1].name)}</button>` : '<span></span>'}${index < entries.length - 1 ? `<button type="button" data-python-entry="${esc(entries[index + 1].id)}">下一节：${esc(entries[index + 1].name)}</button>` : ''}</footer>`;
+    doc.innerHTML = `<header class="python-document-head"><div class="python-breadcrumb">${esc(modules[entry.module])} / ${esc(entry.group)}</div><h2 tabindex="-1">${esc(entry.name)}</h2>${entry.title ? `<p>${esc(entry.title)}</p>` : ''}<div class="python-document-meta">${badge(entry)}${extension ? '' : `<a href="${esc(entry.source)}" target="_blank" rel="noopener noreferrer">讯投来源</a>`}<button type="button" data-python-link>复制链接</button></div></header><section class="python-reference-section"><h3>${extension ? (entry.module === 'notify' ? '消息推送接口' : 'cftrader 独立接口') : '讯投 API 参考'}</h3>${reference}</section><section class="python-reference-section python-solution">${solution}</section><footer class="python-document-footer">${index > 0 ? `<button type="button" data-python-entry="${esc(entries[index - 1].id)}">上一节：${esc(entries[index - 1].name)}</button>` : '<span></span>'}${index < entries.length - 1 ? `<button type="button" data-python-entry="${esc(entries[index + 1].id)}">下一节：${esc(entries[index + 1].name)}</button>` : ''}</footer>`;
     doc.querySelector('.python-document-meta').insertAdjacentHTML('beforeend', window.CfquantApiTester?.button(entry) || '');
     const testHost = document.createElement('section');
     testHost.className = 'api-inline-test';

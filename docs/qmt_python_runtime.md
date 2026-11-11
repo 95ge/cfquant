@@ -39,7 +39,9 @@ Web 服务提供三个受保护接口：
   `qmt_dir`（或唯一的 `account_id`），可选 `runtime`、`restart`、`job_id`。
   `reuse_installed=true` 时复用本地已安装的所选运行库，直接切换账号配置并重启；
   缺失时仍执行下载、校验、安装。默认 `false` 保留主动下载更新行为。
-  Python API 的 `download_and_switch(..., reuse_installed=True)` 支持相同选项。
+  新账号尚未生成 `Config.xml` 时可传 `allow_missing_account_config=true`，仅下载并
+  安装运行库，待登录 QMT 后再执行账号切换；Python API 的
+  `download_and_switch(..., reuse_installed=True)` 支持相同选项。
 * `GET /api/qmt/python-runtime/jobs?job_id=...` 查询任务状态和进度。任务
   也会通过既有 `xtdata:download_progress` 回调事件发送阶段和字节进度。
 
@@ -54,10 +56,11 @@ Python 3.12 的 QMT 显示 Python 3.6 / Python 3.12 下拉选择，默认使用�
 
 所选运行库缺失时，点击“下载并使用”可沿用实时下载进度；已安装但未配置时，
 点击“切换到 … 并重启 QMT”直接复用本地库。任务将所选执行器写入此账号的
-`Config.xml`，停止、切换和重启完成后再保存绑定。不要仅选择新值便关闭弹窗；
+`Config.xml`，停止、切换和重启完成后再保存绑定。新账号还没有生成
+`Config.xml` 时，页面允许先下载并安装运行库，任务不会伪造账号配置；安装完成
+后提示先登录该 QMT，再重新检测并应用执行器。不要仅选择新值便关闭弹窗；
 有未应用选择或任务尚未完成时，页面会提示先完成配置。再次编辑时以 QMT
-配置中的执行器为准。需先在该 QMT 登录对应账号一次，生成可读的 Python
-配置，才能应用选择；账号配置缺失时页面会提示登录并重新检测。
+配置中的执行器为准。
 
 检测失败只显示提示，不会阻止未更改执行器的绑定保存。更换账号或目录后会
 立即清除旧检测结果，重新确认支持的版本；同一 QMT 不允许并发运行多个

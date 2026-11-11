@@ -61,7 +61,13 @@
 
 运行时序弹窗的明细每页显示 100 条，默认定位到最新一页，可用“上一页 / 下一页”查看同次查询的其他记录；图表和指标汇总仍覆盖本次查询的全部样本。查询最多返回最新 10,000 条，达到上限时会提示缩小日期范围。翻页不重新读取数据库。
 
-打开详情期间暂停被弹窗覆盖的监控主页自动刷新，关闭后恢复；后台采集按原设置继续运行。图表悬停更新按浏览器帧合并，关闭弹窗会释放明细与图表，并取消尚未完成的时序请求，避免大量历史节点和迟到响应造成卡顿。
+时序详情支持最近 5/30/60/120 分钟、6/24 小时，以及自定义最近 N 分钟；保留原有按天、当前查询和全部历史选项。分钟范围以服务端当前时间为截止点，每次刷新重新计算，支持跨日查询。N 须为正整数，最大 5,256,000 分钟（与日期查询上限一致）；单次仍最多返回最新 10,000 条样本。
+
+弹窗默认开启独立的「自动刷新（5 秒）」开关，每次请求结束后等待 5 秒再次查询，不叠加未完成请求。刷新保留当前明细页和滚动位置，数据未变化时不重绘图表；失败保留上次结果并自动重试。后台采集按原设置继续运行，分钟采样粒度不变，同一分钟样本可被新采样覆盖。暂停自动刷新后仍可手动刷新。
+
+打开详情期间暂停被弹窗覆盖的监控主页自动刷新，关闭后按主页开关恢复。浏览器标签页隐藏时暂停弹窗刷新，恢复可见后继续；关闭弹窗或离开监控页会停止定时器、取消未完成请求并释放图表和明细。图表悬停更新按浏览器帧合并。
+
+`GET /api/monitor/runtime?minutes=60&bridge_id=qmt-one&mode=lite` 按服务端当前时刻查询最近 60 分钟，`minutes` 优先于 `start/end`；返回 `minutes`、`window_start/window_end` 时间戳和带北京时间时区的 `start/end`，包含窗口起止时刻。未指定 `minutes` 时仍沿用日期查询语义和鉴权。
 
 `GET /api/monitor?start=2026-11-03&end=2026-11-03&bridge_id=...&account_id=...&account_type=STOCK&kind=abnormal&page=1`
 
@@ -73,6 +79,8 @@
 
 
 ## Notification settings
+
+用户程序主动发送自定义消息请参阅 [SDK 自定义消息推送](notifications.md)。账号绑定中的 Webhook 是 `cfquant.notify.send` 的默认接收地址，与本节监控事件的通知策略分别配置。
 
 The monitor page has a separate notification settings dialog. It stores its policy in `runtime/config/monitor_notifications.json` and keeps SMTP passwords, webhook URLs, and secrets out of API responses. Delivery runs on a background queue, so callback and QMT status threads never wait on SMTP or HTTP.
 

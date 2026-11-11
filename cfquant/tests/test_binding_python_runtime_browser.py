@@ -119,6 +119,13 @@ def test_missing_account_config_shows_capabilities_but_requires_login(page, fron
     errors = open_runtime(page, frontend_url, runtime_status(config_exists=False))
     expect(page.locator("#bindingPythonRuntimeSelect option")).to_have_count(2)
     page.locator("#bindingPythonRuntimeSelect").select_option("py312")
-    expect(page.locator("#bindingPythonRuntimeDownloadBtn")).to_be_disabled()
-    expect(page.locator("#bindingPythonRuntimeChoiceHint")).to_contain_text("登录")
+    submitted = []
+    page.route("**/api/qmt/python-runtime/download", lambda route: (
+        submitted.append(route.request.post_data_json),
+        route.fulfill(json={"ok": True, "data": {"state": "queued"}})))
+    expect(page.locator("#bindingPythonRuntimeDownloadBtn")).to_be_enabled()
+    expect(page.locator("#bindingPythonRuntimeChoiceHint")).to_contain_text("先下载")
+    page.locator("#bindingPythonRuntimeDownloadBtn").click()
+    page.wait_for_function("state.bindingPythonRuntimeJobId")
+    assert submitted[0]["allow_missing_account_config"] is True
     assert not errors

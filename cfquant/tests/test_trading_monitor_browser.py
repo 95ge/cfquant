@@ -37,6 +37,79 @@ def runtime_history(count):
         for i in range(count)]}
 
 
+def test_runtime_minute_presets_custom_polling_and_pause(page, frontend_url, tmp_path):
+    page.clock.install()
+    covered_queries, errors = prepare_runtime_history(page, frontend_url, tmp_path)
+    requests, revision = [], [0]
+    fail = [False]
+    def history(route):
+        params = {key: values[0] for key, values in parse_qs(urlparse(route.request.url).query).items()}
+        requests.append(params)
+        if fail[0]:
+            route.fulfill(status=503, json={'ok': False, 'error': 'temporary failure'})
+            return
+        data = runtime_history(205)
+        data['samples'][-1]['normal']['process']['cpu_percent'] = revision[0]
+        data['generated_at'] = NOW + revision[0]
+        if 'minutes' in params:
+            minutes = int(params['minutes'])
+            data.update(minutes=minutes, window_start=NOW - minutes * 60, window_end=NOW)
+        route.fulfill(json={'ok': True, 'data': data})
+    page.route('**/api/monitor/runtime?*', history)
+    page.locator('.monitor-runtime-target').click()
+    expect(page.locator('#monitorRuntimeAuto')).to_be_checked()
+    expect(page.locator('#monitorRuntimePageText')).to_contain_text('第 3 / 3 页')
+    for minutes in [5, 30, 60, 120, 360, 1440]:
+        page.locator('#monitorRuntimeRange').select_option('minutes:' + str(minutes))
+        expect(page.locator('#monitorRuntimeDetailNote')).to_contain_text('最近 ' + format(minutes, ',') + ' 分钟')
+        assert requests[-1]['minutes'] == str(minutes)
+        assert 'start' not in requests[-1] and 'end' not in requests[-1]
+    page.locator('#monitorRuntimeRange').select_option('minutes:custom')
+    page.locator('#monitorRuntimeMinutes').fill('17')
+    page.locator('#monitorRuntimeMinutes').press('Enter')
+    expect(page.locator('#monitorRuntimeDetailNote')).to_contain_text('最近 17 分钟')
+    assert requests[-1]['minutes'] == '17'
+    page.locator('#monitorRuntimePrev').click()
+    expect(page.locator('#monitorRuntimePageText')).to_contain_text('第 2 / 3 页')
+    dialog = page.locator('#monitorRuntimeDetail')
+    before = dialog.evaluate('node => { node.scrollTop = 250; return node.scrollTop; }')
+    covered = len(covered_queries)
+    revision[0] = 27
+    page.clock.fast_forward(5100)
+    expect(page.locator('[data-runtime-metric=cpu] strong')).to_have_text('27 %')
+    expect(page.locator('#monitorRuntimePageText')).to_contain_text('第 2 / 3 页')
+    assert abs(dialog.evaluate('node => node.scrollTop') - before) <= 1
+    assert len(covered_queries) == covered
+    fail[0] = True
+    page.clock.fast_forward(5100)
+    expect(page.locator('#monitorRuntimeRefreshStatus')).to_contain_text('保留上次结果')
+    expect(page.locator('[data-runtime-metric=cpu] strong')).to_have_text('27 %')
+    fail[0] = False
+    revision[0] = 28
+    page.clock.fast_forward(5100)
+    expect(page.locator('[data-runtime-metric=cpu] strong')).to_have_text('28 %')
+    page.locator('#monitorRuntimeAuto').uncheck()
+    stopped = len(requests)
+    page.clock.fast_forward(20000)
+    assert len(requests) == stopped
+    page.locator('#monitorRuntimeMinutes').fill('0')
+    page.locator('#monitorRuntimeMinutes').press('Enter')
+    expect(page.locator('#monitorRuntimeRefreshStatus')).to_contain_text('最近分钟数须为')
+    assert len(requests) == stopped
+    page.locator('#monitorRuntimeMinutes').fill('45')
+    page.locator('#monitorRuntimeMinutes').press('Enter')
+    expect(page.locator('#monitorRuntimeDetailNote')).to_contain_text('最近 45 分钟')
+    page.locator('#monitorRuntimeAuto').check()
+    layout = dialog.evaluate('node => ({width:node.clientWidth, scroll:node.scrollWidth})')
+    assert layout['scroll'] <= layout['width'] + 1
+    dialog.screenshot(path=str(Path(__file__).resolve().parents[2] / 'runtime/reports' / ('runtime-minutes-%s.png' % page.viewport_size['width'])))
+    page.locator('#monitorRuntimeDetailClose').click()
+    stopped = len(requests)
+    page.clock.fast_forward(20000)
+    assert len(requests) == stopped
+    assert errors == []
+
+
 def test_runtime_large_history_bounded_rendering_hover_and_release(page, frontend_url, tmp_path):
     page.clock.install()
     queries, errors = prepare_runtime_history(page, frontend_url, tmp_path)

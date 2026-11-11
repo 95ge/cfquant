@@ -308,7 +308,8 @@ def _patch_source(source, core):
     # is stable even after an interrupted or older run. Anchor on json, since
     # the fileless synchronizer removes the obsolete io import.
     source = re.sub(r"(?m)^import inspect\n", "", source)
-    source = source.replace("import json\n", "import inspect\nimport json\n", 1)
+    source = re.sub(r"(?m)^import gc\n", "", source)
+    source = source.replace("import json\n", "import gc\nimport inspect\nimport json\n", 1)
     source = _ensure_top_level(
         source,
         "def market_data_result_needs_fallback(",
@@ -371,6 +372,9 @@ LITE_OBJECT_QUERY_METHODS = {
         "_dispatch_timed_market_data",
         "_timed_market_call",
         "_legacy_market_result",
+        "_download_history_data2",
+        "_history_download_batch_size",
+        "_history_download_batches",
         "_get_market_data",
         "_get_market_data_ex",
         "_get_local_data",

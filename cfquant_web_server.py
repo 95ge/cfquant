@@ -25,6 +25,7 @@ from cfquant.qmt_dependencies import check_login_dependencies, report_startup_de
 from cfquant import remote_management as remote_agent_module
 from cfquant.trading_monitor import TradingMonitor, monitored_request
 from cfquant.monitor_notifications import MonitorNotificationService
+from cfquant.webhook import normalize_webhook, public_binding, send_webhook, validate_message
 from cfquant.monitor_performance import PerformanceSampler
 import posixpath
 import queue
@@ -2587,7 +2588,9 @@ class WebRuntimeConfig(object):
 
     def snapshot(self):
         with self._lock:
-            return json.loads(json.dumps(self._data, ensure_ascii=False))
+            result = json.loads(json.dumps(self._data, ensure_ascii=False))
+            result["account_configs"] = {key: public_binding(row) for key, row in result["account_configs"].items()}
+            return result
 
     def bridges(self):
         bridges = dict(ENV_BRIDGES)
@@ -2602,7 +2605,8 @@ class WebRuntimeConfig(object):
 
     def account_configs(self):
         with self._lock:
-            return json.loads(json.dumps(self._data.get("account_configs") or {}, ensure_ascii=False))
+            rows = {key: public_binding(row) for key, row in (self._data.get("account_configs") or {}).items()}
+            return json.loads(json.dumps(rows, ensure_ascii=False))
 
     def account_config(self, account_id=None, account_type=None, bridge_id=None, account_key=None):
         account_id = str(account_id or "").strip()
@@ -2615,7 +2619,7 @@ class WebRuntimeConfig(object):
                 bridge_id=bridge_id,
             )
             value = (self._data.get("account_configs") or {}).get(key) if key else None
-            return json.loads(json.dumps(value, ensure_ascii=False)) if value else None
+            return json.loads(json.dumps(public_binding(value), ensure_ascii=False)) if value else None
 
     def account_config_by_key(self, account_key):
         account_key = str(account_key or "").strip()
@@ -2623,7 +2627,43 @@ class WebRuntimeConfig(object):
             return None
         with self._lock:
             value = (self._data.get("account_configs") or {}).get(account_key)
-            return json.loads(json.dumps(value, ensure_ascii=False)) if value else None
+            return json.loads(json.dumps(public_binding(value), ensure_ascii=False)) if value else None
+
+    def account_webhook(self, account_id=None, account_type=None, bridge_id=None, account_key=None):
+        """Resolve exactly one binding; only the delivery path reads its secrets."""
+        account_id = str(account_id or "").strip()
+        account_key = str(account_key or "").strip()
+        if not account_id and not account_key:
+            raise ValueError("请指定资金账号 account_id 或 account_key")
+        with self._lock:
+            rows = self._find_account_configs_locked(account_id, account_type, bridge_id)
+            if account_key:
+                rows = [(key, row) for key, row in rows if key == str(account_key).strip()]
+            if not rows:
+                raise ValueError("未找到匹配的资金账号绑定")
+            if len(rows) != 1:
+                raise ValueError("资金账号对应多个绑定，请补充 account_type、bridge_id 或 account_key")
+            key, row = rows[0]
+            target = dict(row.get("notification_webhook") or {})
+            if not target.get("enabled") or not target.get("url"):
+                raise ValueError("该资金账号未启用 Webhook 推送或未配置地址")
+            return target, key
+
+    def save_account_webhook(self, account_key, value):
+        with self._lock:
+            key = str(account_key or "").strip()
+            row = (self._data.get("account_configs") or {}).get(key)
+            if row is None:
+                raise ValueError("请先保存账号绑定，并提供有效的 account_key")
+            settings = normalize_webhook(value, row.get("notification_webhook"))
+            previous = dict(row)
+            row.update(notification_webhook=settings, updated_at=time.time())
+            try:
+                self._save_locked()
+            except Exception:
+                self._data["account_configs"][key] = previous
+                raise
+            return public_binding(row)
 
     def _runtime_trade_qmt_dir(self, bridge_id):
         registry = globals().get("RUNTIME_VERSIONS")
@@ -2871,6 +2911,7 @@ class WebRuntimeConfig(object):
         qmt_auto_login=None,
         qmt_runtime=None,
         qmt_vm=None,
+        notification_webhook=None,
     ):
         account_id = str(account_id or "").strip()
         if not account_id:
@@ -2886,6 +2927,7 @@ class WebRuntimeConfig(object):
             bridge_id = self._account_bridge_id_locked(account_id, account_type, bridge_id, qmt_dir)
             account_key = account_key_for(account_id, account_type, bridge_id)
             existing = configs.get(account_key)
+            webhook_settings = normalize_webhook(notification_webhook, (existing or {}).get("notification_webhook"))
             runtime_settings = normalize_qmt_runtime_settings(
                 qmt_runtime, existing=(existing or {}).get("qmt_runtime"), strict=True,
             )
@@ -3022,6 +3064,7 @@ class WebRuntimeConfig(object):
                 "qmt_strategy": strategy_settings,
                 "qmt_auto_login": auto_login_settings,
                 "qmt_runtime": runtime_settings,
+                "notification_webhook": webhook_settings,
                 "qmt_vm": vm_settings,
                 "updated_at": now,
             }
@@ -3072,7 +3115,7 @@ class WebRuntimeConfig(object):
             self._repair_account_defaults_locked()
             self._save_locked()
             self._save_settings_locked({"transport_mode": self._data["transport_mode"]})
-        return row
+        return public_binding(row)
 
     def _account_bridge_id_locked(self, account_id, account_type="STOCK", requested_bridge_id=None, qmt_dir=""):
         requested = str(requested_bridge_id or "").strip()
@@ -3862,6 +3905,7 @@ class WebRuntimeConfig(object):
                 "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
                 "qmt_vm": normalize_qmt_vm_settings(item.get("qmt_vm")),
                 "qmt_runtime": normalize_qmt_runtime_settings(item.get("qmt_runtime")),
+                "notification_webhook": normalize_webhook(item.get("notification_webhook")),
                 "data_provider": bool(item.get("data_provider")),
                 "enabled": item.get("enabled", True) is not False,
                 "market_routing_enabled": parse_config_bool(item.get("market_routing_enabled"), False),
@@ -5864,11 +5908,37 @@ def _subscription_manager():
         return _SUBSCRIPTION_MANAGER
 
 
+def send_user_notification(body):
+    if not isinstance(body, dict):
+        raise ValueError("推送参数必须是对象")
+    message, title = body.get("message"), body.get("title", "")
+    timeout = validate_message(message, title, body.get("timeout", 8))
+    explicit = any(body.get(key) is not None for key in ("webhook_url", "provider", "secret"))
+    if explicit:
+        if not body.get("webhook_url") or not body.get("provider"):
+            raise ValueError("调用时覆盖推送配置必须同时提供 webhook_url 和 provider")
+        target = normalize_webhook(dict(enabled=True, provider=body["provider"],
+            url=body["webhook_url"], secret=body.get("secret")))
+        account_key = None
+    else:
+        if WEB_CONFIG is None:
+            raise ValueError("账号绑定配置尚未初始化")
+        target, account_key = WEB_CONFIG.account_webhook(account_id=body.get("account_id"),
+            account_type=body.get("account_type"), bridge_id=body.get("bridge_id"), account_key=body.get("account_key"))
+    result = send_webhook(target, message, title=title, timeout=timeout)
+    result["source"] = "explicit" if explicit else "account"
+    if account_key:
+        result["account_key"] = account_key
+    return result
+
+
 def route_external_lttx_request(msg):
     action = str(msg.get("action") or "")
     params = msg.get("params") or {}
     if not isinstance(params, dict):
         params = {}
+    if action == "cfquant.notify.send":
+        return send_user_notification(params), {"route": "notification"}
     if action == "cfquant.subscriptions":
         manager = _subscription_manager()
         return manager.handle(params, msg.get("client_id") or msg.get("reply_channel")), {"route": "subscription_manager"}
@@ -15517,6 +15587,7 @@ def save_account_runtime_config(body):
         qmt_auto_login=qmt_auto_login_request,
         qmt_runtime=body.get("qmt_runtime") if "qmt_runtime" in body else None,
         qmt_vm=body.get("qmt_vm") if "qmt_vm" in body else None,
+        notification_webhook=body.get("notification_webhook") if "notification_webhook" in body else None,
     )
     row_enabled = account_config_is_enabled(row)
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
@@ -17607,6 +17678,7 @@ def _run_qmt_python_runtime_job(job_id, body):
             progress_callback=progress,
             restart_callback=restart_qmt if bool(body.get("restart", True)) else None,
             reuse_installed=parse_bool(body.get("reuse_installed", False)),
+            allow_missing_account_config=parse_bool(body.get("allow_missing_account_config", False)),
         )
     except Exception as exc:
         with QMT_PYTHON_RUNTIME_JOBS_LOCK:
@@ -17626,7 +17698,10 @@ def start_qmt_python_runtime_job(body):
     if not isinstance(body, dict):
         raise ValueError("request body must be an object")
     manager, runtime = _qmt_python_runtime_row(body)
-    manager.validate_selection(runtime)
+    manager.validate_selection(
+        runtime,
+        allow_missing_account_config=parse_bool(body.get("allow_missing_account_config", False)),
+    )
     job_id = str(body.get("job_id") or new_id("qmt_python"))
     with QMT_PYTHON_RUNTIME_JOBS_LOCK:
         if any(job.get("state") in ("queued", "running")
@@ -17680,6 +17755,12 @@ def should_fallback_history_download(error):
 
 def download_history_data(body):
     body = body or {}
+    # A historical download is synchronous inside QMT. Keep the request open
+    # long enough for the first serialized batches to finish; callers can still
+    # provide an explicit shorter timeout when they only need submission ACK.
+    if body.get("timeout") in (None, ""):
+        body = dict(body)
+        body["timeout"] = 180
     stock_code = str(body.get("stock_code") or "").strip()
     if not stock_code:
         raise ValueError("stock_code is required")
@@ -17690,6 +17771,10 @@ def download_history_data(body):
         "start_time": str(body.get("start_time") or ""),
         "end_time": str(body.get("end_time") or ""),
         "incrementally": body.get("incrementally"),
+        # Large 1m downloads are serialized in the QMT bridge. Callers may
+        # tune the positive batch size when a particular QMT build has a
+        # smaller or larger native download buffer.
+        "download_batch_size": body.get("download_batch_size", body.get("batch_size")),
         "callback_event": DOWNLOAD_CALLBACK_EVENT,
         "download_job_id": job_id,
         "download_emit_lifecycle": True,
@@ -18063,6 +18148,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 self._write_json(ok(save_python_environment(body)))
             elif parsed.path == "/api/qmt/python-runtime/download":
                 self._write_json(ok(start_qmt_python_runtime_job(body)))
+            elif parsed.path == "/api/notifications/send":
+                self._write_json(ok(send_user_notification(body)))
+            elif parsed.path == "/api/account-config/webhook":
+                if not isinstance(body, dict) or not isinstance(body.get("notification_webhook"), dict):
+                    raise ValueError("请提供 account_key 和 notification_webhook 对象")
+                self._write_json(ok({"account": WEB_CONFIG.save_account_webhook(
+                    body.get("account_key"), body["notification_webhook"])}))
             elif parsed.path == "/api/log-cleanup/run":
                 self._write_json(ok(run_log_cleanup(body)))
             elif parsed.path == "/api/updates/github":
@@ -18682,6 +18774,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     bridge_id=(query.get("bridge_id") or [""])[0],
                     mode=(query.get("mode") or [""])[0],
                     limit=(query.get("limit") or [5000])[0],
+                    minutes=(query.get("minutes") or [None])[0],
                 )))
             elif parsed.path == "/api/monitor/settings":
                 refresh_monitor_accounts()

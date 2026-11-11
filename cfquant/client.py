@@ -472,6 +472,8 @@ def configure(**kwargs):
     from .config import configure as configure_config
 
     configure_config(**kwargs)
+    from . import notify
+    notify.close()
     global _default_client
     with _client_lock:
         if _default_client is not None:

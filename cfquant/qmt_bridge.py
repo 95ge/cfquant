@@ -1,6 +1,7 @@
 from .diagnostic_context import versioned_message
 # -*- coding: utf-8 -*-
 import os
+import gc
 import queue
 import sys
 import threading
@@ -516,47 +517,91 @@ class CfquantQmtBridge(object):
                 })
             raise NotImplementedError("当前QMT环境未提供download_history_data2")
 
-        def callback(data):
+        stock_list = params.get("stock_list", params.get("code_list", []))
+        if isinstance(stock_list, str):
+            stock_list = [item.strip() for item in stock_list.replace("，", ",").split(",") if item.strip()]
+        else:
+            stock_list = list(stock_list or [])
+        batches = self._history_download_batches(stock_list, params)
+        total = len(stock_list)
+        completed = 0
+
+        def callback(data, batch_offset=0, batch_index=0, batch_total=1):
             if callback_event and client_id:
+                payload = dict(data) if isinstance(data, dict) else {"message": str(data)}
+                batch_finished = payload.get("finished")
+                try:
+                    batch_finished = max(0, min(int(batch_finished), len(batches[batch_index])))
+                except (TypeError, ValueError, IndexError):
+                    batch_finished = 0
+                payload.update({
+                    "finished": min(total, batch_offset + batch_finished),
+                    "total": total,
+                    "batch_index": batch_index + 1,
+                    "batch_total": batch_total,
+                    "batch_finished": batch_finished,
+                    "batch_size": len(batches[batch_index]) if batch_index < len(batches) else 0,
+                })
                 self._send_event(
                     client_id,
                     callback_event,
-                    data,
+                    payload,
                     meta=self._download_event_meta(params, "history", "progress"),
                 )
 
-        callback_func = callback if callback_event else None
-        variants = []
-        incrementally = params.get("incrementally")
-        if incrementally is not None:
-            variants.append((
-                (
-                    params.get("stock_list", params.get("code_list", [])),
-                    params.get("period", "1d"),
-                    params.get("start_time", ""),
-                    params.get("end_time", ""),
-                    callback_func,
-                    incrementally,
-                ),
-                {},
-            ))
-        variants.append((
-            (
-                params.get("stock_list", params.get("code_list", [])),
-                params.get("period", "1d"),
-                params.get("start_time", ""),
-                params.get("end_time", ""),
-                callback_func,
-            ),
-            {},
-        ))
         if emit_lifecycle:
             self._send_download_event(client_id, params, "history", "submitted", {
                 "stage": "submitted",
                 "message": "history download request submitted",
+                "total": total,
+                "batch_total": len(batches),
+                "batch_size": self._history_download_batch_size(params),
             })
         try:
-            result = self._call_variants(func, variants)
+            incrementally = params.get("incrementally")
+            batch_total = len(batches)
+            for batch_index, batch in enumerate(batches):
+                batch_offset = completed
+                callback_func = (
+                    (lambda data, offset=batch_offset, index=batch_index:
+                     callback(data, offset, index, batch_total))
+                    if callback_event else None
+                )
+                variants = []
+                if incrementally is not None:
+                    variants.append((
+                        (
+                            batch,
+                            params.get("period", "1d"),
+                            params.get("start_time", ""),
+                            params.get("end_time", ""),
+                            callback_func,
+                            incrementally,
+                        ),
+                        {},
+                    ))
+                variants.append((
+                    (
+                        batch,
+                        params.get("period", "1d"),
+                        params.get("start_time", ""),
+                        params.get("end_time", ""),
+                        callback_func,
+                    ),
+                    {},
+                ))
+                self._call_variants(func, variants)
+                completed += len(batch)
+                if emit_lifecycle:
+                    self._send_download_event(client_id, params, "history", "batch_done", {
+                        "stage": "batch_done",
+                        "finished": completed,
+                        "total": total,
+                        "batch_index": batch_index + 1,
+                        "batch_total": batch_total,
+                        "batch_size": len(batch),
+                    })
+                gc.collect()
         except Exception as e:
             if emit_lifecycle:
                 self._send_download_event(client_id, params, "history", "error", {
@@ -567,9 +612,39 @@ class CfquantQmtBridge(object):
         if emit_lifecycle:
             self._send_download_event(client_id, params, "history", "request_done", {
                 "stage": "request_done",
-                "result": result,
+                "result": None,
+                "finished": completed,
+                "total": total,
             })
-        return result
+        return None
+
+    @staticmethod
+    def _history_download_batch_size(params):
+        params = params or {}
+        value = params.get("download_batch_size", params.get("batch_size"))
+        if value is None:
+            value = os.environ.get("CFQUANT_HISTORY_DOWNLOAD_BATCH_SIZE")
+        if value is None or str(value).strip() == "":
+            period = str(params.get("period") or "").lower()
+            if period == "tick":
+                return 20
+            if period == "1m":
+                return 50
+            if period.endswith("m") or period.endswith("h"):
+                return 100
+            return 200
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return 50
+        return max(1, value)
+
+    @classmethod
+    def _history_download_batches(cls, stock_list, params):
+        if not stock_list:
+            return [stock_list]
+        size = cls._history_download_batch_size(params)
+        return [stock_list[index:index + size] for index in range(0, len(stock_list), size)]
 
     def _get_instrument_detail(self, params):
         func = getattr(self.context, "get_instrument_detail")

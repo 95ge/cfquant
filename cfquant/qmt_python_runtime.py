@@ -593,7 +593,8 @@ class QmtPythonRuntime:
             time.sleep(0.25)
         raise QmtPythonRuntimeError("QMT did not start after runtime switch")
 
-    def validate_selection(self, runtime, *, account_id=None):
+    def validate_selection(self, runtime, *, account_id=None,
+                           allow_missing_account_config=False):
         runtime = _canonical_runtime(runtime)
         effective_account = account_id if account_id is not None else self.account_id
         binding = self.binding_status(account_id=effective_account)
@@ -603,6 +604,8 @@ class QmtPythonRuntime:
                 % (binding.get("qmt_version") or "unknown"))
         if effective_account:
             if not binding["config_exists"]:
+                if allow_missing_account_config and binding["state"] == "account_config_missing":
+                    return binding
                 raise QmtPythonRuntimeError("QMT account Config.xml not found: %s; log in to QMT first" % effective_account)
             text = Path(binding["config"]).read_text(encoding="utf-8")
             if not re.search(r'<python\b[^>]*\blibs_path="[^"]*"', text):
@@ -611,9 +614,19 @@ class QmtPythonRuntime:
 
     def download_and_switch(self, runtime="py312", *, restart=True, account_id=None,
                             progress_callback=None, cancel_event=None,
-                            restart_callback=None, reuse_installed=False):
+                            restart_callback=None, reuse_installed=False,
+                            allow_missing_account_config=False):
         runtime = _canonical_runtime(runtime)
-        binding = self.validate_selection(runtime, account_id=account_id)
+        binding = self.validate_selection(
+            runtime,
+            account_id=account_id,
+            allow_missing_account_config=allow_missing_account_config,
+        )
+        deferred_account_config = bool(
+            allow_missing_account_config
+            and (account_id or self.account_id)
+            and binding.get("state") == "account_config_missing"
+        )
         reuse = bool(reuse_installed and binding["runtimes"][runtime]["installed"])
         package, archive = None, None
         if reuse:
@@ -624,17 +637,25 @@ class QmtPythonRuntime:
                                     cancel_event=cancel_event)
         if cancel_event and cancel_event.is_set():
             raise QmtPythonRuntimeError("QMT Python runtime operation cancelled")
-        _callback(progress_callback, QmtPythonProgress(runtime, "activating", message="正在停止 QMT 并配置执行器"))
-        if restart and self._qmt_processes():
+        _callback(progress_callback, QmtPythonProgress(
+            runtime, "activating",
+            message=("正在停止 QMT 并安装运行库" if deferred_account_config
+                     else "正在停止 QMT 并配置执行器"),
+        ))
+        was_running = bool(self._qmt_processes())
+        if restart and was_running:
             self._stop_for_switch()
-        elif not restart and self._qmt_processes():
+        elif not restart and was_running:
             raise QmtPythonRuntimeError(
-                "QMT is running; set restart=True before activating a Python runtime")
+                "QMT is running; set restart=True before installing or activating a Python runtime")
         try:
             installed = self.inspect(runtime, refresh_remote=False) if reuse else self.install(runtime, package=package, progress_callback=progress_callback)
-            switched = self.switch_account(runtime, account_id=account_id) if (account_id or self.account_id) else None
+            switched = None if deferred_account_config else (
+                self.switch_account(runtime, account_id=account_id)
+                if (account_id or self.account_id) else None
+            )
         finally:
-            if restart:
+            if restart and (not deferred_account_config or was_running):
                 _callback(progress_callback, QmtPythonProgress(runtime, "restarting", message="正在重新启动 QMT"))
                 if restart_callback:
                     restarted = restart_callback()
@@ -646,7 +667,10 @@ class QmtPythonRuntime:
                 restarted = None
         return {"runtime": runtime, "package": package.as_dict() if package else None,
                 "archive": str(archive) if archive else None, "reused_installed": reuse,
-                "installed": installed, "switched": switched, "restarted": restarted}
+                "installed": installed, "switched": switched, "restarted": restarted,
+                "account_config_required": deferred_account_config,
+                "message": ("运行库已安装；请先在 QMT 登录此账号，再重新检测并应用执行器。"
+                             if deferred_account_config else "")}
 
     def _stop_for_switch(self):
         for process in self._qmt_processes():

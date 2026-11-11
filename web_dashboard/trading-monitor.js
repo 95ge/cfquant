@@ -56,6 +56,9 @@
 
     </section>`;
   const $ = id => document.getElementById(id);
+  $('monitorRuntimeRange').insertAdjacentHTML('afterbegin', '<option value="minutes:5">最近 5 分钟</option><option value="minutes:30">最近 30 分钟</option><option value="minutes:60">最近 60 分钟（1 小时）</option><option value="minutes:120">最近 120 分钟（2 小时）</option><option value="minutes:360">最近 6 小时</option><option value="minutes:1440">最近 24 小时</option><option value="minutes:custom">自定义最近 N 分钟</option>');
+  $('monitorRuntimeRange').closest('label').insertAdjacentHTML('afterend', '<label id="monitorRuntimeMinutesLabel" hidden>最近分钟数<input id="monitorRuntimeMinutes" type="number" min="1" max="5256000" step="1" inputmode="numeric" value="60" aria-label="运行时序最近分钟数"></label>');
+  $('monitorRuntimeReload').insertAdjacentHTML('afterend', '<label class="monitor-runtime-auto"><input id="monitorRuntimeAuto" type="checkbox" checked>自动刷新（5 秒）</label><span id="monitorRuntimeRefreshStatus" class="monitor-note" role="status" aria-live="polite"></span>');
   $('monitorRuntimeSamples').closest('.monitor-table-wrap').insertAdjacentHTML('afterend', '<div class="monitor-pagination" id="monitorRuntimePagination" hidden><span id="monitorRuntimePageText" role="status"></span><button id="monitorRuntimePrev" type="button">上一页</button><button id="monitorRuntimeNext" type="button">下一页</button></div>');
   const dialog = document.createElement('dialog');
   dialog.id = 'monitorSettingsDialog';
@@ -340,7 +343,9 @@
   }
   let runtimeDetailKey = '', runtimeDetailTitle = '', runtimeDetailData = null;
   const runtimePageSize = 100;
-  let runtimeDetailPage = 1, runtimeRequest = null;
+  let runtimeDetailPage = 1, runtimeRequest = null, runtimeTimer = null, runtimeCleaning = false;
+  let runtimeDataSignature = '';
+  let runtimeMinutesValue = '60';
   const runtimeHoverCleanups = [];
   function clearRuntimeCharts() {
     runtimeHoverCleanups.splice(0).forEach(cleanup => cleanup());
@@ -348,6 +353,7 @@
   }
   function clearRuntimeDetail() {
     runtimeDetailData = null;
+    runtimeDataSignature = '';
     clearRuntimeCharts();
     $('monitorRuntimeMetricCards').replaceChildren();
     $('monitorRuntimeSamples').replaceChildren();
@@ -466,18 +472,33 @@
       renderRuntimeChart(samples, definition, chart);
     });
   }
-  function renderRuntimeDetail(data, title) {
+  function renderRuntimeDetail(data, title, preserveView = false) {
+    const detail = $('monitorRuntimeDetail'), table = $('monitorRuntimeSamples').closest('.monitor-table-wrap');
+    const scrollTop = detail.scrollTop, tableTop = table.scrollTop, tableLeft = table.scrollLeft;
+    const anchor = preserveView ? runtimeDetailData?.samples?.[(runtimeDetailPage - 1) * runtimePageSize]?.sampled_at : null;
     runtimeDetailData = data || {samples: []};
     runtimeDetailTitle = title;
     const samples = runtimeDetailData.samples || [];
     $('monitorRuntimeDetailTitle').textContent = title + ' · 分钟时序';
     const retention = Number(runtimeDetailData.retention_days) === 0 ? '全部保留' : n(runtimeDetailData.retention_days) + ' 天';
-    const range = runtimeDetailData.start === 'all' ? '全部历史' : runtimeDetailData.start + ' 至 ' + runtimeDetailData.end;
+    const range = runtimeDetailData.minutes != null
+      ? `最近 ${n(runtimeDetailData.minutes)} 分钟（${stamp(runtimeDetailData.window_start)} 至 ${stamp(runtimeDetailData.window_end)}）`
+      : runtimeDetailData.start === 'all' ? '全部历史' : runtimeDetailData.start + ' 至 ' + runtimeDetailData.end;
     $('monitorRuntimeDetailNote').textContent = '查询 ' + range + '，共 ' + n(samples.length) + ' 个样本；当前保留期 ' + retention + (samples.length >= 10000 ? '；结果达到单次查询上限，请缩小范围查看完整明细' : '') + '。';
-    renderRuntimeMetricCards(samples);
-    renderRuntimeCharts(samples);
-    runtimeDetailPage = Math.max(1, Math.ceil(samples.length / runtimePageSize));
-    renderRuntimeSamples();
+    // Most polls see the same minute samples. Keep charts/hover/focus intact in that case.
+    const signature = JSON.stringify(samples);
+    if (!preserveView || signature !== runtimeDataSignature) {
+      runtimeDataSignature = signature;
+      renderRuntimeMetricCards(samples);
+      renderRuntimeCharts(samples);
+      if (!preserveView) runtimeDetailPage = Math.max(1, Math.ceil(samples.length / runtimePageSize));
+      else if (anchor != null) {
+        const index = samples.findIndex(sample => sample.sampled_at >= anchor);
+        runtimeDetailPage = index < 0 ? Math.max(1, Math.ceil(samples.length / runtimePageSize)) : Math.floor(index / runtimePageSize) + 1;
+      }
+      renderRuntimeSamples();
+    }
+    if (preserveView) { detail.scrollTop = scrollTop; table.scrollTop = tableTop; table.scrollLeft = tableLeft; }
   }
   function renderRuntimeSamples() {
     const samples = runtimeDetailData?.samples || [];
@@ -489,7 +510,7 @@
       const proc = p.process || (sample.process || {}).normal || {};
       const rates = p.rates || {};
       return '<tr><td>' + stamp(sample.sampled_at) + '</td><td>PID ' + n(proc.pid) + '<small>' + e(proc.name || '—') + '</small></td><td>' + n(proc.cpu_percent, 2) + '%</td><td>' + n(proc.rss_bytes == null ? null : proc.rss_bytes / 1048576, 1) + ' MiB<small>' + n(proc.memory_percent, 2) + '%</small></td><td>' + n(p.qmt_callback_total) + '<small>' + n(rates.callback_total_per_second, 2) + ' 次/s</small></td><td>' + n(p.quote_callback_batches) + '<small>' + n(rates.quote_callback_batches_per_second, 2) + ' 批/s</small></td><td>' + n(p.quote_distribution_batches) + '<small>' + n(rates.quote_distribution_batches_per_second, 2) + ' 批/s</small></td><td>' + n(p.request_completed) + '<small>' + n(rates.request_completed_per_second, 2) + ' 次/s</small></td></tr>';
-    }).join('') : '<tr><td colspan="8" class="monitor-empty">该日期和 QMT 暂无分钟采样。</td></tr>';
+    }).join('') : '<tr><td colspan="8" class="monitor-empty">该时间段和 QMT 暂无分钟采样。</td></tr>';
     $('monitorRuntimePageText').textContent = '共 ' + n(samples.length) + ' 条 · 第 ' + runtimeDetailPage + ' / ' + pages + ' 页 · 每页 ' + runtimePageSize + ' 条';
     $('monitorRuntimePrev').disabled = runtimeDetailPage <= 1;
     $('monitorRuntimeNext').disabled = runtimeDetailPage >= pages;
@@ -499,6 +520,11 @@
   function runtimeRangeQuery(bridgeId, mode) {
     const values = applied || filters();
     const range = $('monitorRuntimeRange').value;
+    if (range.startsWith('minutes:')) {
+      const minutes = range === 'minutes:custom' ? Number(runtimeMinutesValue) : Number(range.split(':')[1]);
+      if (!Number.isInteger(minutes) || minutes < 1 || minutes > 5256000) throw new Error('最近分钟数须为 1 至 5,256,000 的整数');
+      return new URLSearchParams({minutes: String(minutes), bridge_id: bridgeId, mode, limit: '10000'});
+    }
     let start = values.start, end = values.end;
     if (range === 'all') {
       start = 'all'; end = today();
@@ -511,36 +537,68 @@
     }
     return new URLSearchParams({start, end, bridge_id: bridgeId, mode, limit: '10000'});
   }
-  async function openRuntimeDetail(bridgeId, mode, title) {
+  function runtimeCanRefresh() {
+    return $('monitorRuntimeDetail').open && document.body.dataset.view === 'monitor' && !document.hidden;
+  }
+  function scheduleRuntime() {
+    clearTimeout(runtimeTimer);
+    runtimeTimer = null;
+    if (!runtimeCanRefresh() || !$('monitorRuntimeAuto').checked || runtimeCleaning) return;
+    runtimeTimer = setTimeout(() => {
+      runtimeTimer = null;
+      if (!runtimeRequest && runtimeCanRefresh() && runtimeDetailKey) {
+        const [bridgeId, mode] = runtimeDetailKey.split('|');
+        openRuntimeDetail(bridgeId, mode, runtimeDetailTitle, {automatic:true});
+      } else scheduleRuntime();
+    }, 5000);
+  }
+  async function openRuntimeDetail(bridgeId, mode, title, {automatic = false} = {}) {
+    if (runtimeCleaning || (automatic && (runtimeRequest || !runtimeCanRefresh()))) return;
+    clearTimeout(runtimeTimer);
     if (runtimeRequest) runtimeRequest.abort();
     const request = new AbortController();
     runtimeRequest = request;
     const timeout = setTimeout(() => request.abort(), 15000);
     runtimeDetailKey = bridgeId + '|' + mode;
     runtimeDetailTitle = title;
-    clearRuntimeDetail();
+    if (!automatic) clearRuntimeDetail();
     $('monitorRuntimeDetailTitle').textContent = title + ' · 分钟时序';
     if (!$('monitorRuntimeDetail').open) $('monitorRuntimeDetail').showModal();
-    $('monitorRuntimeDetailNote').textContent = '正在读取分钟时序…';
+    if (!automatic) $('monitorRuntimeDetailNote').textContent = '正在读取分钟时序…';
+    $('monitorRuntimeRefreshStatus').textContent = '正在刷新…';
+    $('monitorRuntimeDetail').setAttribute('aria-busy', 'true');
     try {
       const query = runtimeRangeQuery(bridgeId, mode);
       const data = await api('/api/monitor/runtime?' + query, {signal: request.signal});
       if (runtimeRequest !== request || !$('monitorRuntimeDetail').open) return;
-      renderRuntimeDetail(data, title);
+      renderRuntimeDetail(data, title, automatic);
+      $('monitorRuntimeRefreshStatus').textContent = '已更新 ' + stamp(data.generated_at || Date.now() / 1000);
     } catch (error) {
       if (runtimeRequest !== request || !$('monitorRuntimeDetail').open) return;
-      $('monitorRuntimeDetailNote').textContent = '时序读取失败：' + error.message;
-      $('monitorRuntimeCharts').innerHTML = '<div class="monitor-empty monitor-chart-empty">暂时无法读取时序数据。</div>';
-      $('monitorRuntimeSamples').innerHTML = '<tr><td colspan="8" class="monitor-empty">暂时无法读取时序数据。</td></tr>';
+      $('monitorRuntimeRefreshStatus').textContent = '刷新失败：' + error.message + (runtimeDetailData ? '；保留上次结果。' : '；可点击刷新时序重试。');
+      if (!runtimeDetailData) {
+        $('monitorRuntimeDetailNote').textContent = '时序读取失败：' + error.message;
+        $('monitorRuntimeCharts').innerHTML = '<div class="monitor-empty monitor-chart-empty">暂时无法读取时序数据。</div>';
+        $('monitorRuntimeSamples').innerHTML = '<tr><td colspan="8" class="monitor-empty">暂时无法读取时序数据。</td></tr>';
+      }
     } finally {
       clearTimeout(timeout);
-      if (runtimeRequest === request) runtimeRequest = null;
+      if (runtimeRequest === request) {
+        runtimeRequest = null;
+        $('monitorRuntimeDetail').setAttribute('aria-busy', 'false');
+        scheduleRuntime();
+      }
     }
   }
   async function cleanupRuntime(scope) {
     const all = scope === 'all';
     const message = all ? '这会删除所有 QMT 运行时序，并尝试压缩 SQLite 文件。交易回报和异常记录不会删除。继续吗？' : '这会删除当前保留策略已经过期的 QMT 运行时序。交易回报和异常记录不会删除。继续吗？';
     if (!window.confirm(message)) return;
+    if (runtimeCleaning) return;
+    runtimeCleaning = true;
+    clearTimeout(runtimeTimer);
+    if (runtimeRequest) runtimeRequest.abort();
+    runtimeRequest = null;
     try {
       const result = await api('/api/monitor/runtime/cleanup', {
         method: 'POST',
@@ -555,17 +613,40 @@
         renderRuntimeSamples();
         $('monitorRuntimeSamples').innerHTML = '<tr><td colspan="8" class="monitor-empty">历史时序已清空。</td></tr>';
       } else if (runtimeDetailKey) {
+        runtimeCleaning = false;
         const [bridgeId, mode] = runtimeDetailKey.split('|');
         await openRuntimeDetail(bridgeId, mode, runtimeDetailTitle);
       }
     } catch (error) {
       $('monitorRuntimeDetailNote').textContent = '清理失败：' + error.message;
+    } finally {
+      runtimeCleaning = false;
+      $('monitorRuntimeDetail').setAttribute('aria-busy', 'false');
+      scheduleRuntime();
     }
   }
   $('monitorRuntimeRange').addEventListener('change', () => {
+    $('monitorRuntimeMinutesLabel').hidden = $('monitorRuntimeRange').value !== 'minutes:custom';
+    runtimeMinutesValue = $('monitorRuntimeMinutes').value;
     if (!runtimeDetailKey) return;
     const [bridgeId, mode] = runtimeDetailKey.split('|');
     openRuntimeDetail(bridgeId, mode, runtimeDetailTitle);
+  });
+  $('monitorRuntimeMinutes').addEventListener('change', () => {
+    if (runtimeMinutesValue === $('monitorRuntimeMinutes').value) return;
+    runtimeMinutesValue = $('monitorRuntimeMinutes').value;
+    if (runtimeDetailKey) $('monitorRuntimeReload').click();
+  });
+  $('monitorRuntimeMinutes').addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); runtimeMinutesValue = $('monitorRuntimeMinutes').value; $('monitorRuntimeReload').click(); }
+  });
+  $('monitorRuntimeAuto').addEventListener('change', () => {
+    if (!$('monitorRuntimeAuto').checked && runtimeRequest) {
+      runtimeRequest.abort(); runtimeRequest = null;
+      $('monitorRuntimeDetail').setAttribute('aria-busy', 'false');
+    }
+    $('monitorRuntimeRefreshStatus').textContent = $('monitorRuntimeAuto').checked ? '自动刷新已开启' : '自动刷新已暂停';
+    scheduleRuntime();
   });
   $('monitorRuntimeReload').addEventListener('click', () => {
     if (!runtimeDetailKey) return;
@@ -580,10 +661,12 @@
     if ($('monitorRuntimeDetail').open) $('monitorRuntimeDetail').close();
   });
   $('monitorRuntimeDetail').addEventListener('close', () => {
+    clearTimeout(runtimeTimer);
     if (runtimeRequest) runtimeRequest.abort();
     runtimeRequest = null;
     runtimeDetailKey = '';
     clearRuntimeDetail();
+    $('monitorRuntimeDetail').setAttribute('aria-busy', 'false');
     if ($('monitorAuto').checked) schedule();
   });
   function renderChart(data) {
@@ -630,6 +713,12 @@
   }
   function schedule() {
     clearInterval(timer);
+    if (document.body.dataset.view !== 'monitor' && $('monitorRuntimeDetail').open) $('monitorRuntimeDetail').close();
+    if (document.hidden && runtimeRequest) {
+      runtimeRequest.abort(); runtimeRequest = null;
+      $('monitorRuntimeDetail').setAttribute('aria-busy', 'false');
+    }
+    scheduleRuntime();
     if (document.body.dataset.view === 'monitor' && !document.hidden) {
       refresh();
       if ($('monitorAuto').checked) timer = setInterval(() => { if (applied?.end >= today()) refresh(); }, 5000);
@@ -646,6 +735,7 @@
   $('monitorNext').addEventListener('click', () => { page++; sequence++; refresh(); });
   new MutationObserver(schedule).observe(document.body, {attributes:true, attributeFilter:['data-view']});
   document.addEventListener('visibilitychange', schedule);
+  window.addEventListener('pagehide', () => { clearInterval(timer); clearTimeout(runtimeTimer); if (runtimeRequest) runtimeRequest.abort(); });
 
   // Notification policy is kept in its own dialog so collector settings remain
   // small and existing monitor workflows keep the same API contract.

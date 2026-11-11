@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   const routes = {
+    'notify.send': ['notification_send'],
     'xtdata.get_full_tick': ['full_tick'],
     'xtdata.get_market_data': ['market_data'],
     'xtdata.get_market_data_ex': ['market_data_ex'],

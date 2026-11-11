@@ -96,7 +96,7 @@ cfquant 的本质是把外部程序、Web 控制台和大 QMT 策略环境连起
 | 能力 | 外部入口 | 大 QMT 侧依赖 | 当前状态 |
 | --- | --- | --- | --- |
 | 单证券历史行情下载 | `xtdata.download_history_data` / `/api/data/history/download` | `download_history_data` 或 `down_history_data` | 已实现；所有模式都固定普通 QMT 桥。 |
-| 批量历史行情下载 | `xtdata.download_history_data2` | `download_history_data2` 或 `down_history_data2` | 已实现，支持 `callback_event` 事件转发。 |
+| 批量历史行情下载 | `xtdata.download_history_data2` / `/api/data/history/download` | `download_history_data2` 或 `down_history_data2` | 已实现，默认串行分批提交（`1m` 每批 50 个标的），支持 `download_batch_size` 调整批大小、`callback_event` 事件转发；每批完成后回收桥接侧临时 Python 对象，降低 QMT 下载峰值。 |
 | 财务数据查询 | `xtdata.get_financial_data` / `get_financial_data_ori` / `get_raw_financial_data` / `/api/data/financial` | `get_financial_data` 或 `get_raw_financial_data` | 已实现。 |
 | 财务本地校验 | `xtdata.download_financial_data` / `download_financial_data2` / `/api/data/financial/download` | `download_financial_data2`、`down_financial_data2`，或降级到 `get_financial_data` / `get_raw_financial_data` | 部分实现；若 QMT 暴露下载 callable 则转发，否则降级为读取/校验本地已下载财务数据，并提示用户先在 QMT 客户端“数据管理 - 财务数据下载”中下载。 |
 | 交易日历下载 | `xtdata.download_holiday_data` | `download_holiday_data` 或 `down_holiday_data` | 条件可实现；大 QMT 内置文档说明内置环境通过界面端“节假日数据 - 下载”，原生 xtquant 才调用 `xtdata.download_holiday_data()`。当前 QMT 不暴露 callable 时，报错 `requires QMT callable: download_holiday_data, down_holiday_data` 是预期结果。 |

@@ -243,6 +243,56 @@ def test_runtime_retention_setting_and_cleanup(tmp_path):
         instance.close()
 
 
+def test_runtime_recent_minutes_exact_window_crosses_midnight_and_moves(tmp_path):
+    instance = TradingMonitor(tmp_path / 'recent-runtime.sqlite3')
+    now = datetime(2026, 11, 4, 0, 2, tzinfo=SHANGHAI).timestamp()
+    conn = instance._connect()
+    try:
+        rows = [('before', now - 301, 'qmt-one', 'ctypes'),
+                ('start', now - 300, 'qmt-one', 'ctypes'),
+                ('middle', now - 60, 'qmt-one', 'ctypes'),
+                ('now', now, 'qmt-one', 'ctypes'),
+                ('future', now + 1, 'qmt-one', 'ctypes'),
+                ('other', now - 60, 'qmt-two', 'ctypes'),
+                ('lite', now - 60, 'qmt-one', 'lite')]
+        conn.executemany('INSERT INTO monitor_runtime_samples VALUES (?,?,?,?,?,?,?,?,?)',
+            [(key, at, int(at // 60) * 60, bridge, '', mode, '{}', '{}', '{}')
+             for key, at, bridge, mode in rows])
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        data = instance.query_runtime(minutes='5', bridge_id='qmt-one', mode='ctypes', now=now)
+        assert [row['sampled_at'] for row in data['samples']] == [now - 300, now - 60, now]
+        assert data['minutes'] == 5
+        assert data['window_start'] == now - 300 and data['window_end'] == now
+        assert data['start'] == '2026-11-03T23:57:00+08:00'
+        assert data['end'] == '2026-11-04T00:02:00+08:00'
+        moved = instance.query_runtime(minutes=5, bridge_id='qmt-one', mode='ctypes', now=now + 60)
+        assert [row['sampled_at'] for row in moved['samples']] == [now - 60, now, now + 1]
+        # Existing date queries keep whole-day semantics and ignore the wall-clock cutoff.
+        date_result = instance.query_runtime('2026-11-04', '2026-11-04', bridge_id='qmt-one', mode='ctypes', now=now)
+        assert len(date_result['samples']) == 3
+    finally:
+        instance.close()
+
+
+@pytest.mark.parametrize('minutes', [0, -1, 1.5, True, '', 'abc', '1e2', '１', 5256001])
+def test_runtime_recent_minutes_validation_without_database(tmp_path, minutes):
+    instance = TradingMonitor(tmp_path / 'absent.sqlite3')
+    with pytest.raises(ValueError, match='分钟数'):
+        instance.query_runtime(minutes=minutes, now=NOW)
+    assert not instance.path.exists()
+
+
+def test_runtime_recent_minutes_empty_database(tmp_path):
+    instance = TradingMonitor(tmp_path / 'absent.sqlite3')
+    data = instance.query_runtime(minutes=120, now=NOW)
+    assert data['samples'] == [] and data['minutes'] == 120
+    assert data['window_end'] - data['window_start'] == 7200
+    assert not instance.path.exists()
+
+
 def test_runtime_all_history_query_and_manual_cleanup(tmp_path):
     instance = TradingMonitor(tmp_path / 'runtime-all.sqlite3')
     instance.configure(False, runtime_retention_days=0)
@@ -316,6 +366,13 @@ def test_monitor_endpoint_requires_authorization_and_validates_filters(monkeypat
     handler._handle_api_get(urlparse('/api/monitor/runtime?start=2026-11-03&end=2026-11-03&bridge_id=qmt-one'))
     assert written[-1][0] == 200
     assert 'samples' in written[-1][1]['data']
+    handler._handle_api_get(urlparse('/api/monitor/runtime?minutes=120&bridge_id=qmt-one'))
+    assert written[-1][0] == 200 and written[-1][1]['data']['minutes'] == 120
+    handler._handle_api_get(urlparse('/api/monitor/runtime?minutes=0'))
+    assert written[-1][0] == 400
+    handler._authorized = lambda parsed: False
+    handler._handle_api_get(urlparse('/api/monitor/runtime?minutes=5'))
+    assert written[-1][0] == 401
 
 
 def test_full_queue_reports_loss_without_blocking(monitor, monkeypatch):

@@ -139,7 +139,7 @@ Core implemented groups:
 | `get_market_data`, `get_market_data_ex` | Implemented market data query. Advanced mode may prefer trade/fast channel and fall back to ordinary QMT. |
 | `get_local_data` | Implemented against QMT callable, but `data_dir` is only a compatibility parameter; `cfquant` does not take over MiniQMT local directory semantics. |
 | `subscribe_quote`, `subscribe_quote2`, `subscribe_whole_quote`, `unsubscribe_quote` | Implemented quote subscription and event forwarding. Public docs note a single active external full-push subscription on the Web side. |
-| `download_history_data`, `download_history_data2` | Implemented historical data download. Batch download supports progress callback event forwarding. |
+| `download_history_data`, `download_history_data2` | Implemented historical data download. Batch downloads are serialized in bounded chunks (`1m` defaults to 50 symbols per chunk); pass `download_batch_size` to tune the chunk size. Progress callbacks are aggregated across chunks. This limits request peaks; native QMT caches may still require a QMT restart to release. |
 | `get_instrument_detail`, `get_stock_list_in_sector` | Implemented instrument detail and sector constituent lookup. Sector parameters remain simplified. |
 | `get_trading_dates` | Implemented trading calendar query. |
 | `is_stock`, `is_fund`, `is_future`, `get_stock_type`, `get_stock_name`, `get_open_date` | Implemented security type and basic attribute helpers when QMT callable exists. |

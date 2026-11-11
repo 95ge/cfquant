@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261111_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20261111_02">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -3301,6 +3301,44 @@ else:
           </div>
           <p class="metric-note">适用于通用、极致模式；独立市场入口沿用此绑定的设置。保存并同步策略后，按部署提示重新启动策略或 QMT 生效。</p>
         </section>
+        <section id="bindingWebhookSettings" class="binding-runtime-settings binding-dialog-wide-row" aria-labelledby="bindingWebhookTitle">
+          <strong id="bindingWebhookTitle">账号消息推送</strong>
+          <label class="toggle">
+            <input id="bindingWebhookEnabled" type="checkbox">
+            <span>启用此资金账号的默认 Webhook</span>
+          </label>
+          <div id="bindingWebhookFields" class="binding-runtime-grid hidden">
+            <label class="field">
+              <span>推送平台</span>
+              <select id="bindingWebhookProvider">
+                <option value="wecom">企业微信</option>
+                <option value="dingtalk">钉钉</option>
+                <option value="feishu">飞书</option>
+                <option value="generic">通用 Webhook（JSON）</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Webhook 推送地址</span>
+              <input id="bindingWebhookUrl" type="password" autocomplete="new-password" placeholder="粘贴机器人的完整 Webhook 地址">
+              <small id="bindingWebhookUrlHint">地址随绑定保存，编辑时不回显。</small>
+            </label>
+            <label id="bindingWebhookSecretField" class="field hidden">
+              <span>加签密钥（可选）</span>
+              <input id="bindingWebhookSecret" type="password" autocomplete="new-password" placeholder="机器人开启加签时填写">
+              <small id="bindingWebhookSecretHint">更换平台或地址时，请重新填写所需密钥。</small>
+            </label>
+            <label id="bindingWebhookClearSecretField" class="toggle hidden">
+              <input id="bindingWebhookClearSecret" type="checkbox">
+              <span>清除已保存的加签密钥</span>
+            </label>
+          </div>
+          <p class="metric-note">程序可通过 cfquant.notify.send(message, account_id="资金账号") 发送自定义消息。调用时同时指定地址与平台优先，否则使用此账号配置。保存后立即生效；监控自动通知仍在监控页配置。</p>
+          <div class="binding-python-runtime-actions">
+            <button id="bindingWebhookSaveBtn" type="button">仅保存推送配置</button>
+            <button id="bindingWebhookClearBtn" type="button">清除已保存的推送配置</button>
+            <span id="bindingWebhookSaveStatus" class="metric-note" role="status"></span>
+          </div>
+        </section>
         <section id="bindingVmSettings" class="binding-runtime-settings binding-dialog-wide-row" aria-labelledby="bindingVmSettingsTitle">
           <div class="binding-qmt-autostart-head">
             <div>
@@ -3540,13 +3578,14 @@ else:
   <script src="/python-api-data.js?v=20261017_whole_quote_markets_01"></script>
   <script src="/cftrader-api-data.js?v=20261103_algorithm_01"></script>
   <script src="/smart-order-api-data.js?v=20261105_smart_orders_01"></script>
+  <script src="/notify-api-data.js?v=20261111_01"></script>
   <script src="/qmt-inner-api-data.js?v=20261106_inner_scope_01"></script>
-  <script src="/api-tester.js?v=20261105_inner_01"></script>
-  <script src="/python-api.js?v=20261106_inner_scope_01"></script>
-  <script src="/trading-monitor.js?v=20261109_runtime_perf_01"></script>
+  <script src="/api-tester.js?v=20261111_notify_01"></script>
+  <script src="/python-api.js?v=20261111_notify_01"></script>
+  <script src="/trading-monitor.js?v=20261111_runtime_window_01"></script>
   <script src="/navigation.js?v=web_20261108_nav_03"></script>
   <script src="/activity-log.js?v=web_20261108_logs_01"></script>
-  <script src="/app.js?v=web_20261111_01"></script>
+  <script src="/app.js?v=web_20261111_02"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

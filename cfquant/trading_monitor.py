@@ -561,10 +561,20 @@ class TradingMonitor:
             raise ValueError("开始日期不能晚于结束日期，单次最多查询 %d 天" % max_days)
         return start, end, begin, finish
 
-    def query_runtime(self, start=None, end=None, bridge_id="", mode="", limit=5000, now=None):
+    def query_runtime(self, start=None, end=None, bridge_id="", mode="", limit=5000, now=None, minutes=None):
         now = time.time() if now is None else now
-        start, end, begin, finish = self._runtime_dates(
-            start, end, now, max_days=MAX_RUNTIME_RETENTION_DAYS, allow_all=True)
+        if minutes is not None:
+            if isinstance(minutes, bool) or not str(minutes).isascii() or not str(minutes).isdigit():
+                raise ValueError("最近分钟数必须为正整数")
+            minutes = int(minutes)
+            if not 1 <= minutes <= MAX_RUNTIME_RETENTION_DAYS * 1440:
+                raise ValueError("最近分钟数须在 1 至 %d 之间" % (MAX_RUNTIME_RETENTION_DAYS * 1440))
+            finish = datetime.fromtimestamp(now, SHANGHAI)
+            begin = finish - timedelta(minutes=minutes)
+            start, end = begin.isoformat(timespec='seconds'), finish.isoformat(timespec='seconds')
+        else:
+            start, end, begin, finish = self._runtime_dates(
+                start, end, now, max_days=MAX_RUNTIME_RETENTION_DAYS, allow_all=True)
         try:
             limit = int(limit)
         except (TypeError, ValueError):
@@ -574,6 +584,8 @@ class TradingMonitor:
         result = {"start": start, "end": end, "timezone": "Asia/Shanghai", "bridge_id": str(bridge_id or ""),
                   "mode": str(mode or ""),
                   "samples": [], "retention_days": self.runtime_retention_days, "generated_at": now}
+        if minutes is not None:
+            result.update(minutes=minutes, window_start=begin.timestamp(), window_end=finish.timestamp())
         if not self.path.exists():
             return result
         conn = sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True, timeout=3)
@@ -581,7 +593,7 @@ class TradingMonitor:
         try:
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='monitor_runtime_samples'").fetchone():
                 return result
-            clauses = ["sampled_at>=?", "sampled_at<?"]
+            clauses = ["sampled_at>=?", "sampled_at<=?" if minutes is not None else "sampled_at<?"]
             args = [begin.timestamp(), finish.timestamp()]
             if bridge_id:
                 clauses.append("bridge_id=?")

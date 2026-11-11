@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261111_01';
+const FRONTEND_VERSION = 'web_20261111_02';
 
 const state = {
   accountId: '',
@@ -147,6 +147,7 @@ const state = {
   bindingPythonRuntimePollTimer: null,
   bindingPythonRuntimeJobId: '',
   bindingPythonRuntimeProgress: null,
+  bindingPythonRuntimeDeferred: false,
   bindingNoticeTimer: null,
   tests: [],
   testSourceId: '',
@@ -2138,9 +2139,19 @@ const API_ENDPOINTS = [
     defaults: { runtime: 'py312', restart: true },
     fields: ['qmt_dir', 'account_id', 'qmt_runtime', 'qmt_runtime_restart'],
   },
+  {
+    id: 'notification_send', group: 'system', title: '发送自定义消息', functionName: 'notify.send',
+    method: 'POST', path: '/api/notifications/send',
+    desc: '发送用户自定义文本；指定资金账号时使用绑定的 Webhook。SDK/HTTP 同时提供 webhook_url 和 provider 时完整覆盖账号配置。',
+    defaults: { timeout: '8' }, fields: ['account_id', 'notify_account_key', 'notify_message', 'notify_title', 'timeout'],
+    notificationEntry: (window.CFQUANT_NOTIFY_API || [])[0],
+  },
 ];
 
 const API_FIELD_META = {
+  notify_message: { label: '消息内容', type: 'textarea', param: 'message', wide: true },
+  notify_title: { label: '标题（可选）', type: 'text', param: 'title' },
+  notify_account_key: { label: '绑定标识 account_key（同号多绑定时填写）', type: 'text', param: 'account_key' },
   sdk_order_type: { label: '交易类型 order_type', type: 'number', param: 'order_type', step: '1' },
   order_volume: { label: '委托数量 order_volume', type: 'number', step: '1' },
   strategy_name: { label: '策略名称 strategy_name', type: 'text' },
@@ -4932,8 +4943,8 @@ async function copyDocumentCode(button, code) {
 function renderApiDocDetail(endpoint) {
   const box = $('apiDocDetail');
   if (!box) return;
-  if (endpoint.sdkEntry || endpoint.nativeEntry) {
-    const entry = endpoint.sdkEntry || endpoint.nativeEntry;
+  if (endpoint.sdkEntry || endpoint.nativeEntry || endpoint.notificationEntry) {
+    const entry = endpoint.sdkEntry || endpoint.nativeEntry || endpoint.notificationEntry;
     const native = Boolean(endpoint.nativeEntry);
     const nativeSession = native ? window.CFQUANT_QMT_INNER_API : null;
     const algorithm = entry.operation === 'algorithm';
@@ -10151,6 +10162,95 @@ function applyAccountPair(accountKeyOrId) {
   return !!entry || !!loadAccountPairs()[value];
 }
 
+function fillBindingWebhookSettings(settings = {}) {
+  settings = settings || {};
+  const panel = $('bindingWebhookSettings');
+  panel.dataset.provider = settings.provider || 'wecom';
+  panel.dataset.urlConfigured = settings.url_configured ? 'true' : 'false';
+  panel.dataset.secretConfigured = settings.secret_configured ? 'true' : 'false';
+  panel.dataset.clear = 'false';
+  $('bindingWebhookSaveStatus').textContent = '';
+  $('bindingWebhookSaveBtn').classList.toggle('hidden', !$('bindingForm').dataset.accountKey);
+  $('bindingWebhookEnabled').checked = !!settings.enabled;
+  $('bindingWebhookProvider').value = settings.provider || 'wecom';
+  $('bindingWebhookUrl').value = '';
+  $('bindingWebhookSecret').value = '';
+  $('bindingWebhookClearSecret').checked = false;
+  syncBindingWebhookSettings();
+}
+
+function syncBindingWebhookSettings() {
+  const panel = $('bindingWebhookSettings');
+  const enabled = $('bindingWebhookEnabled').checked;
+  const provider = $('bindingWebhookProvider').value;
+  const sameProvider = provider === panel.dataset.provider;
+  const signing = ['dingtalk', 'feishu'].includes(provider);
+  $('bindingWebhookFields').classList.toggle('hidden', !enabled);
+  $('bindingWebhookSecretField').classList.toggle('hidden', !signing);
+  $('bindingWebhookClearSecretField').classList.toggle('hidden', !signing || panel.dataset.secretConfigured !== 'true');
+  $('bindingWebhookUrlHint').textContent = sameProvider && panel.dataset.urlConfigured === 'true'
+    ? '已配置地址；留空保留，填写新地址可替换。' : '请填写此平台机器人的完整 Webhook 地址。';
+  $('bindingWebhookSecretHint').textContent = sameProvider && panel.dataset.secretConfigured === 'true'
+    ? '已配置密钥；地址不变时留空保留。更换地址后请重新填写。' : '机器人开启加签时填写；更换平台或地址后请重新填写。';
+  $('bindingWebhookClearBtn').disabled = panel.dataset.urlConfigured !== 'true' && panel.dataset.secretConfigured !== 'true';
+}
+
+function readBindingWebhookSettings() {
+  const panel = $('bindingWebhookSettings');
+  const enabled = $('bindingWebhookEnabled').checked;
+  if (!enabled) return panel.dataset.clear === 'true' ? { clear: true } : { enabled: false };
+  const provider = $('bindingWebhookProvider').value;
+  const url = $('bindingWebhookUrl').value.trim();
+  const secret = $('bindingWebhookSecret').value.trim();
+  if (!url && (panel.dataset.urlConfigured !== 'true' || provider !== panel.dataset.provider)) {
+    setBindingNotice('请填写 Webhook 推送地址；更换平台时需重新填写。', 'error', { autoHide: false });
+    $('bindingWebhookUrl').focus();
+    return null;
+  }
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.hash || /\s/.test(url)) throw new Error();
+    } catch (_) {
+      setBindingNotice('Webhook 地址格式无效，请填写完整的 HTTP(S) 地址。', 'error', { autoHide: false });
+      return null;
+    }
+  }
+  return { enabled, provider, ...(url ? { url } : {}), ...(secret ? { secret } : {}),
+    clear_secret: $('bindingWebhookClearSecret').checked };
+}
+
+async function saveBindingWebhookSettings() {
+  const form = $('bindingForm');
+  const accountKey = form.dataset.accountKey;
+  const settings = readBindingWebhookSettings();
+  if (!settings || !accountKey) return;
+  const config = findAccountConfigByKey(accountKey);
+  if (!config || form.account_id.value.trim() !== config.account_id
+      || normalizeAccountType(form.account_type.value) !== config.account_type) {
+    setBindingNotice('账号身份已修改，请使用底部按钮保存完整绑定。', 'warn', { autoHide: false });
+    return;
+  }
+  const button = $('bindingWebhookSaveBtn');
+  button.disabled = true;
+  $('bindingWebhookSaveStatus').textContent = '正在保存...';
+  try {
+    const result = await api('/api/account-config/webhook', { method: 'POST', body: JSON.stringify({
+      account_key: accountKey, notification_webhook: settings,
+    }) });
+    if (!result.account?.notification_webhook) throw new Error('后端未保存推送配置，请重启 Web 服务后重试。');
+    state.accountConfigs[accountKey] = result.account;
+    if (form.dataset.accountKey === accountKey) {
+      fillBindingWebhookSettings(result.account.notification_webhook);
+      $('bindingWebhookSaveStatus').textContent = '已保存，立即生效。';
+    }
+  } catch (error) {
+    if (form.dataset.accountKey === accountKey) $('bindingWebhookSaveStatus').textContent = `保存失败：${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function syncBindingForm() {
   const form = $('bindingForm');
   if (!form) return;
@@ -10162,6 +10262,7 @@ function syncBindingForm() {
   const config = info.config;
   fillBindingRuntimeSettings(config ? (config.qmt_runtime || {}) : undefined);
   fillBindingVmSettings(config?.qmt_vm);
+  fillBindingWebhookSettings(config?.notification_webhook);
   if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
   if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(config && config.qmt_dir ? config.qmt_dir : '');
   if (form.mode) form.mode.value = config && config.mode ? config.mode : DEFAULT_BINDING_MODE;
@@ -10196,6 +10297,8 @@ function closeBindingDialog() {
   }
   state.bindingPythonRuntimeCheckToken += 1;
   resetQmtLoginPassword('binding');
+  $('bindingWebhookUrl').value = '';
+  $('bindingWebhookSecret').value = '';
   overlay.classList.add('hidden');
   overlay.setAttribute('aria-hidden', 'true');
   document.body.classList.remove('binding-dialog-open');
@@ -10209,6 +10312,7 @@ function fillBindingForm(values = {}) {
   fillQmtStrategySettings('binding', values.qmtStrategy);
   fillBindingRuntimeSettings(values.qmtRuntime);
   fillBindingVmSettings(values.qmtVm);
+  fillBindingWebhookSettings(values.notificationWebhook);
   if (form.display_name) form.display_name.value = values.displayName || '';
   form.account_id.value = values.accountId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
@@ -10262,6 +10366,7 @@ function openBindingDialog(options = {}) {
     qmtAutoLogin: config ? config.qmt_auto_login : options.qmtAutoLogin,
     qmtRuntime: config ? (config.qmt_runtime || {}) : options.qmtRuntime,
     qmtVm: config ? config.qmt_vm : options.qmtVm,
+    notificationWebhook: config ? config.notification_webhook : undefined,
   });
   const editing = !!accountId;
   const title = $('bindingDialogTitle');
@@ -10622,7 +10727,10 @@ function renderBindingPythonRuntimeProgress() {
     installing: '安装中', installed: '安装完成，等待切换', reusing: '使用已安装运行库',
     activating: '配置执行器', restarting: '重启 QMT', done: '已完成', error: '任务失败' })[phase] || '处理中';
   meta.textContent = `${phaseText}${percent === null ? '' : `，${percent.toFixed(0)}%`}${bytes}${speedText}${etaText}`;
-  text.textContent = data.error || (phase === 'done' ? '执行器已配置，QMT 重启流程已完成' : phaseText);
+  const deferred = state.bindingPythonRuntimeDeferred || !!data.result?.account_config_required;
+  text.textContent = data.error || (phase === 'done'
+    ? (deferred ? '运行库已安装，请先登录 QMT，再重新检测并应用执行器' : '执行器已配置，QMT 重启流程已完成')
+    : phaseText);
 }
 
 function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, error = null) {
@@ -10648,14 +10756,18 @@ function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, e
   const running = !!state.bindingPythonRuntimeJobId;
   const checking = state.bindingPythonRuntimeChecking;
   select.disabled = !detected || checking || running || available.length === 1;
-  const canApply = detected && !error && !!qmtDir && !!accountId && binding.config_exists
-    && !['account_config_missing', 'account_config_unreadable'].includes(binding.state);
+  const missingAccountConfig = binding.state === 'account_config_missing' && !binding.config_exists;
+  const canApply = detected && !error && !!qmtDir && !!accountId
+    && (binding.config_exists || missingAccountConfig)
+    && binding.state !== 'account_config_unreadable';
   const ready = !!selected.installed && binding.selected_runtime === runtime && binding.state === 'ready'
     && (!binding.configured_runtime || binding.configured_runtime === runtime);
   button.disabled = !canApply || ready || checking || running;
   button.textContent = running ? 'Python 库任务进行中...' : (ready ? `${bindingPythonRuntimeName(runtime)} 已就绪`
-    : selected.installed ? `切换到 ${bindingPythonRuntimeName(runtime)} 并重启 QMT`
-      : `下载并使用 ${bindingPythonRuntimeName(runtime)}`);
+    : missingAccountConfig ? (selected.installed ? `已安装 ${bindingPythonRuntimeName(runtime)}，登录后应用`
+      : `下载 ${bindingPythonRuntimeName(runtime)}（登录后应用）`)
+      : selected.installed ? `切换到 ${bindingPythonRuntimeName(runtime)} 并重启 QMT`
+        : `下载并使用 ${bindingPythonRuntimeName(runtime)}`);
   choiceHint.textContent = '选择后点击下方按钮应用，任务会重启此 QMT；已安装的运行库会直接复用。';
   if (error) {
     statusNode.textContent = `检测失败：${error.message || error}`;
@@ -10684,6 +10796,8 @@ function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, e
   if (!canApply) {
     choiceHint.textContent = !accountId ? '填写账号后可配置执行器；请使用已在此 QMT 登录过的账号。'
       : '未找到可读的账号配置，请先在该 QMT 登录此账号一次，再重新检测。';
+  } else if (missingAccountConfig) {
+    choiceHint.textContent = '账号尚未在此 QMT 登录，可先下载运行库；登录后重新检测并应用所选执行器。';
   } else if (binding.selected_runtime) {
     choiceHint.textContent = `当前配置：${bindingPythonRuntimeName(binding.selected_runtime)}。`
       + (ready ? '已就绪。' : '点击下方按钮应用所选执行器，完成后会重启此 QMT。');
@@ -10703,7 +10817,8 @@ function bindingPythonRuntimeProgressEvent(event) {
     closeBindingPythonRuntimeSocket();
     if (state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
       state.bindingPythonRuntimeChoice = state.bindingPythonRuntimeJobRuntime;
-      state.bindingPythonRuntimeChoiceDirty = true;
+      state.bindingPythonRuntimeDeferred = !!event.data?.result?.account_config_required;
+      state.bindingPythonRuntimeChoiceDirty = !state.bindingPythonRuntimeDeferred;
     }
     state.bindingPythonRuntimeJobId = '';
     renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
@@ -10794,6 +10909,7 @@ async function refreshBindingPythonRuntime(options = {}) {
     state.bindingPythonRuntime = null;
     state.bindingPythonRuntimeChoice = '';
     state.bindingPythonRuntimeChoiceDirty = false;
+    state.bindingPythonRuntimeDeferred = false;
     state.bindingPythonRuntimeContext = context;
   }
   state.bindingPythonRuntimeError = null;
@@ -10850,6 +10966,7 @@ function scheduleBindingPythonRuntimeCheck(delay = 350) {
     state.bindingPythonRuntime = null;
     state.bindingPythonRuntimeChoice = '';
     state.bindingPythonRuntimeChoiceDirty = false;
+    state.bindingPythonRuntimeDeferred = false;
     state.bindingPythonRuntimeError = null;
     state.bindingPythonRuntimeContext = context;
   }
@@ -10871,12 +10988,15 @@ async function downloadBindingPythonRuntime() {
   if (state.bindingPythonRuntimeContext !== bindingPythonRuntimeContextKey()) return;
   const binding = bindingPythonRuntimeBinding(state.bindingPythonRuntime);
   const runtime = state.bindingPythonRuntimeChoice;
-  if (!binding.runtimes || !binding.config_exists || !accountId || !['py36', 'py312'].includes(runtime)
+  const missingAccountConfig = binding.state === 'account_config_missing' && !binding.config_exists;
+  if (!binding.runtimes || (!binding.config_exists && !missingAccountConfig) || !accountId || !['py36', 'py312'].includes(runtime)
       || (runtime === 'py312' && !binding.py312_supported)) return;
   const jobId = `binding_qmt_python_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-  const body = { job_id: jobId, qmt_dir: qmtDir, account_id: accountId, runtime, restart: true, reuse_installed: true };
+  const body = { job_id: jobId, qmt_dir: qmtDir, account_id: accountId, runtime, restart: true,
+    reuse_installed: true, allow_missing_account_config: missingAccountConfig };
   state.bindingPythonRuntimeJobContext = bindingPythonRuntimeContextKey();
   state.bindingPythonRuntimeJobRuntime = runtime;
+  state.bindingPythonRuntimeDeferred = false;
   state.bindingPythonRuntimeJobId = jobId;
   state.bindingPythonRuntimeProgress = {
     event: DOWNLOAD_CALLBACK_EVENT,
@@ -10903,6 +11023,8 @@ async function downloadBindingPythonRuntime() {
 
 async function submitBindingForm(event) {
   event.preventDefault();
+  const notificationWebhook = readBindingWebhookSettings();
+  if (!notificationWebhook) return;
   const qmtVm = readBindingVmSettings();
   if (!qmtVm) return;
   const form = event.currentTarget;
@@ -11004,8 +11126,14 @@ async function submitBindingForm(event) {
       qmt_strategy: strategySettings,
       qmt_runtime: normalizeTransportMode(mode) === 'lttx' ? undefined : qmtRuntime,
       qmt_vm: qmtVm,
+      notification_webhook: notificationWebhook,
     });
     const responseAccount = data.account && typeof data.account === 'object' ? data.account : {};
+    if (notificationWebhook.enabled && (!responseAccount.notification_webhook?.enabled
+        || !responseAccount.notification_webhook?.url_configured
+        || responseAccount.notification_webhook?.provider !== notificationWebhook.provider)) {
+      throw new Error('账号推送配置未被后端保存，请重启 Web 服务后重新保存。');
+    }
     if (qmtAutoLoginSettings.password && !(responseAccount.qmt_auto_login && responseAccount.qmt_auto_login.password_saved)) {
       throw new Error('当前后端未保存 QMT 登录密码，请重启项目后重新保存。');
     }
@@ -15399,6 +15527,14 @@ async function boot() {
   const bridgeForm = $('bridgeForm');
   if (bridgeForm) bridgeForm.addEventListener('submit', submitBridgeForm);
   $('bindingForm').addEventListener('submit', submitBindingForm);
+  $('bindingWebhookEnabled').addEventListener('change', syncBindingWebhookSettings);
+  $('bindingWebhookSaveBtn').addEventListener('click', saveBindingWebhookSettings);
+  $('bindingWebhookProvider').addEventListener('change', syncBindingWebhookSettings);
+  $('bindingWebhookClearBtn').addEventListener('click', () => {
+    fillBindingWebhookSettings();
+    $('bindingWebhookSettings').dataset.clear = 'true';
+    setBindingNotice('推送配置已标记清除，保存绑定后生效。', 'warn', { autoHide: false });
+  });
   const bindingMode = $('bindingMode');
   if (bindingMode) {
     bindingMode.addEventListener('change', () => {
@@ -15487,6 +15623,7 @@ async function boot() {
   if (bindingPythonRuntimeSelect) bindingPythonRuntimeSelect.addEventListener('change', () => {
     const binding = bindingPythonRuntimeBinding();
     state.bindingPythonRuntimeChoice = bindingPythonRuntimeSelect.value;
+    state.bindingPythonRuntimeDeferred = false;
     state.bindingPythonRuntimeChoiceDirty = binding.selected_runtime !== state.bindingPythonRuntimeChoice
       || !binding.runtimes?.[state.bindingPythonRuntimeChoice]?.installed;
     renderBindingPythonRuntimeStatus();
