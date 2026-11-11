@@ -135,7 +135,7 @@ def same_path(left, right):
 
 
 class UpdateProcesses:
-    def __init__(self, directory, pid):
+    def __init__(self, directory, pid, launch_client=None):
         import psutil
         self.psutil = psutil
         self.directory = Path(directory).resolve()
@@ -148,6 +148,7 @@ class UpdateProcesses:
         self.owners = {}  # PID -> (creation time, installer flag)
         self.native = NativeDialogs()
         self.launch = None
+        self.launch_client = launch_client
 
     @property
     def pid(self):
@@ -218,7 +219,18 @@ class UpdateProcesses:
             new = matches[0]
             if new.create_time() <= self.started:
                 raise QmtUpdateError("update_process_changed")
-        else:
+            if self.launch_client is not None:
+                # Installer-started terminals have not received launch hooks.
+                new.terminate()
+                try:
+                    new.wait(timeout=10)
+                except self.psutil.TimeoutExpired:
+                    raise QmtUpdateError("update_restart_failed") from None
+                matches = []
+        if not matches and self.launch_client is not None:
+            self.launch = self.launch_client()
+            new = self.psutil.Process(int(self.launch['pid']))
+        elif not matches:
             self.launch = subprocess.Popen([str(self.exe)], cwd=str(self.directory))
             new = self.psutil.Process(self.launch.pid)
         self.qmt = new
@@ -325,14 +337,15 @@ class UpdateMonitor:
 
 def manage_qmt_startup(directory, pid, login, *, auto_update=False,
                        should_cancel=lambda: False, on_wait=lambda phase: None,
-                       on_pid=lambda pid: None):
+                       on_pid=lambda pid: None, launch_client=None):
     """Supervise update/restart and rerun login only for the resulting new PID.
 
     login is None for a client with its own automatic login; no Qt injection or
     credential access happens in that mode. The worker continues observing the
     updater after login so its late dialogs cannot be left blocking the client.
     """
-    processes = UpdateProcesses(directory, pid)
+    processes = (UpdateProcesses(directory, pid, launch_client=launch_client) if launch_client is not None
+                 else UpdateProcesses(directory, pid))
     monitor = UpdateMonitor(processes, auto_update, should_cancel, on_wait, on_pid)
     while not should_cancel():
         try:

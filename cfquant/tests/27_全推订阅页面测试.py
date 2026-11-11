@@ -4,6 +4,7 @@ from playwright.sync_api import expect
 import json
 import re
 import csv
+import pytest
 from pathlib import Path
 from cfquant.diagnostics import latency_report
 
@@ -60,6 +61,7 @@ def test_internal_latency_subscription_stream_and_stop(page, frontend_url, tmp_p
     page.locator('#quoteConnectBtn').click()
     expect(page.locator('#quoteLiveStatus')).to_contain_text('已连接')
     assert len(sockets) == 1
+    assert sent[1] == dict(sent[0], resume_subscribe_id='123')
     quote = {'%06d.SZ' % i: {'time': 1792112400000, 'lastPrice': 10.25, 'volume': i,
                             'bidPrice': [10.2, 10.1], 'name': '测试行情'} for i in range(1, 258)}
     quote['000257.SZ']['time'] -= 1000
@@ -137,7 +139,109 @@ def test_internal_latency_subscription_stream_and_stop(page, frontend_url, tmp_p
     page.locator('#quoteStopBtn').click()
     expect(page.locator('#quoteLiveStatus')).to_contain_text('未订阅')
     page.wait_for_function('!state.quoteSubscribeId && !state.apiSocket')
-    assert stopped == [{'bridge_id': 'default', 'channel': 'normal', 'subscribe_id': '123'}]
+    assert stopped == [{'bridge_id': 'default', 'channel': 'normal', 'subscribe_id': '123', 'shared_only': True}]
     page.evaluate("renderApiDocs('quote_subscribe_whole')")
     expect(page.locator('#quoteLatencySummary')).not_to_be_visible()
+    assert errors == []
+
+
+@pytest.mark.parametrize('diagnostic', [False, True], ids=['whole', 'latency'])
+def test_connect_restores_expired_subscription_and_shows_actual_source(page, frontend_url, diagnostic):
+    sent, stopped, sockets = [], [], []
+    subscribe_path = '/api/diagnostics/quotes/subscribe' if diagnostic else '/api/quotes/whole/subscribe'
+    unsubscribe_path = '/api/diagnostics/quotes/unsubscribe' if diagnostic else '/api/quotes/unsubscribe'
+    ws_path = '/ws/diagnostics/quotes' if diagnostic else '/ws/quotes'
+    page.route_web_socket(re.compile(re.escape(ws_path) + r'\?'), lambda ws: sockets.append(ws))
+    _, errors = open_app(page, frontend_url)
+    def subscribe(route):
+        sent.append(route.request.post_data_json)
+        route.fulfill(json={'ok': True, 'data': {
+            'subscribe_id': str(40 + len(sent)), 'bridge_id': 'running-provider',
+            'source_reused': True, 'requested_bridge_id': 'default'}})
+    page.route('**' + subscribe_path, subscribe)
+    page.route('**' + unsubscribe_path, lambda route: (
+        stopped.append(route.request.post_data_json), route.fulfill(json={'ok': True, 'data': {'result': True}})))
+    page.evaluate("""diagnostic => {
+        document.querySelector('#setupOverlay').classList.add('hidden');
+        setView('api');
+        renderApiDocs(diagnostic ? 'quote_latency' : 'quote_subscribe_whole');
+    }""", diagnostic)
+    page.locator('#apiForm [type="submit"]').click()
+    expect(page.locator('#quoteLiveStatus')).to_contain_text('复用共享行情源：running-provider')
+    assert sockets == []
+    # Draft form edits must not change the already submitted subscription.
+    page.locator('#apiForm [name="markets"]').fill('CUSTOM')
+    page.locator('#quoteConnectBtn').click()
+    expect(page.locator('#quoteLiveStatus')).to_contain_text('已连接 #42')
+    expect(page.locator('#quoteLiveStatus')).to_contain_text('复用共享行情源：running-provider')
+    assert sent[1] == dict(sent[0], resume_subscribe_id='41')
+    assert len(sockets) == 1
+    assert 'subscribe_id=42' in sockets[0].url
+    sockets[0].send(json.dumps({'type': 'quote', 'event': {'subscribe_id': '42', 'seq': 1,
+        'data': {'600000.SH': {'lastPrice': 10.25, 'time': 1792112400000}}}}))
+    expect(page.locator('#quoteLiveBody')).to_contain_text('600000.SH')
+    page.locator('#quoteStopBtn').click()
+    page.wait_for_function('!state.quoteSubscribeId && !state.apiSocket')
+    assert stopped[-1]['subscribe_id'] == '42'
+    assert stopped[-1]['shared_only'] is True
+    assert errors == []
+
+
+def test_connect_failure_is_visible_and_retryable(page, frontend_url):
+    sent, sockets = [], []
+    page.route_web_socket(re.compile(r'/ws/quotes\?'), lambda ws: sockets.append(ws))
+    _, errors = open_app(page, frontend_url)
+    def subscribe(route):
+        sent.append(route.request.post_data_json)
+        if len(sent) == 2:
+            route.fulfill(status=400, json={'ok': False, 'error': 'QMT provider unavailable'})
+        else:
+            route.fulfill(json={'ok': True, 'data': {'subscribe_id': '123'}})
+    page.route('**/api/quotes/whole/subscribe', subscribe)
+    page.evaluate("""() => {
+        document.querySelector('#setupOverlay').classList.add('hidden');
+        setView('api'); renderApiDocs('quote_subscribe_whole');
+    }""")
+    page.locator('#apiForm [type="submit"]').click()
+    expect(page.locator('#quoteConnectBtn')).to_be_enabled()
+    page.locator('#quoteConnectBtn').click()
+    expect(page.locator('#apiResponseBox')).to_contain_text('QMT provider unavailable')
+    expect(page.locator('#quoteLiveStatus')).to_contain_text('连接失败')
+    expect(page.locator('#quoteConnectBtn')).to_be_enabled()
+    assert sockets == []
+    page.locator('#quoteConnectBtn').click()
+    expect(page.locator('#quoteLiveStatus')).to_contain_text('已连接')
+    assert len(sockets) == 1
+    assert errors == []
+
+
+def test_stop_during_recovery_releases_late_subscription_without_connecting(page, frontend_url):
+    pending, stopped, sockets = [], [], []
+    page.route_web_socket(re.compile(r'/ws/quotes\?'), lambda ws: sockets.append(ws))
+    _, errors = open_app(page, frontend_url)
+    def subscribe(route):
+        if route.request.post_data_json.get('resume_subscribe_id'):
+            pending.append(route)
+        else:
+            route.fulfill(json={'ok': True, 'data': {'subscribe_id': '1'}})
+    page.route('**/api/quotes/whole/subscribe', subscribe)
+    page.route('**/api/quotes/unsubscribe', lambda route: (
+        stopped.append(route.request.post_data_json['subscribe_id']),
+        route.fulfill(json={'ok': True, 'data': {'result': True}})))
+    page.evaluate("""() => {
+        document.querySelector('#setupOverlay').classList.add('hidden');
+        setView('api'); renderApiDocs('quote_subscribe_whole');
+    }""")
+    page.locator('#apiForm [type="submit"]').click()
+    expect(page.locator('#quoteConnectBtn')).to_be_enabled()
+    with page.expect_request('**/api/quotes/whole/subscribe'):
+        page.locator('#quoteConnectBtn').click()
+    page.locator('#quoteStopBtn').click()
+    expect(page.locator('#quoteLiveStatus')).to_contain_text('未订阅')
+    assert len(pending) == 1
+    with page.expect_request('**/api/quotes/unsubscribe'):
+        pending[0].fulfill(json={'ok': True, 'data': {'subscribe_id': '2'}})
+    page.wait_for_function('!state.quoteSubscribeId && !state.apiSocket')
+    assert stopped == ['1', '2']
+    assert sockets == []
     assert errors == []

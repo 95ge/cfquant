@@ -19,6 +19,8 @@ from pathlib import Path
 from cfquant.diagnostics import latency_report, SCHEMA as QUOTE_LATENCY_SCHEMA
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
+from cfquant.qmt_vm_settings import normalize_qmt_vm_settings, qmt_vm_settings_enabled
+from cfquant.qmt_vm_runtime import start_feature_process, preflight_feature_process
 from cfquant.qmt_dependencies import check_login_dependencies, report_startup_dependencies
 from cfquant import remote_management as remote_agent_module
 from cfquant.trading_monitor import TradingMonitor, monitored_request
@@ -1815,6 +1817,34 @@ def account_config_is_enabled(config):
     return parse_config_bool(config.get("enabled"), True)
 
 
+def _qmt_vm_roots(row):
+    roots = account_qmt_roots(row)
+    if row.get("qmt_dir"):
+        roots.add(os.path.normcase(str(qmt_root(row["qmt_dir"]))))
+    return roots
+
+
+def _qmt_vm_effective_settings(row):
+    settings = normalize_qmt_vm_settings(row.get("qmt_vm"))
+    return settings["disable_vm"], settings["mac_address"] if settings["inject_mac"] else ''
+
+
+def _validate_qmt_vm_conflicts(row, configs):
+    if not account_config_is_enabled(row):
+        return
+    roots = _qmt_vm_roots(row)
+    if qmt_vm_settings_enabled(row.get("qmt_vm")) and not roots:
+        raise ValueError("启用虚拟机检测适配或 MAC 注入时必须填写 QMT 目录")
+    for key, other in configs.items():
+        if key == row.get("account_key") or not account_config_is_enabled(other):
+            continue
+        if (other.get("account_id") == row.get("account_id")
+                and (other.get("mode") != row.get("mode") or (row.get("qmt_strategy") or {}).get("enabled"))):
+            continue  # save_account_config disables this replaced binding.
+        if roots.intersection(_qmt_vm_roots(other)) and _qmt_vm_effective_settings(row) != _qmt_vm_effective_settings(other):
+            raise ValueError("共用同一 QMT 目录的启用绑定必须使用相同的虚拟机与 MAC 设置")
+
+
 def validate_qmt_auto_login_credentials(config_path, qmt_dir, settings, password=None):
     """Validate before stopping QMT or changing configuration; never trust a saved flag."""
     from cfquant.qmt_credentials import QmtCredentialStore
@@ -2815,6 +2845,12 @@ class WebRuntimeConfig(object):
             bridge_id = self._account_bridge_id_locked(account_id, account_type, body.get("bridge_id"), qmt_dir)
             existing = self._data.get("account_configs", {}).get(account_key_for(account_id, account_type, bridge_id)) or {}
             settings = normalize_qmt_auto_login_settings(request, existing=existing.get("qmt_auto_login"))
+            vm_settings = normalize_qmt_vm_settings(body.get("qmt_vm"), existing=existing.get("qmt_vm"), strict=True)
+            candidate = dict(existing, **body)
+            candidate.update(qmt_vm=vm_settings, qmt_dir=qmt_dir, account_id=account_id,
+                             mode=body.get("mode") or existing.get("mode") or DEFAULT_BINDING_MODE,
+                             account_key=account_key_for(account_id, account_type, bridge_id))
+            _validate_qmt_vm_conflicts(candidate, self._data.get("account_configs", {}))
             password = request.get("password") if isinstance(request, dict) else None
             validate_qmt_auto_login_credentials(self.path, qmt_dir, settings, password)
 
@@ -2834,6 +2870,7 @@ class WebRuntimeConfig(object):
         qmt_strategy=None,
         qmt_auto_login=None,
         qmt_runtime=None,
+        qmt_vm=None,
     ):
         account_id = str(account_id or "").strip()
         if not account_id:
@@ -2872,6 +2909,11 @@ class WebRuntimeConfig(object):
             auto_login_settings = normalize_qmt_auto_login_settings(
                 qmt_auto_login,
                 existing=existing.get("qmt_auto_login") if existing else {"auto_update": True},
+            )
+            vm_settings = normalize_qmt_vm_settings(
+                qmt_vm,
+                existing=existing.get("qmt_vm") if existing else None,
+                strict=True,
             )
             if strategy_settings["enabled"] and not qmt_dir:
                 raise ValueError("自动导入策略需要填写 QMT 目录")
@@ -2918,6 +2960,10 @@ class WebRuntimeConfig(object):
                     if requested_channels.intersection(occupied):
                         raise ValueError("自动导入的市场入口需要独立 bridge_id，请清空市场 bridge_id 后重试")
             supplied_password = qmt_auto_login.get("password") if isinstance(qmt_auto_login, dict) else None
+            _validate_qmt_vm_conflicts(dict(account_key=account_key, account_id=account_id,
+                enabled=enabled, qmt_dir=qmt_dir, qmt_trade_dir=qmt_trade_dir, mode=mode,
+                qmt_strategy=strategy_settings, market_routing_enabled=market_routing_enabled,
+                market_bridges=market_routes, qmt_vm=vm_settings), configs)
             password_saved = validate_qmt_auto_login_credentials(self.path, qmt_dir, auto_login_settings, supplied_password)
             if supplied_password and auto_login_settings["auto_fill_credentials"]:
                 from cfquant.qmt_credentials import QmtCredentialStore
@@ -2976,6 +3022,7 @@ class WebRuntimeConfig(object):
                 "qmt_strategy": strategy_settings,
                 "qmt_auto_login": auto_login_settings,
                 "qmt_runtime": runtime_settings,
+                "qmt_vm": vm_settings,
                 "updated_at": now,
             }
             if enabled:
@@ -3012,6 +3059,7 @@ class WebRuntimeConfig(object):
                 "market_routing_enabled": market_routing_enabled,
                 "market_bridges": market_routes if market_routing_enabled else {},
                 "qmt_auto_login": auto_login_settings,
+                "qmt_vm": vm_settings,
                 "enabled": enabled,
                 "updated_at": now,
             }
@@ -3766,6 +3814,7 @@ class WebRuntimeConfig(object):
                         enabled=parse_config_bool(item.get("market_routing_enabled"), False),
                     ),
                     "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
+                    "qmt_vm": normalize_qmt_vm_settings(item.get("qmt_vm")),
                     "updated_at": float(item.get("updated_at") or 0),
                 }
         return result
@@ -3811,6 +3860,7 @@ class WebRuntimeConfig(object):
                 "mode": normalize_transport_mode(item.get("mode") or "ctypes"),
                 "qmt_strategy": normalize_strategy_settings(item.get("qmt_strategy")),
                 "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
+                "qmt_vm": normalize_qmt_vm_settings(item.get("qmt_vm")),
                 "qmt_runtime": normalize_qmt_runtime_settings(item.get("qmt_runtime")),
                 "data_provider": bool(item.get("data_provider")),
                 "enabled": item.get("enabled", True) is not False,
@@ -7009,7 +7059,7 @@ class QuoteSubscriptionStore(object):
         self._pending_diagnostics = {}
         self.max_events = int(max_events)
         self._lock = threading.RLock()
-        self._subscribe_lock = threading.Lock()
+        self._subscribe_lock = threading.RLock()
         self._subscriptions = {}
         self._events = QuoteHistory(self.max_events, int(os.environ.get("CFQUANT_WEB_QUOTE_HISTORY_BYTES", 64 * 1024 * 1024)))
         self._history_error = ""
@@ -7048,6 +7098,23 @@ class QuoteSubscriptionStore(object):
         markets = self._normalize_markets(body.get("markets", body.get("code_list", ["SH", "SZ", "BJ"])))
         service = self._shared_service or PROJECT_QUOTES
         self.start()
+        resume_id = str(body.get("resume_subscribe_id") or "").strip()
+        if resume_id:
+            with self._lock:
+                row = self._subscriptions.get(resume_id)
+                if row and "shared_lease_id" in row:
+                    if row["markets"] != markets:
+                        raise ValueError("cannot resume a quote subscription with another scope")
+                    # Reserve time for the browser's WebSocket handshake even
+                    # if an old socket disconnects during this request.
+                    row["connect_deadline"] = time.time() + 8
+                    self._schedule_idle_release_locked()
+                    return dict(row, shared=True, already_subscribed=True)
+        requested_source = {
+            key: body.get(key)
+            for key in ("bridge_id", "channel", "account_id", "account_type", "account_key")
+            if body.get(key)
+        }
         pending, identity = [], []
         callback_lock = threading.Lock()
         def receive(data):
@@ -7058,10 +7125,12 @@ class QuoteSubscriptionStore(object):
                 subscribe_id = identity[0]
             received = data.get("shared_received_at_ms") if self.diagnostic and isinstance(data, dict) else None
             self._on_quote(dict(subscription_id=subscribe_id, event="quote:" + subscribe_id, data=data), received)
-        lease = service.acquire("web:" + new_id("quote"), markets, receive, purpose="web", source=body,
-                                diagnostic=self.diagnostic)
+        lease = service.acquire("web:" + new_id("quote"), markets, receive, purpose="web", source=requested_source,
+                                diagnostic=self.diagnostic, reuse_source=True)
         subscribe_id = str(lease)
         source = service.status()["source"]
+        source_reused = any(source.get(key) and str(source[key]) != str(value)
+                            for key, value in requested_source.items())
         with self._lock:
             row = dict(subscribe_id=subscribe_id, shared_lease_id=lease,
                        kind="whole_quote_latency" if self.diagnostic else "whole_quote", markets=markets,
@@ -7069,7 +7138,11 @@ class QuoteSubscriptionStore(object):
                        created_at=time.time(), event_count=0, publish_existing=False,
                        bridge_id=source.get("bridge_id", DEFAULT_BRIDGE_ID), channel=source.get("channel", "normal"),
                        mode=source.get("mode"), account_id=source.get("account_id", ""),
-                       account_type=source.get("account_type", ""), account_key=source.get("account_key", ""))
+                       account_type=source.get("account_type", ""), account_key=source.get("account_key", ""),
+                       source_reused=source_reused,
+                       requested_bridge_id=str(body.get("bridge_id") or "").strip())
+            if resume_id:
+                row["connect_deadline"] = time.time() + 8
             self._subscriptions[subscribe_id] = row
             self._whole_subscribe_id = subscribe_id
             self._whole_subscribed_at = row["created_at"]
@@ -7083,11 +7156,19 @@ class QuoteSubscriptionStore(object):
         return dict(row, shared=True, already_subscribed=False)
 
     def unsubscribe(self, body):
+        with self._subscribe_lock:
+            return self._unsubscribe(body)
+
+    def _unsubscribe(self, body):
         subscribe_id = str((body or {}).get("subscribe_id") or "").strip()
         if not subscribe_id:
             raise ValueError("subscribe_id is required")
         with self._lock:
             row = dict(self._subscriptions.get(subscribe_id) or {})
+        if parse_bool((body or {}).get("shared_only")) and "shared_lease_id" not in row:
+            # An expired shared ID belongs to this service, not to QMT's
+            # native ID namespace. Never forward it as a native unsubscribe.
+            return dict(subscribe_id=subscribe_id, result=False, already_released=True)
         if "shared_lease_id" in row:
             result = (self._shared_service or PROJECT_QUOTES).release(row["shared_lease_id"])
             with self._lock:
@@ -7122,6 +7203,10 @@ class QuoteSubscriptionStore(object):
         }
 
     def release_idle_whole_subscription(self, reason="", grace_seconds=0):
+        with self._subscribe_lock:
+            return self._release_idle_whole_subscription(reason, grace_seconds)
+
+    def _release_idle_whole_subscription(self, reason, grace_seconds):
         with self._lock:
             rows = [dict(row) for row in self._subscriptions.values() if "shared_lease_id" in row]
         released = []
@@ -7130,7 +7215,8 @@ class QuoteSubscriptionStore(object):
                 connected = self.manager.count(row["subscribe_id"])
             except TypeError:
                 connected = self.manager.count()
-            if connected or time.time() - row["created_at"] < grace_seconds:
+            if (connected or time.time() < row.get("connect_deadline", 0)
+                    or time.time() - row["created_at"] < grace_seconds):
                 continue
             self.unsubscribe({"subscribe_id": row["subscribe_id"]})
             released.append(row["subscribe_id"])
@@ -11567,6 +11653,22 @@ def qmt_process_snapshot(qmt_dir):
     return result
 
 
+def _qmt_vm_settings_for_qmt_dir(qmt_dir):
+    """Find the binding VM/MAC settings associated with a QMT directory."""
+    if WEB_CONFIG is None:
+        return normalize_qmt_vm_settings(None)
+    target = os.path.normcase(str(qmt_root(qmt_dir)))
+    matches = []
+    for row in WEB_CONFIG.account_configs().values():
+        if not isinstance(row, dict) or not account_config_is_enabled(row):
+            continue
+        if target in _qmt_vm_roots(row):
+            matches.append(row)
+    if len({_qmt_vm_effective_settings(row) for row in matches}) > 1:
+        raise ValueError("此 QMT 目录的绑定存在不同的虚拟机与 MAC 设置，请先统一配置")
+    return normalize_qmt_vm_settings(matches[0].get("qmt_vm") if matches else None, strict=True)
+
+
 def qmt_process_snapshots_for_request(body=None, row=None):
     """Collect process status for every QMT directory used by an account."""
     body = body or {}
@@ -11806,6 +11908,22 @@ def _qmt_auto_login_start_capture(paths):
 
 
 def _qmt_auto_login_start_xtitclient(paths, use_link=False):
+    vm_settings = normalize_qmt_vm_settings(
+        paths.get("qmt_vm") if "qmt_vm" in paths else _qmt_vm_settings_for_qmt_dir(paths["bin_dir"]), strict=True,
+    )
+    if qmt_vm_settings_enabled(vm_settings):
+        restart_arg = str(QMT_AUTO_LOGIN_RESTART_ARG or "").strip()
+        launch = start_feature_process(paths["bin_dir"], vm_settings,
+                                       qmt_args=[restart_arg] if use_link and restart_arg else [])
+        return {
+            "pid": int(launch.get("qmt_pid") or 0),
+            "launcher_pid": int(launch.get("launcher_pid") or 0),
+            "command": [paths["exe_path"]] + ([restart_arg] if use_link and restart_arg else []),
+            "exe_path": paths["exe_path"],
+            "bin_dir": paths["bin_dir"],
+            "qmt_vm": vm_settings,
+            "managed_hooks": True,
+        }
     command = [paths["exe_path"]]
     restart_arg = str(QMT_AUTO_LOGIN_RESTART_ARG or "").strip()
     if use_link and restart_arg:
@@ -11913,7 +12031,7 @@ def qmt_auto_login_prepare_for_account(row, request=None):
                 "bin_dir": paths["bin_dir"],
             }
         else:
-            launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
+            launch = _qmt_auto_login_start_xtitclient(dict(paths, qmt_vm=row.get("qmt_vm")), use_link=False)
         token_exists = os.path.isfile(paths["copy_path"])
         if token_exists:
             message = "已发现 linkMini_copy，可直接执行重启验证"
@@ -11930,6 +12048,7 @@ def qmt_auto_login_prepare_for_account(row, request=None):
             "capture_pid": capture.get("pid") or 0,
             "launch": launch,
             "launch_pid": launch.get("pid") or 0,
+            "launcher_pid": launch.get("launcher_pid") or 0,
             "token_exists": token_exists,
             "token_path": paths["copy_path"],
             "message": message,
@@ -11943,6 +12062,7 @@ def qmt_auto_login_prepare_for_account(row, request=None):
             "capture_script_path": paths["capture_script_path"],
             "capture_pid": capture.get("pid") or 0,
             "launch_pid": launch.get("pid") or 0,
+            "launcher_pid": launch.get("launcher_pid") or 0,
             "token_path": paths["copy_path"],
             "token_exists": token_exists,
             "message": result["message"],
@@ -11991,7 +12111,7 @@ def qmt_auto_login_complete_for_account(row):
         return result
     stop = _qmt_auto_login_stop_xtitclient(row, paths, session=session)
     shutil.copy2(paths["copy_path"], paths["link_path"])
-    restart = _qmt_auto_login_start_xtitclient(paths, use_link=True)
+    restart = _qmt_auto_login_start_xtitclient(dict(paths, qmt_vm=row.get("qmt_vm")), use_link=True)
     result = {
         "ok": True,
         "completed": True,
@@ -12005,6 +12125,7 @@ def qmt_auto_login_complete_for_account(row):
         "stop": stop,
         "restart": restart,
         "restart_pid": restart.get("pid") or 0,
+        "launcher_pid": restart.get("launcher_pid") or 0,
         "message": "已按 PID/目录关闭 QMT，并用 linkMini_copy 重新启动自动登录验证",
     }
     _qmt_auto_login_update_session(row, {
@@ -12017,6 +12138,7 @@ def qmt_auto_login_complete_for_account(row):
         "link_path": paths["link_path"],
         "token_exists": True,
         "restart_pid": restart.get("pid") or 0,
+        "launcher_pid": restart.get("launcher_pid") or 0,
         "last_stop": stop,
         "message": result["message"],
         "error": "",
@@ -12112,9 +12234,18 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
                 on_wait=on_wait, before_poll=before_poll,
             )
         if update_configured:
+            launch_options = {}
+            if qmt_vm_settings_enabled(row.get("qmt_vm")):
+                def launch_after_update():
+                    launch = _qmt_auto_login_start_xtitclient(
+                        dict(paths, qmt_vm=row.get("qmt_vm")), use_link=False)
+                    _qmt_auto_login_update_session(row, {"launcher_pid": launch.get("launcher_pid", 0)})
+                    return launch
+                launch_options["launch_client"] = launch_after_update
             result = manage_qmt_startup(
                 paths["bin_dir"], pid, login if settings["auto_fill_credentials"] else None,
                 auto_update=settings.get("auto_update", False), should_cancel=should_cancel, on_wait=on_wait, on_pid=on_pid,
+                **launch_options,
             )
         else:
             # Keep the established login path for test doubles and clients
@@ -12221,6 +12352,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
         "pid": 0,
         "launch_pid": 0,
         "restart_pid": 0,
+        "launcher_pid": 0,
         "account_key": _qmt_auto_login_session_key(row),
         "account_id": str(row.get("account_id") or ""),
         "qmt_dir": qmt_dir,
@@ -12267,6 +12399,9 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
     try:
         with QMT_AUTO_LOGIN_LOCK:
             paths = _qmt_auto_login_paths(qmt_dir)
+            paths = dict(paths, qmt_vm=normalize_qmt_vm_settings(row.get("qmt_vm"), strict=True))
+            if qmt_vm_settings_enabled(paths["qmt_vm"]):
+                preflight_feature_process(paths["bin_dir"], paths["qmt_vm"])
             if settings["auto_fill_credentials"]:
                 _qmt_component_login_preflight(paths, settings)
             key = _qmt_component_job_key(paths["bin_dir"])
@@ -12314,6 +12449,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "pid": pid,
                 "launch_pid": pid if not restart else 0,
                 "restart_pid": pid if restart else 0,
+                "launcher_pid": int((launch or {}).get("launcher_pid") or 0),
                 "bin_dir": paths["bin_dir"],
                 "exe_path": paths["exe_path"],
                 "processes": running,
@@ -12356,6 +12492,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "pid": pid,
                 "launch_pid": result["launch_pid"],
                 "restart_pid": result["restart_pid"],
+                "launcher_pid": result["launcher_pid"],
                 "restart_times": list(settings["restart_times"]),
                 "last_reason": reason,
                 "last_stop": stop,
@@ -15379,6 +15516,7 @@ def save_account_runtime_config(body):
         qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
         qmt_auto_login=qmt_auto_login_request,
         qmt_runtime=body.get("qmt_runtime") if "qmt_runtime" in body else None,
+        qmt_vm=body.get("qmt_vm") if "qmt_vm" in body else None,
     )
     row_enabled = account_config_is_enabled(row)
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
@@ -15629,6 +15767,7 @@ def initialize_web_setup(body):
         market_bridges=body.get("market_bridges") if "market_bridges" in body else body.get("market_routes") if "market_routes" in body else None,
         qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
         qmt_auto_login=body.get("qmt_auto_login") if "qmt_auto_login" in body else None,
+        qmt_vm=body.get("qmt_vm") if "qmt_vm" in body else None,
     )
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
         row,
@@ -16645,7 +16784,8 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
     if not force:
         with _PROJECT_VERSION_LOCK:
             cached = _PROJECT_VERSION_CACHE.get(cache_key)
-            if cached and now - float(cached.get("checked_at") or 0) < UPDATE_REMOTE_CACHE_SECONDS:
+            cache_seconds = min(UPDATE_REMOTE_CACHE_SECONDS, 15) if cached and cached.get("error") else UPDATE_REMOTE_CACHE_SECONDS
+            if cached and now - float(cached.get("checked_at") or 0) < cache_seconds:
                 result = dict(cached)
                 result["cached"] = True
                 return result
@@ -16730,14 +16870,31 @@ def _remote_project_version_info(repo_url=None, ref=None, force=False):
     return result
 
 
-def project_version_info(include_remote=False, force=False, repo_url=None, ref=None, bridge_id=None, force_remote=False):
+def project_version_info(
+    include_remote=False,
+    force=False,
+    repo_url=None,
+    ref=None,
+    bridge_id=None,
+    force_remote=False,
+    probe_qmt=None,
+):
     repo_url = str(repo_url or DEFAULT_UPDATE_REPO_URL).strip()
     ref = str(ref or DEFAULT_UPDATE_REF).strip() or "main"
     bridge_id = normalize_bridge_id(bridge_id or DEFAULT_BRIDGE_ID)
     local = _local_project_version_info()
     core_version = local.get("version") or current_core_version()
-    read_qmt_runtime_marker_reports(bridge_id)
-    qmt_runtime = refresh_runtime_version_report(bridge_id, timeout=1.2) if force else RUNTIME_VERSIONS.latest(bridge_id)
+    # Remote project checks and QMT runtime probes have very different latency
+    # characteristics. Keep the historical ``force`` behaviour for callers
+    # that do not pass ``probe_qmt``, while allowing the web UI to refresh the
+    # project version without waiting for every QMT channel.
+    if probe_qmt is None:
+        probe_qmt = force
+    if probe_qmt:
+        qmt_runtime = refresh_runtime_version_report(bridge_id, timeout=1.2)
+    else:
+        read_qmt_runtime_marker_reports(bridge_id)
+        qmt_runtime = RUNTIME_VERSIONS.latest(bridge_id)
     qmt_runtime_version = qmt_runtime.get("version") if qmt_runtime.get("reported") else ""
     latest_qmt_core_version = qmt_runtime.get("version") if qmt_runtime.get("has_report") else ""
     data = {
@@ -17355,11 +17512,8 @@ def _qmt_python_runtime_row(body):
 def qmt_python_runtime_status(body):
     manager, runtime = _qmt_python_runtime_row(body)
     result = manager.inspect(runtime, refresh_remote=parse_bool((body or {}).get("refresh", True)))
-    if manager.account_id:
-        # Keep the package-level response backwards compatible while exposing
-        # the account's version-gated runtime choice to callers that query a
-        # specific binding.
-        result["binding"] = manager.binding_status()
+    # Version capabilities also matter before an account has been entered.
+    result["binding"] = manager.binding_status()
     return result
 
 
@@ -17376,8 +17530,7 @@ def _run_qmt_python_runtime_job(job_id, body):
 
     def progress(item):
         now = time.monotonic()
-        terminal = item.get("phase") in ("download_verified", "installed")
-        if not terminal and now - last_emit[0] < 0.5:
+        if item.get("phase") == "downloading" and now - last_emit[0] < 0.5:
             return
         last_emit[0] = now
         with QMT_PYTHON_RUNTIME_JOBS_LOCK:
@@ -17418,7 +17571,14 @@ def _run_qmt_python_runtime_job(job_id, body):
                 # client, then invoke the same credential injector directly;
                 # this keeps runtime switching independent of old strategy
                 # queue state while preserving the normal login mechanism.
-            restart_result = manager.restart_qmt()
+            vm_settings = _qmt_vm_settings_for_qmt_dir(str(manager.bin_dir))
+            if qmt_vm_settings_enabled(vm_settings):
+                paths = dict(_qmt_auto_login_paths(str(manager.bin_dir)), qmt_vm=vm_settings)
+                preflight_feature_process(paths["bin_dir"], vm_settings)
+                _qmt_auto_login_stop_xtitclient(row or {}, paths)
+                restart_result = dict(_qmt_auto_login_start_xtitclient(paths), started=True)
+            else:
+                restart_result = manager.restart_qmt()
             if row is None:
                 return restart_result
             try:
@@ -17446,6 +17606,7 @@ def _run_qmt_python_runtime_job(job_id, body):
             account_id=account_id or None,
             progress_callback=progress,
             restart_callback=restart_qmt if bool(body.get("restart", True)) else None,
+            reuse_installed=parse_bool(body.get("reuse_installed", False)),
         )
     except Exception as exc:
         with QMT_PYTHON_RUNTIME_JOBS_LOCK:
@@ -17465,8 +17626,13 @@ def start_qmt_python_runtime_job(body):
     if not isinstance(body, dict):
         raise ValueError("request body must be an object")
     manager, runtime = _qmt_python_runtime_row(body)
+    manager.validate_selection(runtime)
     job_id = str(body.get("job_id") or new_id("qmt_python"))
     with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+        if any(job.get("state") in ("queued", "running")
+               and os.path.normcase(job.get("qmt_dir", "")) == os.path.normcase(str(manager.qmt_dir))
+               for job in QMT_PYTHON_RUNTIME_JOBS.values()):
+            raise ValueError("该 QMT 已有 Python 库任务正在执行，请等待完成")
         if job_id in QMT_PYTHON_RUNTIME_JOBS and QMT_PYTHON_RUNTIME_JOBS[job_id].get("state") in ("queued", "running"):
             raise ValueError("a QMT Python runtime job with this id is already running")
         QMT_PYTHON_RUNTIME_JOBS[job_id] = {
@@ -18450,6 +18616,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                 repo_url = (query.get("repo_url") or query.get("url") or [""])[0]
                 ref = (query.get("ref") or query.get("branch") or query.get("tag") or [""])[0]
                 bridge_id = (query.get("bridge_id") or [""])[0]
+                probe_qmt_values = query.get("probe_qmt")
+                if probe_qmt_values is None:
+                    probe_qmt_values = query.get("qmt")
+                probe_qmt = parse_bool(probe_qmt_values[0]) if probe_qmt_values else None
                 version_info = project_version_info(
                     include_remote=include_remote,
                     force=force,
@@ -18457,6 +18627,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     ref=ref,
                     bridge_id=bridge_id,
                     force_remote=parse_bool((query.get("force_remote") or ["0"])[0]),
+                    probe_qmt=probe_qmt,
                 )
                 version_info["system_info"] = project_system_info(version_info)
                 self._write_json(ok(version_info))

@@ -194,6 +194,14 @@ def restore_order_remark(data):
         if is_unique_order_remark(internal):
             data["cfquant_order_remark"] = internal
             data["order_remark"] = original_order_remark(internal)
+            submission_id = _ORDER_REMARK_SUFFIX.search(internal).group(1)
+            data["cfquant_submission_id"] = submission_id
+            # The native remark identifies one submission, which QMT may split.
+            # Derive the child key from the final public ID, never list position.
+            data.pop("cfquant_child_id", None)
+            order_id = str(data.get("order_id") or "").strip()
+            if order_id.isdigit() and int(order_id) > 0:
+                data["cfquant_child_id"] = submission_id + ":" + str(int(order_id))
     return data
 
 
@@ -275,7 +283,7 @@ class OrderCallbackCache(object):
             matches = self._matches(scope, refs, data)
             remark = order_remark_key(data)
             local = sorted(ref for ref in refs if ref[0] == "local")
-            identity = ("remark", remark) if is_unique_order_remark(remark) else (local or sorted(refs))[0]
+            identity = (local or sorted(refs))[0]
             key = (scope, identity)
             if len(matches) == 1:
                 key = matches[0]
@@ -309,7 +317,25 @@ class OrderCallbackCache(object):
                     data[name] = value
             if is_unique_order_remark(remark):
                 data["cfquant_order_remark"] = remark
+            # A broker-only DEAL can recover its child from this typed index.
+            # Shared submission metadata alone cannot choose that child.
+            order_id = str(data.get("order_id") or "").strip()
+            if not (order_id.isdigit() and int(order_id) > 0):
+                saved_id = saved.get("order_id")
+                if str(saved_id or "").isdigit() and int(saved_id) > 0:
+                    data["order_id"] = int(saved_id)
         return restore_order_remark(data)
+
+    def submission_is_ambiguous(self, data, account_type):
+        """Missing child IDs must not fall back to a split submission's first ID."""
+        with self.lock:
+            scope, _ = self._identity(data, account_type)
+            remark = order_remark_key(data)
+            ids = {str(record["data"].get("order_id")) for key, record in self.records.items()
+                   if key[0] == scope and order_remark_key(record["data"]) == remark
+                   and str(record["data"].get("order_id") or "").isdigit()
+                   and int(record["data"]["order_id"]) > 0}
+            return len(ids) > 1
 
 """Batch wire contract and QMT execution, compatible with embedded Python 3.6."""
 
@@ -514,6 +540,9 @@ def batch_cancel_result_rows(cancels, seqs=None):
 
 
 def batch_result(account, batch_id, asynchronous, results, operation="order"):
+    if operation == "order":
+        for row in results:
+            restore_order_remark(row)
     counts = {name: sum(row["status"] == name for row in results)
               for name in ("submitted", "failed", "unknown", "skipped")}
     counts["rejected"] = sum(row.get("dispatched") is False for row in results)
@@ -737,7 +766,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.66"
+CORE_VERSION = "0.2.67"
 
 # BEGIN GENERATED DIAGNOSTIC CONTEXT
 """Version context for cfquant diagnostics without changing application logging."""
@@ -3508,7 +3537,7 @@ class TxTradeBridge(object):
             )
         if pending_sync_order is not None:
             self._discard_pending_sync_order(pending_sync_order)
-        return {
+        return restore_order_remark({
             "request_result": result,
             "order_id": order_id if order_id is not None else -1,
             "order_remark": original_order_remark(order_remark),
@@ -3516,7 +3545,7 @@ class TxTradeBridge(object):
             "order_type": order_type,
             "account_type": str(account_type or "").upper(),
             "previous_order_id": previous_order_id,
-        }
+        })
 
     def _register_pending_sync_order(
         self,
@@ -3905,8 +3934,14 @@ class TxTradeBridge(object):
             for name in ("m_strRemark", "m_strOrderRemark"):
                 if not order.get(name):
                     order[name] = order_remark
-        if order_id is not None and (is_unique_order_remark(key[2]) or
-                                    order_id == self._order_id_from_detail(order)):
+        # A submission UUID can be shared by several native children. It is
+        # sufficient for text metadata, never for replacing a different ID.
+        native_id = self._order_id_from_detail(order)
+        broker_id = self._first_value(order, ("order_sysid", "m_strOrderSysID"))
+        missing_id_unambiguous = (native_id is None and not broker_id
+                                 and not self.order_callback_cache.submission_is_ambiguous(
+                                     order, self._account_type_name(order.get("account_type"))))
+        if order_id is not None and (native_id == order_id or missing_id_unambiguous):
             current_order_id = self._normalize_order_id(order.get("order_id"))
             if current_order_id is not None and current_order_id != order_id:
                 order["cfquant_callback_order_id"] = order.get("order_id")

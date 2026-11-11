@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping
 from numbers import Integral, Real
 from .stock_connect import normalize_connect_code, validate_connect_market
-from .order_identity import prepare_order_remark, order_remark_key
+from .order_identity import prepare_order_remark, order_remark_key, restore_order_remark
 
 
 CFTRADER_BATCH_ORDER_ACTIONS = frozenset(("cftrader.order_stock_batch", "cftrader.order_stock_batch_async"))
@@ -203,6 +203,9 @@ def batch_cancel_result_rows(cancels, seqs=None):
 
 
 def batch_result(account, batch_id, asynchronous, results, operation="order"):
+    if operation == "order":
+        for row in results:
+            restore_order_remark(row)
     counts = {name: sum(row["status"] == name for row in results)
               for name in ("submitted", "failed", "unknown", "skipped")}
     counts["rejected"] = sum(row.get("dispatched") is False for row in results)

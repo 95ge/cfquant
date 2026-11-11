@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261108_02">
+  <link rel="stylesheet" href="/styles.css?v=web_20261111_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -3200,6 +3200,13 @@ else:
             <button id="bindingPythonRuntimeRefreshBtn" type="button">重新检测</button>
           </div>
           <div id="bindingPythonRuntimeStatus" class="binding-python-runtime-status" role="status" aria-live="polite">尚未检测</div>
+          <label class="field">
+            <span>QMT Python 执行器</span>
+            <select id="bindingPythonRuntimeSelect" disabled aria-describedby="bindingPythonRuntimeHint bindingPythonRuntimeChoiceHint">
+              <option value="py36">Python 3.6</option>
+            </select>
+            <small id="bindingPythonRuntimeChoiceHint">检测 QMT 版本后显示支持的执行器；选择后点击下方按钮应用。</small>
+          </label>
           <div id="bindingPythonRuntimeProgressWrap" class="binding-python-runtime-progress hidden">
             <div class="download-progress-meter" aria-hidden="true"><span id="bindingPythonRuntimeProgressBar"></span></div>
             <div id="bindingPythonRuntimeProgressMeta" class="download-progress-meta">等待下载任务</div>
@@ -3293,6 +3300,31 @@ else:
             </label>
           </div>
           <p class="metric-note">适用于通用、极致模式；独立市场入口沿用此绑定的设置。保存并同步策略后，按部署提示重新启动策略或 QMT 生效。</p>
+        </section>
+        <section id="bindingVmSettings" class="binding-runtime-settings binding-dialog-wide-row" aria-labelledby="bindingVmSettingsTitle">
+          <div class="binding-qmt-autostart-head">
+            <div>
+              <strong id="bindingVmSettingsTitle">虚拟机与 MAC 设置</strong>
+              <span id="bindingVmSettingsSummary" class="metric-note">默认关闭</span>
+            </div>
+            <button id="bindingVmSettingsToggle" type="button" aria-expanded="false" aria-controls="bindingVmSettingsBody">设置</button>
+          </div>
+          <div id="bindingVmSettingsBody" class="binding-vm-settings-body hidden">
+            <label class="toggle">
+              <input id="bindingDisableVm" name="qmt_disable_vm" type="checkbox">
+              <span>禁用 QMT 虚拟机检测</span>
+            </label>
+            <label class="toggle">
+              <input id="bindingInjectMac" name="qmt_inject_mac" type="checkbox">
+              <span>启用 MAC 注入</span>
+            </label>
+            <label class="field">
+              <span>注入的 MAC 地址</span>
+              <input id="bindingMacAddress" name="qmt_mac_address" type="text" maxlength="17" autocomplete="off" spellcheck="false" placeholder="02-11-22-33-44-55" aria-describedby="bindingMacAddressHint">
+              <small id="bindingMacAddressHint">支持用短横线或冒号分隔的六组十六进制字节。启用 MAC 注入时必填。</small>
+            </label>
+            <p class="metric-note">两项默认关闭，只影响此绑定由 cfquant 启动的 QMT 进程。保存后，在下一次启动或重启 QMT 时生效。</p>
+          </div>
         </section>
         <details class="market-routing-panel binding-dialog-bleed wide" open>
           <summary class="market-routing-head">
@@ -3511,10 +3543,10 @@ else:
   <script src="/qmt-inner-api-data.js?v=20261106_inner_scope_01"></script>
   <script src="/api-tester.js?v=20261105_inner_01"></script>
   <script src="/python-api.js?v=20261106_inner_scope_01"></script>
-  <script src="/trading-monitor.js?v=20261107_runtime_history_05"></script>
+  <script src="/trading-monitor.js?v=20261109_runtime_perf_01"></script>
   <script src="/navigation.js?v=web_20261108_nav_03"></script>
   <script src="/activity-log.js?v=web_20261108_logs_01"></script>
-  <script src="/app.js?v=web_20261108_02"></script>
+  <script src="/app.js?v=web_20261111_01"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

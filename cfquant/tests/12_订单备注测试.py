@@ -305,6 +305,8 @@ def test_tx_trade_bridge_async_zero_is_accepted_without_sync_order_lookup():
         "order_remark": "remark",
         "seq": 21,
         "cfquant_order_remark": _wire_remark("remark"),
+        "cfquant_submission_id": "0123456789abcdef0123456789abcdef",
+        "cfquant_child_id": "0123456789abcdef0123456789abcdef:700002",
     })]
     assert bridge.pending_async_orders == []
 
@@ -342,6 +344,8 @@ def test_qmt_bridge_async_zero_waits_for_matching_order_callback():
         "order_remark": "remark",
         "seq": 22,
         "cfquant_order_remark": _wire_remark("remark"),
+        "cfquant_submission_id": "0123456789abcdef0123456789abcdef",
+        "cfquant_child_id": "0123456789abcdef0123456789abcdef:800002",
     }
 
 
@@ -462,6 +466,8 @@ def test_normal_bridge_turns_real_order_callback_into_xtorderresponse():
         "order_remark": "remark",
         "seq": 24,
         "cfquant_order_remark": _wire_remark("remark"),
+        "cfquant_submission_id": "0123456789abcdef0123456789abcdef",
+        "cfquant_child_id": "0123456789abcdef0123456789abcdef:700002",
     })]
     callback_pushes = [item for item in bridge.tx.pushes if item[0] == "event"]
     callback_payload = json.loads(callback_pushes[0][1])

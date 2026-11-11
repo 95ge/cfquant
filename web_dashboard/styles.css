@@ -85,7 +85,8 @@
 .monitor-runtime-detail .monitor-table-wrap { max-height: 520px; }
 .monitor-runtime-detail th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
 .monitor-runtime-dialog { width: min(1180px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); box-sizing: border-box; margin: auto !important; inset: 0; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); overflow: auto; }
-.monitor-runtime-dialog::backdrop { background: rgb(15 23 42 / 54%); backdrop-filter: blur(2px); }
+.monitor-runtime-dialog::backdrop { background: rgb(15 23 42 / 54%); }
+.monitor-runtime-dialog [hidden] { display: none !important; }
 .monitor-runtime-dialog .panel-head { position: static; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 4px 0 16px; background: var(--panel); }
 .monitor-runtime-dialog .panel-head h3 { min-width: 0; overflow-wrap: anywhere; }
 .monitor-runtime-dialog .panel-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; min-width: 0; }
@@ -4921,6 +4922,22 @@ th.num .sort-header {
 
 .binding-qmt-autologin-panel.hidden {
   display: none;
+}
+
+.binding-vm-settings-body {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  min-width: 0;
+}
+
+.binding-vm-settings-body.hidden {
+  display: none;
+}
+
+#bindingVmSettings .binding-qmt-autostart-head > div {
+  display: grid;
+  gap: 6px;
 }
 
 .binding-qmt-login-check-panel {

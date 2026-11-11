@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261108_02';
+const FRONTEND_VERSION = 'web_20261111_01';
 
 const state = {
   accountId: '',
@@ -85,7 +85,13 @@ const state = {
   versionInfo: null,
   systemInfo: null,
   versionCheckInFlight: false,
-  versionRemoteChecked: false,
+  versionCheckPromise: null,
+  versionRemoteCheckedAt: 0,
+  qmtVersionCheckPromise: null,
+  qmtVersionCheckBridgeId: '',
+  qmtVersionInfo: null,
+  qmtVersionCheckedAt: 0,
+  qmtVersionError: '',
   versionUpdateBusy: false,
   projectUpdateStatus: null,
   projectUpdateBusy: false,
@@ -103,6 +109,9 @@ const state = {
   quoteSeq: 0,
   quoteEventCount: 0,
   quoteSubscribeId: '',
+  quoteSubscriptionRequest: null,
+  quoteConnectGeneration: 0,
+  quoteSourceText: '',
   quoteConnectionText: '未连接',
   quoteLiveActive: false,
   quoteRenderTimer: null,
@@ -125,6 +134,13 @@ const state = {
   bindingActionBusyKey: '',
   bindingActionBusyType: '',
   bindingPythonRuntime: null,
+  bindingPythonRuntimeChoice: '',
+  bindingPythonRuntimeChoiceDirty: false,
+  bindingPythonRuntimeContext: '',
+  bindingPythonRuntimeChecking: false,
+  bindingPythonRuntimeError: null,
+  bindingPythonRuntimeJobContext: '',
+  bindingPythonRuntimeJobRuntime: '',
   bindingPythonRuntimeCheckToken: 0,
   bindingPythonRuntimeCheckTimer: null,
   bindingPythonRuntimeSocket: null,
@@ -1651,7 +1667,7 @@ const API_ENDPOINTS = [
     title: '订阅全推行情',
     method: 'POST',
     path: '/api/quotes/whole/subscribe',
-    desc: '按市场或证券代码列表订阅全推行情，支持 WebSocket 行情回调；通用模式由 ctypes 单桥转发，高级模式由普通 QMT 桥接转发。',
+    desc: '按市场或证券代码列表订阅全推行情，支持 WebSocket 行情回调。已有共享订阅时自动复用其行情源，页面显示实际来源；订阅后点击“连接推送”，已过期的页面订阅会自动恢复。',
     defaults: { channel: 'normal', markets: 'SH,SZ,BJ', timeout: String(API_DEBUG_QMT_TIMEOUT_SECONDS) },
     fields: ['bridge_id', 'whole_quote_channel', 'markets', 'timeout'],
   },
@@ -2825,6 +2841,56 @@ function readBindingRuntimeSettings(form) {
   return { timer_interval_ms: interval, log_enabled: choice === 'inherit' ? null : choice === 'on' };
 }
 
+function setBindingVmSettingsOpen(open) {
+  $('bindingVmSettingsBody')?.classList.toggle('hidden', !open);
+  const button = $('bindingVmSettingsToggle');
+  if (button) {
+    button.setAttribute('aria-expanded', String(!!open));
+    button.textContent = open ? '收起设置' : '设置';
+  }
+}
+
+function syncBindingVmSettingsSummary() {
+  const enabled = [];
+  if ($('bindingDisableVm')?.checked) enabled.push('虚拟机检测适配：开启');
+  if ($('bindingInjectMac')?.checked) enabled.push('MAC 注入：开启');
+  if ($('bindingVmSettingsSummary')) $('bindingVmSettingsSummary').textContent = enabled.join(' · ') || '两项均关闭';
+}
+
+function fillBindingVmSettings(settings) {
+  const value = settings || {};
+  if ($('bindingDisableVm')) $('bindingDisableVm').checked = value.disable_vm === true;
+  if ($('bindingInjectMac')) $('bindingInjectMac').checked = value.inject_mac === true;
+  if ($('bindingMacAddress')) $('bindingMacAddress').value = value.mac_address || '';
+  if ($('bindingForm')) $('bindingForm').dataset.qmtVmConfigured = settings ? 'true' : 'false';
+  setBindingVmSettingsOpen(false);
+  syncBindingVmSettingsSummary();
+}
+
+function readBindingVmSettings() {
+  const mac = String($('bindingMacAddress')?.value || '').trim().toUpperCase().replace(/:/g, '-');
+  const settings = { disable_vm: !!$('bindingDisableVm')?.checked,
+    inject_mac: !!$('bindingInjectMac')?.checked, mac_address: mac };
+  const octets = mac.split('-').map(value => parseInt(value, 16));
+  if ((mac && (!/^(?:[0-9A-F]{2}-){5}[0-9A-F]{2}$/.test(mac)
+      || (octets[0] & 1) || !octets.some(value => value))) || (settings.inject_mac && !mac)) {
+    setBindingVmSettingsOpen(true);
+    setBindingNotice('请填写有效的非零单播 MAC 地址，例如 02-11-22-33-44-55。', 'error', { autoHide: false });
+    $('bindingMacAddress')?.focus();
+    return null;
+  }
+  return settings;
+}
+
+function verifySavedBindingVmSettings(account, requested) {
+  const saved = account?.qmt_vm;
+  if (!saved && !requested.disable_vm && !requested.inject_mac && !requested.mac_address
+      && $('bindingForm')?.dataset.qmtVmConfigured !== 'true') return;
+  if (!saved || ['disable_vm', 'inject_mac', 'mac_address'].some(key => saved[key] !== requested[key])) {
+    throw new Error('虚拟机与 MAC 设置未被后端保存，请重启 Web 后端后重新保存。');
+  }
+}
+
 function qmtDirsAreSame(first, second) {
   const normalize = (value) => qmtDeploymentPath(value).replace(/[\\/]+$/, '').toLowerCase();
   return normalize(first) && normalize(first) === normalize(second);
@@ -3556,6 +3622,16 @@ function renderProjectVersion(info) {
   const recheckDisabled = checking ? ' disabled' : '';
   const heroClass = checking ? 'is-checking' : (remoteError ? 'is-wait' : (updateAvailable ? 'is-stale' : 'is-ok'));
   const changelog = remote.changelog || {};
+  const bridgeId = selectedBridge();
+  const runtimeInfo = state.qmtVersionInfo && state.qmtVersionInfo.bridge_id === bridgeId
+    ? state.qmtVersionInfo : (data.bridge_id === bridgeId ? data : {});
+  const runtime = runtimeInfo.qmt_runtime || {};
+  const runtimeChecking = state.qmtVersionCheckPromise && state.qmtVersionCheckBridgeId === bridgeId;
+  const runtimeError = state.qmtVersionInfo?.bridge_id === bridgeId ? state.qmtVersionError : '';
+  const runtimeStatus = runtimeChecking ? '后台检查中' : qmtRuntimeLabel(runtime);
+  const runtimeDetail = runtimeChecking
+    ? '正在刷新 QMT 运行状态，版本检查结果已独立显示。'
+    : (runtimeError || qmtRuntimeDetail(runtime));
   body.innerHTML = `
     <div class="version-primary-action">
       <button type="button" class="primary" data-version-action="project-update"${updateDisabled}>${updateAvailable ? '立即更新' : '暂无可用更新'}</button>
@@ -3593,6 +3669,10 @@ function renderProjectVersion(info) {
       <div class="version-compare-row">
         <div><span>最新 Web 版本</span><strong>${esc(remote.web_version || '--')}</strong></div>
         <small>发布包中的 Web 构建</small>
+      </div>
+      <div class="version-compare-row" data-version-runtime>
+        <div><span>QMT 运行时</span><strong>${esc(runtimeStatus)}</strong></div>
+        <small>${esc(runtimeDetail)}</small>
       </div>
     </section>
     ${remote.version || remote.error ? `<div class="version-log-wrap">${renderVersionLog(changelog, '版本说明')}</div>` : ''}
@@ -3792,35 +3872,98 @@ function renderProjectVersionLegacy(info) {
     <div class="version-action-status">${esc(actionStatus)}</div>`;
 }
 
-async function refreshProjectVersion(options = {}) {
-  if (state.versionCheckInFlight) return state.versionInfo;
-  if (state.versionRemoteChecked && !options.force) return state.versionInfo;
+function refreshProjectVersion(options = {}) {
+  if (state.versionCheckPromise) return state.versionCheckPromise;
+  const remote = options.remote !== false;
+  const cacheMs = state.versionInfo?.remote?.error ? 15000 : 300000;
+  if (remote && !options.force && state.versionInfo?.remote
+      && state.versionRemoteCheckedAt && Date.now() - state.versionRemoteCheckedAt < cacheMs) {
+    return Promise.resolve(state.versionInfo);
+  }
   state.versionCheckInFlight = true;
   renderProjectVersion(state.versionInfo);
-  try {
-    const remote = options.remote !== false;
-    const force = !!options.force;
-    const data = await api(`/api/version?remote=${remote ? '1' : '0'}&force=${force ? '1' : '0'}&bridge_id=${encodeURIComponent(selectedBridge())}`);
-    state.versionRemoteChecked = remote || state.versionRemoteChecked;
-    renderProjectVersion(data);
-    if (options.log) {
-      log('版本状态已刷新', {
-        current_version: data.current_version || '',
-        remote_version: data.remote && data.remote.version ? data.remote.version : '',
-        comparison: data.comparison || '',
-      });
+  const request = (async () => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), remote ? 45000 : 10000);
+    try {
+      // force_remote refreshes the release source without triggering legacy QMT probes.
+      const data = await api(`/api/version?remote=${remote ? '1' : '0'}&force_remote=${remote && options.force ? '1' : '0'}&probe_qmt=0&bridge_id=${encodeURIComponent(selectedBridge())}`, { signal: controller.signal });
+      if (remote) {
+        state.versionRemoteCheckedAt = Date.now();
+      } else if (state.versionInfo?.remote) {
+        // A local/system-info refresh must not erase the release check result.
+        for (const key of ['remote', 'comparison', 'core_comparison', 'web_comparison', 'installed_web_comparison', 'update_available']) {
+          data[key] = state.versionInfo[key];
+        }
+      }
+      renderProjectVersion(data);
+      if (options.log) {
+        log('版本状态已刷新', {
+          current_version: data.current_version || '',
+          remote_version: data.remote && data.remote.version ? data.remote.version : '',
+          comparison: data.comparison || '',
+        });
+      }
+      return data;
+    } catch (error) {
+      const message = controller.signal.aborted ? '版本检查超时，请稍后重试' : error.message;
+      const fallback = { ...(state.versionInfo || { current_version: '--', comparison: 'unknown' }) };
+      if (remote) {
+        fallback.remote = { ...(fallback.remote || {}), error: message };
+        state.versionRemoteCheckedAt = Date.now();
+      }
+      renderProjectVersion(fallback);
+      if (options.log !== false) log('版本状态刷新失败', { error: message });
+      return fallback;
+    } finally {
+      window.clearTimeout(timer);
     }
-    return data;
-  } catch (error) {
-    const fallback = state.versionInfo || { current_version: '--', comparison: 'unknown', remote: {} };
-    fallback.remote = { ...(fallback.remote || {}), error: error.message };
-    renderProjectVersion(fallback);
-    if (options.log !== false) log('版本状态刷新失败', { error: error.message });
-    return fallback;
-  } finally {
+  })();
+  state.versionCheckPromise = request.finally(() => {
+    state.versionCheckPromise = null;
     state.versionCheckInFlight = false;
     renderProjectVersion(state.versionInfo);
+  });
+  return state.versionCheckPromise;
+}
+
+function refreshQmtRuntimeVersion(options = {}) {
+  if (state.qmtVersionCheckPromise) return state.qmtVersionCheckPromise;
+  const bridgeId = selectedBridge();
+  const cacheMs = state.qmtVersionError ? 15000 : 60000;
+  if (!options.force && state.qmtVersionInfo?.bridge_id === bridgeId
+      && state.qmtVersionCheckedAt && Date.now() - state.qmtVersionCheckedAt < cacheMs) {
+    return Promise.resolve(state.qmtVersionInfo);
   }
+  state.qmtVersionError = '';
+  state.qmtVersionCheckBridgeId = bridgeId;
+  const request = (async () => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 15000);
+    try {
+      const data = await api(`/api/version?remote=0&probe_qmt=1&bridge_id=${encodeURIComponent(bridgeId)}`, { signal: controller.signal });
+      if (bridgeId === selectedBridge()) {
+        state.qmtVersionInfo = data;
+        state.qmtVersionCheckedAt = Date.now();
+      }
+      return data;
+    } catch (error) {
+      if (bridgeId === selectedBridge()) {
+        state.qmtVersionError = controller.signal.aborted ? 'QMT 运行状态检查超时' : `QMT 运行状态检查失败：${error.message}`;
+        if (state.qmtVersionInfo?.bridge_id !== bridgeId) state.qmtVersionInfo = { bridge_id: bridgeId };
+        state.qmtVersionCheckedAt = Date.now();
+      }
+      return state.qmtVersionInfo;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  })();
+  state.qmtVersionCheckPromise = request.finally(() => {
+    state.qmtVersionCheckPromise = null;
+    renderProjectVersion(state.versionInfo);
+  });
+  renderProjectVersion(state.versionInfo);
+  return state.qmtVersionCheckPromise;
 }
 
 function wireVersionBadge() {
@@ -3833,6 +3976,7 @@ function wireVersionBadge() {
     let closeTimer = null;
     const check = () => {
       refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态刷新失败', { error: error.message }));
+      refreshQmtRuntimeVersion();
     };
     const openPopover = () => {
       if (closeTimer) {
@@ -3882,6 +4026,7 @@ function wireVersionBadge() {
       event.stopPropagation();
       if (action.dataset.versionAction === 'recheck') {
         refreshProjectVersion({ remote: true, force: true, log: true }).catch((error) => log('版本状态刷新失败', { error: error.message }));
+        refreshQmtRuntimeVersion({ force: true });
       } else if (action.dataset.versionAction === 'project-update') {
         runProjectGithubUpdateFromUi({ source: 'version-popover' }).catch((error) => log('Web 项目更新失败', { error: error.message }));
       } else if (action.dataset.versionAction === 'qmt-update') {
@@ -3904,7 +4049,10 @@ function wireVersionBadge() {
           closePopover(true);
         }
       }
-      refreshProjectVersion({ remote: true, force: true, log: true }).catch((error) => log('版本状态刷新失败', { error: error.message }));
+      if (popoverPinned) {
+        refreshProjectVersion({ remote: true, log: false }).catch((error) => log('版本状态刷新失败', { error: error.message }));
+        refreshQmtRuntimeVersion();
+      }
     });
   }
   document.addEventListener('click', (event) => {
@@ -8039,7 +8187,7 @@ async function sendApiDebugRequest(event) {
     }
     renderApiResponseLatency(payload, endpoint, apiDebugElapsedMs(startedAt));
     $('apiResponseBox').textContent = apiDebugOutput(payload, request, startedAt, { http_status: response.status });
-    handleApiDebugPayload(payload);
+    handleApiDebugPayload(payload, request);
     if (isDownloadEndpoint(endpoint)) {
       finishDownloadRequest(payload);
     } else if (isExportEndpoint(endpoint)) {
@@ -8065,7 +8213,7 @@ async function sendApiDebugRequest(event) {
   }
 }
 
-function handleApiDebugPayload(payload) {
+function handleApiDebugPayload(payload, request = null) {
   if (!payload || !payload.ok || !payload.data) return;
   const endpoint = apiEndpointById(state.apiEndpointId);
   if (['quote_latency', 'quote_subscribe_whole', 'quote_subscribe_single'].includes(endpoint.id)) {
@@ -8074,6 +8222,9 @@ function handleApiDebugPayload(payload) {
       resetQuoteLive(subscribeId, { active: false });
       state.quoteLatencyMode = endpoint.id === 'quote_latency';
       state.quoteLatencyWindow = [];
+      state.quoteSubscriptionRequest = request && ['quote_latency', 'quote_subscribe_whole'].includes(endpoint.id)
+        ? { url: request.url, body: JSON.parse(JSON.stringify(request.body || {})), subscribeId: String(subscribeId) } : null;
+      state.quoteSourceText = quoteSourceText(payload.data);
       renderQuoteLiveTable();
       const field = $('apiForm').elements.subscribe_id;
       if (field) field.value = subscribeId;
@@ -8097,6 +8248,10 @@ function handleApiDebugPayload(payload) {
   }
 }
 
+function quoteSourceText(data) {
+  return data?.bridge_id ? `${data.source_reused ? '复用共享行情源' : '行情源'}：${data.bridge_id}` : '';
+}
+
 function closeApiSocket() {
   if (!state.apiSocket) return;
   try {
@@ -8109,8 +8264,12 @@ function closeApiSocket() {
 
 function stopQuoteLive(options = {}) {
   const subscribeId = String(state.quoteSubscribeId || '');
+  const sharedOnly = !!state.quoteSubscriptionRequest;
   const unsubscribePath = state.quoteLatencyMode ? '/api/diagnostics/quotes/unsubscribe' : '/api/quotes/unsubscribe';
   const shouldUnsubscribe = !!subscribeId && options.unsubscribe !== false;
+  state.quoteConnectGeneration += 1;
+  state.quoteSubscriptionRequest = null;
+  state.quoteSourceText = '';
   closeApiSocket();
   if (state.quoteRenderTimer) {
     clearTimeout(state.quoteRenderTimer);
@@ -8133,6 +8292,7 @@ function stopQuoteLive(options = {}) {
     channel: 'normal',
     subscribe_id: subscribeId,
   };
+  if (sharedOnly) body.shared_only = true;
   if (options.beacon && navigator.sendBeacon) {
     try {
       const authQuery = authQueryString();
@@ -8155,7 +8315,7 @@ function stopQuoteLive(options = {}) {
   }).catch((error) => log('行情订阅释放失败', { subscribe_id: subscribeId, error: error.message }));
 }
 
-function connectQuoteWebSocket(subscribeId = '') {
+async function connectQuoteWebSocket(subscribeId = '') {
   subscribeId = String(subscribeId || state.quoteSubscribeId || '').trim();
   if (!subscribeId) {
     $('apiResponseBox').textContent = JSON.stringify({
@@ -8164,21 +8324,69 @@ function connectQuoteWebSocket(subscribeId = '') {
     }, null, 2);
     return;
   }
-  const params = new URLSearchParams();
-  if (subscribeId) params.set('subscribe_id', subscribeId);
+  if (state.quoteLiveActive) return;
+  const generation = ++state.quoteConnectGeneration;
+  const subscriptionRequest = state.quoteSubscriptionRequest?.subscribeId === subscribeId
+    ? state.quoteSubscriptionRequest : null;
+  state.quoteSubscriptionRequest = subscriptionRequest;
+  const diagnostic = state.quoteLatencyMode;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 20000);
+  closeApiSocket();
   state.quoteSubscribeId = subscribeId;
   state.quoteLiveActive = true;
   state.quoteSocketLogCount = 0;
   state.quoteSocketMessageCount = 0;
   state.quoteConnectionText = `连接中 #${subscribeId}`;
   renderQuoteLiveTable();
-  const request = {
-    method: 'WS',
-    endpointId: 'ws_quotes',
-    quoteStream: true,
-    url: apiWsUrl(`${state.quoteLatencyMode ? '/ws/diagnostics/quotes' : '/ws/quotes'}${params.toString() ? `?${params.toString()}` : ''}`),
-  };
-  connectApiWebSocket(request);
+  try {
+    if (subscriptionRequest) {
+      // The server reclaims viewers without a socket after eight seconds.
+      // Renew the lease (or recreate an expired one) on the explicit connect.
+      const response = await fetch(subscriptionRequest.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...apiDebugAuthHeaders() },
+        body: JSON.stringify({ ...subscriptionRequest.body, resume_subscribe_id: subscribeId }),
+        signal: controller.signal,
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok || !payload.data?.subscribe_id) {
+        throw new Error(payload.error || '恢复行情订阅失败，请重新订阅');
+      }
+      subscribeId = String(payload.data.subscribe_id);
+      if (generation !== state.quoteConnectGeneration) {
+        // Stop/switch may happen while QMT is acknowledging this request.
+        if (state.quoteSubscribeId !== subscribeId) {
+          await fetch(apiUrl(diagnostic ? '/api/diagnostics/quotes/unsubscribe' : '/api/quotes/unsubscribe'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...apiDebugAuthHeaders() },
+            body: JSON.stringify({ subscribe_id: subscribeId, shared_only: true }),
+            signal: controller.signal,
+          });
+        }
+        return;
+      }
+      if (subscribeId !== state.quoteSubscribeId) resetQuoteLive(subscribeId, { active: true });
+      subscriptionRequest.subscribeId = subscribeId;
+      state.quoteSourceText = quoteSourceText(payload.data);
+      const field = $('apiForm').elements.subscribe_id;
+      if (field) field.value = subscribeId;
+    }
+    const params = new URLSearchParams({ subscribe_id: subscribeId });
+    connectApiWebSocket({
+      method: 'WS', endpointId: 'ws_quotes', quoteStream: true,
+      url: apiWsUrl(`${diagnostic ? '/ws/diagnostics/quotes' : '/ws/quotes'}?${params}`),
+    });
+  } catch (error) {
+    if (generation !== state.quoteConnectGeneration) return;
+    state.quoteLiveActive = false;
+    state.quoteConnectionText = '连接失败';
+    $('apiResponseBox').textContent = controller.signal.aborted
+      ? '恢复行情订阅超时，请重试连接推送。' : error.message;
+    renderQuoteLiveTable();
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function connectApiWebSocket(request) {
@@ -8415,6 +8623,7 @@ function renderQuoteLiveTable() {
   if (status) {
     const subText = state.quoteSubscribeId ? ` #${state.quoteSubscribeId}` : '';
     status.textContent = `${state.quoteConnectionText}${state.quoteConnectionText.includes('#') ? '' : subText} · ${diagnostic ? '已展示 ' : ''}${state.quoteEventCount || 0} 批推送 · ${rows.length} 条${diagnostic ? ` / 本批 ${state.quoteRows.size} 只${state.quoteLatencyPaused ? ' · 已暂停刷新' : ''}` : ''} / seq ${state.quoteSeq || 0}`;
+    if (state.quoteSourceText) status.textContent += ` · ${state.quoteSourceText}`;
   }
   const connectBtn = $('quoteConnectBtn');
   const stopBtn = $('quoteStopBtn');
@@ -9730,6 +9939,8 @@ function renderCachedBindingStatuses() {
 }
 
 async function saveCurrentAccountPair() {
+  const qmtVm = readBindingVmSettings();
+  if (!qmtVm) return;
   const accountId = selectedAccount();
   const accountType = selectedAccountType();
   const accountKey = selectedAccountKey();
@@ -9787,12 +9998,14 @@ async function saveCurrentAccountPair() {
       data_provider: dataProvider,
       enabled,
       qmt_auto_login: qmtAutoLoginSettings,
+      qmt_vm: qmtVm,
       market_routing_enabled: marketRoutingEnabled,
       market_bridges: marketBridges,
     });
     if (qmtAutoLoginSettings.password && !(data.account && data.account.qmt_auto_login && data.account.qmt_auto_login.password_saved)) {
       throw new Error('当前后端未保存 QMT 登录密码，请重启项目后重新保存。');
     }
+    verifySavedBindingVmSettings(data.account, qmtVm);
     state.accountPairs = data.account_pairs || {};
     state.accountConfigs = data.account_configs || state.accountConfigs;
     state.setup = data.setup || state.setup;
@@ -9948,6 +10161,7 @@ function syncBindingForm() {
   if (form.account_type) form.account_type.value = normalizeAccountType(info.accountType || 'STOCK');
   const config = info.config;
   fillBindingRuntimeSettings(config ? (config.qmt_runtime || {}) : undefined);
+  fillBindingVmSettings(config?.qmt_vm);
   if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
   if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(config && config.qmt_dir ? config.qmt_dir : '');
   if (form.mode) form.mode.value = config && config.mode ? config.mode : DEFAULT_BINDING_MODE;
@@ -9994,6 +10208,7 @@ function fillBindingForm(values = {}) {
   form.dataset.bridgeId = values.bridgeId || '';
   fillQmtStrategySettings('binding', values.qmtStrategy);
   fillBindingRuntimeSettings(values.qmtRuntime);
+  fillBindingVmSettings(values.qmtVm);
   if (form.display_name) form.display_name.value = values.displayName || '';
   form.account_id.value = values.accountId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
@@ -10046,6 +10261,7 @@ function openBindingDialog(options = {}) {
     qmtStrategy: config ? (config.qmt_strategy || { enabled: false }) : undefined,
     qmtAutoLogin: config ? config.qmt_auto_login : options.qmtAutoLogin,
     qmtRuntime: config ? (config.qmt_runtime || {}) : options.qmtRuntime,
+    qmtVm: config ? config.qmt_vm : options.qmtVm,
   });
   const editing = !!accountId;
   const title = $('bindingDialogTitle');
@@ -10063,8 +10279,11 @@ function openBindingDialog(options = {}) {
   overlay.classList.remove('hidden');
   overlay.setAttribute('aria-hidden', 'false');
   document.body.classList.add('binding-dialog-open');
+  state.bindingPythonRuntime = null;
+  state.bindingPythonRuntimeChoice = '';
+  state.bindingPythonRuntimeChoiceDirty = false;
+  state.bindingPythonRuntimeContext = '';
   if (!state.bindingPythonRuntimeJobId) {
-    state.bindingPythonRuntime = null;
     state.bindingPythonRuntimeProgress = null;
   }
   renderBindingPythonRuntimeStatus();
@@ -10341,6 +10560,15 @@ function bindingPythonRuntimeFormValues() {
   return { qmtDir, accountId };
 }
 
+function bindingPythonRuntimeContextKey() {
+  const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
+  return JSON.stringify([qmtDir.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase(), accountId]);
+}
+
+function bindingPythonRuntimeName(runtime) {
+  return runtime === 'py312' ? 'Python 3.12' : 'Python 3.6';
+}
+
 function closeBindingPythonRuntimeSocket() {
   if (state.bindingPythonRuntimeSocket) {
     try {
@@ -10370,7 +10598,7 @@ function renderBindingPythonRuntimeProgress() {
   const text = $('bindingPythonRuntimeProgressText');
   const event = state.bindingPythonRuntimeProgress;
   if (!wrap || !bar || !meta || !text) return;
-  if (!event) {
+  if (!event || state.bindingPythonRuntimeJobContext !== bindingPythonRuntimeContextKey()) {
     wrap.classList.add('hidden');
     text.textContent = '';
     return;
@@ -10385,72 +10613,104 @@ function renderBindingPythonRuntimeProgress() {
   const eta = Number(data.eta);
   bar.style.width = percent === null ? '0%' : `${percent.toFixed(0)}%`;
   bar.classList.toggle('is-indeterminate', percent === null && !['installed', 'download_verified', 'done', 'error'].includes(phase));
-  bar.classList.toggle('is-done', ['installed', 'done'].includes(phase));
+  bar.classList.toggle('is-done', phase === 'done');
   bar.classList.toggle('is-error', phase === 'error');
   const bytes = total > 0 ? `，${(done / 1048576).toFixed(1)} / ${(total / 1048576).toFixed(1)} MB` : '';
   const speedText = speed > 0 ? `，${(speed / 1048576).toFixed(2)} MB/s` : '';
   const etaText = Number.isFinite(eta) && eta >= 0 ? `，剩余约 ${Math.ceil(eta)} 秒` : '';
-  meta.textContent = `${phase}${percent === null ? '' : `，${percent.toFixed(0)}%`}${bytes}${speedText}${etaText}`;
-  text.textContent = data.message || data.error || (phase === 'error' ? '下载失败' : '任务进行中');
+  const phaseText = ({ queued: '排队中', downloading: '下载中', download_verified: '下载校验完成',
+    installing: '安装中', installed: '安装完成，等待切换', reusing: '使用已安装运行库',
+    activating: '配置执行器', restarting: '重启 QMT', done: '已完成', error: '任务失败' })[phase] || '处理中';
+  meta.textContent = `${phaseText}${percent === null ? '' : `，${percent.toFixed(0)}%`}${bytes}${speedText}${etaText}`;
+  text.textContent = data.error || (phase === 'done' ? '执行器已配置，QMT 重启流程已完成' : phaseText);
 }
 
 function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, error = null) {
   const statusNode = $('bindingPythonRuntimeStatus');
   const hint = $('bindingPythonRuntimeHint');
   const button = $('bindingPythonRuntimeDownloadBtn');
-  if (!statusNode || !hint || !button) return;
-  const { qmtDir } = bindingPythonRuntimeFormValues();
+  const select = $('bindingPythonRuntimeSelect');
+  const choiceHint = $('bindingPythonRuntimeChoiceHint');
+  if (!statusNode || !hint || !button || !select || !choiceHint) return;
+  const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
+  const validContext = state.bindingPythonRuntimeContext === bindingPythonRuntimeContextKey();
+  if (!validContext) status = null;
+  error = error || (validContext && state.bindingPythonRuntimeError);
   const binding = bindingPythonRuntimeBinding(status);
-  const runtime = binding.selected_runtime || (binding.py312_supported ? 'py312' : 'py36');
-  const selected = binding.selected || (binding.runtimes && binding.runtimes[runtime]) || {};
+  const detected = !!(status && binding.runtimes);
+  const available = detected && binding.py312_supported ? ['py36', 'py312'] : ['py36'];
+  const runtime = available.includes(state.bindingPythonRuntimeChoice)
+    ? state.bindingPythonRuntimeChoice : (available.includes(binding.selected_runtime) ? binding.selected_runtime : 'py36');
+  const options = available.map(value => `<option value="${value}">${bindingPythonRuntimeName(value)}</option>`).join('');
+  if (select.innerHTML !== options) select.innerHTML = options;
+  select.value = runtime;
+  const selected = binding.runtimes?.[runtime] || {};
   const running = !!state.bindingPythonRuntimeJobId;
+  const checking = state.bindingPythonRuntimeChecking;
+  select.disabled = !detected || checking || running || available.length === 1;
+  const canApply = detected && !error && !!qmtDir && !!accountId && binding.config_exists
+    && !['account_config_missing', 'account_config_unreadable'].includes(binding.state);
+  const ready = !!selected.installed && binding.selected_runtime === runtime && binding.state === 'ready'
+    && (!binding.configured_runtime || binding.configured_runtime === runtime);
+  button.disabled = !canApply || ready || checking || running;
+  button.textContent = running ? 'Python 库任务进行中...' : (ready ? `${bindingPythonRuntimeName(runtime)} 已就绪`
+    : selected.installed ? `切换到 ${bindingPythonRuntimeName(runtime)} 并重启 QMT`
+      : `下载并使用 ${bindingPythonRuntimeName(runtime)}`);
+  choiceHint.textContent = '选择后点击下方按钮应用，任务会重启此 QMT；已安装的运行库会直接复用。';
   if (error) {
     statusNode.textContent = `检测失败：${error.message || error}`;
     hint.textContent = '检测失败不会阻止保存绑定，请检查目录后重试。';
-    button.disabled = true;
-    button.textContent = '下载并安装 Python 库';
+    select.disabled = true;
     renderBindingPythonRuntimeProgress();
     return;
   }
   if (!qmtDir) {
     statusNode.textContent = '填写 QMT 目录后自动检测版本和 Python 库。';
     hint.textContent = '仅读取本机文件，不会上传账号或目录。';
-    button.disabled = true;
-    button.textContent = '下载并安装 Python 库';
+    renderBindingPythonRuntimeProgress();
+    return;
+  }
+  if (checking || !detected) {
+    statusNode.textContent = checking ? '正在检测 QMT 版本和本地 Python 库...' : '尚未完成版本检测';
+    hint.textContent = '确认支持 Python 3.12 后才会显示该选项。';
     renderBindingPythonRuntimeProgress();
     return;
   }
   const versionText = binding.qmt_version ? `QMT ${binding.qmt_version}` : 'QMT 版本未知';
-  const selectionText = binding.runtime_selection === 'fixed_py36'
-    ? '固定默认 py36'
-    : `当前选择 ${runtime}`;
-  const ready = !!selected.installed && binding.state === 'ready';
-  if (ready) {
-    statusNode.textContent = `${versionText}，${selectionText}，Python 库已就绪。`;
-    hint.textContent = binding.py312_supported ? '该版本支持 py36 和 py3.12。' : '该版本没有 py3.12 选项，只使用 py36。';
-  } else if (binding.state === 'account_config_missing' || binding.state === 'python_library_missing' || binding.state === 'runtime_not_selected') {
-    statusNode.textContent = `${versionText}，${selectionText}，尚未检测到可用 Python 库。`;
-    hint.textContent = '点击下载并安装；安装完成后会按任务设置重启 QMT。';
-  } else {
-    statusNode.textContent = `${versionText}，${selectionText}，状态：${binding.state || '待检测'}。`;
-    hint.textContent = '可以重新检测或保存绑定。';
+  const libraryText = selected.installed ? (ready ? '已安装并配置' : '已安装，等待切换') : '尚未安装';
+  statusNode.textContent = `${versionText}，所选 ${bindingPythonRuntimeName(runtime)}：${libraryText}。`;
+  hint.textContent = binding.py312_supported ? '该 QMT 支持 Python 3.6 和 Python 3.12。'
+    : binding.qmt_version ? '此 QMT 仅提供 Python 3.6。' : '未识别到可靠的 QMT 版本，暂时仅提供 Python 3.6。';
+  if (!canApply) {
+    choiceHint.textContent = !accountId ? '填写账号后可配置执行器；请使用已在此 QMT 登录过的账号。'
+      : '未找到可读的账号配置，请先在该 QMT 登录此账号一次，再重新检测。';
+  } else if (binding.selected_runtime) {
+    choiceHint.textContent = `当前配置：${bindingPythonRuntimeName(binding.selected_runtime)}。`
+      + (ready ? '已就绪。' : '点击下方按钮应用所选执行器，完成后会重启此 QMT。');
   }
-  button.disabled = !qmtDir || ready || running;
-  button.textContent = running ? 'Python 库任务进行中...' : (ready ? 'Python 库已就绪' : `下载并安装 ${runtime}`);
+  if (running && state.bindingPythonRuntimeJobContext !== bindingPythonRuntimeContextKey()) {
+    choiceHint.textContent = '另一个 QMT 的 Python 库任务正在执行，请等待完成后再操作。';
+  }
   renderBindingPythonRuntimeProgress();
 }
 
 function bindingPythonRuntimeProgressEvent(event) {
-  if (!event || (state.bindingPythonRuntimeJobId && downloadEventJobId(event) !== state.bindingPythonRuntimeJobId)) return;
+  if (!event || !state.bindingPythonRuntimeJobId || downloadEventJobId(event) !== state.bindingPythonRuntimeJobId) return;
   state.bindingPythonRuntimeProgress = event;
   const stage = downloadEventStage(event);
-  if (['done', 'installed'].includes(stage)) {
+  if (stage === 'done') {
     clearBindingPythonRuntimePoll();
+    closeBindingPythonRuntimeSocket();
+    if (state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
+      state.bindingPythonRuntimeChoice = state.bindingPythonRuntimeJobRuntime;
+      state.bindingPythonRuntimeChoiceDirty = true;
+    }
     state.bindingPythonRuntimeJobId = '';
     renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
     scheduleBindingPythonRuntimeCheck(250);
   } else if (['error', 'failed', 'fail'].includes(stage)) {
     clearBindingPythonRuntimePoll();
+    closeBindingPythonRuntimeSocket();
     state.bindingPythonRuntimeJobId = '';
     renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
   } else {
@@ -10518,7 +10778,10 @@ function pollBindingPythonRuntimeJob(jobId) {
       }
     } catch (error) {
       const text = $('bindingPythonRuntimeProgressText');
-      if (text) text.textContent = `进度查询失败：${error.message}`;
+      if (text && state.bindingPythonRuntimeJobId === jobId
+          && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
+        text.textContent = `进度查询失败：${error.message}`;
+      }
     }
   }, 1000);
 }
@@ -10526,30 +10789,72 @@ function pollBindingPythonRuntimeJob(jobId) {
 async function refreshBindingPythonRuntime(options = {}) {
   const token = ++state.bindingPythonRuntimeCheckToken;
   const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
+  const context = bindingPythonRuntimeContextKey();
+  if (state.bindingPythonRuntimeContext !== context) {
+    state.bindingPythonRuntime = null;
+    state.bindingPythonRuntimeChoice = '';
+    state.bindingPythonRuntimeChoiceDirty = false;
+    state.bindingPythonRuntimeContext = context;
+  }
+  state.bindingPythonRuntimeError = null;
   if (!qmtDir) {
     state.bindingPythonRuntime = null;
-    state.bindingPythonRuntimeProgress = null;
+    state.bindingPythonRuntimeChecking = false;
     renderBindingPythonRuntimeStatus(null);
     return null;
   }
-  const hint = $('bindingPythonRuntimeHint');
-  if (hint) hint.textContent = '正在检测 QMT 版本和本地 Python 库...';
+  state.bindingPythonRuntimeChecking = true;
+  renderBindingPythonRuntimeStatus();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15000);
   try {
     const query = new URLSearchParams({ qmt_dir: qmtDir, account_id: accountId, runtime: 'py36', refresh: '0' });
-    const data = await api(`/api/qmt/python-runtime?${query.toString()}`);
-    if (token !== state.bindingPythonRuntimeCheckToken) return data;
+    const data = await api(`/api/qmt/python-runtime?${query.toString()}`, { signal: controller.signal });
+    if (token !== state.bindingPythonRuntimeCheckToken || context !== bindingPythonRuntimeContextKey()) return null;
     state.bindingPythonRuntime = data;
-    renderBindingPythonRuntimeStatus(data);
+    const binding = bindingPythonRuntimeBinding(data);
+    const available = binding.py312_supported ? ['py36', 'py312'] : ['py36'];
+    if (state.bindingPythonRuntimeJobId && state.bindingPythonRuntimeJobContext === context
+        && available.includes(state.bindingPythonRuntimeJobRuntime)) {
+      state.bindingPythonRuntimeChoice = state.bindingPythonRuntimeJobRuntime;
+      state.bindingPythonRuntimeChoiceDirty = true;
+    } else if (!available.includes(state.bindingPythonRuntimeChoice)) {
+      state.bindingPythonRuntimeChoice = available.includes(binding.selected_runtime) ? binding.selected_runtime : 'py36';
+    }
+    if (binding.selected_runtime === state.bindingPythonRuntimeChoice && binding.state === 'ready'
+        && binding.runtimes?.[state.bindingPythonRuntimeChoice]?.installed) {
+      state.bindingPythonRuntimeChoiceDirty = false;
+    }
     return data;
   } catch (error) {
-    if (token === state.bindingPythonRuntimeCheckToken) renderBindingPythonRuntimeStatus(null, error);
+    if (token === state.bindingPythonRuntimeCheckToken && context === bindingPythonRuntimeContextKey()) {
+      state.bindingPythonRuntime = null;
+      state.bindingPythonRuntimeError = controller.signal.aborted ? new Error('检测超时，请重试') : error;
+    }
     if (options.throwOnError) throw error;
     return null;
+  } finally {
+    window.clearTimeout(timeout);
+    if (token === state.bindingPythonRuntimeCheckToken && context === bindingPythonRuntimeContextKey()) {
+      state.bindingPythonRuntimeChecking = false;
+      renderBindingPythonRuntimeStatus();
+    }
   }
 }
 
 function scheduleBindingPythonRuntimeCheck(delay = 350) {
   if (state.bindingPythonRuntimeCheckTimer) window.clearTimeout(state.bindingPythonRuntimeCheckTimer);
+  state.bindingPythonRuntimeCheckToken += 1;
+  const context = bindingPythonRuntimeContextKey();
+  if (state.bindingPythonRuntimeContext !== context) {
+    state.bindingPythonRuntime = null;
+    state.bindingPythonRuntimeChoice = '';
+    state.bindingPythonRuntimeChoiceDirty = false;
+    state.bindingPythonRuntimeError = null;
+    state.bindingPythonRuntimeContext = context;
+  }
+  state.bindingPythonRuntimeChecking = !!bindingPythonRuntimeFormValues().qmtDir;
+  renderBindingPythonRuntimeStatus();
   state.bindingPythonRuntimeCheckTimer = window.setTimeout(() => {
     state.bindingPythonRuntimeCheckTimer = null;
     refreshBindingPythonRuntime();
@@ -10557,16 +10862,21 @@ function scheduleBindingPythonRuntimeCheck(delay = 350) {
 }
 
 async function downloadBindingPythonRuntime() {
-  if (state.bindingPythonRuntimeJobId) return;
+  if (state.bindingPythonRuntimeJobId || state.bindingPythonRuntimeChecking) return;
   const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
   if (!qmtDir) {
     renderBindingPythonRuntimeStatus(null, new Error('请先填写 QMT 目录'));
     return;
   }
+  if (state.bindingPythonRuntimeContext !== bindingPythonRuntimeContextKey()) return;
   const binding = bindingPythonRuntimeBinding(state.bindingPythonRuntime);
-  const runtime = binding.selected_runtime || (binding.py312_supported ? 'py312' : 'py36');
+  const runtime = state.bindingPythonRuntimeChoice;
+  if (!binding.runtimes || !binding.config_exists || !accountId || !['py36', 'py312'].includes(runtime)
+      || (runtime === 'py312' && !binding.py312_supported)) return;
   const jobId = `binding_qmt_python_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
-  const body = { job_id: jobId, qmt_dir: qmtDir, account_id: accountId, runtime, restart: true };
+  const body = { job_id: jobId, qmt_dir: qmtDir, account_id: accountId, runtime, restart: true, reuse_installed: true };
+  state.bindingPythonRuntimeJobContext = bindingPythonRuntimeContextKey();
+  state.bindingPythonRuntimeJobRuntime = runtime;
   state.bindingPythonRuntimeJobId = jobId;
   state.bindingPythonRuntimeProgress = {
     event: DOWNLOAD_CALLBACK_EVENT,
@@ -10593,6 +10903,8 @@ async function downloadBindingPythonRuntime() {
 
 async function submitBindingForm(event) {
   event.preventDefault();
+  const qmtVm = readBindingVmSettings();
+  if (!qmtVm) return;
   const form = event.currentTarget;
   const accountId = form.account_id.value.trim();
   const displayName = form.display_name ? form.display_name.value.trim() : '';
@@ -10601,6 +10913,15 @@ async function submitBindingForm(event) {
   const qmtTradeDir = form.qmt_trade_dir ? qmtDeploymentPath(form.qmt_trade_dir.value) : '';
   const mode = form.mode ? form.mode.value : DEFAULT_BINDING_MODE;
   const qmtRuntime = readBindingRuntimeSettings(form);
+  if (state.bindingPythonRuntimeJobId && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
+    setBindingNotice('Python 执行器正在配置，请等待任务完成后再保存绑定。', 'warn', { autoHide: false });
+    return;
+  }
+  if (state.bindingPythonRuntimeChoiceDirty) {
+    setBindingNotice('所选 Python 执行器尚未应用，请先点击运行库区域的下载或切换按钮，完成后再保存绑定。', 'warn', { autoHide: false });
+    $('bindingPythonRuntimePanel')?.scrollIntoView({ block: 'center' });
+    return;
+  }
   if (normalizeTransportMode(mode) !== 'lttx' && !qmtRuntime) {
     setBindingNotice('QMT 调度间隔必须是 1–1000 ms 的整数。', 'error', { autoHide: false });
     form.qmt_timer_interval_ms.focus();
@@ -10682,6 +11003,7 @@ async function submitBindingForm(event) {
       market_bridges: marketBridges,
       qmt_strategy: strategySettings,
       qmt_runtime: normalizeTransportMode(mode) === 'lttx' ? undefined : qmtRuntime,
+      qmt_vm: qmtVm,
     });
     const responseAccount = data.account && typeof data.account === 'object' ? data.account : {};
     if (qmtAutoLoginSettings.password && !(responseAccount.qmt_auto_login && responseAccount.qmt_auto_login.password_saved)) {
@@ -10694,6 +11016,7 @@ async function submitBindingForm(event) {
       throw new Error('绑定已保存，但调度与日志设置未被后端保存。请重启 Web 后端后重新保存这两项设置。');
     }
     const savedBridgeId = responseAccount.bridge_id || bridgeId || state.defaultBridgeId || 'default';
+    verifySavedBindingVmSettings(responseAccount, qmtVm);
     const savedAccountKey = responseAccount.account_key || form.dataset.accountKey || makeAccountKey(accountId, accountType, savedBridgeId);
     state.accountPairs = data.account_pairs || {};
     state.accountConfigs = data.account_configs || {};
@@ -15096,6 +15419,12 @@ async function boot() {
     $(`${prefix}QmtDependencies`)?.addEventListener('click', handleQmtDependencyAction);
   }
   const bindingQmtAutoLogin = $('bindingQmtAutoLogin');
+  $('bindingVmSettingsToggle')?.addEventListener('click', () => {
+    setBindingVmSettingsOpen($('bindingVmSettingsToggle').getAttribute('aria-expanded') !== 'true');
+  });
+  ['bindingDisableVm', 'bindingInjectMac'].forEach(id => {
+    $(id)?.addEventListener('change', syncBindingVmSettingsSummary);
+  });
   for (const prefix of ['setup', 'onboarding', 'binding']) {
     const password = $(`${prefix}QmtLoginPassword`);
     const toggle = $(`${prefix}QmtPasswordToggle`);
@@ -15153,6 +15482,14 @@ async function boot() {
   const bindingPythonRuntimeDownloadBtn = $('bindingPythonRuntimeDownloadBtn');
   if (bindingPythonRuntimeDownloadBtn) bindingPythonRuntimeDownloadBtn.addEventListener('click', () => {
     downloadBindingPythonRuntime();
+  });
+  const bindingPythonRuntimeSelect = $('bindingPythonRuntimeSelect');
+  if (bindingPythonRuntimeSelect) bindingPythonRuntimeSelect.addEventListener('change', () => {
+    const binding = bindingPythonRuntimeBinding();
+    state.bindingPythonRuntimeChoice = bindingPythonRuntimeSelect.value;
+    state.bindingPythonRuntimeChoiceDirty = binding.selected_runtime !== state.bindingPythonRuntimeChoice
+      || !binding.runtimes?.[state.bindingPythonRuntimeChoice]?.installed;
+    renderBindingPythonRuntimeStatus();
   });
   ['bindingQmtDir', 'bindingAccountId'].forEach((id) => {
     const input = $(id);

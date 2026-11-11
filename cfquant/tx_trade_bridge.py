@@ -1147,7 +1147,7 @@ class TxTradeBridge(object):
             )
         if pending_sync_order is not None:
             self._discard_pending_sync_order(pending_sync_order)
-        return {
+        return restore_order_remark({
             "request_result": result,
             "order_id": order_id if order_id is not None else -1,
             "order_remark": original_order_remark(order_remark),
@@ -1155,7 +1155,7 @@ class TxTradeBridge(object):
             "order_type": order_type,
             "account_type": str(account_type or "").upper(),
             "previous_order_id": previous_order_id,
-        }
+        })
 
     @staticmethod
     def _order_error_code(stock_code):
@@ -1752,8 +1752,14 @@ class TxTradeBridge(object):
             for name in ("m_strRemark", "m_strOrderRemark"):
                 if not order.get(name):
                     order[name] = order_remark
-        if order_id is not None and (is_unique_order_remark(key[2]) or
-                                    order_id == self._order_id_from_detail(order)):
+        # A submission UUID can be shared by several native children. It is
+        # sufficient for text metadata, never for replacing a different ID.
+        native_id = self._order_id_from_detail(order)
+        broker_id = self._first_value(order, ("order_sysid", "m_strOrderSysID"))
+        missing_id_unambiguous = (native_id is None and not broker_id
+                                 and not self.order_callback_cache.submission_is_ambiguous(
+                                     order, self._account_type_name(order.get("account_type"))))
+        if order_id is not None and (native_id == order_id or missing_id_unambiguous):
             order_meta.reconcile_order_id(order, order_id)
             for name in ("m_nRef", "m_nOrderID"):
                 if self._normalize_order_id(order.get(name)) is None:
@@ -1803,49 +1809,10 @@ class TxTradeBridge(object):
         return data
 
     def _resolve_direct_query_order_meta(self, data, account_id, account_type):
-        callback_record = order_meta.normalize_record(
-            data,
-            bridge_id=self.bridge_id,
-            account_type=account_type or data.get("account_type"),
-            account_id=account_id or data.get("account_id"),
+        return self.order_meta_cache.resolve_callback(
+            data, bridge_id=self.bridge_id, account_type=account_type,
+            account_id=account_id, allow_pending=False, query=True,
         )
-        order_refs = order_meta.order_ref_candidates_from_data(callback_record)
-        user_order_id = order_meta.normalize_text(callback_record.get("user_order_id"))
-        with self.order_meta_cache.lock:
-            self.order_meta_cache.prune()
-            ctx = self.order_meta_cache._ctx(callback_record)
-            for order_ref in order_refs:
-                record = self.order_meta_cache.by_ref.get(ctx + (order_ref,))
-                if record and user_order_id and is_unique_order_remark(order_meta.user_order_id_from_data(record)):
-                    if not order_remark_matches_reference(order_meta.user_order_id_from_data(record), user_order_id):
-                        record = None
-                if record:
-                    return record, {"match_confidence": "order_ref"}
-            if user_order_id:
-                record = self.order_meta_cache.by_user.get(ctx + (user_order_id,))
-                if record and not is_unique_order_remark(user_order_id):
-                    query_id = self._order_id_from_detail(data)
-                    canonical_id = order_meta.canonical_order_id_from_record(record)
-                    if query_id is not None and canonical_id is not None and query_id != canonical_id:
-                        record = None
-                if record:
-                    bound_order_ref = ""
-                    if order_refs:
-                        existing_refs = order_meta.order_ref_candidates_from_data(record)
-                        existing_set = set(existing_refs)
-                        bound_refs = [ref for ref in order_refs if ref not in existing_set]
-                        order_meta.merge_order_ref_candidates(record, order_refs)
-                        if not order_meta.normalize_order_ref(record.get("order_ref")):
-                            record["order_ref"] = order_refs[0]
-                            record["m_strOrderRef"] = order_refs[0]
-                        record["updated_at"] = time.time()
-                        self.order_meta_cache._upsert_locked(record)
-                        bound_order_ref = order_refs[0] if bound_refs else ""
-                    return record, {
-                        "match_confidence": "user_order_id",
-                        "bound_order_ref": bound_order_ref,
-                    }
-        return None, {}
 
     def _prune_pending_async_orders_locked(self):
         wait_seconds = os.environ.get("CFQUANT_ASYNC_ORDER_RESPONSE_WAIT_SECONDS", 60.0)

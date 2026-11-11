@@ -27,6 +27,7 @@ DEFAULT_BRIDGE_ID = "default"
 DEFAULT_ACCOUNT_TYPE = "STOCK"
 PENDING_MATCH_TTL_SECONDS = 10 * 60
 CANONICAL_ORDER_ID_FIELD = "canonical_order_id"
+ORDER_IDENTITY_VERSION = 2
 ORDER_REF_FIELDS = (
     "order_ref",
     "m_strOrderRef",
@@ -163,6 +164,42 @@ def reconcile_order_id(data, order_id):
         data["cfquant_order_id_reconciled"] = True
     data["order_id"] = canonical
     return mismatched
+
+
+def native_order_id(data):
+    for name in ("m_nRef", "m_nOrderID", "m_strOrderRef", "m_strOrderID", "order_id"):
+        value = positive_order_id(data.get(name))
+        if value is not None:
+            return value
+    return None
+
+
+def same_broker_order(record, data):
+    """Only child-scoped, versioned broker evidence can justify a local alias."""
+    if record.get("order_identity_version") != ORDER_IDENTITY_VERSION:
+        return False
+    left = normalize_order_ref(first_value(record, ("order_sysid", "m_strOrderSysID")))
+    right = normalize_order_ref(first_value(data, ("order_sysid", "m_strOrderSysID")))
+    left_stock = normalize_text(record.get("stock_code")).upper()
+    right_stock = normalize_text(data.get("stock_code")).upper()
+    return bool(left and left == right and left_stock and left_stock == right_stock)
+
+
+def verified_child_alias(record, data):
+    return (record.get("order_identity_version") == ORDER_IDENTITY_VERSION
+            and native_order_id(data) in (record.get("child_local_ids") or [])) or same_broker_order(record, data)
+
+
+def submission_metadata(record):
+    """Copy shared text/context without carrying a sibling's identity or size."""
+    result = dict(record)
+    for name in ORDER_REF_FIELDS + ("order_refs", CANONICAL_ORDER_ID_FIELD,
+                                    "callback_bound_at", "order_volume", "order_identity_version", "child_local_ids",
+                                    "query_order_id",
+                                    "cfquant_child_id", "cfquant_callback_order_id",
+                                    "cfquant_order_id_reconciled"):
+        result.pop(name, None)
+    return result
 
 
 def stock_code_base(value):
@@ -413,6 +450,13 @@ def apply_record_to_callback(data, record, match_info=None):
         data["client_order_id"] = normalize_text(record.get("client_order_id"))
 
     order_id = canonical_order_id_from_record(record)
+    native_id = native_order_id(data)
+    if native_id is not None and (
+        (match_info or {}).get("preserve_order_id")
+        or (is_unique_order_remark(user_order_id) and native_id != order_id
+            and not verified_child_alias(record, data))
+    ):
+        order_id = native_id
     if order_id is not None:
         reconcile_order_id(data, order_id)
         order_id_ref = str(order_id)
@@ -511,6 +555,19 @@ class OrderMetaCache(object):
             return self._upsert_locked(record)
 
     def _upsert_locked(self, record):
+        if (is_unique_order_remark(user_order_id_from_data(record))
+                and record.get("order_identity_version") != ORDER_IDENTITY_VERSION):
+            # Old stores may have merged sibling IDs/sysids into one record.
+            # Retain submission metadata and its canonical ID, not unproven aliases.
+            canonical = canonical_order_id_from_record(record)
+            volume = record.get("order_volume")
+            record = submission_metadata(record)
+            if volume is not None:
+                record["order_volume"] = volume
+            if canonical is not None:
+                record.update(order_id=canonical, canonical_order_id=canonical,
+                              order_ref=str(canonical), order_refs=[str(canonical)])
+            record["order_identity_version"] = ORDER_IDENTITY_VERSION
         trade_day = current_trade_day()
         self._prune_locked(trade_day, time.time())
         status = normalize_text(record.get("status")).lower()
@@ -594,13 +651,18 @@ class OrderMetaCache(object):
             loaded += 1
         return {"loaded": loaded, "stale": stale}
 
-    def resolve_callback(self, data, bridge_id=None, account_type=None, account_id=None, allow_pending=True):
+    def resolve_callback(self, data, bridge_id=None, account_type=None, account_id=None, allow_pending=True,
+                         query=False):
         callback_record = normalize_record(
             data,
             bridge_id=bridge_id or self.bridge_id,
             account_type=account_type or data.get("account_type"),
             account_id=account_id or data.get("account_id"),
         )
+        # normalize_record also accepts stores and synthesizes m_strOrderRef
+        # from any reference, including a broker sysid. It is not native evidence.
+        if "m_strOrderRef" not in data:
+            callback_record.pop("m_strOrderRef", None)
         with self.lock:
             self._prune_locked(current_trade_day(), time.time())
             record = None
@@ -611,6 +673,13 @@ class OrderMetaCache(object):
                 record = self.by_ref.get(self._ctx(callback_record) + (order_ref,))
                 if record and user_order_id and is_unique_order_remark(user_order_id_from_data(record)):
                     if not order_remark_matches_reference(user_order_id_from_data(record), user_order_id):
+                        record = None
+                if record and is_unique_order_remark(user_order_id_from_data(record)):
+                    native_id = native_order_id(callback_record)
+                    if not ((native_id is not None and native_id == canonical_order_id_from_record(record))
+                            or verified_child_alias(record, callback_record)):
+                        # Numeric local IDs and broker IDs share the legacy
+                        # index. An untyped string hit is not child evidence.
                         record = None
                 if record:
                     confidence = "order_ref"
@@ -624,10 +693,13 @@ class OrderMetaCache(object):
                         record = None
                 if record:
                     confidence = "user_order_id"
-            if record is None and allow_pending:
+            if record is None and allow_pending and not query:
                 record, confidence = self._match_pending_locked(callback_record)
-            if record is None:
+            if record is None and not query:
                 record, confidence = self._match_known_locked(callback_record, order_refs)
+
+            if record and is_unique_order_remark(user_order_id_from_data(record)):
+                record = self._resolve_child_locked(record, callback_record, confidence, query)
 
             bound_order_ref = ""
             bound_order_refs = []
@@ -652,7 +724,55 @@ class OrderMetaCache(object):
                 "bound_order_ref": bound_order_ref,
                 "bound_order_refs": bound_order_refs,
                 "match_confidence": confidence,
+                "preserve_order_id": query,
             }
+
+    def _resolve_child_locked(self, record, data, confidence, query):
+        """A UUID groups submissions; native IDs partition the real children."""
+        incoming_id = native_order_id(data)
+        canonical = canonical_order_id_from_record(record)
+        broker_matches = []
+        if same_broker_order(record, data):
+            broker_matches = [item for item in self._unique_records_locked()
+                              if self._ctx(item) == self._ctx(record) and same_broker_order(item, data)]
+        broker_ambiguous = len({canonical_order_id_from_record(item) for item in broker_matches}) > 1
+        if incoming_id is None:
+            broker_id = normalize_order_ref(first_value(data, ("order_sysid", "m_strOrderSysID")))
+            if broker_id and (broker_ambiguous or not same_broker_order(record, data)):
+                return submission_metadata(record)
+            if confidence == "user_order_id":
+                key = self._user_key(record)
+                children = {canonical_order_id_from_record(item) for item in self._unique_records_locked()
+                            if self._user_key(item) == key}
+                children.discard(None)
+                if len(children) > 1:
+                    return submission_metadata(record)
+            return record
+        same_child = incoming_id == canonical or verified_child_alias(record, data)
+        if broker_ambiguous and incoming_id != canonical and incoming_id not in (record.get("child_local_ids") or []):
+            same_child = False
+        if query and record.get("query_order_id") not in (None, incoming_id):
+            # Two ORDER query rows are separate children even if the broker
+            # uses the same reference. Only callback references can be aliases.
+            same_child = False
+        if not same_child:
+            record = submission_metadata(record)
+        else:
+            record = dict(record)
+        # Queries provide the authoritative local order ID. A callback alias
+        # may reuse it only after matching a broker ID recorded for this child.
+        child_id = canonical if same_child and canonical is not None and not query else incoming_id
+        record.update(order_id=child_id, canonical_order_id=child_id,
+                      order_identity_version=ORDER_IDENTITY_VERSION)
+        record["child_local_ids"] = sorted(set((record.get("child_local_ids") or []) + [child_id, incoming_id]))
+        if query:
+            record["query_order_id"] = incoming_id
+        if not same_child:
+            record.update(order_ref=str(child_id), order_refs=[str(child_id)])
+        for name in ("order_sysid", "m_strOrderSysID", "order_volume"):
+            if not is_empty(data.get(name)):
+                record[name] = data[name]
+        return record
 
     def _unique_records_locked(self):
         records = []
@@ -683,6 +803,11 @@ class OrderMetaCache(object):
                 continue
             if not self._has_callback_metadata(record):
                 continue
+            if is_unique_order_remark(user_order_id_from_data(record)):
+                native_id = native_order_id(callback_record)
+                if not ((native_id is not None and native_id == canonical_order_id_from_record(record))
+                        or verified_child_alias(record, callback_record)):
+                    continue
             evidence = self._context_match_evidence(record, callback_record)
             if evidence < 0:
                 continue

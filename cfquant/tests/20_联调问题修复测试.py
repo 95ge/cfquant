@@ -152,6 +152,9 @@ def test_trade_callback_is_forwarded_with_trade_fields_and_sdk_shape():
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
 
+        def close(self):
+            pass
+
     bridge = NormalQmtBridge(None, show=False, schedule_timer=False, order_meta_enabled=False)
     tx = RecordingTx()
     bridge.tx = tx
@@ -220,6 +223,9 @@ def test_order_callback_skips_placeholder_order_reference(bridge_class):
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
 
+        def close(self):
+            pass
+
     bridge = bridge_class(None, show=False, schedule_timer=False)
     tx = RecordingTx()
     bridge.tx = tx
@@ -244,13 +250,16 @@ def test_order_callback_skips_placeholder_order_reference(bridge_class):
 
 
 @pytest.mark.parametrize("bridge_class", [NormalQmtBridge, PipeNormalQmtBridge])
-def test_order_callback_reconciles_order_id_from_request_metadata(bridge_class):
+def test_order_callback_preserves_native_id_when_only_submission_metadata_matches(bridge_class):
     class RecordingTx(object):
         def __init__(self):
             self.pushes = []
 
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
+
+        def close(self):
+            pass
 
     bridge_kwargs = {"show": False, "schedule_timer": False}
     if bridge_class is NormalQmtBridge:
@@ -284,11 +293,10 @@ def test_order_callback_reconciles_order_id_from_request_metadata(bridge_class):
         bridge.close()
 
     data = json.loads(tx.pushes[0][1])["data"]
-    assert data["order_id"] == 700014
-    assert data["cfquant_callback_order_id"] == 700015
-    assert data["cfquant_order_id_reconciled"] is True
+    assert data["order_id"] == 700015
+    assert not data.get("cfquant_order_id_reconciled")
     assert data["m_nRef"] == 700015
-    assert XtOrder.from_any(data).order_id == 700014
+    assert XtOrder.from_any(data).order_id == 700015
 
 
 
@@ -300,6 +308,9 @@ def test_order_error_callback_restores_strategy_and_order_id_from_request_metada
 
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
+
+        def close(self):
+            pass
 
     bridge = bridge_class(None, show=False, schedule_timer=False)
     tx = RecordingTx()
@@ -326,6 +337,8 @@ def test_order_error_callback_restores_strategy_and_order_id_from_request_metada
             "m_nErrorID": 101,
             "m_strErrorMsg": "rejected",
         })
+        # Test the live callback flush; pipe shutdown closes the transport first.
+        bridge._flush_pending_order_errors(force=True)
     finally:
         bridge.close()
 
@@ -415,6 +428,9 @@ def test_order_error_callback_can_match_lightweight_request_before_passorder_ret
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
 
+        def close(self):
+            pass
+
     bridge = NormalQmtBridge(None, show=False, schedule_timer=False, order_meta_enabled=False)
     tx = RecordingTx()
     bridge.tx = tx
@@ -464,6 +480,9 @@ def test_qmt_order_error_message_fills_missing_error_id_and_stock_code():
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
 
+        def close(self):
+            pass
+
     bridge = NormalQmtBridge(None, show=False, schedule_timer=False)
     tx = RecordingTx()
     bridge.tx = tx
@@ -492,6 +511,9 @@ def test_cancel_error_callback_restores_context_by_order_id(bridge_class):
 
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
+
+        def close(self):
+            pass
 
     bridge = bridge_class(None, show=False, schedule_timer=False)
     tx = RecordingTx()
@@ -602,6 +624,9 @@ def test_property_based_callbacks_preserve_async_and_asset_position_fields(bridg
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
 
+        def close(self):
+            pass
+
     class SlotObject(object):
         __slots__ = ("__dict__",)
 
@@ -707,6 +732,9 @@ def test_normal_bridge_dedupes_identical_asset_callbacks_per_client():
 
         def push(self, kind, payload, key):
             self.pushes.append((kind, payload, key))
+
+        def close(self):
+            pass
 
     bridge = NormalQmtBridge(None, show=False, schedule_timer=False, order_meta_enabled=False)
     bridge.tx = RecordingTx()

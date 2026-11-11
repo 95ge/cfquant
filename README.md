@@ -378,6 +378,7 @@ restart_cfquant.bat     重启
 | 极致模式部署 | [极致模式部署指南](docs/极致模式部署指南.md) |
 | 高级模式部署 | [高级模式部署指南](docs/高级模式部署指南.md) |
 | 账号和 QMT 目录配置 | [Web 账号运行配置说明](docs/Web账号运行配置说明.md) |
+| 虚拟机检测适配与 MAC 注入 | [QMT 启动设置](docs/qmt_launch_settings.md)，按绑定配置，默认关闭 |
 | 从 miniQMT 迁移 | [miniQMT 迁移到大 QMT 指南](docs/miniQMT迁移到大QMT指南.md) |
 | 官网 nativeApi 接口功能及适配状态 | [xtquant 原版接口适配清单](docs/xtquant原版接口适配清单.md) |
 | Level2 六类行情、订阅回调与千档边界 | [Level2 行情适配说明](docs/Level2行情适配说明.md) |

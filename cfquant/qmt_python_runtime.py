@@ -89,14 +89,10 @@ def _version_tuple(value):
     different files.  Unknown values deliberately return ``None`` so callers
     can choose the conservative py36 runtime.
     """
-    parts = re.findall(r"\d+", str(value or ""))
-    if not parts:
+    match = re.fullmatch(r"\s*(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?\s*", str(value or ""))
+    if not match:
         return None
-    try:
-        numbers = [int(part) for part in parts[:4]]
-    except ValueError:
-        return None
-    return tuple((numbers + [0, 0, 0, 0])[:4])
+    return tuple(int(part or 0) for part in match.groups())
 
 
 class QmtPythonRuntime:
@@ -288,6 +284,8 @@ class QmtPythonRuntime:
         # binding on the native/default py36 runtime until it is verified.
         if configured_runtime:
             selected = configured_runtime if py312_supported or configured_runtime == "py36" else "py36"
+        elif not py312_supported:
+            selected = "py36"
         inspected = {
             runtime: self.inspect(runtime, refresh_remote=False)
             for runtime in ("py36", "py312")
@@ -526,6 +524,9 @@ class QmtPythonRuntime:
         account = str(account_id if account_id is not None else self.account_id) if (account_id is not None or self.account_id is not None) else None
         if not account:
             raise QmtPythonRuntimeError("account_id is required to switch QMT Python runtime")
+        self.validate_selection(runtime, account_id=account)
+        if not self.inspect(runtime, refresh_remote=False)["installed"]:
+            raise QmtPythonRuntimeError("QMT Python library is not installed: %s" % runtime)
         config = self.qmt_dir / "userdata" / "users" / account / "Config.xml"
         if not config.is_file():
             raise QmtPythonRuntimeError("QMT account Config.xml not found: %s" % account)
@@ -533,13 +534,16 @@ class QmtPythonRuntime:
         path_value = (self.bin_dir / "python312" if runtime == "py312" else self.bin_dir).as_posix()
         if not re.search(r"<python\b[^>]*>", text):
             raise QmtPythonRuntimeError("QMT account Config.xml has no python settings")
-        updated = re.sub(r'(<python\b[^>]*\blibs_path=")[^"]*(")', r'\g<1>' + path_value + r'\2', text, count=1)
-        if updated == text:
+        if not re.search(r'<python\b[^>]*\blibs_path="[^"]*"', text):
             raise QmtPythonRuntimeError("cannot update QMT python libs_path")
+        updated = re.sub(r'(<python\b[^>]*\blibs_path=")[^"]*(")', r'\g<1>' + path_value + r'\2', text, count=1)
         if re.search(r'(<python\b[^>]*\bm_nPythonVersion=")[^"]*(")', updated):
             updated = re.sub(r'(<python\b[^>]*\bm_nPythonVersion=")[^"]*(")', r'\g<1>' + ("1" if runtime == "py312" else "0") + r'\2', updated, count=1)
         else:
             updated = re.sub(r'(<python\b)', r'\1 m_nPythonVersion="%s"' % ("1" if runtime == "py312" else "0"), updated, count=1)
+        if updated == text:
+            return {"account_id": account, "runtime": runtime, "config": str(config),
+                    "backup": None, "libs_path": path_value, "unchanged": True}
         self.backup_dir.mkdir(parents=True, exist_ok=True)
         backup = self.backup_dir / ("Config-%s-%s.xml" % (account, time.strftime("%Y%m%d-%H%M%S")))
         shutil.copy2(config, backup)
@@ -589,31 +593,49 @@ class QmtPythonRuntime:
             time.sleep(0.25)
         raise QmtPythonRuntimeError("QMT did not start after runtime switch")
 
-    def download_and_switch(self, runtime="py312", *, restart=True, account_id=None,
-                            progress_callback=None, cancel_event=None,
-                            restart_callback=None):
+    def validate_selection(self, runtime, *, account_id=None):
         runtime = _canonical_runtime(runtime)
         effective_account = account_id if account_id is not None else self.account_id
-        if runtime == "py312" and effective_account:
-            binding = self.binding_status(account_id=effective_account)
-            if not binding["py312_supported"]:
-                version = binding.get("qmt_version") or "unknown"
-                raise QmtPythonRuntimeError(
-                    "QMT %s only supports the default py36 runtime; py312 is unavailable" % version
-                )
-        package = self.fetch_package(runtime)
-        archive = self.download(runtime, package=package, progress_callback=progress_callback,
-                                cancel_event=cancel_event)
+        binding = self.binding_status(account_id=effective_account)
+        if runtime == "py312" and not binding["py312_supported"]:
+            raise QmtPythonRuntimeError(
+                "QMT %s only supports the default py36 runtime; py312 is unavailable"
+                % (binding.get("qmt_version") or "unknown"))
+        if effective_account:
+            if not binding["config_exists"]:
+                raise QmtPythonRuntimeError("QMT account Config.xml not found: %s; log in to QMT first" % effective_account)
+            text = Path(binding["config"]).read_text(encoding="utf-8")
+            if not re.search(r'<python\b[^>]*\blibs_path="[^"]*"', text):
+                raise QmtPythonRuntimeError("QMT account Config.xml has no Python library settings")
+        return binding
+
+    def download_and_switch(self, runtime="py312", *, restart=True, account_id=None,
+                            progress_callback=None, cancel_event=None,
+                            restart_callback=None, reuse_installed=False):
+        runtime = _canonical_runtime(runtime)
+        binding = self.validate_selection(runtime, account_id=account_id)
+        reuse = bool(reuse_installed and binding["runtimes"][runtime]["installed"])
+        package, archive = None, None
+        if reuse:
+            _callback(progress_callback, QmtPythonProgress(runtime, "reusing", message="Python 库已安装，准备切换执行器"))
+        else:
+            package = self.fetch_package(runtime)
+            archive = self.download(runtime, package=package, progress_callback=progress_callback,
+                                    cancel_event=cancel_event)
+        if cancel_event and cancel_event.is_set():
+            raise QmtPythonRuntimeError("QMT Python runtime operation cancelled")
+        _callback(progress_callback, QmtPythonProgress(runtime, "activating", message="正在停止 QMT 并配置执行器"))
         if restart and self._qmt_processes():
             self._stop_for_switch()
         elif not restart and self._qmt_processes():
             raise QmtPythonRuntimeError(
                 "QMT is running; set restart=True before activating a Python runtime")
         try:
-            installed = self.install(runtime, package=package, progress_callback=progress_callback)
+            installed = self.inspect(runtime, refresh_remote=False) if reuse else self.install(runtime, package=package, progress_callback=progress_callback)
             switched = self.switch_account(runtime, account_id=account_id) if (account_id or self.account_id) else None
         finally:
             if restart:
+                _callback(progress_callback, QmtPythonProgress(runtime, "restarting", message="正在重新启动 QMT"))
                 if restart_callback:
                     restarted = restart_callback()
                 elif self._qmt_processes():
@@ -622,7 +644,8 @@ class QmtPythonRuntime:
                     restarted = self.restart_qmt()
             else:
                 restarted = None
-        return {"runtime": runtime, "package": package.as_dict(), "archive": str(archive),
+        return {"runtime": runtime, "package": package.as_dict() if package else None,
+                "archive": str(archive) if archive else None, "reused_installed": reuse,
                 "installed": installed, "switched": switched, "restarted": restarted}
 
     def _stop_for_switch(self):

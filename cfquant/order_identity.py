@@ -72,6 +72,14 @@ def restore_order_remark(data):
         if is_unique_order_remark(internal):
             data["cfquant_order_remark"] = internal
             data["order_remark"] = original_order_remark(internal)
+            submission_id = _ORDER_REMARK_SUFFIX.search(internal).group(1)
+            data["cfquant_submission_id"] = submission_id
+            # The native remark identifies one submission, which QMT may split.
+            # Derive the child key from the final public ID, never list position.
+            data.pop("cfquant_child_id", None)
+            order_id = str(data.get("order_id") or "").strip()
+            if order_id.isdigit() and int(order_id) > 0:
+                data["cfquant_child_id"] = submission_id + ":" + str(int(order_id))
     return data
 
 
@@ -153,7 +161,7 @@ class OrderCallbackCache(object):
             matches = self._matches(scope, refs, data)
             remark = order_remark_key(data)
             local = sorted(ref for ref in refs if ref[0] == "local")
-            identity = ("remark", remark) if is_unique_order_remark(remark) else (local or sorted(refs))[0]
+            identity = (local or sorted(refs))[0]
             key = (scope, identity)
             if len(matches) == 1:
                 key = matches[0]
@@ -187,4 +195,22 @@ class OrderCallbackCache(object):
                     data[name] = value
             if is_unique_order_remark(remark):
                 data["cfquant_order_remark"] = remark
+            # A broker-only DEAL can recover its child from this typed index.
+            # Shared submission metadata alone cannot choose that child.
+            order_id = str(data.get("order_id") or "").strip()
+            if not (order_id.isdigit() and int(order_id) > 0):
+                saved_id = saved.get("order_id")
+                if str(saved_id or "").isdigit() and int(saved_id) > 0:
+                    data["order_id"] = int(saved_id)
         return restore_order_remark(data)
+
+    def submission_is_ambiguous(self, data, account_type):
+        """Missing child IDs must not fall back to a split submission's first ID."""
+        with self.lock:
+            scope, _ = self._identity(data, account_type)
+            remark = order_remark_key(data)
+            ids = {str(record["data"].get("order_id")) for key, record in self.records.items()
+                   if key[0] == scope and order_remark_key(record["data"]) == remark
+                   and str(record["data"].get("order_id") or "").isdigit()
+                   and int(record["data"]["order_id"]) > 0}
+            return len(ids) > 1

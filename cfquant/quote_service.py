@@ -39,7 +39,8 @@ class ProjectQuoteService:
                 self._thread = threading.Thread(target=self._monitor, name="cfquant-quote-health", daemon=True)
                 self._thread.start()
 
-    def acquire(self, key, codes, callback=None, purpose="user", source=None, diagnostic=False):
+    def acquire(self, key, codes, callback=None, purpose="user", source=None, diagnostic=False,
+                reuse_source=False):
         codes = quote_scope(codes)
         source = {key: value for key, value in (source or {}).items()
                   if key in ("bridge_id", "channel", "account_id", "account_type", "account_key") and value}
@@ -48,10 +49,15 @@ class ProjectQuoteService:
             with self._lock:
                 active = self.feed.status()["consumers"] or self._route or self._pending
                 if active:
-                    chosen = dict(self._source, **(self._route or {}))
-                    for name, value in source.items():
-                        if chosen.get(name) and str(chosen[name]) != str(value):
-                            raise ValueError("shared quotes already use another %s; release existing consumers first" % name)
+                    # Web viewers may follow the existing source. Decide under
+                    # the same lock as acquisition, including unconfirmed RPCs;
+                    # a status check by the caller can race another subscriber.
+                    chosen = dict(self._source, **((self._pending or {}).get("source") or {}))
+                    chosen.update(self._route or {})
+                    if not reuse_source:
+                        for name, value in source.items():
+                            if chosen.get(name) and str(chosen[name]) != str(value):
+                                raise ValueError("shared quotes already use another %s; release existing consumers first" % name)
                 else:
                     self._source = source
             if diagnostic:

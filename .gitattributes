@@ -1,0 +1,7 @@
+# Preserve the bundled upstream UPX distribution byte for byte.
+cfquant/tools/upx/* -text
+# The upstream README uses seven '=' characters as a heading underline.
+cfquant/tools/upx/README conflict-marker-size=32
+# Upstream generated documentation ends with blank lines.
+cfquant/tools/upx/upx-doc.html whitespace=-blank-at-eof
+cfquant/tools/upx/upx-doc.txt whitespace=-blank-at-eof

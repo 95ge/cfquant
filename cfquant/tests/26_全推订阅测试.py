@@ -568,10 +568,14 @@ def test_web_concurrent_subscriptions_are_coalesced(store, monkeypatch):
     assert len(store.calls) == 1
 
 
-def test_web_different_bridge_is_not_reused(store):
-    store.quotes.subscribe_whole({"markets": ["BJ"], "bridge_id": "first"})
-    with pytest.raises(ValueError, match="another bridge_id"):
-        store.quotes.subscribe_whole({"markets": ["BJ"], "bridge_id": "second"})
+def test_web_different_bridge_follows_existing_source(store):
+    first = store.quotes.subscribe_whole({"markets": ["BJ"], "bridge_id": "first"})
+    second = store.quotes.subscribe_whole({"markets": ["BJ"], "bridge_id": "second"})
+    assert first["source_reused"] is False
+    assert second["bridge_id"] == "first"
+    assert second["requested_bridge_id"] == "second"
+    assert second["source_reused"] is True
+    assert first["subscribe_id"] != second["subscribe_id"]
     assert len(store.calls) == 1
 
 

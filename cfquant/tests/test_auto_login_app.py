@@ -164,3 +164,200 @@ def test_runtime_validation_rejects_bad_restart_values():
     })
     with pytest.raises(ValueError, match="倒计时"):
         auto_login.validate_profile(profile)
+
+
+def test_run_log_store_persists_and_manages_history(tmp_path):
+    store = auto_login.RunLogStore(tmp_path / "cfquant_auto_login.sqlite3", retention_days=30)
+    store.append({"id": "qmt", "name": "演示 QMT"}, "QMT 已启动")
+    rows = store.list_logs()
+    assert len(rows) == 1
+    assert rows[0]["profile_name"] == "演示 QMT"
+    assert rows[0]["message"] == "QMT 已启动"
+    assert (tmp_path / "cfquant_auto_login.sqlite3").exists()
+    assert store.delete_ids([rows[0]["id"]]) == 1
+    assert store.list_logs() == []
+
+
+def test_run_log_store_cleanup_and_keep_all(tmp_path):
+    store = auto_login.RunLogStore(tmp_path / "logs.sqlite3", retention_days=30)
+    store.append({"id": "qmt", "name": "QMT"}, "old")
+    with store.lock, store._connect() as connection:
+        connection.execute("UPDATE run_logs SET created_at = ?", ("2020-01-01T00:00:00",))
+        connection.commit()
+    assert store.cleanup() == 1
+    store.append({"id": "qmt", "name": "QMT"}, "keep")
+    assert store.set_retention(0) == 0
+    assert len(store.list_logs()) == 1
+
+
+def test_runtime_normalizes_shutdown_defaults_and_days():
+    runtime = auto_login.ProfileStore.normalize_runtime({
+        "shutdown_enabled": True,
+        "shutdown_time": "23:10",
+        "shutdown_weekdays": [0, 2, 9, "bad"],
+        "shutdown_countdown": 120,
+    })
+    assert runtime["shutdown_enabled"] is True
+    assert runtime["shutdown_time"] == "23:10"
+    assert runtime["shutdown_weekdays"] == [0, 2]
+    assert runtime["shutdown_countdown"] == "120"
+    auto_login.validate_shutdown_settings(runtime)
+
+
+@pytest.mark.parametrize("value", ["9:00", "25:00", "18:60", ""])
+def test_shutdown_validation_rejects_invalid_time(value):
+    runtime = auto_login.ProfileStore.normalize_runtime({"shutdown_time": value})
+    with pytest.raises(ValueError, match="关机时间"):
+        auto_login.validate_shutdown_settings(runtime)
+
+
+def test_scheduler_triggers_shutdown_once_per_minute():
+    class Launcher:
+        def start(self, profile):
+            pass
+
+        def event_callback(self, profile, message):
+            pass
+
+    runtime = auto_login.ProfileStore.normalize_runtime({
+        "shutdown_enabled": True,
+        "shutdown_time": "18:30",
+        "shutdown_weekdays": [0],
+        "shutdown_countdown": "60",
+    })
+    calls = []
+    scheduler = auto_login.Scheduler(lambda: [], Launcher(), lambda: runtime, lambda config: calls.append(config))
+    now = auto_login.dt.datetime(2026, 11, 9, 18, 30)
+    assert scheduler.due_shutdown(now) is True
+    assert scheduler.due_shutdown(now) is False
+    assert calls == []
+    assert scheduler.last_shutdown_slots == {"2026-11-09 18:30"}
+
+
+def test_system_shutdown_command_is_explicit_and_cancelable(monkeypatch):
+    calls = []
+    monkeypatch.setattr(auto_login.os, "name", "nt")
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(auto_login.subprocess, "run", lambda args, **kwargs: calls.append(args) or Result())
+    auto_login.request_system_shutdown(90)
+    auto_login.cancel_system_shutdown()
+    assert calls[0][:4] == ["shutdown.exe", "/s", "/t", "90"]
+    assert calls[1] == ["shutdown.exe", "/a"]
+
+
+def test_startup_failure_writes_report(tmp_path, monkeypatch):
+    monkeypatch.setenv("CFQUANT_AUTO_LOGIN_LOG_DIR", str(tmp_path))
+    try:
+        raise RuntimeError("synthetic startup failure")
+    except RuntimeError as error:
+        report = auto_login.write_crash_report(error)
+    assert report == tmp_path / "cfquant_auto_login_crash.log"
+    assert "synthetic startup failure" in report.read_text(encoding="utf-8")
+
+
+def test_damaged_log_database_is_preserved_and_gui_can_continue(tmp_path):
+    path = tmp_path / "logs.sqlite3"
+    path.write_bytes(b"damaged sqlite fixture")
+    store = auto_login.RunLogStore(path)
+    assert path.read_bytes() == b"damaged sqlite fixture"
+    assert store.path != path
+    assert store.startup_warning
+    store.append({"name": "system"}, "recovered")
+    assert store.list_logs()[0]["message"] == "recovered"
+    # Connections must be closed, not left holding the database open on Windows.
+    moved = store.path.with_suffix(".moved")
+    store.path.rename(moved)
+
+
+def test_unwritable_program_directory_uses_writable_fallback(tmp_path, monkeypatch):
+    primary = tmp_path / "protected"
+    fallback = tmp_path / "writable"
+    monkeypatch.setenv("CFQUANT_AUTO_LOGIN_LOG_DIR", str(primary))
+    monkeypatch.setenv("CFQUANT_RUNTIME_DIR", str(fallback))
+    probe = auto_login._probe_writable_directory
+    monkeypatch.setattr(auto_login, "_probe_writable_directory", lambda path: path != primary and probe(path))
+    assert auto_login.runtime_data_dir() == fallback
+
+
+def test_notification_failure_returns_message_without_tk_calls(monkeypatch):
+    def fail(*args):
+        raise RuntimeError("simulated network error")
+    monkeypatch.setattr(auto_login.NotificationService, "send", fail)
+    results = auto_login.queue.Queue()
+    auto_login.NotificationDialog._run_test(object(), {}, results)
+    assert results.get_nowait() == (False, "simulated network error")
+
+
+def test_shutdown_failure_is_reported(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(auto_login.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=5, stdout="", stderr="access denied"))
+    with pytest.raises(RuntimeError, match="access denied"):
+        auto_login.request_system_shutdown(60)
+
+
+@pytest.fixture
+def desktop_app(tmp_path, monkeypatch):
+    if auto_login.os.name != "nt":
+        pytest.skip("Windows desktop regression test")
+    monkeypatch.setenv("CFQUANT_AUTO_LOGIN_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("CFQUANT_AUTO_LOGIN_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(auto_login.Scheduler, "start", lambda self: None)
+    app = auto_login.AutoLoginApp()
+    try:
+        app.update()
+        yield app
+    finally:
+        app.scheduler.close()
+        app.manager.stop_all()
+        for callback in app.tk.splitlist(app.tk.call("after", "info")):
+            app.after_cancel(callback)
+        app.destroy()
+
+
+def test_required_agreement_visible_before_main_window(desktop_app):
+    app = desktop_app
+    dialog = next(child for child in app.winfo_children() if isinstance(child, auto_login.AgreementDialog))
+    assert app.state() == "withdrawn"
+    assert dialog.winfo_viewable()
+    assert not app._scheduler_started
+    dialog.accept_var.set(True)
+    dialog._accept()
+    app.update()
+    assert app.winfo_viewable()
+    assert app._scheduler_started
+    assert app.store.load_runtime()["agreement_accepted"]
+
+
+def test_agreement_save_failure_keeps_visible_dialog(desktop_app, monkeypatch):
+    app = desktop_app
+    dialog = next(child for child in app.winfo_children() if isinstance(child, auto_login.AgreementDialog))
+    errors = []
+    monkeypatch.setattr(auto_login.messagebox, "showerror", lambda *args, **kwargs: errors.append(kwargs["parent"]))
+    def fail(*args):
+        raise PermissionError("read only config")
+    monkeypatch.setattr(app.store, "save", fail)
+    dialog.accept_var.set(True)
+    dialog._accept()
+    assert not app.runtime["agreement_accepted"]
+    assert not app._scheduler_started
+    assert dialog.winfo_viewable()
+    assert errors == [dialog]
+
+
+def test_shutdown_save_failure_does_not_activate_schedule(desktop_app, monkeypatch):
+    app = desktop_app
+    before = dict(app.runtime)
+    app.shutdown_enabled_var.set(True)
+    errors = []
+    monkeypatch.setattr(auto_login.messagebox, "showerror", lambda *args, **kwargs: errors.append(args))
+    def fail(*args):
+        raise PermissionError("read only config")
+    monkeypatch.setattr(app.store, "save", fail)
+    app._save_shutdown()
+    assert app.runtime == before
+    assert errors

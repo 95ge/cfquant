@@ -59,6 +59,10 @@
 
 ## 查询接口
 
+运行时序弹窗的明细每页显示 100 条，默认定位到最新一页，可用“上一页 / 下一页”查看同次查询的其他记录；图表和指标汇总仍覆盖本次查询的全部样本。查询最多返回最新 10,000 条，达到上限时会提示缩小日期范围。翻页不重新读取数据库。
+
+打开详情期间暂停被弹窗覆盖的监控主页自动刷新，关闭后恢复；后台采集按原设置继续运行。图表悬停更新按浏览器帧合并，关闭弹窗会释放明细与图表，并取消尚未完成的时序请求，避免大量历史节点和迟到响应造成卡顿。
+
 `GET /api/monitor?start=2026-11-03&end=2026-11-03&bridge_id=...&account_id=...&account_type=STOCK&kind=abnormal&page=1`
 
 `start`、`end` 默认今天；其余筛选项可省略。`kind` 支持 `order`、`trade`、`abnormal`、`order_request`、`cancel_request`。返回标准 `{ok, data}` 包装，`data` 包含 `stats`、`series`、`nodes`、`events`、分页信息与 `collector` 采集健康状态。

@@ -274,6 +274,10 @@ def updated_source(source):
             + '            raise\n'
         )
         order_stock = order_stock[:pass_start] + wrapped + order_stock[pass_end:]
+    if 'return restore_order_remark({' not in order_stock:
+        order_stock = order_stock.replace('        return {\n', '        return restore_order_remark({\n', 1)
+        end = order_stock.rfind('        }')
+        order_stock = order_stock[:end] + order_stock[end:].replace('        }', '        })', 1)
     source = _replace_class_method(source, 'TxTradeBridge', '_order_stock', order_stock)
 
     sync_methods = (

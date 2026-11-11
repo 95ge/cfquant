@@ -131,3 +131,138 @@ def test_zip_slip_is_rejected(tmp_path):
         bundle.writestr("../outside.txt", "bad")
     with pytest.raises(QmtPythonRuntimeError, match="unsafe path"):
         QmtPythonRuntime._safe_extract(archive, tmp_path / "extract")
+
+
+def runtime_fixture(tmp_path, version="2.1.33.0", configured="py36", installed=("py36", "py312")):
+    root = tmp_path / "qmt"
+    bin_dir = root / "bin.x64"
+    bin_dir.mkdir(parents=True)
+    account = root / "userdata/users/TEST_ONLY"
+    account.mkdir(parents=True)
+    target = bin_dir / "python312" if configured == "py312" else bin_dir
+    (account / "Config.xml").write_text(
+        '<root><Global version="%s"/><python libs_path="%s" m_nPythonVersion="%s"/></root>'
+        % (version, target.as_posix(), "1" if configured == "py312" else "0"), encoding="utf-8")
+    for runtime in installed:
+        directory = bin_dir / "python312" if runtime == "py312" else bin_dir
+        (directory / "Lib").mkdir(parents=True, exist_ok=True)
+        (directory / ("python312.dll" if runtime == "py312" else "python36.dll")).write_bytes(b"test")
+        if runtime == "py312":
+            (directory / "python.exe").write_bytes(b"test")
+    return QmtPythonRuntime(root, account_id="TEST_ONLY")
+
+
+@pytest.mark.parametrize("version, supported", [
+    ("2.1.32.99", False), ("2.1.33", True), ("2.1.33.0", True),
+    ("2.1.34.0", True), ("", False), ("unknown", False), ("20261109", False),
+])
+def test_version_gate_is_conservative(tmp_path, version, supported):
+    manager = runtime_fixture(tmp_path, version=version)
+    binding = manager.binding_status()
+    assert binding["py312_supported"] is supported
+    assert binding["available_runtimes"] == (["py36", "py312"] if supported else ["py36"])
+
+
+def test_installed_client_version_overrides_account_version(tmp_path, monkeypatch):
+    manager = runtime_fixture(tmp_path)
+    monkeypatch.setattr(manager, "_client_version", lambda: "2.1.19.0")
+    assert manager.binding_status()["py312_supported"] is False
+    with pytest.raises(QmtPythonRuntimeError, match="only supports"):
+        manager.switch_account("py312")
+
+
+@pytest.mark.parametrize("runtime", ["py36", "py312"])
+def test_installed_library_switches_offline_and_restart_sees_new_config(tmp_path, monkeypatch, runtime):
+    manager = runtime_fixture(tmp_path, configured="py312" if runtime == "py36" else "py36")
+    monkeypatch.setattr(manager, "fetch_package", lambda *a: pytest.fail("Installed library must not be downloaded"))
+    monkeypatch.setattr(manager, "install", lambda *a, **k: pytest.fail("Installed library must not be reinstalled"))
+    processes = [object()]
+    events = []
+    monkeypatch.setattr(manager, "_qmt_processes", lambda: processes)
+    monkeypatch.setattr(manager, "_stop_for_switch", lambda: processes.clear())
+    def restart():
+        assert not processes
+        assert manager.binding_status()["selected_runtime"] == runtime
+        return {"started": True}
+    result = manager.download_and_switch(runtime, reuse_installed=True, restart_callback=restart,
+                                         progress_callback=events.append)
+    assert result["reused_installed"] is True and result["package"] is None
+    assert result["switched"]["runtime"] == runtime
+    assert result["restarted"]["started"] is True
+    assert [item["phase"] for item in events] == ["reusing", "activating", "restarting"]
+    assert manager.switch_account(runtime)["unchanged"] is True
+
+
+@pytest.mark.parametrize("runtime, version", [("py36", "2.1.19.0"), ("py312", "2.1.33.0")])
+def test_missing_selected_library_downloads_then_switches(tmp_path, monkeypatch, runtime, version):
+    manager = runtime_fixture(tmp_path, version=version, installed=())
+    archive = manager.download_dir / (runtime + "-test.zip")
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("python.exe", "test")
+        bundle.writestr("python312.dll" if runtime == "py312" else "python36.dll", "test")
+        bundle.writestr("Lib/site.py", "test")
+    package = _package(runtime, archive)
+    calls = []
+    monkeypatch.setattr(manager, "fetch_package", lambda runtime: calls.append(runtime) or package)
+    monkeypatch.setattr(manager, "download", lambda *a, **kw: archive)
+    monkeypatch.setattr(manager, "_qmt_processes", lambda: [])
+    result = manager.download_and_switch(runtime, restart=False, reuse_installed=True)
+    assert calls == [runtime]
+    assert result["reused_installed"] is False
+    assert manager.binding_status()["state"] == "ready"
+    assert manager.binding_status()["selected_runtime"] == runtime
+
+
+def test_invalid_config_fails_before_download_or_process_stop(tmp_path, monkeypatch):
+    manager = runtime_fixture(tmp_path)
+    config = manager.qmt_dir / "userdata/users/TEST_ONLY/Config.xml"
+    config.write_text('<root><Global version="2.1.33.0"/></root>', encoding="utf-8")
+    monkeypatch.setattr(manager, "fetch_package", lambda *a: pytest.fail("No download"))
+    monkeypatch.setattr(manager, "_qmt_processes", lambda: pytest.fail("No process access"))
+    with pytest.raises(QmtPythonRuntimeError, match="no Python library settings"):
+        manager.download_and_switch("py312", reuse_installed=True)
+
+
+def test_runtime_status_without_account_still_exposes_capabilities(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    manager = runtime_fixture(tmp_path)
+    monkeypatch.setattr(QmtPythonRuntime, "_client_version", lambda self: "2.1.33.0")
+    status = web.qmt_python_runtime_status({"qmt_dir": str(manager.qmt_dir), "runtime": "py36", "refresh": False})
+    assert status["binding"]["available_runtimes"] == ["py36", "py312"]
+    assert status["binding"]["config_exists"] is False
+
+
+def test_runtime_jobs_forward_reuse_and_reject_concurrent_directory(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    manager = runtime_fixture(tmp_path)
+    jobs, calls, events = {}, [], []
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
+    monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
+    monkeypatch.setattr(web, "emit_download_progress", lambda *a, **kw: events.append(a[2]))
+    def switch(self, runtime, **kwargs):
+        calls.append((runtime, kwargs))
+        for phase in ("reusing", "activating", "restarting"):
+            kwargs["progress_callback"]({"phase": phase})
+        return {}
+    monkeypatch.setattr(QmtPythonRuntime, "download_and_switch", switch)
+    body = {"qmt_dir": str(manager.qmt_dir), "account_id": "TEST_ONLY", "runtime": "py312",
+            "reuse_installed": True, "restart": False, "job_id": "runtime-test"}
+    web.start_qmt_python_runtime_job(body)
+    with pytest.raises(ValueError, match="Python"):
+        web.start_qmt_python_runtime_job(dict(body, job_id="other", qmt_dir=str(manager.bin_dir)))
+    web._run_qmt_python_runtime_job("runtime-test", body)
+    assert jobs["runtime-test"]["state"] == "done"
+    assert calls[0][0] == "py312" and calls[0][1]["reuse_installed"] is True
+    assert events == ["reusing", "activating", "restarting", "done"]
+
+
+def test_runtime_job_rejects_unsupported_selection_before_scheduling(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    manager = runtime_fixture(tmp_path, version="2.1.19.0")
+    jobs = {}
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
+    monkeypatch.setattr(web.threading.Thread, "start", lambda self: pytest.fail("Unsupported runtime must not start a job"))
+    with pytest.raises(QmtPythonRuntimeError, match="only supports"):
+        web.start_qmt_python_runtime_job({"qmt_dir": str(manager.qmt_dir), "account_id": "TEST_ONLY", "runtime": "py312"})
+    assert not jobs

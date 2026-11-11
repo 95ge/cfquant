@@ -4,9 +4,15 @@
   if (!root) return;
   const today = () => new Intl.DateTimeFormat('en-CA', {timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date());
   const e = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-  const n = (value, digits = 0) => value == null ? '—' : Number(value).toLocaleString('zh-CN', {maximumFractionDigits: digits});
+  const numberFormats = new Map();
+  const n = (value, digits = 0) => {
+    if (value == null) return '—';
+    if (!numberFormats.has(digits)) numberFormats.set(digits, new Intl.NumberFormat('zh-CN', {maximumFractionDigits: digits}));
+    return numberFormats.get(digits).format(Number(value));
+  };
   const percent = value => value == null ? '—' : `${n(value * 100, 2)}%`;
-  const stamp = value => value ? new Date(value * 1000).toLocaleString('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false}) : '—';
+  const timestampFormat = new Intl.DateTimeFormat('zh-CN', {timeZone: 'Asia/Shanghai', hour12: false, year:'numeric', month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  const stamp = value => value && Number.isFinite(Number(value)) ? timestampFormat.format(new Date(value * 1000)) : '—';
   const labels = {order:'委托回报', trade:'成交', order_error:'委托异常', cancel_error:'撤单异常', order_request:'报单请求', cancel_request:'撤单请求'};
   const statuses = {48:'未报',49:'待报',50:'已报',51:'已报待撤',52:'部成待撤',53:'部撤',54:'已撤',55:'部成',56:'已成',57:'废单'};
   let page = 1, timer, busy = false, rerun = false, last = null, applied = null, sequence = 0, followToday = true;
@@ -50,6 +56,7 @@
 
     </section>`;
   const $ = id => document.getElementById(id);
+  $('monitorRuntimeSamples').closest('.monitor-table-wrap').insertAdjacentHTML('afterend', '<div class="monitor-pagination" id="monitorRuntimePagination" hidden><span id="monitorRuntimePageText" role="status"></span><button id="monitorRuntimePrev" type="button">上一页</button><button id="monitorRuntimeNext" type="button">下一页</button></div>');
   const dialog = document.createElement('dialog');
   dialog.id = 'monitorSettingsDialog';
   dialog.className = 'monitor-dialog';
@@ -332,6 +339,20 @@
     }));
   }
   let runtimeDetailKey = '', runtimeDetailTitle = '', runtimeDetailData = null;
+  const runtimePageSize = 100;
+  let runtimeDetailPage = 1, runtimeRequest = null;
+  const runtimeHoverCleanups = [];
+  function clearRuntimeCharts() {
+    runtimeHoverCleanups.splice(0).forEach(cleanup => cleanup());
+    $('monitorRuntimeCharts').replaceChildren();
+  }
+  function clearRuntimeDetail() {
+    runtimeDetailData = null;
+    clearRuntimeCharts();
+    $('monitorRuntimeMetricCards').replaceChildren();
+    $('monitorRuntimeSamples').replaceChildren();
+    $('monitorRuntimePagination').hidden = true;
+  }
   const runtimeMetricDefinitions = [
     {key:'cpu', label:'CPU', unit:'%', digits:2},
     {key:'memory', label:'内存', unit:'MiB', digits:1},
@@ -350,7 +371,7 @@
       callback_rate: rates.callback_total_per_second,
       distribution_rate: rates.quote_distribution_batches_per_second,
     };
-    const value = Number(values[metric]);
+    const value = values[metric] == null ? NaN : Number(values[metric]);
     return Number.isFinite(value) ? value : null;
   }
   function renderRuntimeMetricCards(samples) {
@@ -397,26 +418,47 @@
     const hoverLine = target.querySelector('.monitor-runtime-hover-line');
     const hoverDot = target.querySelector('.monitor-runtime-hover-dot');
     const tooltip = target.querySelector('.monitor-runtime-chart-tooltip');
-    const hideHover = () => { hoverLine.hidden = true; hoverDot.hidden = true; tooltip.hidden = true; };
-    const updateHover = event => {
+    const hoverTime = document.createElement('strong'), hoverValue = document.createElement('span');
+    tooltip.append(hoverTime, hoverValue);
+    let hoverFrame = null, hoverClientX = 0, hoverIndex = -1;
+    const hideHover = () => {
+      if (hoverFrame != null) cancelAnimationFrame(hoverFrame);
+      hoverFrame = null; hoverIndex = -1;
+      hoverLine.setAttribute('hidden', ''); hoverDot.setAttribute('hidden', ''); tooltip.hidden = true;
+    };
+    runtimeHoverCleanups.push(hideHover);
+    const drawHover = () => {
+      hoverFrame = null;
+      // Read geometry before writes; coalesce pointer events into one update per frame.
       const rect = svg.getBoundingClientRect();
-      const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
-      const index = Math.round(ratio * (rows.length - 1));
+      const ratio = Math.max(0, Math.min(1, ((hoverClientX - rect.left) / Math.max(1, rect.width) * 920 - 62) / 816));
+      const time = rows[0].time + ratio * (rows[rows.length - 1].time - rows[0].time);
+      let index = 0;
+      for (let i = 1; i < rows.length; i++) if (Math.abs(rows[i].time - time) < Math.abs(rows[index].time - time)) index = i;
+      if (hoverIndex === index) return;
+      hoverIndex = index;
+      const width = target.clientWidth;
       const row = rows[index];
       const plotX = x(row.time), plotY = y(row.value);
-      hoverLine.setAttribute('x1', plotX); hoverLine.setAttribute('x2', plotX); hoverLine.hidden = false;
-      hoverDot.setAttribute('cx', plotX); hoverDot.setAttribute('cy', plotY); hoverDot.hidden = false;
-      tooltip.innerHTML = '<strong>' + e(stamp(row.time)) + '</strong><span>' + e(label) + ' ' + n(row.value, digits) + ' ' + e(unit) + '</span>';
+      hoverLine.setAttribute('x1', plotX); hoverLine.setAttribute('x2', plotX); hoverLine.removeAttribute('hidden');
+      hoverDot.setAttribute('cx', plotX); hoverDot.setAttribute('cy', plotY); hoverDot.removeAttribute('hidden');
+      hoverTime.textContent = stamp(row.time);
+      hoverValue.textContent = label + ' ' + n(row.value, digits) + ' ' + unit;
       tooltip.hidden = false;
-      const left = Math.max(8, Math.min(target.clientWidth - 178, plotX / 920 * target.clientWidth - 78));
+      const left = Math.max(8, Math.min(width - 178, plotX / 920 * width - 78));
       tooltip.style.left = left + 'px';
+    };
+    const updateHover = event => {
+      hoverClientX = event.clientX;
+      if (hoverFrame == null) hoverFrame = requestAnimationFrame(drawHover);
     };
     svg.addEventListener('pointermove', updateHover);
     svg.addEventListener('pointerleave', hideHover);
-    svg.addEventListener('focus', event => { if (event.target === svg) updateHover({clientX: svg.getBoundingClientRect().left + svg.getBoundingClientRect().width / 2}); });
+    svg.addEventListener('focus', () => { const rect = svg.getBoundingClientRect(); updateHover({clientX: rect.left + rect.width / 2}); });
     svg.addEventListener('blur', hideHover);
   }
   function renderRuntimeCharts(samples) {
+    clearRuntimeCharts();
     const target = $('monitorRuntimeCharts');
     target.innerHTML = runtimeMetricDefinitions.map(definition => '<article class="monitor-runtime-chart-card" data-runtime-chart="' + definition.key + '"><div class="monitor-runtime-chart-card-head"><strong>' + e(definition.label) + '</strong><span>' + e(definition.unit) + '</span></div><div class="monitor-runtime-chart" data-runtime-chart-canvas="' + definition.key + '"></div></article>').join('');
     runtimeMetricDefinitions.forEach(definition => {
@@ -434,12 +476,25 @@
     $('monitorRuntimeDetailNote').textContent = '查询 ' + range + '，共 ' + n(samples.length) + ' 个样本；当前保留期 ' + retention + (samples.length >= 10000 ? '；结果达到单次查询上限，请缩小范围查看完整明细' : '') + '。';
     renderRuntimeMetricCards(samples);
     renderRuntimeCharts(samples);
-    $('monitorRuntimeSamples').innerHTML = samples.length ? samples.map(sample => {
+    runtimeDetailPage = Math.max(1, Math.ceil(samples.length / runtimePageSize));
+    renderRuntimeSamples();
+  }
+  function renderRuntimeSamples() {
+    const samples = runtimeDetailData?.samples || [];
+    const pages = Math.max(1, Math.ceil(samples.length / runtimePageSize));
+    runtimeDetailPage = Math.max(1, Math.min(pages, runtimeDetailPage));
+    const begin = (runtimeDetailPage - 1) * runtimePageSize;
+    $('monitorRuntimeSamples').innerHTML = samples.length ? samples.slice(begin, begin + runtimePageSize).map(sample => {
       const p = sample.normal && Object.keys(sample.normal).length ? sample.normal : (sample.trade || {});
       const proc = p.process || (sample.process || {}).normal || {};
       const rates = p.rates || {};
       return '<tr><td>' + stamp(sample.sampled_at) + '</td><td>PID ' + n(proc.pid) + '<small>' + e(proc.name || '—') + '</small></td><td>' + n(proc.cpu_percent, 2) + '%</td><td>' + n(proc.rss_bytes == null ? null : proc.rss_bytes / 1048576, 1) + ' MiB<small>' + n(proc.memory_percent, 2) + '%</small></td><td>' + n(p.qmt_callback_total) + '<small>' + n(rates.callback_total_per_second, 2) + ' 次/s</small></td><td>' + n(p.quote_callback_batches) + '<small>' + n(rates.quote_callback_batches_per_second, 2) + ' 批/s</small></td><td>' + n(p.quote_distribution_batches) + '<small>' + n(rates.quote_distribution_batches_per_second, 2) + ' 批/s</small></td><td>' + n(p.request_completed) + '<small>' + n(rates.request_completed_per_second, 2) + ' 次/s</small></td></tr>';
     }).join('') : '<tr><td colspan="8" class="monitor-empty">该日期和 QMT 暂无分钟采样。</td></tr>';
+    $('monitorRuntimePageText').textContent = '共 ' + n(samples.length) + ' 条 · 第 ' + runtimeDetailPage + ' / ' + pages + ' 页 · 每页 ' + runtimePageSize + ' 条';
+    $('monitorRuntimePrev').disabled = runtimeDetailPage <= 1;
+    $('monitorRuntimeNext').disabled = runtimeDetailPage >= pages;
+    $('monitorRuntimePagination').hidden = !samples.length;
+    $('monitorRuntimeSamples').closest('.monitor-table-wrap').scrollTop = 0;
   }
   function runtimeRangeQuery(bridgeId, mode) {
     const values = applied || filters();
@@ -457,20 +512,29 @@
     return new URLSearchParams({start, end, bridge_id: bridgeId, mode, limit: '10000'});
   }
   async function openRuntimeDetail(bridgeId, mode, title) {
+    if (runtimeRequest) runtimeRequest.abort();
+    const request = new AbortController();
+    runtimeRequest = request;
+    const timeout = setTimeout(() => request.abort(), 15000);
     runtimeDetailKey = bridgeId + '|' + mode;
     runtimeDetailTitle = title;
+    clearRuntimeDetail();
+    $('monitorRuntimeDetailTitle').textContent = title + ' · 分钟时序';
     if (!$('monitorRuntimeDetail').open) $('monitorRuntimeDetail').showModal();
     $('monitorRuntimeDetailNote').textContent = '正在读取分钟时序…';
     try {
       const query = runtimeRangeQuery(bridgeId, mode);
-      const data = await api('/api/monitor/runtime?' + query, {signal: AbortSignal.timeout(15000)});
-      if (runtimeDetailKey !== bridgeId + '|' + mode) return;
+      const data = await api('/api/monitor/runtime?' + query, {signal: request.signal});
+      if (runtimeRequest !== request || !$('monitorRuntimeDetail').open) return;
       renderRuntimeDetail(data, title);
     } catch (error) {
-      if (runtimeDetailKey !== bridgeId + '|' + mode) return;
+      if (runtimeRequest !== request || !$('monitorRuntimeDetail').open) return;
       $('monitorRuntimeDetailNote').textContent = '时序读取失败：' + error.message;
       $('monitorRuntimeCharts').innerHTML = '<div class="monitor-empty monitor-chart-empty">暂时无法读取时序数据。</div>';
       $('monitorRuntimeSamples').innerHTML = '<tr><td colspan="8" class="monitor-empty">暂时无法读取时序数据。</td></tr>';
+    } finally {
+      clearTimeout(timeout);
+      if (runtimeRequest === request) runtimeRequest = null;
     }
   }
   async function cleanupRuntime(scope) {
@@ -488,6 +552,7 @@
         runtimeDetailData = {samples: []};
         renderRuntimeMetricCards([]);
         renderRuntimeCharts([]);
+        renderRuntimeSamples();
         $('monitorRuntimeSamples').innerHTML = '<tr><td colspan="8" class="monitor-empty">历史时序已清空。</td></tr>';
       } else if (runtimeDetailKey) {
         const [bridgeId, mode] = runtimeDetailKey.split('|');
@@ -508,13 +573,18 @@
     openRuntimeDetail(bridgeId, mode, runtimeDetailTitle);
   });
   $('monitorRuntimeCleanup').addEventListener('click', () => cleanupRuntime('expired'));
+  $('monitorRuntimePrev').addEventListener('click', () => { runtimeDetailPage--; renderRuntimeSamples(); });
+  $('monitorRuntimeNext').addEventListener('click', () => { runtimeDetailPage++; renderRuntimeSamples(); });
   $('monitorRuntimeClearAll').addEventListener('click', () => cleanupRuntime('all'));
   $('monitorRuntimeDetailClose').addEventListener('click', () => {
     if ($('monitorRuntimeDetail').open) $('monitorRuntimeDetail').close();
   });
   $('monitorRuntimeDetail').addEventListener('close', () => {
+    if (runtimeRequest) runtimeRequest.abort();
+    runtimeRequest = null;
     runtimeDetailKey = '';
-    runtimeDetailData = null;
+    clearRuntimeDetail();
+    if ($('monitorAuto').checked) schedule();
   });
   function renderChart(data) {
     if (!data.series.length) {
@@ -532,7 +602,7 @@
     $('monitorChart').innerHTML = `<svg viewBox="0 0 920 224" role="img" aria-label="委托、成交和撤成每秒平均流速，最高 ${n(peak,3)} 笔每秒"><title>交易流速；${n(step / 60)} 分钟聚合</title>${[0,.5,1].map(t => `<line class="monitor-gridline" x1="58" x2="878" y1="${y(peak*t)}" y2="${y(peak*t)}"/><text x="48" y="${y(peak*t)+4}" text-anchor="end">${n(peak*t,3)}</text>`).join('')}${paths}<text x="58" y="211">${e(stamp(start))}</text><text x="878" y="211" text-anchor="end">${e(stamp(end))}</text></svg>`;
   }
   async function refresh() {
-    if (document.body.dataset.view !== 'monitor' || document.hidden) return;
+    if (document.body.dataset.view !== 'monitor' || document.hidden || $('monitorRuntimeDetail').open) return;
     if (busy) { rerun = true; return; }
     applied ||= filters();
     if (followToday && applied.start !== today()) {
@@ -543,11 +613,11 @@
     root.setAttribute('aria-busy', 'true');
     try {
       const data = await api(`/api/monitor?${new URLSearchParams({...applied, kind:$('monitorKind').value, page})}`, {signal: AbortSignal.timeout(15000)});
-      if (current !== sequence) return;
+      if (current !== sequence || $('monitorRuntimeDetail').open) return;
       $('monitorError').classList.add('hidden');
       render(data);
     } catch (error) {
-      if (current !== sequence) return;
+      if (current !== sequence || $('monitorRuntimeDetail').open) return;
       $('monitorError').textContent = `监控读取失败：${error.message}${last ? '。下方保留上次结果。' : ''}`;
       $('monitorError').classList.remove('hidden');
       $('monitorFreshness').textContent = '刷新失败 · 数据未更新';

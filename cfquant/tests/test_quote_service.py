@@ -1,4 +1,6 @@
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -203,6 +205,157 @@ def test_provider_conflict_does_not_replace_active_algorithms_source(service):
     with pytest.raises(ValueError, match="another bridge_id"):
         service.project.acquire("viewer", ["SH"], source={"bridge_id": "other"})
     assert len(service.subscribed) == 1
+
+
+@pytest.mark.parametrize("diagnostic", [False, True])
+def test_web_viewer_follows_algorithm_source_and_receives_quotes(service, diagnostic):
+    seen, delivered = [], threading.Event()
+    def broadcast(event):
+        seen.append(event)
+        delivered.set()
+    project = service.project
+    algo = project.acquire("algo", ["SH"], purpose="algo")
+    store = web.QuoteSubscriptionStore(shared_service=project, diagnostic=diagnostic,
+        manager=SimpleNamespace(count=lambda *args: 1, broadcast=broadcast))
+    store._schedule_idle_release_locked = lambda: None
+    try:
+        viewer = store.subscribe_whole({"markets": ["SH"], "bridge_id": "other", "account_id": "other-account"})
+        assert viewer["bridge_id"] == "test"
+        assert viewer["requested_bridge_id"] == "other"
+        assert viewer["source_reused"] is True
+        assert len(service.requests) == 1
+        service.callbacks[100]({"600000.SH": {"lastPrice": 10}})
+        assert delivered.wait(2)
+        assert seen[-1]["subscribe_id"] == viewer["subscribe_id"]
+        assert seen[-1]["data"]["600000.SH"]["lastPrice"] == 10
+        store.unsubscribe(viewer)
+        service.callbacks[100]({"600000.SH": {"lastPrice": 11}})
+        assert project.snapshot("600000.SH")["quote"]["lastPrice"] == 11
+        assert project.status()["consumers"] == 1
+        assert not service.unsubscribed
+    finally:
+        store.close()
+        project.release(algo)
+
+
+def test_concurrent_web_and_diagnostic_viewers_follow_first_source(service):
+    project = service.project
+    entered, finish, second_started = threading.Event(), threading.Event(), threading.Event()
+    original = project._subscribe_rpc
+    def blocked_subscribe(params, source):
+        entered.set()
+        assert finish.wait(3)
+        return original(params, source)
+    project._subscribe_rpc = blocked_subscribe
+    stores = [web.QuoteSubscriptionStore(shared_service=project, diagnostic=diagnostic,
+        manager=SimpleNamespace(count=lambda *args: 1, broadcast=lambda e: None)) for diagnostic in (False, True)]
+    for store in stores:
+        store._schedule_idle_release_locked = lambda: None
+    def second():
+        second_started.set()
+        return stores[1].subscribe_whole({"bridge_id": "other"})
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(stores[0].subscribe_whole, {"bridge_id": "test"})
+            try:
+                assert entered.wait(2)
+                other = pool.submit(second)
+                assert second_started.wait(2)
+            finally:
+                finish.set()
+            assert first.result(timeout=3)["source_reused"] is False
+            assert other.result(timeout=3)["source_reused"] is True
+        assert project.status()["consumers"] == 2
+        assert len(service.requests) == 1
+    finally:
+        for store in stores:
+            store.close()
+
+
+def test_viewer_recovers_unconfirmed_subscription_on_original_source(service):
+    original = service.project._subscribe_rpc
+    sources = []
+    def resolved_subscribe(params, source):
+        if not source.get("bridge_id"):
+            source.update(bridge_id="test", account_id="provider")
+        sources.append(dict(source))
+        return original(params, source)
+    service.project._subscribe_rpc = resolved_subscribe
+    service.lose_ack[0] = True
+    with pytest.raises(TimeoutError):
+        service.project.acquire("algo", ["SH"], purpose="algo")
+    # Even before acknowledgement, explicit SDK requests may not retarget it.
+    with pytest.raises(ValueError, match="another bridge_id"):
+        service.project.acquire("sdk", ["SH"], source={"bridge_id": "other"})
+    store = web.QuoteSubscriptionStore(shared_service=service.project,
+        manager=SimpleNamespace(count=lambda *args: 1, broadcast=lambda e: None))
+    store._schedule_idle_release_locked = lambda: None
+    try:
+        row = store.subscribe_whole({"bridge_id": "other"})
+        assert row["bridge_id"] == "test"
+        assert row["source_reused"] is True
+        assert sources == [{"bridge_id": "test", "account_id": "provider"}] * 2
+        assert service.requests[0]["shared_lease_key"] == service.requests[1]["shared_lease_key"]
+        assert len(service.subscribed) == 1
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("diagnostic", [False, True])
+def test_connect_renews_or_recovers_expired_viewer_without_releasing_algorithm(service, diagnostic):
+    project = service.project
+    project.acquire("algo", ["SH"], purpose="algo")
+    store = web.QuoteSubscriptionStore(shared_service=project, diagnostic=diagnostic,
+        manager=SimpleNamespace(count=lambda *args: 0, broadcast=lambda e: None))
+    store._schedule_idle_release_locked = lambda: None
+    try:
+        body = {"markets": ["SH"], "bridge_id": "other"}
+        first = store.subscribe_whole(body)
+        body["resume_subscribe_id"] = first["subscribe_id"]
+        resumed = store.subscribe_whole(body)
+        assert resumed["subscribe_id"] == first["subscribe_id"]
+        assert resumed["already_subscribed"] is True
+        assert not store.release_idle_whole_subscription()["released"]
+        # Simulate the renewed connection window expiring before connecting.
+        store._subscriptions[first["subscribe_id"]]["connect_deadline"] = time.time() - 1
+        assert store.release_idle_whole_subscription()["released"]
+        restored = store.subscribe_whole(body)
+        assert restored["subscribe_id"] != first["subscribe_id"]
+        assert restored["already_subscribed"] is False
+        assert restored["source_reused"] is True
+        assert not store.release_idle_whole_subscription()["released"]
+        assert project.status()["consumers"] == 2
+        assert len(service.requests) == 1
+        # An explicit stop still releases immediately during the connect window.
+        renewed = store.subscribe_whole(dict(body, resume_subscribe_id=restored["subscribe_id"]))
+        store.unsubscribe(renewed)
+        assert project.status()["consumers"] == 1
+    finally:
+        store.close()
+
+
+def test_stopping_expired_shared_id_never_forwards_native_unsubscribe(service):
+    project = service.project
+    project.acquire("algo", ["SH"], purpose="algo")
+    store = web.QuoteSubscriptionStore(shared_service=project,
+        manager=SimpleNamespace(count=lambda *args: 0, broadcast=lambda e: None))
+    store._schedule_idle_release_locked = lambda: None
+    def reject_native_unsubscribe(*args, **kwargs):
+        pytest.fail("expired shared ID must never be sent to QMT")
+    store._request_unsubscribe = reject_native_unsubscribe
+    try:
+        viewer = store.subscribe_whole({"markets": ["SH"]})
+        assert store.release_idle_whole_subscription()["released"]
+        reply = store.unsubscribe(dict(viewer, shared_only=True))
+        assert reply["already_released"] is True
+        # A native single-symbol subscription with the same number is unrelated.
+        store._subscriptions[viewer["subscribe_id"]] = dict(subscribe_id=viewer["subscribe_id"], kind="quote")
+        assert store.unsubscribe(dict(viewer, shared_only=True))["result"] is False
+        assert viewer["subscribe_id"] in store._subscriptions
+        assert project.status()["consumers"] == 1
+    finally:
+        store._subscriptions.clear()
+        store.close()
 
 
 def test_diagnostic_and_algo_share_one_rpc_and_preserve_source_time(service):
