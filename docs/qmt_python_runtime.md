@@ -10,6 +10,26 @@ Python 3.6/3.12 运行时。它读取 QMT 官方 `update36.cfg` 或
 仍可使用 Python 3.6；QMT 策略加载桥接模块时不会导入或导出这组管理类，
 避免管理模块使用的新版 Python 语法和 `dataclasses` 阻断策略启动。
 
+## 官网镜像和故障切换
+
+运行库下载器会先访问 `https://cfquant.org` 的运行库镜像状态接口。接口使用
+固定的 `X-CFQuant-Runtime-Key` 应用鉴权，并返回 Python 3.6/3.12 的版本、文件名、
+大小、MD5、SHA-256 和当前下载连接数。官网同时下载达到 20 个连接时，客户端改用
+讯投原始地址；讯投连接失败、返回错误状态或完整性校验失败时，会强制请求官网镜像。
+强制请求只接受与当前运行库 MD5 相同的文件，避免官网切换版本期间把不同 ZIP 接在
+同一个断点文件上。
+
+官网接口为：
+
+* `GET /api/qmt/python-runtime/status`：返回连接数和两个包的元数据；
+* `GET /api/qmt/python-runtime/download?runtime=py36&md5=...`：支持 Range 断点续传；
+  讯投失败后的强制回退追加 `force=1`。
+
+接口有 5 秒窗口的 IP 访问限制；短时间内超过 10 次返回 `429`，持续的大量访问会
+临时封禁 IP。单个 IP 同时最多 4 个运行库下载连接。每个流在完成、客户端断开或
+校验失败时都会释放连接计数并写入官网运行日志。ZIP 包由官网单独保存，manifest
+在两个文件完成 SHA-256 校验后才原子替换，下载过程不会暴露半成品。
+
 ```python
 from cfquant import QmtPythonRuntime
 

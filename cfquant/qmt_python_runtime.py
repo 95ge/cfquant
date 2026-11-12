@@ -15,7 +15,9 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 import configparser
 import hashlib
+import http.client
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -26,11 +28,22 @@ import time
 from typing import Dict, Optional
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 import zipfile
 
 
 class QmtPythonRuntimeError(RuntimeError):
     """A download, validation, activation, or restart operation failed."""
+
+
+class _DownloadSourceError(QmtPythonRuntimeError):
+    """A remote failure that permits trying another copy of the same package."""
+
+
+class _NoMirrorRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Never forward the shared mirror key to a redirected host.
+        return None
 
 
 @dataclass(frozen=True)
@@ -41,6 +54,8 @@ class QmtPythonPackage:
     filename: str
     md5: str
     force_update: bool = False
+    sha256: str = ""
+    size: int = 0
 
     def as_dict(self):
         return asdict(self)
@@ -67,6 +82,10 @@ _RUNTIME_ALIASES = {"36": "py36", "3.6": "py36", "python36": "py36",
 _PY312_MIN_QMT_VERSION = (2, 1, 33, 0)
 _CONFIG_LOCKS: Dict[str, threading.RLock] = {}
 _CONFIG_LOCKS_GUARD = threading.Lock()
+_MIRROR_BASE = "https://cfquant.org/api/qmt/python-runtime/"
+_MIRROR_KEY_HEADER = "X-CFQuant-Runtime-Key"
+_MIRROR_KEY = "cfq-runtime-v1-4859bf5af16942e38b30f128bd540714"
+_LOG = logging.getLogger(__name__)
 
 
 def _canonical_runtime(runtime: str) -> str:
@@ -118,6 +137,10 @@ class QmtPythonRuntime:
         self.staging_dir = self.state_dir / "staging"
         self.backup_dir = self.state_dir / "backups"
         self._opener = opener or urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        self._mirror_opener = opener or urllib.request.build_opener(
+            urllib.request.ProxyHandler({}), _NoMirrorRedirect())
+        self._mirror_cache = None
+        self._mirror_checked_at = float("-inf")
         self._lock = self._lock_for(str(self.bin_dir))
 
     @staticmethod
@@ -131,10 +154,50 @@ class QmtPythonRuntime:
 
     def _request(self, url, *, headers=None, timeout=None):
         request = urllib.request.Request(url, headers=headers or {}, method="GET")
-        return self._opener.open(request, timeout=timeout or self.timeout)
+        opener = self._mirror_opener if url.startswith(_MIRROR_BASE) else self._opener
+        return opener.open(request, timeout=timeout or self.timeout)
+
+    def _mirror_status(self):
+        if time.monotonic() - self._mirror_checked_at < 5:
+            return self._mirror_cache
+        self._mirror_checked_at = time.monotonic()
+        self._mirror_cache = None
+        try:
+            with self._request(_MIRROR_BASE + "status", headers={_MIRROR_KEY_HEADER: _MIRROR_KEY},
+                               timeout=min(self.timeout, 5)) as response:
+                data = json.loads(response.read(65537).decode("utf-8"))
+            if (not data.get("ok") or data.get("schema") != 1 or not isinstance(data.get("packages"), dict)
+                    or not isinstance(data.get("busy"), bool)):
+                raise ValueError("invalid mirror status")
+            self._mirror_cache = data
+        except (OSError, ValueError, AttributeError, http.client.HTTPException) as exc:
+            _LOG.info("QMT runtime mirror status unavailable: %s", exc)
+        return self._mirror_cache
+
+    @staticmethod
+    def _package_from_mirror(data, runtime):
+        try:
+            item = data["packages"][runtime]
+            if (not re.fullmatch(r"[A-Za-z0-9_.-]+\.zip", item["filename"])
+                    or not re.fullmatch(r"[0-9a-f]{32}", item["md5"])
+                    or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+                    or not item["url"].startswith(("http://", "https://"))
+                    or int(item["size"]) <= 0):
+                return None
+            return QmtPythonPackage(runtime, item["version"], item["url"], item["filename"],
+                                    item["md5"], bool(item.get("force_update")),
+                                    item["sha256"], int(item["size"]))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
 
     def fetch_package(self, runtime="py312") -> QmtPythonPackage:
         runtime = _canonical_runtime(runtime)
+        mirrored = self._package_from_mirror(self._mirror_status(), runtime)
+        if mirrored:
+            return mirrored
+        return self._fetch_upstream_package(runtime)
+
+    def _fetch_upstream_package(self, runtime):
         cfg_url = "http://download.thinktrader.net:8800/download/" + _CONFIG_NAMES[runtime]
         try:
             with self._request(cfg_url) as response:
@@ -350,67 +413,126 @@ class QmtPythonRuntime:
         destination = self.download_dir / package.filename
         partial = destination.with_suffix(destination.suffix + ".part")
         with self._lock:
-            if destination.is_file() and self._md5(destination) == package.md5:
+            if destination.is_file() and self._archive_matches(destination, package):
                 _callback(progress_callback, QmtPythonProgress(
                     runtime, "download_verified", destination.stat().st_size,
                     destination.stat().st_size, 100, 0, 0, "download already verified"))
                 return destination
-            existing = partial.stat().st_size if partial.exists() and keep_existing else 0
-            if not existing and not keep_existing and partial.exists():
+            identity_file = partial.with_suffix(partial.suffix + ".identity")
+            identity = package.md5 + ":" + package.sha256
+            previous = identity_file.read_text("ascii") if identity_file.exists() else ""
+            if partial.exists() and (not keep_existing or previous != identity):
                 partial.unlink()
-            headers = {"Accept-Encoding": "identity"}
-            if existing:
-                headers["Range"] = "bytes=%d-" % existing
-            try:
-                response = self._request(package.url, headers=headers)
-            except (OSError, urllib.error.URLError) as exc:
-                raise QmtPythonRuntimeError("cannot download QMT runtime: %s" % exc) from exc
-            status = getattr(response, "status", response.getcode())
-            if status == 206 and existing:
-                mode, done = "ab", existing
-            elif status == 200:
-                mode, done = "wb", 0
+            identity_file.write_text(identity, encoding="ascii")
+            self._check_cancel(cancel_event)
+            snapshot = self._mirror_status()
+            mirrored = self._package_from_mirror(snapshot, runtime)
+            mirror_url = _MIRROR_BASE + "download?" + urlencode(dict(runtime=runtime, md5=package.md5))
+            sources = []
+            if mirrored and mirrored.md5 == package.md5 and not snapshot["busy"]:
+                sources.append(("官网", mirror_url))
+            sources.extend([("讯投", package.url), ("官网（失败回退）", mirror_url + "&force=1")])
+            errors = []
+            for source, url in sources:
+                self._check_cancel(cancel_event)
+                _LOG.info("QMT runtime download source=%s runtime=%s file=%s", source, runtime, package.filename)
+                _callback(progress_callback, QmtPythonProgress(runtime, "download", message="正在通过%s下载运行库" % source))
+                try:
+                    self._download_source(package, url, partial, source, progress_callback, cancel_event)
+                    break
+                except _DownloadSourceError as exc:
+                    errors.append("%s: %s" % (source, exc))
+                    _LOG.warning("QMT runtime source failed source=%s runtime=%s error=%s", source, runtime, exc)
             else:
-                response.close()
-                raise QmtPythonRuntimeError("unexpected QMT download HTTP status: %s" % status)
-            total_header = response.headers.get("Content-Range", "").split("/")[-1]
-            total = int(total_header) if total_header.isdigit() else int(response.headers.get("Content-Length") or 0) + done
-            started = time.monotonic()
-            _callback(progress_callback, QmtPythonProgress(runtime, "download", done, total,
-                                                            (done / total * 100) if total else 0,
-                                                            0, None, "downloading"))
-            try:
-                with response, open(partial, mode) as stream:
-                    while True:
-                        if cancel_event is not None and cancel_event.is_set():
-                            raise QmtPythonRuntimeError("QMT runtime download cancelled")
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        stream.write(chunk)
-                        done += len(chunk)
-                        elapsed = max(time.monotonic() - started, 0.001)
-                        speed = (done - (existing if mode == "ab" else 0)) / elapsed
-                        eta = ((total - done) / speed) if speed > 0 and total else None
-                        _callback(progress_callback, QmtPythonProgress(
-                            runtime, "download", done, total,
-                            (done / total * 100) if total else 0, speed, eta, "downloading"))
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except QmtPythonRuntimeError:
-                raise
-            except OSError as exc:
-                raise QmtPythonRuntimeError("cannot write QMT runtime download: %s" % exc) from exc
-            actual = self._md5(partial)
-            if actual != package.md5:
-                raise QmtPythonRuntimeError("QMT runtime MD5 mismatch: expected %s, got %s" %
-                                             (package.md5, actual))
+                raise QmtPythonRuntimeError("QMT runtime download failed; " + "; ".join(errors))
             os.replace(partial, destination)
+            identity_file.unlink()
+            size = destination.stat().st_size
             _callback(progress_callback, QmtPythonProgress(runtime, "download_verified",
-                                                            total or destination.stat().st_size,
-                                                            total or destination.stat().st_size,
+                                                            size, size,
                                                             100, 0, 0, "download verified"))
         return destination
+
+    @staticmethod
+    def _check_cancel(event):
+        if event is not None and event.is_set():
+            raise QmtPythonRuntimeError("QMT runtime download cancelled")
+
+    def _archive_matches(self, path, package):
+        if package.size and path.stat().st_size != package.size:
+            return False
+        if self._md5(path) != package.md5:
+            return False
+        if package.sha256:
+            digest = hashlib.sha256()
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest() == package.sha256
+        return True
+
+    def _download_source(self, package, url, partial, source, callback, cancel_event):
+        existing = partial.stat().st_size if partial.exists() else 0
+        if existing and self._archive_matches(partial, package):
+            return
+        if package.size and existing >= package.size:
+            partial.unlink()
+            existing = 0
+        headers = {"Accept-Encoding": "identity"}
+        if url.startswith(_MIRROR_BASE):
+            headers[_MIRROR_KEY_HEADER] = _MIRROR_KEY
+        if existing:
+            headers["Range"] = "bytes=%d-" % existing
+        try:
+            response = self._request(url, headers=headers)
+        except (OSError, http.client.HTTPException) as exc:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 416:
+                partial.unlink(missing_ok=True)
+            raise _DownloadSourceError("cannot connect: %s" % exc) from exc
+        with response:
+            status = response.getcode()
+            if status == 206 and existing:
+                match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", response.headers.get("Content-Range", ""))
+                if not match or int(match[1]) != existing or int(match[2]) != int(match[3]) - 1:
+                    raise _DownloadSourceError("invalid resume Content-Range")
+                mode, done, total = "ab", existing, int(match[3])
+            elif status == 200:
+                mode, done = "wb", 0
+                try:
+                    total = int(response.headers.get("Content-Length") or package.size)
+                except ValueError as exc:
+                    raise _DownloadSourceError("invalid Content-Length") from exc
+            else:
+                raise _DownloadSourceError("unexpected HTTP status: %s" % status)
+            if package.size and total and total != package.size:
+                raise _DownloadSourceError("package size differs from manifest")
+            started, initial = time.monotonic(), done
+            with partial.open(mode) as stream:
+                while True:
+                    self._check_cancel(cancel_event)
+                    try:
+                        chunk = response.read(1024 * 1024)
+                    except (OSError, http.client.HTTPException) as exc:
+                        raise _DownloadSourceError("connection interrupted: %s" % exc) from exc
+                    if not chunk:
+                        break
+                    stream.write(chunk)  # Local disk failures must not trigger another download.
+                    done += len(chunk)
+                    if total and done > total:
+                        break
+                    speed = (done - initial) / max(time.monotonic() - started, 0.001)
+                    _callback(callback, QmtPythonProgress(
+                        package.runtime, "download", done, total, (done / total * 100) if total else 0,
+                        speed, (total - done) / speed if total and speed else None,
+                        "正在通过%s下载运行库" % source))
+                stream.flush()
+                os.fsync(stream.fileno())
+        self._check_cancel(cancel_event)
+        if total and done < total:
+            raise _DownloadSourceError("download truncated: %d/%d" % (done, total))
+        if not self._archive_matches(partial, package):
+            partial.unlink()
+            raise _DownloadSourceError("QMT runtime MD5/SHA-256 mismatch")
 
     @staticmethod
     def _safe_extract(archive, destination):
@@ -442,7 +564,7 @@ class QmtPythonRuntime:
         runtime = _canonical_runtime(runtime)
         package = package or self.fetch_package(runtime)
         archive = self.download_dir / package.filename
-        if not archive.is_file() or self._md5(archive) != package.md5:
+        if not archive.is_file() or not self._archive_matches(archive, package):
             raise QmtPythonRuntimeError("verified QMT runtime archive is missing")
         with self._lock:
             self.staging_dir.mkdir(parents=True, exist_ok=True)
