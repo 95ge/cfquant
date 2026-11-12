@@ -17571,6 +17571,46 @@ QMT_PYTHON_RUNTIME_JOBS = {}
 QMT_PYTHON_RUNTIME_JOBS_LOCK = threading.RLock()
 
 
+class _QmtPythonProgressNotifier:
+    """A slow WebSocket subscriber must never block installation or HTTP state."""
+
+    def __init__(self, job_id, account_id):
+        self.job_id, self.account_id = job_id, account_id
+        self.pending = queue.Queue(maxsize=1)
+        self.closed = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="qmt-python-progress-%s" % job_id, daemon=True)
+        self.thread.start()
+
+    def notify(self, stage, data):
+        # Only the latest snapshot matters. In particular, done/error replaces
+        # any unsent extraction progress; HTTP always retains the full result.
+        try:
+            self.pending.put_nowait((stage, data))
+        except queue.Full:
+            try:
+                self.pending.get_nowait()
+            except queue.Empty:
+                pass
+            self.pending.put_nowait((stage, data))
+
+    def close(self):
+        self.closed.set()
+
+    def _run(self):
+        warned = False
+        while not self.closed.is_set() or not self.pending.empty():
+            try:
+                stage, data = self.pending.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                emit_download_progress(self.job_id, "qmt_python", stage, data, account_id=self.account_id)
+            except Exception as exc:
+                if not warned:
+                    safe_print("QMT Python job %s notification failed; HTTP polling remains available: %s" % (self.job_id, exc))
+                    warned = True
+
+
 def _qmt_python_runtime_row(body):
     body = body or {}
     qmt_dir = str(body.get("qmt_dir") or body.get("path") or "").strip()
@@ -17714,17 +17754,8 @@ def _qmt_python_job_snapshot(job_id):
 def _run_qmt_python_runtime_job(job_id, body):
     account_id = str(body.get("account_id") or "")
     last_emit = [0.0]
-    notification_failed = [False]
-
-    def notify(stage, data):
-        try:
-            emit_download_progress(job_id, "qmt_python", stage, data, account_id=account_id)
-        except Exception as exc:
-            # HTTP job state is authoritative. Losing a progress subscriber
-            # must not abort installation or prevent a terminal transition.
-            if not notification_failed[0]:
-                safe_print("QMT Python job %s progress notification failed; HTTP polling remains available: %s" % (job_id, exc))
-                notification_failed[0] = True
+    notifier = _QmtPythonProgressNotifier(job_id, account_id)
+    notify = notifier.notify
 
     def progress(item):
         now = time.monotonic()
@@ -17744,21 +17775,20 @@ def _run_qmt_python_runtime_job(job_id, body):
             job.update(state="running", updated_at=time.time())
     try:
         manager, runtime = _qmt_python_runtime_row(body)
+        row = None
+        if WEB_CONFIG is not None and account_id:
+            for candidate in WEB_CONFIG.account_configs().values():
+                if str(candidate.get("account_id") or "") == account_id:
+                    try:
+                        candidate_dir = Path(str(candidate.get("qmt_dir") or "")).resolve()
+                        if candidate_dir == manager.qmt_dir or candidate_dir == manager.bin_dir:
+                            row = candidate
+                            break
+                    except (OSError, ValueError):
+                        continue
+
         def restart_qmt():
-            # When the web service owns this binding, reuse its credential and
-            # strategy recovery flow.  A plain client launch remains the safe
-            # fallback for installations that are not configured as bindings.
-            row = None
-            if WEB_CONFIG is not None and account_id:
-                for candidate in WEB_CONFIG.account_configs().values():
-                    if str(candidate.get("account_id") or "") == account_id:
-                        try:
-                            candidate_dir = Path(str(candidate.get("qmt_dir") or "")).resolve()
-                            if candidate_dir == manager.qmt_dir or candidate_dir == manager.bin_dir:
-                                row = candidate
-                                break
-                        except (OSError, ValueError):
-                            continue
+            # Existing bindings retain their managed login/recovery flow.
             if row is not None:
                 result = _qmt_python_runtime_bootstrap_restart(
                     row, row.get("qmt_auto_login"), manager, runtime, account_id,
@@ -17776,12 +17806,17 @@ def _run_qmt_python_runtime_job(job_id, body):
                 restart_result = manager.restart_qmt()
             return restart_result
 
+        missing_account = (parse_bool(body.get("allow_missing_account_config", False))
+                           and manager.binding_status().get("state") == "account_config_missing")
+        # A new, unsaved binding has no credentials/configuration to activate.
+        # Finish its library installation without starting a fresh QMT login.
+        manage_restart = bool(body.get("restart", True)) and (row is not None or not missing_account)
         result = manager.download_and_switch(
             runtime,
             restart=bool(body.get("restart", True)),
             account_id=account_id or None,
             progress_callback=progress,
-            restart_callback=restart_qmt if bool(body.get("restart", True)) else None,
+            restart_callback=restart_qmt if manage_restart else None,
             reuse_installed=parse_bool(body.get("reuse_installed", False)),
             allow_missing_account_config=parse_bool(body.get("allow_missing_account_config", False)),
         )
@@ -17806,6 +17841,7 @@ def _run_qmt_python_runtime_job(job_id, body):
                            progress=dict(job.get("progress") or {}, phase="error", error=str(exc)))
         safe_print("QMT Python job %s failed: %s" % (job_id, exc))
         notify("error", {"phase": "error", "error": str(exc)})
+        notifier.close()
         return
     completed = {"phase": "done", "percent": 100, "result": result}
     with QMT_PYTHON_RUNTIME_JOBS_LOCK:
@@ -17815,6 +17851,7 @@ def _run_qmt_python_runtime_job(job_id, body):
     safe_print("QMT Python job %s completed; account_config_required=%s" %
                (job_id, bool(result.get("account_config_required"))))
     notify("done", completed)
+    notifier.close()
 
 
 def start_qmt_python_runtime_job(body):

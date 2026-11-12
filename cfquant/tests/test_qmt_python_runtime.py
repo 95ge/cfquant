@@ -305,12 +305,15 @@ def test_runtime_job_allows_install_before_first_qmt_login(tmp_path, monkeypatch
 
 
 def test_runtime_jobs_forward_reuse_and_reject_concurrent_directory(tmp_path, monkeypatch):
+    from types import SimpleNamespace
     import cfquant_web_server as web
     manager = runtime_fixture(tmp_path)
     jobs, calls, events = {}, [], []
     monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
     monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
     monkeypatch.setattr(web, "emit_download_progress", lambda *a, **kw: events.append(a[2]))
+    monkeypatch.setattr(web, "_QmtPythonProgressNotifier", lambda *a: SimpleNamespace(
+        notify=lambda stage, data: events.append(stage), close=lambda: None))
     def switch(self, runtime, **kwargs):
         calls.append((runtime, kwargs))
         for phase in ("reusing", "activating", "restarting"):
@@ -344,7 +347,13 @@ def test_runtime_job_completion_survives_notification_failure(tmp_path, monkeypa
     manager = runtime_fixture(tmp_path)
     jobs = {}
     monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
-    monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
+    notifiers = []
+    notifier_class = web._QmtPythonProgressNotifier
+    def notifier(*args):
+        instance = notifier_class(*args)
+        notifiers.append(instance)
+        return instance
+    monkeypatch.setattr(web, "_QmtPythonProgressNotifier", notifier)
     def unavailable(*args, **kwargs):
         raise RuntimeError("callback transport unavailable")
     monkeypatch.setattr(web, "emit_download_progress", unavailable)
@@ -355,8 +364,12 @@ def test_runtime_job_completion_survives_notification_failure(tmp_path, monkeypa
         return result
     monkeypatch.setattr(QmtPythonRuntime, "download_and_switch", switch)
     body = {"qmt_dir": str(manager.qmt_dir), "account_id": "TEST_ONLY", "runtime": "py36", "job_id": "notify-failure"}
-    web.start_qmt_python_runtime_job(body)
+    with monkeypatch.context() as scheduling:
+        scheduling.setattr(web.threading.Thread, "start", lambda self: None)
+        web.start_qmt_python_runtime_job(body)
     web._run_qmt_python_runtime_job(body["job_id"], body)
+    notifiers[0].thread.join(timeout=2)
+    assert not notifiers[0].thread.is_alive()
     job = web._qmt_python_job_snapshot(body["job_id"])
     assert job["state"] == "done"
     assert job["result"] == result
@@ -377,6 +390,77 @@ def test_runtime_job_initialization_failure_is_terminal(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "_qmt_python_runtime_row", invalid)
     web._run_qmt_python_runtime_job(body["job_id"], body)
     assert web._qmt_python_job_snapshot(body["job_id"])["state"] == "error"
+
+
+def test_blocked_progress_subscriber_cannot_stall_installation(tmp_path, monkeypatch):
+    import threading
+    import cfquant_web_server as web
+    manager = runtime_fixture(tmp_path)
+    blocked, release, delivered = threading.Event(), threading.Event(), threading.Event()
+    events = []
+    monkeypatch.setattr(web, "WEB_CONFIG", None)
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", {"slow-socket": {"state": "queued"}})
+
+    def emit(job_id, kind, stage, data, **kwargs):
+        events.append(stage)
+        if stage == "extract":
+            blocked.set()
+            release.wait(timeout=5)
+        if stage == "done":
+            delivered.set()
+
+    def install(self, runtime, **kwargs):
+        kwargs["progress_callback"]({"phase": "extract"})
+        assert blocked.wait(timeout=2)
+        kwargs["progress_callback"]({"phase": "installing"})
+        kwargs["progress_callback"]({"phase": "installed", "percent": 100})
+        return {"installed": {"installed": True}, "account_config_required": True}
+
+    monkeypatch.setattr(web, "emit_download_progress", emit)
+    monkeypatch.setattr(QmtPythonRuntime, "download_and_switch", install)
+    body = {"qmt_dir": str(manager.qmt_dir), "runtime": "py36", "restart": False}
+    worker = threading.Thread(target=web._run_qmt_python_runtime_job, args=("slow-socket", body))
+    worker.start()
+    try:
+        assert blocked.wait(timeout=2)
+        worker.join(timeout=2)
+        assert not worker.is_alive(), "installation must finish while the socket is blocked"
+        snapshot = web._qmt_python_job_snapshot("slow-socket")
+        assert snapshot["state"] == "done" and snapshot["progress"]["phase"] == "done"
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert delivered.wait(timeout=2)
+    assert events == ["extract", "done"]  # Coalesce obsolete intermediate progress.
+
+
+def test_new_binding_install_finishes_without_launching_qmt(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    root = tmp_path / "fresh-qmt"
+    (root / "bin.x64").mkdir(parents=True)
+    manager = QmtPythonRuntime(root, account_id="TEST_ONLY")
+    archive = manager.download_dir / "py36.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("python36.dll", "fixture")
+        bundle.writestr("Lib/site.py", "# fixture")
+    package = _package("py36", archive)
+    monkeypatch.setattr(web, "WEB_CONFIG", None)
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", {"fresh": {"state": "queued"}})
+    monkeypatch.setattr(web, "_qmt_python_runtime_row", lambda body: (manager, "py36"))
+    monkeypatch.setattr(web, "emit_download_progress", lambda *a, **kw: None)
+    monkeypatch.setattr(manager, "fetch_package", lambda runtime: package)
+    monkeypatch.setattr(manager, "download", lambda *a, **kw: archive)
+    monkeypatch.setattr(manager, "_qmt_processes", lambda: [])
+    monkeypatch.setattr(manager, "restart_qmt", lambda: pytest.fail("unsaved binding must not launch QMT"))
+    web._run_qmt_python_runtime_job("fresh", {"account_id": "TEST_ONLY", "runtime": "py36",
+                                           "restart": True, "allow_missing_account_config": True})
+    job = web._qmt_python_job_snapshot("fresh")
+    assert job["state"] == "done"
+    assert job["result"]["installed"]["installed"] is True
+    assert job["result"]["account_config_required"] is True
+    assert job["result"]["restarted"] is None
+    assert job["progress"]["percent"] == 100
 
 
 @pytest.mark.parametrize("restart_failed", [False, True])

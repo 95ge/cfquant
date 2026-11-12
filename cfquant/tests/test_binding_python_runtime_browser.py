@@ -8,7 +8,7 @@ from cfquant.tests.test_binding_runtime_browser import open_bindings
 
 
 def runtime_status(*, supported=True, configured="py36", py312_installed=False, config_exists=True):
-    runtimes = {"py36": {"installed": True}, "py312": {"installed": py312_installed}}
+    runtimes = {"py36": {"installed": config_exists}, "py312": {"installed": py312_installed}}
     return {"binding": {
         "qmt_version": "2.1.33.0" if supported else "2.1.19.0",
         "py312_supported": supported,
@@ -201,4 +201,43 @@ def test_poll_completion_before_first_login_unlocks_binding(page, frontend_url, 
     assert not page.evaluate("state.bindingPythonRuntimeChoiceDirty")
     expect(page.locator("#bindingPythonRuntimeProgressMeta")).to_contain_text("100%")
     expect(page.locator("#bindingPythonRuntimeProgressText")).to_contain_text("登录")
+    assert not errors
+
+
+def test_fresh_py36_install_updates_open_dialog_without_account_login(page, frontend_url):
+    status = runtime_status(supported=False, config_exists=False)
+    errors = open_runtime(page, frontend_url, status)
+    page.route("**/api/qmt/python-runtime/download", lambda route: route.fulfill(
+        json={"ok": True, "data": {"state": "queued"}}))
+    job = {"state": "running", "progress": {"phase": "extract"}}
+    page.route("**/api/qmt/python-runtime/jobs?*", lambda route: route.fulfill(json={"ok": True, "data": job}))
+    page.locator('#bindingPythonRuntimeDownloadBtn').click()
+    expect(page.locator('#bindingPythonRuntimeProgressMeta')).to_contain_text('解压安装中')
+    status['binding']['runtimes']['py36']['installed'] = True
+    # Deliberately leave progress at extract: the terminal state is authoritative.
+    job.update(state='done', result={'account_config_required': True, 'installed': {'installed': True}})
+    expect(page.locator('#bindingPythonRuntimeProgressMeta')).to_contain_text('已完成，100%')
+    expect(page.locator('#bindingPythonRuntimeStatus')).to_contain_text('已安装，登录后应用')
+    expect(page.locator('#bindingPythonRuntimeChoiceHint')).to_contain_text('可以保存绑定')
+    expect(page.locator('#bindingPythonRuntimeDownloadBtn')).to_have_text('已安装 Python 3.6，登录后应用')
+    expect(page.locator('#bindingPythonRuntimeDownloadBtn')).to_be_disabled()
+    assert not page.evaluate('state.bindingPythonRuntimeJobId')
+    assert not errors
+
+
+def test_manual_recheck_reconciles_completed_job(page, frontend_url):
+    status = runtime_status(supported=False, config_exists=False)
+    errors = open_runtime(page, frontend_url, status)
+    page.evaluate("""() => {
+        state.bindingPythonRuntimeJobId = 'stale-install';
+        state.bindingPythonRuntimeJobContext = bindingPythonRuntimeContextKey();
+        state.bindingPythonRuntimeJobRuntime = 'py36';
+        renderBindingPythonRuntimeStatus();
+    }""")
+    status['binding']['runtimes']['py36']['installed'] = True
+    page.route('**/api/qmt/python-runtime/jobs?*', lambda route: route.fulfill(json={
+        'ok': True, 'data': {'state': 'done', 'result': {'account_config_required': True}}}))
+    page.locator('#bindingPythonRuntimeRefreshBtn').click()
+    expect(page.locator('#bindingPythonRuntimeDownloadBtn')).to_have_text('已安装 Python 3.6，登录后应用')
+    assert not page.evaluate('state.bindingPythonRuntimeJobId')
     assert not errors

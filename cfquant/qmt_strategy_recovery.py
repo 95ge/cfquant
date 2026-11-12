@@ -19,7 +19,7 @@ import uuid
 
 from .qmt_component_login import QtLoginBackend, QmtNotReady
 from .qmt_native_worker import IsolatedStrategyBackend, QmtAutomationError, StrategyWorkerHost
-from .qmt_dependencies import QmtDependencyError
+from .qmt_dependencies import QmtDependencyError, import_login_module
 from .qmt_strategy_deploy import (
     _role_stock, _strategy_slot_name, account_qmt_roots,
     _write_json, _digest, PipeStrategyController, normalize_strategy_mode, normalize_strategy_settings, qmt_root,
@@ -29,8 +29,8 @@ from .qmt_strategy_deploy import (
 def visible_notice_windows(pid, main_hwnd):
     if os.name != "nt" or not pid or not main_hwnd:
         return []
-    import win32gui
-    import win32process
+    win32gui = import_login_module("win32gui")
+    win32process = import_login_module("win32process")
     result = []
     def visit(hwnd, _):
         if (hwnd != main_hwnd and win32gui.IsWindowVisible(hwnd)

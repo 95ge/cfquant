@@ -1,6 +1,7 @@
 """Read-only checks and repair instructions for optional QMT login components."""
 
 from .diagnostic_context import VersionedErrorMixin
+from ._pywin32_runtime import prepare_pywin32_runtime
 import copy
 import importlib
 import importlib.metadata
@@ -19,11 +20,20 @@ FRIDA_VERSION = "17.16.4"
 FRIDA_REQUIREMENT = "frida==" + FRIDA_VERSION
 _LOCK = threading.Lock()
 _CACHE = {}
-_PROBE_CODE = r'''
-import importlib, importlib.metadata, json, os, pathlib, sys
+_PROBE_CODE = "RUNTIME_HELPER = %s\n" % ascii(os.path.join(os.path.dirname(__file__), "_pywin32_runtime.py")) + r'''
+import importlib, importlib.metadata, json, os, pathlib, runpy, sys
+runtime = runpy.run_path(RUNTIME_HELPER)
+runtime_info = {}
+runtime_error = None
+try:
+    runtime_info = runtime['prepare_pywin32_runtime']()
+except (ImportError, OSError) as error:
+    runtime_error = error
 checks = []
 for name in MODULES:
     try:
+        if name.startswith('win32') and runtime_error is not None:
+            raise runtime_error
         if name == 'frida' and importlib.metadata.version('frida') != FRIDA_VERSION:
             raise RuntimeError('Unsupported Frida version; install frida==' + FRIDA_VERSION)
         module = importlib.import_module(name)
@@ -45,7 +55,7 @@ print(json.dumps(dict(python_executable=sys.executable, python_version=sys.versi
     prefix=str(prefix), base_prefix=str(base_prefix), environment=environment,
     global_python=sys.prefix == sys.base_prefix,
     conda_executable=os.environ.get('CONDA_EXE', '') if conda else '',
-    conda_pywin32=conda and bool(list((prefix / 'conda-meta').glob('pywin32-*.json'))),
+    pywin32_runtime=runtime_info, **runtime['pywin32_installation'](),
     supported=sys.platform == 'win32', checks=checks, packages=packages), ensure_ascii=True))
 '''
 
@@ -99,8 +109,9 @@ def _finish_report(report):
     report["repair_commands"] = commands
     if environment == "conda":
         report["repair_note"] = (
-            "已检测到 Conda 环境。先停止 CFQuant，在已激活该环境的 Anaconda Prompt 或 PowerShell 中执行；"
-            "命令会绑定当前环境的前缀。验证通过后重启 CFQuant，再重新检测。"
+            "已检测到 Conda 环境。pywin32 已安装但提示“找不到指定的程序”时，通常是新版组件加载了残留的旧版 DLL。"
+            "先停止 CFQuant，在已激活该环境的 PowerShell 中逐行执行下面的命令；命令已绑定当前环境。"
+            "不要在 Conda 环境运行 pywin32_postinstall。验证通过后重启 CFQuant，再重新检测。"
         )
     elif environment == "venv":
         report["repair_note"] = (
@@ -167,6 +178,8 @@ def import_login_module(name):
     if name == "frida":
         require_compatible_frida()
     try:
+        if name.startswith("win32"):
+            prepare_pywin32_runtime()
         return importlib.import_module(name)
     except (ImportError, OSError) as error:
         raise QmtDependencyError(

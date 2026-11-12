@@ -52,7 +52,7 @@ def page(browser, request):
     context.close()
 
 
-def open_app(page, frontend_url, setup_required=True):
+def open_app(page, frontend_url, setup_required=True, *, legacy_entry=True, account_configs=None):
     requests = []
     errors = []
 
@@ -63,7 +63,7 @@ def open_app(page, frontend_url, setup_required=True):
         if path == "/api/config":
             data = {
                 "setup": {"setup_required": setup_required},
-                "account_configs": {},
+                "account_configs": account_configs or {},
                 "server_access": {"web_auth_enabled": False},
             }
         route.fulfill(json={"ok": True, "data": data})
@@ -71,7 +71,15 @@ def open_app(page, frontend_url, setup_required=True):
     page.on("pageerror", lambda error: errors.append(str(error)))
     page.route("**/api/**", respond)
     page.goto(frontend_url)
-    expect(page.locator("#setupOverlay" if setup_required else "#onboardingWizard")).to_be_visible()
+    page.wait_for_function("state.appStarted")
+    if not account_configs:
+        expect(page.locator("#bindingDialogOverlay")).to_be_visible()
+    if legacy_entry:
+        # These existing tests exercise the manually accessible legacy forms.
+        # Fresh-start regressions below use the actual binding entry instead.
+        page.evaluate("closeBindingDialog()")
+        page.evaluate("showSetupOverlay()" if setup_required else "openOnboardingGuide()")
+        expect(page.locator("#setupOverlay" if setup_required else "#onboardingWizard")).to_be_visible()
     return requests, errors
 
 
@@ -98,7 +106,7 @@ def test_first_setup_can_read_without_saving_and_preserves_draft(page, frontend_
     page.screenshot(path=str(tmp_path / "setup.png"))
     opener.click()
     expect(page.locator("#tutorialReader")).to_be_visible()
-    assert page.evaluate("state.setup.setup_required && !state.appStarted")
+    assert page.evaluate("state.setup.setup_required && state.appStarted")
     page.locator('#tutorialReader [data-guide="python"]').click()
     expect(page.locator("#python-prepare")).to_be_visible()
     expect(page.locator("#tutorialReader .tutorial-menu")).to_be_visible()
@@ -295,6 +303,7 @@ def test_python_api_search_status_examples_and_deep_links(page, frontend_url, tm
     expect(page.locator('.python-solution pre')).to_have_count(0)
     page.goto(deep_link)
     page.reload()
+    page.evaluate("closeBindingDialog(); showSetupOverlay()")
     page.locator('#setupOverlay [data-open-tutorial]').click()
     expect(page.locator('.python-document-head h2')).to_have_text('get_financial_data')
     assert all(method == 'GET' for method, path in requests)

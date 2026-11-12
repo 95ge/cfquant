@@ -132,7 +132,9 @@ set CFQUANT_PYTHON_EXE=C:\Users\用户名\anaconda3\envs\quant\python.exe
 start_cfquant.bat
 ```
 
-Web 控制台启动后，请在初始化配置中确认或修改 Python 解释器路径。后续启动会优先使用已保存的路径；启动选择结果和失败原因记录在 `log\startup\cfquant_startup.log`。
+Web 控制台首次启动时，如果尚无账号绑定，会直接进入“账号绑定”并打开新增窗口，使用与后续添加账号相同的配置流程。已有绑定时不再自动弹出新手向导。需要修改 Web 服务使用的 Python 解释器时，请在系统设置中保存路径；后续启动会优先使用已保存的路径，启动选择结果和失败原因记录在 `log\startup\cfquant_startup.log`。
+
+新安装的 QMT 可以在首次登录前下载 Python 运行库。安装完成后，绑定窗口会显示“已完成，100%”和“已安装，登录后应用”，此时可保存绑定；未保存的新绑定不会因为下载运行库而自动启动 QMT。登录后重新检测即可应用执行器，无需关闭并重新打开编辑窗口。
 
 自动安装失败时，启动窗口会保持打开，并把安装日志写入 `log\startup\cfquant_startup.log`，修复 Python、网络或权限问题后重新启动即可。
 
@@ -171,6 +173,8 @@ cfquant run
 ```
 
 如果使用源码包，直接运行项目目录中的 `start_cfquant.bat`。即使 Conda 没有加入系统 PATH，启动脚本也会探测常见 Conda 目录；无法探测时可设置 `CFQUANT_PYTHON_EXE` 指向该环境的 `python.exe`。Web 初始化后请保存同一个解释器路径，避免 Web、外部策略和 QMT 使用不同环境。
+
+如果自动登录检测显示 pywin32 已安装，但 `win32api`、`win32gui` 报“DLL load failed / 找不到指定的程序”，通常是 pip 更新了组件，而 Conda 或以前安装留下的旧 `pywintypes` DLL 仍被优先加载。CFQuant 会在导入登录组件前加载当前安装包清单中的配套 DLL，并在检测详情中显示实际路径，无需手工复制 DLL。如果当前进程已经加载了不同版本，会显示冲突路径；停止 CFQuant，按检测页面生成的 PowerShell 命令逐行修复后重新启动。修复命令按实际包来源选择 pip 或 Conda；`pywin32-ctypes` 是另一个包，不表示 pywin32 由 Conda 管理。不要在 Conda 环境运行 `pywin32_postinstall`。
 
 #### 选择建议
 

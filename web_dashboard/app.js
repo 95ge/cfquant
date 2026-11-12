@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261112_02';
+const FRONTEND_VERSION = 'web_20261112_03';
 
 const state = {
   accountId: '',
@@ -1352,6 +1352,7 @@ function qmtDependencyStatusHtml(report, prefix = '') {
     <details><summary>检测详情与修复方法</summary>
       <p>当前 Web 服务 Python：<code>${esc(report.python_executable || '')}</code></p>
       <p>${esc([report.environment, report.python_version, report.packages?.pywin32 && `pywin32 ${report.packages.pywin32}`, report.packages?.frida && `Frida ${report.packages.frida}`].filter(Boolean).join(' · '))}</p>
+      ${report.pywin32_runtime?.loaded_dll ? `<p>pywintypes DLL：<code>${esc(report.pywin32_runtime.loaded_dll)}</code></p>` : ''}
       ${failures.map(item => `<p><code>${esc(item.name)}</code>：${esc(item.error || '')}</p>`).join('')}
       ${report.error ? `<p>${esc(report.error)}</p>` : ''}
       ${commands.length ? `<p>${esc(report.repair_note || '')}</p><pre>${esc(commands.join('\n'))}</pre>
@@ -6057,16 +6058,15 @@ async function reinitializeSetup() {
 }
 
 async function continueAfterConfig() {
-  if (state.setup && state.setup.setup_required) {
-    showSetupOverlay('请完成初始化配置');
-    return;
-  }
   hideSetupOverlay();
   await startAuthenticatedApp();
   if (state.currentView === 'tests') {
     renderTestsView();
   }
-  maybeAutoOpenOnboardingGuide();
+  if (!Object.values(state.accountConfigs || {}).some(row => row && row.account_id)) {
+    setView('bindings');
+    if ($('bindingDialogOverlay')?.classList.contains('hidden')) openBindingDialog();
+  }
 }
 
 async function ensureWebAuth() {
@@ -10393,6 +10393,7 @@ function openBindingDialog(options = {}) {
   }
   renderBindingPythonRuntimeStatus();
   scheduleBindingPythonRuntimeCheck(0);
+  if (state.bindingPythonRuntimeJobId) pollBindingPythonRuntimeJob(state.bindingPythonRuntimeJobId);
   window.setTimeout(() => form.account_id && form.account_id.focus(), 0);
 }
 
@@ -10710,7 +10711,8 @@ function renderBindingPythonRuntimeProgress() {
   }
   wrap.classList.remove('hidden');
   const data = event.data && typeof event.data === 'object' ? event.data : event;
-  const phase = data.phase || event.meta?.stage || 'progress';
+  const stage = downloadEventStage(event);
+  const phase = ['done', 'error'].includes(stage) ? stage : data.phase || stage || 'progress';
   const phaseHasPercent = ['download', 'downloading', 'download_verified', 'installed'].includes(phase);
   const rawPercent = Number(data.percent);
   const percent = phase === 'done' ? 100 : (phaseHasPercent && Number.isFinite(rawPercent)
@@ -10763,9 +10765,10 @@ function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, e
   const canApply = detected && !error && !!qmtDir && !!accountId
     && (binding.config_exists || missingAccountConfig)
     && binding.state !== 'account_config_unreadable';
+  const installedBeforeLogin = missingAccountConfig && !!selected.installed;
   const ready = !!selected.installed && binding.selected_runtime === runtime && binding.state === 'ready'
     && (!binding.configured_runtime || binding.configured_runtime === runtime);
-  button.disabled = !canApply || ready || checking || running;
+  button.disabled = !canApply || ready || installedBeforeLogin || checking || running;
   button.textContent = running ? 'Python 库任务进行中...' : (ready ? `${bindingPythonRuntimeName(runtime)} 已就绪`
     : missingAccountConfig ? (selected.installed ? `已安装 ${bindingPythonRuntimeName(runtime)}，登录后应用`
       : `下载 ${bindingPythonRuntimeName(runtime)}（登录后应用）`)
@@ -10792,7 +10795,8 @@ function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, e
     return;
   }
   const versionText = binding.qmt_version ? `QMT ${binding.qmt_version}` : 'QMT 版本未知';
-  const libraryText = selected.installed ? (ready ? '已安装并配置' : '已安装，等待切换') : '尚未安装';
+  const libraryText = selected.installed ? (ready ? '已安装并配置'
+    : installedBeforeLogin ? '已安装，登录后应用' : '已安装，等待切换') : '尚未安装';
   statusNode.textContent = `${versionText}，所选 ${bindingPythonRuntimeName(runtime)}：${libraryText}。`;
   hint.textContent = binding.py312_supported ? '该 QMT 支持 Python 3.6 和 Python 3.12。'
     : binding.qmt_version ? '此 QMT 仅提供 Python 3.6。' : '未识别到可靠的 QMT 版本，暂时仅提供 Python 3.6。';
@@ -10800,7 +10804,8 @@ function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, e
     choiceHint.textContent = !accountId ? '填写账号后可配置执行器；请使用已在此 QMT 登录过的账号。'
       : '未找到可读的账号配置，请先在该 QMT 登录此账号一次，再重新检测。';
   } else if (missingAccountConfig) {
-    choiceHint.textContent = '账号尚未在此 QMT 登录，可先下载运行库；登录后重新检测并应用所选执行器。';
+    choiceHint.textContent = installedBeforeLogin ? '运行库已安装，可以保存绑定；登录此 QMT 后重新检测并应用所选执行器。'
+      : '账号尚未在此 QMT 登录，可先下载运行库；登录后重新检测并应用所选执行器。';
   } else if (binding.selected_runtime) {
     choiceHint.textContent = `当前配置：${bindingPythonRuntimeName(binding.selected_runtime)}。`
       + (ready ? '已就绪。' : '点击下方按钮应用所选执行器，完成后会重启此 QMT。');
@@ -10822,6 +10827,12 @@ function bindingPythonRuntimeProgressEvent(event) {
       state.bindingPythonRuntimeChoice = state.bindingPythonRuntimeJobRuntime;
       state.bindingPythonRuntimeDeferred = !!event.data?.result?.account_config_required;
       state.bindingPythonRuntimeChoiceDirty = !state.bindingPythonRuntimeDeferred;
+      // Completion is authoritative even if the following disk check is slow.
+      const binding = bindingPythonRuntimeBinding();
+      const runtime = state.bindingPythonRuntimeJobRuntime;
+      if (event.data?.result?.installed?.installed && binding.runtimes?.[runtime]) {
+        binding.runtimes[runtime].installed = true;
+      }
     }
     state.bindingPythonRuntimeJobId = '';
     renderBindingPythonRuntimeStatus(state.bindingPythonRuntime);
@@ -15167,17 +15178,6 @@ function openOnboardingGuide(options = {}) {
   showOnboardingModal(options);
 }
 
-function maybeAutoOpenOnboardingGuide() {
-  if (state.setup && state.setup.setup_required) {
-    return false;
-  }
-  if (localStorage.getItem(onboardingAutoShownKey()) === '1') {
-    return false;
-  }
-  window.setTimeout(() => openOnboardingGuide({ auto: true, reason: 'first_start', step: 'intro' }), 0);
-  return true;
-}
-
 function setSettingsTab(name, shouldPersist = true) {
   if (!document.querySelector(`.settings-menu-item[data-settings-tab="${name}"]`)) {
     name = 'api-key';
@@ -15634,8 +15634,9 @@ async function boot() {
   const cancelBindingDialogBtn = $('cancelBindingDialogBtn');
   if (cancelBindingDialogBtn) cancelBindingDialogBtn.addEventListener('click', closeBindingDialog);
   const bindingPythonRuntimeRefreshBtn = $('bindingPythonRuntimeRefreshBtn');
-  if (bindingPythonRuntimeRefreshBtn) bindingPythonRuntimeRefreshBtn.addEventListener('click', () => {
-    refreshBindingPythonRuntime({ throwOnError: false });
+  if (bindingPythonRuntimeRefreshBtn) bindingPythonRuntimeRefreshBtn.addEventListener('click', async () => {
+    if (state.bindingPythonRuntimeJobId) await refreshBindingPythonRuntimeJob(state.bindingPythonRuntimeJobId);
+    await refreshBindingPythonRuntime({ throwOnError: false });
   });
   const bindingPythonRuntimeDownloadBtn = $('bindingPythonRuntimeDownloadBtn');
   if (bindingPythonRuntimeDownloadBtn) bindingPythonRuntimeDownloadBtn.addEventListener('click', () => {

@@ -3,7 +3,8 @@ from cfquant.tests.test_tutorial_reader import browser, page, expect, frontend_u
 
 
 def open_console(page, frontend_url):
-    requests, errors = open_app(page, frontend_url, setup_required=False)
+    requests, errors = open_app(page, frontend_url, setup_required=False,
+                                account_configs={'saved': {'account_id': 'TEST_ONLY', 'bridge_id': 'test'}})
     page.locator('#closeOnboardingBtn').click()
     page.mouse.move(page.viewport_size['width'] - 1, page.viewport_size['height'] - 1)
     page.keyboard.press('Escape')

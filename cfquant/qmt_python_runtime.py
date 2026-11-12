@@ -237,7 +237,8 @@ class QmtPythonRuntime:
         if not executable.is_file():
             return ""
         try:
-            import win32api
+            from .qmt_dependencies import import_login_module
+            win32api = import_login_module("win32api")
             info = win32api.GetFileVersionInfo(str(executable), "\\")
             ms = int(info.get("FileVersionMS", 0))
             ls = int(info.get("FileVersionLS", 0))
@@ -581,6 +582,7 @@ class QmtPythonRuntime:
                 required = [install / "python36.dll", install / "Lib"]
             if not all(path.exists() for path in required):
                 raise QmtPythonRuntimeError("QMT runtime archive has an unexpected layout")
+            _callback(progress_callback, QmtPythonProgress(runtime, "installing", message="正在写入运行库文件"))
             backup = None
             if runtime == "py312":
                 if target.exists():
