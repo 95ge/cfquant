@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261112_03';
+const FRONTEND_VERSION = 'web_20261113_02';
 
 const state = {
   accountId: '',
@@ -29,6 +29,7 @@ const state = {
   orderCallbackRefreshTimer: null,
   orderCallbackRefreshInFlight: false,
   orderCallbackRefreshPending: false,
+  orderCallbackRefreshLastAt: -Infinity,
   orderCallbackRefreshSections: new Set(),
   orderCallbackMeta: new Map(),
   latestOrders: [],
@@ -1603,6 +1604,7 @@ const QUOTE_RESPONSE_LOG_LIMIT = 20;
 const QUOTE_EVENT_PROCESS_LIMIT = 160;
 const STATUS_REFRESH_INTERVAL_MS = 30000;
 const ACCOUNT_CACHE_POLL_INTERVAL_MS = 15000;
+const ORDER_CACHE_POLL_INTERVAL_MS = 2000;
 const BINDING_POLL_INTERVAL_MS = 5000;
 const ONBOARDING_BRIDGE_POLL_MS = 3000;
 const CALLBACK_POLL_INTERVAL_MS = 3000;
@@ -8697,6 +8699,7 @@ function setView(view, monitorAuthorized = false) {
   state.currentView = view;
   syncActivityLogContext();
   if (state.appStarted) refreshVisibleAccountCache();
+  refreshVisibleOrderCache();
   localStorage.setItem('cfquant.view', view);
   document.body.dataset.view = view;
   const titleMap = {
@@ -8784,7 +8787,7 @@ function setDataTab(name, shouldRefresh = true) {
     refreshAccount('trades').catch((error) => logRequestError('成交刷新失败', error));
   }
   if (shouldRefresh && name === 'orders') {
-    refreshAccount('orders', { force: true, subscribe: false }).catch((error) => logRequestError('委托刷新失败', error));
+    refreshAccount('orders').catch((error) => logRequestError('委托刷新失败', error));
   }
 }
 
@@ -12295,6 +12298,7 @@ function resetSelectionState() {
   state.cfquantOrderRemarks.clear();
   state.orderCallbackRefreshSections.clear();
   state.orderCallbackRefreshPending = false;
+  state.orderCallbackRefreshLastAt = -Infinity;
   if (state.orderHighlightTimer) {
     window.clearTimeout(state.orderHighlightTimer);
     state.orderHighlightTimer = null;
@@ -13270,22 +13274,52 @@ function mergeOrderCallbackRow(row) {
   return true;
 }
 
+function visibleOrderCallbackSections() {
+  if (!state.appStarted || !visiblePage() || !realtimeOrdersEnabled()) return [];
+  if (state.currentView === 'orders') return ['orders'];
+  if (state.currentView === 'overview') return ['asset', 'positions', 'orders'];
+  if (state.currentView !== 'trade') return [];
+  const tab = document.querySelector('.data-tab.active')?.dataset.tab;
+  return ['asset', 'positions', ...(['orders', 'trades'].includes(tab) ? [tab] : [])];
+}
+
+function clearOrderCallbackRefresh() {
+  if (state.orderCallbackRefreshTimer) window.clearTimeout(state.orderCallbackRefreshTimer);
+  state.orderCallbackRefreshTimer = null;
+  state.orderCallbackRefreshSections.clear();
+  state.orderCallbackRefreshPending = false;
+}
+
+function refreshVisibleOrderCache() {
+  const visible = visibleOrderCallbackSections();
+  if (!visible.length) {
+    clearOrderCallbackRefresh();
+    return;
+  }
+  // Keep reading after the last callback so a delayed reconciliation reaches
+  // the page. Only visible tables renew their server-side cache subscription.
+  scheduleOrderCallbackRefresh(visible.filter(section => ['orders', 'trades'].includes(section)).join(','));
+}
+
 function runOrderCallbackRefresh() {
   state.orderCallbackRefreshTimer = null;
+  const visible = visibleOrderCallbackSections();
+  if (!visible.length) {
+    clearOrderCallbackRefresh();
+    return;
+  }
   if (state.orderCallbackRefreshInFlight) {
     state.orderCallbackRefreshPending = true;
     return;
   }
-  const sections = Array.from(state.orderCallbackRefreshSections);
+  const sections = Array.from(state.orderCallbackRefreshSections).filter(section => visible.includes(section));
   state.orderCallbackRefreshSections.clear();
   if (!sections.length) return;
   state.orderCallbackRefreshInFlight = true;
-  const snapshots = sections.filter((section) => section === 'asset' || section === 'positions');
-  const live = sections.filter((section) => section !== 'asset' && section !== 'positions');
-  Promise.all([
-    snapshots.length && accountSnapshotVisible() ? refreshVisibleAccountCache() : Promise.resolve(),
-    live.length ? refreshAccount(live.join(','), { force: true, subscribe: false }) : Promise.resolve(),
-  ])
+  state.orderCallbackRefreshLastAt = performance.now();
+  // All automatic readers share AccountDataCache's single-flight, event
+  // throttle and failure backoff. Explicit user actions keep their live path.
+  refreshAccount(sections.join(','))
     .catch((error) => logRequestError('回调刷新交易数据失败', error, { sections }, { category: 'account' }))
     .finally(() => {
       state.orderCallbackRefreshInFlight = false;
@@ -13296,13 +13330,19 @@ function runOrderCallbackRefresh() {
     });
 }
 
-function scheduleOrderCallbackRefresh(sections = 'orders') {
-  String(sections || 'orders').split(',').forEach((section) => {
+function scheduleOrderCallbackRefresh(sections = '') {
+  const visible = visibleOrderCallbackSections();
+  if (!visible.length) {
+    clearOrderCallbackRefresh();
+    return;
+  }
+  String(sections).split(',').forEach((section) => {
     const value = section.trim();
-    if (value) state.orderCallbackRefreshSections.add(value);
+    if (visible.includes(value)) state.orderCallbackRefreshSections.add(value);
   });
-  if (state.orderCallbackRefreshTimer) return;
-  state.orderCallbackRefreshTimer = window.setTimeout(runOrderCallbackRefresh, 180);
+  if (state.orderCallbackRefreshTimer || !state.orderCallbackRefreshSections.size) return;
+  const delay = Math.max(0, state.orderCallbackRefreshLastAt + ORDER_CACHE_POLL_INTERVAL_MS - performance.now());
+  state.orderCallbackRefreshTimer = window.setTimeout(runOrderCallbackRefresh, delay);
 }
 
 function handleOrderCallbackEvent(event, options = {}) {
@@ -13316,7 +13356,7 @@ function handleOrderCallbackEvent(event, options = {}) {
   if (name.includes('stock_trade')) {
     scheduleOrderCallbackRefresh('asset,positions,orders,trades');
   } else if (name.includes('stock_asset') || name.includes('stock_position')) {
-    refreshVisibleAccountCache();
+    scheduleOrderCallbackRefresh('asset,positions');
   } else if (!merged && callbackEventIsTradeRelated(event)) {
     scheduleOrderCallbackRefresh('orders');
   }
@@ -13594,6 +13634,7 @@ function renderTrades(section) {
 }
 
 const accountRefreshStates = new Map();
+const accountRenderedSnapshots = new Map();
 
 function accountFailureSignature(section) {
   // Cache age and HTTP read time change on every poll; the failed query does not.
@@ -13639,7 +13680,21 @@ function renderAccountSection(name, section, identity) {
   const renderers = { asset: renderAsset, positions: renderPositions, orders: renderOrders, trades: renderTrades };
   const hasData = !!section.ok || (section.stale === true && section.has_data === true);
   const failed = !section.ok || section.refresh_ok === false || !!(section.partial_errors || []).length;
-  renderers[name](hasData ? section : {});
+  const snapshotKey = identity.join('|');
+  const snapshotTimes = Object.fromEntries(Object.entries(section.market_results || { default: section })
+    .map(([market, row]) => [market, Number(row?.data_checked_at || row?.checked_at || 0)]));
+  const displayed = accountRenderedSnapshots.get(name);
+  const fullList = name === 'orders' || name === 'trades';
+  // A repeated/older cached snapshot must not undo a newer manual query or
+  // locally merged order callback. Still update failure notices below.
+  const keepRows = fullList && hasData && section.cached && displayed?.key === snapshotKey
+    && Object.keys(snapshotTimes).length > 0
+    && Object.keys(snapshotTimes).length === Object.keys(displayed.times).length
+    && Object.entries(snapshotTimes).every(([market, at]) => at > 0 && at <= displayed.times[market]);
+  if (!keepRows) {
+    renderers[name](hasData ? section : {});
+    if (fullList) accountRenderedSnapshots.set(name, { key: snapshotKey, times: hasData ? snapshotTimes : {} });
+  }
   if (!hasData && name !== 'asset') {
     const bodies = { positions: ['positionsBody', 'tradePositionsBody'], orders: ['ordersBody', 'tradeOrdersBody'], trades: ['tradeTradesBody'] };
     const columns = { positions: 7, orders: 11, trades: 6 };
@@ -14041,8 +14096,13 @@ function wireNavigation() {
     closeOrderCallbackSocket();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) stopQuoteLive({ beacon: true });
-    else connectOrderCallbackSocket();
+    if (document.hidden) {
+      stopQuoteLive({ beacon: true });
+      clearOrderCallbackRefresh();
+    } else {
+      connectOrderCallbackSocket();
+      refreshVisibleOrderCache();
+    }
   });
 }
 
@@ -15442,6 +15502,7 @@ async function refreshVisibleBindings() {
 function startTimers() {
   if (state.statusTimer) return;
   setInterval(refreshVisibleAccountCache, ACCOUNT_CACHE_POLL_INTERVAL_MS);
+  setInterval(refreshVisibleOrderCache, ORDER_CACHE_POLL_INTERVAL_MS);
   document.addEventListener('visibilitychange', refreshVisibleAccountCache);
   setInterval(refreshVisibleBindings, BINDING_POLL_INTERVAL_MS);
   document.addEventListener('visibilitychange', refreshVisibleBindings);

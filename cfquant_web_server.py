@@ -14914,6 +14914,12 @@ class AccountDataCache(object):
                 self._refresh_failures.pop(cache_key, None)
                 # A callback received during the RPC must not be overwritten by its older snapshot.
                 if versions is not None and versions[section] != self._versions.get(cache_key, 0):
+                    # Order/trade callbacks only invalidate their full lists;
+                    # they do not merge rows here. Keep the completed snapshot
+                    # and its dirty flag so continuous trading cannot starve
+                    # readers, then reconcile again under the normal throttle.
+                    if section in ("orders", "trades"):
+                        self._entries[cache_key] = stored
                     continue
                 self._entries[cache_key] = stored
                 self._dirty.pop(cache_key, None)

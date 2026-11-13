@@ -48,11 +48,12 @@ def test_visible_cache_reads_do_not_overlap(page, frontend_url):
     assert result == {"count": 1, "inFlight": True, "finished": True}
 
 
-def test_trade_callback_refresh_uses_cache_for_asset_and_positions(page, frontend_url):
+def test_trade_callback_refresh_uses_shared_cache_only_for_visible_sections(page, frontend_url):
     open_app(page, frontend_url)
     calls = page.evaluate("""async () => {
         state.appStarted = true;
         state.currentView = 'trade';
+        setDataTab('orders', false);
         const calls = [];
         refreshAccount = async (sections, options = {}) => { calls.push({ sections, options }); };
         state.orderCallbackRefreshSections = new Set(['asset', 'positions', 'orders', 'trades']);
@@ -61,9 +62,160 @@ def test_trade_callback_refresh_uses_cache_for_asset_and_positions(page, fronten
         return calls;
     }""")
     assert calls == [
-        {"sections": "asset,positions", "options": {}},
-        {"sections": "orders,trades", "options": {"force": True, "subscribe": False}},
+        {"sections": "asset,positions,orders", "options": {}},
     ]
+
+
+def test_callback_bursts_are_bounded_and_poll_after_the_last_trade(page, frontend_url):
+    page.clock.install()
+    open_app(page, frontend_url)
+    page.evaluate("""() => {
+        clearOrderCallbackRefresh();
+        state.currentView = 'trade';
+        setDataTab('trades', false);
+        state.orderCallbackRefreshLastAt = -Infinity;
+        window.cacheReads = [];
+        refreshAccount = async (sections, options = {}) => {
+            cacheReads.push({ sections, options, at: performance.now() });
+        };
+        appendServerCallbackEvent = event => event;
+        rememberCfquantOrder = rememberOrderCallbackMeta = () => {};
+        mergeOrderCallbackRow = () => true;
+        window.burst = () => {
+            for (let i = 0; i < 100; i++) handleOrderCallbackEvent({
+                event: 'trader:on_stock_trade', data: { traded_id: String(i), order_id: 'order' }
+            });
+        };
+    }""")
+    for _ in range(10):
+        page.evaluate("burst()")
+        page.clock.run_for(1000)
+    calls = page.evaluate("cacheReads")
+    assert 5 <= len(calls) <= 6
+    assert all(call["options"] == {} and "orders" not in call["sections"] for call in calls)
+    assert all(b["at"] - a["at"] >= 2000 for a, b in zip(calls, calls[1:]))
+    # No more callback: periodic cache reads still retrieve the final snapshot.
+    page.clock.run_for(4000)
+    assert page.evaluate("cacheReads.length") > len(calls)
+
+
+def test_hidden_and_unrelated_views_do_not_requery_on_callbacks(page, frontend_url):
+    page.clock.install()
+    open_app(page, frontend_url)
+    page.evaluate("""() => {
+        clearOrderCallbackRefresh();
+        state.currentView = 'orders';
+        state.orderCallbackRefreshLastAt = performance.now();
+        window.cacheReads = [];
+        refreshAccount = async (sections, options = {}) => cacheReads.push({ sections, options });
+        scheduleOrderCallbackRefresh('orders,trades');
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    page.clock.run_for(6000)
+    assert page.evaluate("cacheReads") == []
+    page.evaluate("""() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+        state.currentView = 'settings';
+        for (let i = 0; i < 100; i++) scheduleOrderCallbackRefresh('asset,positions,orders,trades');
+    }""")
+    page.clock.run_for(6000)
+    assert page.evaluate("cacheReads") == []
+    page.evaluate("""() => {
+        state.currentView = 'orders';
+        document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    page.clock.run_for(2000)
+    assert page.evaluate("cacheReads.length") >= 1
+    assert all(row == {"sections": "orders", "options": {}} for row in page.evaluate("cacheReads"))
+    page.evaluate("document.getElementById('autoRefresh').checked = false")
+    before = page.evaluate("cacheReads.length")
+    page.clock.run_for(6000)
+    assert page.evaluate("cacheReads.length") == before
+
+
+def test_slow_callback_cache_reads_never_overlap_and_drop_hidden_followups(page, frontend_url):
+    page.clock.install()
+    open_app(page, frontend_url)
+    page.evaluate("""() => {
+        clearOrderCallbackRefresh();
+        state.currentView = 'orders';
+        state.orderCallbackRefreshLastAt = -Infinity;
+        window.cacheReadCount = 0;
+        refreshAccount = () => {
+            cacheReadCount += 1;
+            return new Promise(resolve => { window.finishCacheRead = resolve; });
+        };
+        scheduleOrderCallbackRefresh('orders');
+    }""")
+    page.clock.run_for(6000)
+    assert page.evaluate("cacheReadCount") == 1
+    page.evaluate("""() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+        finishCacheRead();
+    }""")
+    page.clock.run_for(6000)
+    assert page.evaluate("cacheReadCount") == 1
+    assert page.evaluate("!state.orderCallbackRefreshInFlight && !state.orderCallbackRefreshTimer")
+
+
+def test_manual_orders_refresh_still_bypasses_cache(page, frontend_url):
+    open_app(page, frontend_url)
+    calls = page.evaluate("""async () => {
+        clearOrderCallbackRefresh();
+        state.currentView = 'settings';
+        const calls = [];
+        refreshAccount = async (sections, options = {}) => calls.push({ sections, options });
+        document.getElementById('ordersBtn').click();
+        await Promise.resolve();
+        return calls;
+    }""")
+    assert calls == [{"sections": "orders", "options": {"force": True, "subscribe": False}}]
+
+
+def test_cached_lists_do_not_undo_newer_callbacks_or_manual_refresh(page, frontend_url):
+    open_app(page, frontend_url)
+    result = page.evaluate("""() => {
+        const identity = ['paper', 'STOCK', 'default', 'trade'];
+        const renders = [];
+        renderOrders = section => renders.push(section.data?.[0]?.order_id || 'empty');
+        const snapshot = (id, at, cached = true) => ({
+            ok: true, cached, checked_at: at, data: [{ order_id: id }]
+        });
+        renderAccountSection('orders', snapshot('cached', 100), identity);
+        renderOrders({ data: [{ order_id: 'callback' }] });
+        renderAccountSection('orders', snapshot('cached', 100), identity);
+        renderAccountSection('orders', snapshot('manual', 105, false), identity);
+        renderAccountSection('orders', snapshot('older-cache', 103), identity);
+        renderAccountSection('orders', snapshot('reconciled', 106), identity);
+        renderAccountSection('orders', snapshot('other-account', 90), ['other', ...identity.slice(1)]);
+        renderAccountSection('orders', snapshot('back-to-paper', 106), identity);
+        return renders;
+    }""")
+    assert result == ['cached', 'callback', 'manual', 'reconciled', 'other-account', 'back-to-paper']
+
+
+def test_market_cache_changes_are_checked_per_market(page, frontend_url):
+    open_app(page, frontend_url)
+    result = page.evaluate("""() => {
+        const identity = ['paper', 'STOCK', 'base', 'trade'];
+        const renders = [];
+        renderTrades = section => renders.push(section.data[0]);
+        const snapshot = (id, sh, sz, cached = true) => ({
+            ok: true, cached, data: [id], market_results: {
+                SH: { checked_at: sh }, SZ: { checked_at: sz }
+            }
+        });
+        renderAccountSection('trades', snapshot('initial', 100, 90), identity);
+        renderAccountSection('trades', snapshot('unchanged', 100, 90), identity);
+        renderAccountSection('trades', snapshot('sz-updated', 100, 95), identity);
+        renderAccountSection('trades', snapshot('manual', 105, 105, false), identity);
+        renderAccountSection('trades', snapshot('old-cache', 100, 95), identity);
+        renderAccountSection('trades', snapshot('sh-updated', 110, 105), identity);
+        return renders;
+    }""")
+    assert result == ['initial', 'sz-updated', 'manual', 'sh-updated']
 
 
 def test_account_switch_does_not_render_the_previous_accounts_response(page, frontend_url):

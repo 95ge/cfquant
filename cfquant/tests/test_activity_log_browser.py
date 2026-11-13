@@ -3,6 +3,9 @@ from cfquant.tests.test_tutorial_reader import browser, page, expect, frontend_u
 
 
 def open_logs(page, frontend_url):
+    # The static fixture has no WebSocket server. Keep unrelated connection
+    # errors out of assertions about deliberately injected log incidents.
+    page.route_web_socket("**/ws/callbacks**", lambda socket: None)
     requests, errors = open_app(page, frontend_url)
     page.evaluate("""() => {
         document.getElementById('setupOverlay').remove();

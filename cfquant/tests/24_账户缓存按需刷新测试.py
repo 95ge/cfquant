@@ -265,7 +265,8 @@ def test_event_dirty_flag_survives_an_inflight_query(environment, monkeypatch):
     assert KEY + ("positions",) not in cache._dirty
 
 
-def test_concurrent_initial_readers_share_one_query(environment, monkeypatch):
+@pytest.mark.parametrize("sections", [("asset", "positions"), ("orders", "trades")])
+def test_concurrent_initial_readers_share_one_query(environment, monkeypatch, sections):
     cache = environment.cache
     entered = threading.Event()
     release = threading.Event()
@@ -279,7 +280,7 @@ def test_concurrent_initial_readers_share_one_query(environment, monkeypatch):
 
     def read():
         try:
-            results.append(get(cache))
+            results.append(get(cache, sections))
         except Exception as error:
             errors.append(error)
 
@@ -309,6 +310,70 @@ def test_force_refresh_and_unsubscribed_queries_keep_their_contract(environment)
     assert result["cache"]["enabled"] is False
     assert all(key[3] != "other" for key in cache._subscriptions)
     assert len(environment.calls) == 3
+
+
+def test_order_trade_readers_share_throttled_reconciliation_and_backoff(environment, monkeypatch):
+    cache = environment.cache
+    cache.interval = 5
+    sections = ("orders", "trades")
+    get(cache, sections)
+    # Twenty pages read the same account during a ten-second callback burst.
+    # Each pair of native queries is shared, including readers between events.
+    for tick in range(1, 101):
+        environment.clock[0] = 1000 + tick / 10
+        cache.update_from_event(event("on_stock_trade", {"traded_id": tick}))
+        for _ in range(20):
+            get(cache, sections)
+        cache._refresh_subscriptions()
+    assert len(environment.calls) == 6  # Initial read, then 2/4/6/8/10 seconds.
+    assert all(set(call[3]) == set(sections) for call in environment.calls)
+    failures = fail_queries(environment, monkeypatch)
+    cache.update_from_event(event("on_stock_trade", {"traded_id": "last"}))
+    environment.clock[0] += 2
+    cache._refresh_subscriptions()
+    assert len(failures) == 1
+    for delay in (5, 15, 60):
+        before = len(failures)
+        for _ in range(delay - 1):
+            environment.clock[0] += 1
+            cache.update_from_event(event("on_stock_trade", {"traded_id": environment.clock[0]}))
+            for _ in range(20):
+                rows = get(cache, sections)
+                assert all(rows[name]["stale"] for name in sections)
+            cache._refresh_subscriptions()
+        assert len(failures) == before
+        environment.clock[0] += 1
+        cache._refresh_subscriptions()
+        assert len(failures) == before + 1
+    # The last completed trade must still reach all pages after callbacks stop.
+    def recovered(*args, **kwargs):
+        return {name: {"ok": True, "data": [{"order_id": "final"}]} for name in sections}
+    monkeypatch.setattr(web, "query_account_live", recovered)
+    environment.clock[0] += 60
+    cache._refresh_subscriptions()
+    rows = get(cache, sections)
+    assert all(rows[name]["ok"] and rows[name]["data"][0]["order_id"] == "final" for name in sections)
+    before = len(failures)
+    environment.clock[0] += 91
+    cache._refresh_subscriptions()
+    assert not cache._subscriptions and not cache._entries
+    assert len(failures) == before
+
+
+def test_order_trade_snapshot_is_not_starved_by_inflight_callbacks(environment, monkeypatch):
+    cache = environment.cache
+    sections = ("orders", "trades")
+    def query(*args, **kwargs):
+        cache.update_from_event(event("on_stock_trade", {"traded_id": 1}))
+        return {name: {"ok": True, "data": [{"order_id": "snapshot"}]} for name in sections}
+    monkeypatch.setattr(web, "query_account_live", query)
+    result = get(cache, sections)
+    assert all(result[name]["data"][0]["order_id"] == "snapshot" for name in sections)
+    assert all(KEY + (name,) in cache._dirty for name in sections)
+    monkeypatch.setattr(web, "query_account_live", environment.query)
+    environment.clock[0] += 2
+    cache._refresh_subscriptions()
+    assert all(KEY + (name,) not in cache._dirty for name in sections)
 
 
 def test_event_store_updates_cache_before_broadcast_without_rpc(environment, monkeypatch):
