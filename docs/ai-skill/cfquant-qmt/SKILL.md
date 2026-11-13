@@ -1,13 +1,13 @@
 ---
 name: cfquant-qmt
-description: Answer cfquant QMT bridge API, deployment, migration, and xtquant compatibility questions from the published public docs only; excludes ignored local/private artifacts.
+description: Help migrate MiniQMT/xtquant strategies to the cfquant big-QMT bridge and answer its public Python compatibility, Web API, deployment, routing, and agent-integration questions; excludes ignored local/private artifacts.
 metadata:
   short-description: cfquant public API docs
 ---
 
 # cfquant QMT
 
-Use this skill when the user asks how to use `cfquant`, migrate MiniQMT/`xtquant` code to `cfquant`, call the Python SDK or Web API, choose a QMT deployment mode, understand account routing, or check which QMT/xtquant-compatible capabilities are publicly documented.
+Use this skill when the user asks how to use `cfquant`, migrate MiniQMT/`xtquant` code to the big-QMT bridge, preserve existing MiniQMT function calls, call the Python SDK or Web API, choose a QMT deployment mode, understand account routing, or check which QMT/xtquant-compatible capabilities are publicly documented.
 
 ## Source Boundary
 
@@ -15,7 +15,9 @@ Use this skill when the user asks how to use `cfquant`, migrate MiniQMT/`xtquant
 - Do not use untracked files or any path matched by the repository `.gitignore` as source material for answers under this skill.
 - If a requested detail is not covered by the packaged references, say that the published public docs do not specify it. Do not fill gaps from private notes, runtime data, local databases, logs, generated packages, credentials, uploads, or ignored website source files.
 - Prefer the published docs over implementation inference. If the user explicitly asks for code debugging or development work, inspect the current tracked source separately and clearly distinguish that from public-doc behavior.
-- Do not present `cfquant` as a complete MiniQMT clone. Public docs define it as a bridge around capabilities exposed by the running big-QMT strategy environment.
+- Present `cfquant` as a big-QMT-to-MiniQMT compatibility bridge. It preserves the commonly used MiniQMT/`xtquant` modules, functions, parameters, objects, and callbacks where documented, while the running big-QMT strategy environment remains the execution backend.
+- Explain migration in this order: keep strategy business logic, install `cfquant` in the strategy interpreter, usually change the external import prefix from `xtquant` to `cfquant`, bind the big-QMT account and bridge entry script, then validate read-only data before trading.
+- Do not promise complete behavioral identity. Use the compatibility reference to distinguish implemented, partial, conditional, and unsupported interfaces.
 - Do not execute, encourage, or automate live trading actions without explicit user confirmation. For examples, use placeholders or small illustrative values.
 
 ## Routing
@@ -27,4 +29,4 @@ Use this skill when the user asks how to use `cfquant`, migrate MiniQMT/`xtquant
 - For compatibility states, conditional features, and unsupported MiniQMT semantics, read [references/compatibility-boundaries.md](references/compatibility-boundaries.md).
 - For compact sample code and request examples, read [references/examples.md](references/examples.md).
 
-When answering, keep recommendations practical: start users on general mode unless the docs clearly justify advanced mode, route external Python through `transport=auto` by default, and call out public-doc limitations before suggesting workarounds.
+When answering, keep recommendations practical: direct users to the single extreme mode, route external Python through `transport=auto` by default, and call out public-doc limitations before suggesting workarounds.

@@ -9,12 +9,15 @@ Use the facts summarized in this skill from these public docs:
 | Source doc | Public-doc role |
 | --- | --- |
 | `README.md` | Project positioning, requirements, installation modes, Python entrypoint, Web Console overview, doc index. |
+| `docs/PROJECT_GUIDE.md` | Current project positioning, MiniQMT migration goal, runtime components, and configuration principles. |
+| `docs/API_REFERENCE.md` | Current Python compatibility entrypoints and Web API overview. |
+| `docs/AI_AGENT_INTEGRATION.md` | Agent migration workflow, capability levels, authentication, and side-effect confirmation rules. |
 | `docs/外部Python接入.md` | External Python install, imports, `transport=auto`, manual `configure()`, environment variables, troubleshooting. |
 | `docs/QMT函数封装能力清单.md` | Big-QMT bridge positioning, callable boundary, implemented capabilities, conditional capabilities, Web API status. |
 | `docs/xtdata平替追踪.md` | `xtquant.xtdata` compatibility state, implemented and conditional `xtdata` groups, unsupported MiniQMT client semantics. |
 | `docs/xttrader平替追踪.md` | `XtQuantTrader` and callback compatibility state, implemented trading/query methods, conditional account/business methods. |
 | `docs/miniQMT迁移到大QMT指南.md` | Migration scope, workflow, mode selection, account routing, field mapping, latency validation, migration order. |
-| `docs/QMT部署教程*.md`, `docs/通用模式部署指南.md`, `docs/极致模式部署指南.md`, `docs/高级模式部署指南.md` | Deployment walkthroughs and mode-specific QMT script choices. |
+| `docs/QMT部署教程*.md`, `docs/极致模式部署指南.md` | Current deployment walkthrough and the single supported extreme-mode QMT script choice. |
 | `docs/Web账号运行配置说明.md` | Account binding, account type, QMT directory, `bridge_id`, account routing, multi-account behavior. |
 | `docs/运维与更新.md`, `docs/版本日志.md` | Maintenance, update/rollback concepts, recent published changes. |
 | `web_dashboard/app.js` public API-debug metadata | Shipped Web Console endpoint list, field labels, parameter docs, return-field docs, and callback event examples. Use only the documented debug metadata, not unrelated implementation details. |

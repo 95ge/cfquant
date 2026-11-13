@@ -1,10 +1,10 @@
 # Deployment And Routing
 
-This reference summarizes the public docs for choosing deployment modes, binding accounts, routing external Python calls, and migrating MiniQMT strategies.
+This reference summarizes the public docs for the single supported deployment mode, binding accounts, routing external Python calls, and migrating MiniQMT strategies.
 
 ## Project Positioning
 
-`cfquant` connects external Python programs, the local Web Console, and the big-QMT strategy environment. It wraps big-QMT `ContextInfo` methods or strategy-script global functions that already exist in the running QMT environment.
+`cfquant` converts the big-QMT strategy environment into a MiniQMT/`xtquant`-compatible bridge for external Python programs. It connects those programs, the local Web Console, and big QMT, wrapping `ContextInfo` methods or strategy-script global functions that already exist in the running QMT environment.
 
 The bridge callable lookup boundary in the docs:
 
@@ -14,15 +14,13 @@ The bridge callable lookup boundary in the docs:
 
 The main chain no longer falls back to importing MiniQMT `xtquant.xtdata` to fill missing capability.
 
-## Mode Selection
+## Runtime Mode
 
-| Mode | QMT entry script | Best fit | Notes |
-| --- | --- | --- | --- |
-| General mode | `qmt_scripts/CFQUANT_CTYPE_ALL_LOWLAT.py` | Default choice for most users and single-account deployments. | One QMT and one entry script can cover quotes, queries, orders, cancels, and callbacks. Requests use PipeHub/named pipe. |
-| Lite/extreme mode | `qmt_scripts/CFQUANT_LITE.py` | QMT environments with import/package restrictions. | Pure ctypes/self-contained style. Use when ordinary packaged imports are blocked. |
-| Advanced mode | Ordinary QMT loads `qmt_scripts/CFQUANT.py`; fast trade terminal QMT loads `qmt_scripts/CFQUANT_TRADE_LOWLAT.py`. | Users who explicitly need lower order/cancel latency and have the required QMT terminals. | Ordinary QMT handles normal queries, quotes, and callbacks; fast trade QMT handles orders, cancels, and trade queries. Do not load both entry scripts in the same QMT. |
+| Mode | QMT entry script | Current behavior |
+| --- | --- | --- |
+| Lite/extreme mode | `qmt_scripts/CFQUANT_LITE.py` | The only supported mode. After binding, the Web Console installs the QMT runtime, starts QMT, and deploys the self-contained entry script. |
 
-Practical default: recommend general mode first. Switch to advanced mode only after the user's account binding and both QMT sides are online and after realistic latency measurement.
+Users do not choose between general and advanced modes. Complete the Web binding and wait for the extreme-mode channels to become online.
 
 ## First-Time Setup Flow
 
@@ -31,10 +29,10 @@ Practical default: recommend general mode first. Switch to advanced mode only af
 3. Open `http://127.0.0.1:8765/`.
 4. Use the Web initialization wizard.
 5. Bind account information in Web Console.
-6. Load the QMT entry script that matches the selected mode.
+6. Wait for the Web Console to install the QMT runtime, start QMT, and deploy the extreme-mode entry script.
 7. Validate status, asset, positions, orders, trades, and quote query through Web API debug or external Python.
 
-For PyPI-only library usage, users still need to export and load the QMT-side entry scripts.
+For PyPI-only library usage, the Web Console still needs to complete account binding so it can install the QMT runtime and deploy the QMT-side entry script.
 
 ## Account Binding And Routing
 
@@ -55,19 +53,9 @@ Multi-account guidance:
 - For multiple QMT terminals or brokers, assign different `bridge_id` values and load the matching entry script configuration in each QMT.
 - External strategies should pass the real `StockAccount` and let Web auto routing choose the internal channel.
 
-## Runtime Dependencies By Mode
+## Runtime Dependencies
 
-General mode requires:
-
-- `cfquant_pipe_hub.py` or managed PipeHub online.
-- QMT loaded with `CFQUANT_CTYPE_ALL_LOWLAT.py`.
-
-Advanced mode requires:
-
-- Ordinary QMT loaded with `CFQUANT.py`.
-- Fast trade terminal QMT loaded with `CFQUANT_TRADE_LOWLAT.py`.
-- Both normal and trade channels online before Web can enable advanced mode.
-- General/PipeHub may still be kept as fallback for account-level route failures.
+Extreme mode requires the managed PipeHub and QMT loaded with the self-contained `CFQUANT_LITE.py` entry. The Web Console installs the QMT runtime, starts the client, and deploys this entry after binding.
 
 External discovery:
 
@@ -76,6 +64,8 @@ External discovery:
 - Directly probing the Web HTTP port is not recommended for external programs because users may change the port; LTtx registration is described as more stable.
 
 ## Migration Strategy From MiniQMT
+
+The intended migration is backend replacement: keep the strategy's business logic and familiar `xtdata`/`XtQuantTrader` calls, install `cfquant` in the strategy interpreter, usually change the external import prefix from `xtquant` to `cfquant`, then bind the big-QMT account and load the matching bridge entry script. Do not rewrite the strategy around Web endpoints unless the user specifically needs an HTTP integration.
 
 Start by listing the actual interfaces the existing strategy uses. Do not migrate by trying to replace the entire `xtquant` surface at once.
 
@@ -86,8 +76,7 @@ Recommended migration order:
 3. Callback events for async order/cancel and trade report.
 4. Real-time tick and quote subscription.
 5. Multi-process same-account pressure testing.
-6. Decide whether advanced mode is needed.
-7. Remove MiniQMT dependency and field compatibility branches only after production validation.
+6. Remove MiniQMT dependency and field compatibility branches only after production validation.
 
 Public docs recommend splitting data paths:
 

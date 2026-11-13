@@ -13,15 +13,17 @@ Use these terms consistently:
 | `条件可实现` / `兼容入口` | Entry exists or can be forwarded only when the user's big-QMT version, broker environment, permissions, or strategy context exposes the needed callable. |
 | `不能实现/不应实现` | Big-QMT strategy environment lacks equivalent ability, or the capability belongs to MiniQMT client/server/local-file management and should not be on the main bridge path. |
 
-## Big-QMT Bridge Boundary
+## Big-QMT → MiniQMT Compatibility Boundary
 
 Say:
 
-> `cfquant` wraps capabilities exposed by the running big-QMT strategy environment and provides xtquant-like external Python and Web access.
+> `cfquant` converts capabilities exposed by the running big-QMT strategy environment into a MiniQMT/`xtquant`-compatible external Python and Web access layer.
 
 Do not say:
 
 > `cfquant` fully replaces all MiniQMT local client behavior.
+
+The migration promise is compatibility of the commonly used strategy surface: `xtdata`, `XtQuantTrader`, `StockAccount`, constants, queries, orders, and callbacks keep their documented names and calling patterns where marked supported. MiniQMT local quote-server management, local data-directory ownership, and unsupported edge interfaces remain outside the bridge.
 
 The public docs are explicit that the bridge should not become a MiniQMT SDK proxy by importing `xtquant.xtdata` as a fallback.
 
@@ -31,7 +33,7 @@ Public docs mark these as the current main chain:
 
 - Bridge status and health.
 - Transport mode query/switch.
-- PipeHub status/start/stop for general mode.
+- PipeHub status/start/stop for the extreme-mode bridge.
 - Multi-account routing through Web binding.
 - Stock account subscribe/unsubscribe.
 - Asset, positions, orders, and trades query.

@@ -1,5 +1,13 @@
 # cfquant
 
+## 文档入口
+
+- [项目指南](docs/PROJECT_GUIDE.md)：部署、运行组成和配置原则
+- [Web API 参考](docs/API_REFERENCE.md)：认证、行情、交易与生命周期接口
+- [AI Agent 接入指南](docs/AI_AGENT_INTEGRATION.md)：权限分级、安全边界和 Python 调用示例
+- [MiniQMT 迁移指南](docs/miniQMT迁移到大QMT指南.md)：从原有策略迁移到大 QMT 的步骤和兼容边界
+- [CFQuant QMT Agent Skill](docs/ai-skill/cfquant-qmt/SKILL.md)：供 Codex 或兼容 agent 使用的标准技能
+
 <p>
   <a href="https://github.com/95ge/cfquant/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/95ge/cfquant?style=flat&logo=github&label=Stars" height="18" /></a>
   <a href="https://github.com/95ge/cfquant/network/members"><img alt="GitHub forks" src="https://img.shields.io/github/forks/95ge/cfquant?style=flat&logo=github&label=Forks" /></a>
@@ -11,63 +19,82 @@
 
 ## 项目简介
 
-> **CFQuant 是 MiniQMT 的开源替代方案：让原有 `xtquant` / 外部 Python 策略低成本接入大 QMT。**
+> **CFQuant 是“大 QMT → MiniQMT”桥接兼容层：让原有 MiniQMT / `xtquant` 策略以熟悉的接口接入大 QMT，尽量做到低成本、少改代码、平滑迁移。**
 
 ### 1. 项目定位
 
-`cfquant` 是面向大 QMT 的本地桥接层，专注解决 MiniQMT 迁移、大 QMT 外部 Python 调用、账号路由、交易回调和 Web 可观测这些实际问题。它不会替代 QMT 终端本身，而是把大 QMT 已有的行情、查询、交易和回调能力整理成更接近 `miniQMT` / `xtquant` 的调用方式，让旧策略可以更低成本迁移到大 QMT 环境。
+`cfquant` 是把大 QMT 能力整理成 MiniQMT/`xtquant` 使用体验的本地桥接层。它不会替代 QMT 终端本身，也不是另一个独立行情或交易柜台：大 QMT 负责客户端运行、行情源和交易执行，CFQuant 负责协议转换、进程通信、账户路由、对象/回调兼容以及策略接入。
+
+项目的核心目标是**让已经在 MiniQMT 上运行的策略低成本切换到大 QMT**。原有的 `xtdata` 行情函数、`XtQuantTrader` 交易对象、`StockAccount` 账户对象、常量、查询结果和交易回调尽量保持原来的函数名、参数顺序和调用习惯。迁移时通常只需要安装 `cfquant`、配置 QMT 账户和桥接入口，并将外部包导入从 `xtquant` 调整为 `cfquant`（已经使用 `cfquant` 兼容入口的策略可以继续沿用原调用代码）；策略的主要行情、交易和回调逻辑无需重写。具体差异以[接口适配清单](docs/xtquant原版接口适配清单.md)为准。
 
 ### 2. 核心能力
 
 | 能力 | 解决的问题 |
 |---|---|
-| MiniQMT / `xtquant` 兼容调用 | 原有外部 Python 策略可以沿用接近 `xtdata`、`XtQuantTrader`、`StockAccount` 的写法，降低迁移成本。 |
-| 大 QMT 本地桥接 | 把大 QMT 内部的行情、查询、交易、撤单和回调能力桥接给外部 Python 程序和 Web 控制台。 |
+| MiniQMT / `xtquant` 兼容调用 | 保留 `xtdata`、`XtQuantTrader`、`StockAccount`、`xtconstant` 等常用入口的调用方式，让 MiniQMT 策略低成本切换到大 QMT。 |
+| 大 QMT → MiniQMT 协议桥 | 把大 QMT 内部的行情、查询、交易、撤单和回调转换为外部策略熟悉的 MiniQMT/`xtquant` 兼容协议。 |
 | 大 QMT 原生接口类 | 独立的 `QmtInnerApi` 面向外部数据查询、研究和实盘交易，按系统、行情、交易、回调、扩展数据与因子细分，保留原生函数名与参数，详见 [内置接口说明](docs/大QMT内置接口.md)。 |
 | Web 控制台 | 在浏览器里完成账号绑定、QMT 入口脚本指引、在线检测、接口调试、版本更新和回滚。 |
 | 多账号 / 多 QMT 路由 | 按 `bridge_id`、`account_type`、`account_id` 路由请求，适配多资金账号、普通账户、信用账户和多 QMT 终端。 |
-| 通用、极致、高级三种模式 | 普通环境快速跑通；受限 QMT 使用自包含入口；低延迟场景可拆分普通桥和交易桥。 |
+| 极致模式 | 当前唯一支持的运行方式，使用自包含桥接入口，自动完成 QMT 侧环境准备和策略托管。 |
 | 交易回调与行情推送 | 接收委托、成交、账号状态和行情事件，方便外部策略处理异步结果。 |
 | 部署与排障闭环 | 通过日志、状态检查、教程、反馈和论坛沉淀接入问题，减少部署和维护成本。 |
 
 ### 3. 兼容方式
 
-项目尽量保持 `miniQMT` / `xtquant` 常用接口的调用习惯。已有外部 Python 策略通常只需要调整连接方式或少量配置，不需要重写主要的行情和交易逻辑。具体接口能力和兼容边界请以项目文档为准。
+项目保留 MiniQMT/`xtquant` 常用模块和函数的调用习惯，但兼容不等于所有终端、所有数据权限下的行为完全一致。已有策略通常只需调整导入前缀和连接配置，不需要重写主要行情、交易和回调逻辑。尚未完整适配、参数或返回结构存在差异的接口，会在[接口适配清单](docs/xtquant原版接口适配清单.md)中标明。
 
 ### 4. 使用方式
 
-完成部署后，QMT 负责运行桥接策略，`cfquant` 负责提供本地通信和接口转发。外部 Python 程序可以继续使用熟悉的接口访问 QMT 能力，Web 控制台则用于账号绑定、状态检查、接口测试、策略部署和日常运维。
+完成部署后，大 QMT 负责运行桥接入口和实际交易，`cfquant` 负责提供本地通信、接口转换和兼容对象。外部 Python 程序继续使用 MiniQMT 风格的接口访问大 QMT；Web 控制台用于账号绑定、状态检查、接口测试、策略部署和日常运维。
 
 ### 5. 部署建议
 
-部署需要同时配置本地 Python 环境、QMT 目录、账号绑定和 QMT 入口策略。建议第一次使用时优先选择**通用模式**，按 [QMT 部署教程](docs/QMT部署教程.md) 和 Web 控制台中的初始化向导逐步完成；高级模式和两地多中心需要额外配置多个 QMT 或多个市场入口。
+部署只需准备 Python、QMT 安装目录和账号绑定。当前统一使用**极致模式**，按 Web 控制台中的初始化向导完成绑定后，系统会自动启动 QMT、安装所需运行环境并部署桥接策略。
 
 ### 6. 官方资源
 
 - 官网与问题反馈：[www.cfquant.org](https://cfquant.org)
 - 版本更新日志：[docs/版本日志.md](docs/版本日志.md)
-- 完整部署、模式选择和接口说明见下方“文档”目录
+- 完整部署、极致模式和接口说明见下方“文档”目录
 
 ## 新用户先看这里
 
 如果你第一次使用 cfquant，只需要先完成下面这条路径：
 
-1. 安装 Python 3.8–3.12，生产环境建议 Python 3.10 或 3.12；使用 Anaconda/Miniconda 时，先确定实际运行策略的环境名称。
-2. 按下方“安装方式”选择源码包或 PyPI。第一次部署、需要 Web 更新和 QMT 脚本管理时，优先选择源码包。
-3. 启动 `start_cfquant.bat`，或在已安装包的环境中执行 `cfquant run`。
-4. 打开 <http://127.0.0.1:8765/>，按初始化向导填写 QMT 目录、账号和运行模式。
-5. 在绑定页导入并运行 QMT 入口策略，等待页面显示通道在线。
-6. 先用“接口测试”验证行情、资金和持仓，再接入自己的策略。
+1. 在 Windows 下载并安装 QMT，无需预先登录 QMT。
+2. 安装 Python 3.8–3.12；使用 Anaconda/Miniconda 时，准备运行策略的目标环境。
+3. 按下方“安装方式”安装并启动 CFQuant，打开 <http://127.0.0.1:8765/>。
+4. 在前端初始化向导中填写 QMT 目录、账户和运行配置，保存绑定。
+5. 系统自动启动 QMT，安装 QMT 所需 Python 运行环境，并部署极致模式桥接策略。
+6. 等待页面显示通道在线，先用接口测试验证行情、资金和持仓，再接入 MiniQMT 策略。
 
-### 我应该选择哪种方式？
+### MiniQMT 策略迁移
+
+原有策略的迁移目标是保留业务逻辑，只替换运行后端：
+
+```python
+# 原 MiniQMT / xtquant 风格
+from xtquant import xtdata
+from xtquant.xttrader import XtQuantTrader
+from xtquant.xttype import StockAccount
+
+# CFQuant 兼容入口
+from cfquant import xtdata
+from cfquant.xttrader import XtQuantTrader
+from cfquant.xttype import StockAccount
+```
+
+两种入口中的主要函数名、参数顺序和对象调用方式保持一致，例如 `xtdata.get_market_data`、`xtdata.subscribe_quote`、`XtQuantTrader.connect`、`XtQuantTrader.order_stock`、`query_stock_positions` 以及交易回调。迁移后只需在 Web 控制台绑定大 QMT 账户和桥接目录；不要把 MiniQMT 的本地 `userdata_mini` 路径当作大 QMT 连接地址。兼容边界、部分适配项和返回结构差异请先查阅[适配清单](docs/xtquant原版接口适配清单.md)。
+
+### 安装方式怎么选？
 
 | 你的情况 | 推荐做法 |
 |---|---|
-| 第一次部署，希望系统自动管理 Web、QMT 脚本和更新 | 源码包 + 通用模式 |
+| 第一次部署，希望前端自动管理 Web、QMT 启动和运行环境 | 源码包部署 |
 | 已有 Python 项目，只需要调用 `xtdata` / `xttrader` | PyPI 安装 |
 | 使用 Anaconda/Miniconda | 激活目标环境后执行 `python -m pip` 安装 |
-| QMT 无法导入 `cfquant` 或受 Python 包白名单限制 | 极致模式 |
-| 需要拆分行情与低延迟交易链路 | 高级模式，准备两个 QMT 环境 |
+| QMT 无法导入 `cfquant` 或受 Python 包白名单限制 | 仍使用极致模式，由系统部署自包含入口 |
 
 ### 这几个 Python 环境分别做什么？
 
@@ -84,7 +111,7 @@ python -m pip show cfquant
 
 - 浏览器可以打开 `http://127.0.0.1:8765/`。
 - Web 页面状态中的 Web、LTtx 和需要的 PipeHub 通道在线。
-- QMT 已登录，绑定页显示入口策略运行中。
+- QMT 已由系统自动启动，绑定页显示极致模式入口策略运行中。
 - 接口测试可以返回至少一只证券的行情，以及资金或持仓查询结果。
 - 外部 Python 能够导入 `cfquant`，并且使用的解释器路径与安装包的解释器一致。
 
@@ -93,24 +120,12 @@ python -m pip show cfquant
 ### 环境要求
 
 - Windows
-- 已安装并登录大 QMT
+- 已下载并安装大 QMT（无需预先登录）
 - Python `3.8` - `3.12`，生产环境优先使用 `3.10` 或 `3.12`
 
-### 模式选择
+### 运行方式
 
-部署前先根据 QMT 环境选择模式：
-
-| 模式 | QMT 入口 | 适用场景 |
-|---|---|---|
-| 通用模式 | `CFQUANT_CTYPE_ALL_LOWLAT.py` | 默认选择，适合大多数用户、单账号和常规 QMT 环境 |
-| 极致模式 | `CFQUANT_LITE.py` | 适合国泰君安、国泰海通的君弘君智，以及其他存在 Python 包白名单或导入限制的 QMT |
-| 高级模式 | 普通 QMT 加载 `CFQUANT.py`，极速交易端加载 `CFQUANT_TRADE_LOWLAT.py` | 需要进一步降低下单、撤单延迟，并且能够准备两个 QMT 时使用 |
-
-选择建议：
-
-- 不确定时优先使用**通用模式**。
-- 如果 QMT 无法导入 `cfquant`，或受到 Python 包白名单限制，选择**极致模式**。
-- **高级模式**需要两个不同的 QMT，不能在同一个 QMT 中同时加载普通入口和极速交易入口。
+当前仅支持**极致模式**。它使用自包含的 QMT 桥接入口，避免依赖 QMT 内部导入 `cfquant`，适配存在 Python 包白名单或导入限制的 QMT 环境。用户无需手工选择通用、高级或其他模式；完成前端绑定后，系统会自动准备 QMT 运行环境并部署对应入口。
 
 ### 安装方式
 
@@ -134,7 +149,7 @@ start_cfquant.bat
 
 Web 控制台首次启动时，如果尚无账号绑定，会直接进入“账号绑定”并打开新增窗口，使用与后续添加账号相同的配置流程。已有绑定时不再自动弹出新手向导。需要修改 Web 服务使用的 Python 解释器时，请在系统设置中保存路径；后续启动会优先使用已保存的路径，启动选择结果和失败原因记录在 `log\startup\cfquant_startup.log`。
 
-新安装的 QMT 可以在首次登录前下载 Python 运行库。安装完成后，绑定窗口会显示“已完成，100%”和“已安装，登录后应用”，此时可保存绑定；未保存的新绑定不会因为下载运行库而自动启动 QMT。登录后重新检测即可应用执行器，无需关闭并重新打开编辑窗口。
+新安装的 QMT 在前端绑定过程中会自动下载并安装 Python 运行库。安装完成后，绑定窗口会显示环境准备进度；保存绑定后系统自动启动 QMT 并应用桥接执行器，无需用户先登录或手工导入策略。
 
 自动安装失败时，启动窗口会保持打开，并把安装日志写入 `log\startup\cfquant_startup.log`，修复 Python、网络或权限问题后重新启动即可。
 
@@ -156,11 +171,13 @@ python -m pip install --upgrade "cfquant[zmq]"
 cfquant run
 ```
 
-也可以使用 `cfquant serve` 或 `cfquant-web`；三者启动的是同一个本地 Web 服务。首次启动后访问 <http://127.0.0.1:8765/>，在初始化向导中配置 QMT 目录、账号和运行模式。需要 QMT 入口脚本时，使用已安装包导出到 QMT 策略目录：
+也可以使用 `cfquant serve` 或 `cfquant-web`；三者启动的是同一个本地 Web 服务。首次启动后访问 <http://127.0.0.1:8765/>，在初始化向导中配置 QMT 目录和账号。保存绑定后，前端自动启动 QMT、安装运行环境并部署极致模式入口，无需手工导出或导入 QMT 策略：
 
 ```powershell
 cfquant qmt-scripts --output D:\QMT\cfquant
 ```
+
+上面的导出命令仅用于查看或备份入口脚本，正常部署不需要手工执行。
 
 #### 方式三：Conda / Anaconda 环境
 
@@ -174,7 +191,7 @@ cfquant run
 
 如果使用源码包，直接运行项目目录中的 `start_cfquant.bat`。即使 Conda 没有加入系统 PATH，启动脚本也会探测常见 Conda 目录；无法探测时可设置 `CFQUANT_PYTHON_EXE` 指向该环境的 `python.exe`。Web 初始化后请保存同一个解释器路径，避免 Web、外部策略和 QMT 使用不同环境。
 
-如果自动登录检测显示 pywin32 已安装，但 `win32api`、`win32gui` 报“DLL load failed / 找不到指定的程序”，通常是 pip 更新了组件，而 Conda 或以前安装留下的旧 `pywintypes` DLL 仍被优先加载。CFQuant 会在导入登录组件前加载当前安装包清单中的配套 DLL，并在检测详情中显示实际路径，无需手工复制 DLL。如果当前进程已经加载了不同版本，会显示冲突路径；停止 CFQuant，按检测页面生成的 PowerShell 命令逐行修复后重新启动。修复命令按实际包来源选择 pip 或 Conda；`pywin32-ctypes` 是另一个包，不表示 pywin32 由 Conda 管理。不要在 Conda 环境运行 `pywin32_postinstall`。
+如果 Python 环境中的 `win32api`、`win32gui` 报“DLL load failed / 找不到指定的程序”，通常是 pip 更新了组件，而 Conda 或以前安装留下的旧 `pywintypes` DLL 仍被优先加载。CFQuant 会在导入相关组件前加载当前安装包清单中的配套 DLL，并在检测详情中显示实际路径，无需手工复制 DLL。如果当前进程已经加载了不同版本，会显示冲突路径；停止 CFQuant，按检测页面生成的 PowerShell 命令逐行修复后重新启动。修复命令按实际包来源选择 pip 或 Conda；`pywin32-ctypes` 是另一个包，不表示 pywin32 由 Conda 管理。不要在 Conda 环境运行 `pywin32_postinstall`。
 
 #### 选择建议
 
@@ -183,37 +200,35 @@ cfquant run
 - 使用 Anaconda/Miniconda：优先在目标 Conda 环境中执行 `python -m pip install`，不要使用未激活环境的裸 `pip`。
 - 源码包和 PyPI 包不要在同一个解释器中反复混用；源码开发时使用 `python -m pip install --editable .`，正式使用时使用 PyPI 版本。
 
-启动后打开 <http://127.0.0.1:8765/>，按网页中的“新手初始化向导”完成账号、模式和 QMT 目录配置。开启“自动导入并管理 QMT 策略”可配置账号、模拟/实盘及 QMT 启动自运行；按绑定页进度完成 QMT 导入和重启，再验证资金、持仓、委托和行情。流程及模式互斥规则见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
+启动后打开 <http://127.0.0.1:8765/>，按网页中的“新手初始化向导”完成账号和 QMT 目录配置。保存绑定后，前端自动安装 QMT Python 环境、启动 QMT 并部署极致模式入口，再验证资金、持仓、委托和行情。流程见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
 
 重点：
 
 - 源码部署后，网页里的“版本/更新”功能会按完整项目目录更新，适合从官网或 GitHub 拉取新版本。
 - 更新时会尽量保留本地配置、数据库、日志和运行目录，便于日常升级和回滚。
-- 完整项目更新会先关闭已绑定且正在运行的 QMT，按绑定模式覆盖 `qmt_scripts/` 里的入口脚本，然后重启对应 QMT 策略。
+- 完整项目更新会先关闭已绑定且正在运行的 QMT，按极致模式更新 `qmt_scripts/` 里的自包含入口脚本，然后自动重启对应 QMT 策略。
 - 建议把源码目录固定下来，例如 `D:\cfquant`，不要频繁挪动目录。
 
-新用户建议先使用**通用模式**。所有部署配置都在 Web 控制台完成，保存绑定后系统会自动准备并管理 QMT 托管策略。
+当前仅支持**极致模式**。所有部署配置都在 Web 控制台完成，保存绑定后系统会自动准备环境、启动 QMT 并管理托管策略。
 
 ### Web 控制台绑定与初始化流程
 
-1. 在初始化向导或“绑定”页面填写资金账号、账户类型、模式和 QMT 目录，勾选“自动导入并管理 QMT 策略”，确认模拟／实盘与策略自动运行设置。
-2. 保存后系统自动部署核心包、身份配置和托管策略，弹窗显示部署结果及启动提醒，无需复制代码或手工新建策略。
-3. 按提示重启并登录 QMT。如果勾选了“自动启动 QMT”，在启动后的 QMT 中登录即可；QMT 自身已设置自动登录时，等待自动登录完成。**国金证券 QMT 目前不支持自动登录，每次启动后需手动输入密码登录。**
-4. 若提示等待退出，正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。若部署失败，修正目录、权限或模型账号 Key 后重新保存。
-5. “知道了”直接关闭提醒；“检测连接”可进入通道检测，随后查询资金或持仓确认账号数据。
+1. 在初始化向导或“绑定”页面填写资金账号、账户类型和 QMT 目录，确认模拟／实盘及策略自动运行设置；系统固定使用极致模式。
+2. 保存后系统自动部署核心包、身份配置和极致模式托管策略，弹窗显示环境安装和启动进度，无需复制代码或手工新建策略。
+3. 系统自动启动 QMT 并应用入口策略，用户等待页面提示完成即可。
+4. 若提示等待退出，按页面提示关闭占用中的 QMT，保持 cfquant 运行，等待环境配置完成后系统会继续启动。若部署失败，修正目录、权限或账号配置后重新保存。
+5. “检测连接”可进入通道检测，随后查询资金或持仓确认账号数据。
 
-“自动启动 QMT”负责启动客户端；“QMT 启动后自动运行”负责运行托管策略。未勾选策略自动运行时，登录后需在“模型交易”运行已导入的托管策略。编辑已有绑定会保留这些选项，不会自动开启。
+系统负责启动 QMT 并运行极致模式托管策略；用户不需要预先登录或手工运行 QMT 模型。
 
-cfquant Web 每次启动时都会读取已保存的绑定：只要账号处于启用状态并勾选了“自动启动 QMT”，就会检查对应 QMT 是否已经运行；未运行时自动拉起对应的 `XtItClient.exe`，已经运行的实例不会重复启动。首次登录、密码输入和 QMT 内的策略运行仍按页面提示完成。
+cfquant Web 每次启动时都会读取已保存的绑定：只要账号处于启用状态，就会检查对应 QMT 是否已经运行；未运行时自动拉起对应的 `XtItClient.exe`，并准备极致模式运行环境和入口策略，已经运行的实例不会重复启动。
 
-| 模式 | 自动部署目标 | 在线检测要求 |
+| 运行方式 | 自动部署目标 | 在线检测要求 |
 |---|---|---|
-| 通用模式 | 单个 QMT 中的通用托管策略 | 查询通道和交易通道都在线 |
 | 极致模式 | 单个 QMT 中的自包含托管策略 | 查询通道和交易通道都在线 |
-| 高级模式 | 普通端与极速交易端两个不同的 QMT | 两端都在线 |
 | 同账号独立市场 | 对应上海和深圳市场的 QMT | 沪市和深市交易通道都在线 |
 
-多 QMT 部署需分别完成各终端登录，自动启动选项仅启动绑定的主 QMT 目录。同一资金账号在同一个 QMT 中只允许一种模式。完整配置及状态说明见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
+多 QMT 部署需分别在前端完成绑定，系统会按绑定的 QMT 目录自动启动对应实例。完整配置及状态说明见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
 
 ## 常见问题先查哪里
 
@@ -221,10 +236,10 @@ cfquant Web 每次启动时都会读取已保存的绑定：只要账号处于�
 |---|---|
 | 双击启动窗口后立即退出 | 查看 `log\startup\cfquant_startup.log`；确认 Python 路径存在，或设置 `CFQUANT_PYTHON_EXE`。 |
 | 页面打不开 | 查看最新的 `log\web\cfquant_web_server.*.stderr.log`；确认 8765 端口没有被其他程序占用。 |
-| 页面在线但 QMT 不在线 | 确认 QMT 已登录、QMT 目录正确，并按绑定页提示重新导入或启动入口策略。 |
+| 页面在线但 QMT 不在线 | 确认 QMT 已安装、QMT 目录正确，并在绑定页重新保存配置触发自动启动。 |
 | `ModuleNotFoundError: cfquant` | 在运行策略的同一个解释器中执行 `python -m pip install --upgrade cfquant`，再用 `python -c "import cfquant; print(cfquant.__file__)"` 验证。 |
 | 行情为空 | 先用页面接口测试确认证券代码、周期和行情权限；标准行情异常时可对照 `xtdata.get_market_data_ex`。 |
-| 不确定应该使用哪种模式 | 先选通用模式；极致模式用于 QMT 导入受限的情况，高级模式需要额外准备两个 QMT 环境。 |
+| 不确定运行方式 | 当前仅支持极致模式，完成前端绑定后由系统自动部署。 |
 
 完整日志位于项目的 `log` 目录。提交问题时，请附上启动日志、页面状态和使用的 Python 版本，删除账号、密码、Token、订单和持仓等敏感信息后再提交。
 
@@ -239,10 +254,10 @@ runtime = RuntimeManager(home=r"D:\MyApp\cfquant")
 runtime.start()  # 隐藏启动；遵循各账号保存的 QMT 启动设置
 runtime.initialize(
     account_id="YOUR_ACCOUNT_ID", account_type="STOCK",
-    qmt_dir=r"D:\QMT", mode="ctypes",
-    auto_start_qmt=False, strategy_autorun=True, live=False,
+    qmt_dir=r"D:\QMT", mode="lite",
+    auto_start_qmt=True, strategy_autorun=True, live=False,
 )
-# 用户自行启动并登录 QMT；首次部署前需关闭 QMT。
+# 保存绑定后，系统自动启动 QMT 并准备极致模式运行环境。
 runtime.wait_ready("YOUR_ACCOUNT_ID", timeout=120)
 runtime.configure_client()
 
@@ -269,7 +284,7 @@ print(result["status"], result["message"])
 
 ## 从 `xtquant` 迁移到 `cfquant`
 
-安装和初始化完成后，通常不需要重写原有策略。先把外部策略中指向 `xtquant` 的导入改成 `cfquant` 对应模块，再按下面的顺序验证。cfquant 负责外部 Python 与 QMT 之间的桥接，QMT 仍然需要登录并运行 Web 绑定页部署的入口策略。
+安装和初始化完成后，通常不需要重写原有策略。先把外部策略中指向 `xtquant` 的导入改成 `cfquant` 对应模块，再按下面的顺序验证。cfquant 负责外部 Python 与 QMT 之间的桥接，前端绑定会自动启动 QMT 并运行部署的入口策略。
 
 ### 最小改动
 
@@ -285,7 +300,7 @@ from cfquant.xttrader import XtQuantTrader
 from cfquant.xttype import StockAccount
 ```
 
-默认路由是 `auto`，外部策略通常不需要手工选择 Pipe、LTtx 或高级模式。需要固定传输方式时，再使用 `cfquant.configure(...)`；具体路由说明见 [外部 Python 接入](docs/外部Python接入.md)。
+默认路由是 `auto`，外部策略通常不需要手工选择 Pipe 或 LTtx。需要固定传输方式时，再使用 `cfquant.configure(...)`；具体路由说明见 [外部 Python 接入](docs/外部Python接入.md)。
 
 ### 先验证行情
 
@@ -378,9 +393,7 @@ restart_cfquant.bat     重启
 | cftrader 批量同步/异步下单与撤单 | [cftrader 批量交易与撤单](docs/cftrader批量交易.md)，含 100 单本地基准 |
 | cftrader TWAP / VWAP / POV | [算法交易与共享全推行情](docs/algorithm_trading.md)，含自动订阅、生命周期和接口示例 |
 | 条件单 / 仓位计算 / 下单计划 | [条件单、仓位计算与下单计划](docs/conditional_orders.md)，含止盈止损、到时平仓、回撤 / 保本保护、风险仓位及 Python / HTTP 接口 |
-| 通用模式部署 | [通用模式部署指南](docs/通用模式部署指南.md) |
 | 极致模式部署 | [极致模式部署指南](docs/极致模式部署指南.md) |
-| 高级模式部署 | [高级模式部署指南](docs/高级模式部署指南.md) |
 | 账号和 QMT 目录配置 | [Web 账号运行配置说明](docs/Web账号运行配置说明.md) |
 | 虚拟机检测适配与 MAC 注入 | [QMT 启动设置](docs/qmt_launch_settings.md)，按绑定配置，默认关闭 |
 | 从 miniQMT 迁移 | [miniQMT 迁移到大 QMT 指南](docs/miniQMT迁移到大QMT指南.md) |

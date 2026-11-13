@@ -36,7 +36,7 @@ When authentication is enabled, the Web API can require Web auth or an API key. 
 | `account_id` | Fund/account id. Use placeholders in examples. |
 | `account_type` | `STOCK`, `CREDIT`, `FUTURE`, `FUTURE_OPTION`, or `STOCK_OPTION`. These match ordinary securities, margin/credit, futures, futures option, and stock/ETF option accounts. |
 | `account_key` | Account binding key used by Web routing when configured. |
-| `channel` | In advanced mode, `normal` means ordinary QMT and `trade` means fast trade terminal. In general mode the backend routes through the ctypes bridge. |
+| `channel` | Internal route channel selected by the extreme-mode bridge; account APIs normally choose it automatically. |
 | `timeout` | Per-call timeout in seconds. Docs commonly use around 12 seconds for debugging. |
 
 ## Data And Quote Endpoints
@@ -104,8 +104,8 @@ Order action semantics:
 | --- | --- | --- |
 | `GET /api/status` | Implemented | Bridge status. With account fields, resolves account route status; without account, returns latest bridge monitor status. |
 | `GET /api/transport` | Implemented | Read current transport mode and client route. |
-| `POST /api/transport` | Implemented | Switch Web transport mode. Advanced mode requires ordinary and trade channels online before enabling. |
-| `GET /api/pipe-hub` | Implemented | PipeHub status for general ctypes mode. |
+| `POST /api/transport` | Implemented | Read or update the Web transport used by the extreme-mode bridge. |
+| `GET /api/pipe-hub` | Implemented | PipeHub status for the extreme-mode bridge. |
 | `POST /api/pipe-hub/start` | Implemented | Start PipeHub. |
 | `POST /api/pipe-hub/stop` | Implemented | Stop PipeHub. |
 

@@ -72,9 +72,8 @@ Auto route flow from the docs:
 1. Web service starts and writes runtime registration to LTtx.
 2. External `cfquant` reads that registration when it starts.
 3. If discovery succeeds, requests enter the Web unified route channel.
-4. Web chooses general or advanced routing based on account binding.
-5. If advanced mode is configured but unavailable, Web falls back to that account's general ctypes bridge.
-6. If Web discovery fails, `auto` falls back to direct general PipeHub.
+4. Web routes the request through the bound extreme-mode bridge.
+5. If Web discovery fails, `auto` falls back to the configured local PipeHub route.
 
 Relevant environment variables:
 
@@ -103,7 +102,7 @@ configure(
 )
 ```
 
-Direct general PipeHub:
+Direct PipeHub (troubleshooting only):
 
 ```python
 from cfquant import configure
@@ -115,7 +114,7 @@ configure(
 )
 ```
 
-Direct advanced/legacy LTtx:
+Direct LTtx (troubleshooting only):
 
 ```python
 from cfquant import configure

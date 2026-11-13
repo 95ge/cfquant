@@ -1,6 +1,6 @@
 # 外部 Python 接入
 
-本文说明外部程序如何通过 `cfquant` 调用 QMT 行情、查询和交易能力。新用户建议先在 Web 控制台完成初始化向导，并确认 QMT 侧入口脚本在线。
+本文说明外部程序如何通过 `cfquant` 的 MiniQMT/`xtquant` 兼容 API 调用大 QMT 行情、查询和交易能力。迁移已有 MiniQMT 策略时，优先保留原有 `xtdata`、`XtQuantTrader`、`StockAccount`、常量和回调调用，只将外部导入前缀调整为 `cfquant`，再在前端完成账户绑定。保存绑定后，系统会自动启动 QMT、安装运行环境并部署极致模式桥接入口。
 
 批量同步、批量异步下单使用 [cftrader 批量交易](cftrader批量交易.md)，复用已有 `XtQuantTrader` 连接和回调。
 
@@ -163,11 +163,10 @@ order_id = trader.order_stock(
 - Web 服务启动后，会通过 LTtx 的 `tx.put()` 写入 `cfquant.runtime`。
 - 外部 `cfquant` 启动时，会通过 `tx.get("cfquant.runtime")` 读取运行注册信息。
 - 如果读取成功，请求会进入 Web 统一路由频道 `cfquant.web.request`。
-- Web 根据账号绑定自动选择通用模式或高级模式。
-- 如果账号配置了高级模式，但高级通道不可用，会自动回退到该账号的 ctypes 通用桥。
-- 如果没有读到 Web 注册信息，`auto` 会回退为直连通用 PipeHub。
+- Web 根据账号绑定将请求路由到极致模式桥接入口。
+- 如果没有读到 Web 注册信息，`auto` 会回退为直连 PipeHub；需要先确认前端已完成绑定并启动 QMT。
 
-这样外部代码通常不需要关心当前运行的是通用模式还是高级模式。
+这样外部代码不需要选择或感知 QMT 运行模式。
 
 ## 强制指定通道
 
@@ -199,7 +198,7 @@ configure(
 )
 ```
 
-强制直连高级模式或旧 LTtx 通道：
+强制直连 LTtx 通道（仅用于排查或特殊部署）：
 
 ```python
 from cfquant import configure
@@ -244,12 +243,11 @@ LTtx、Web LTtx 路由和管道客户端将收包与用户回调分开：RPC 应
 
 整张 DataFrame、Series、非零维 NumPy 数组不能当作单个价格或数量，需明确选出一个标量；真正需要集合参数的接口可显式使用 `.tolist()` 或字典。`NaN`、正负无穷、`pd.NA/NaT` 及无法识别的对象会在发送前报错，并标明如 `message.params.price` 的字段位置，不自动取第一项、补零或转为字符串。此检查是传输类型校验，不代替具体接口的价格、数量及业务规则校验。
 
-本次修复位于 cfquant 调用 LTtx 的共用协议边界，不修改 LTtx 的全局 JSON 行为。高级模式、Web LTtx 路由、通用管道及三份自包含 LITE 入口同步更新；升级后重启使用 SDK 的 Python 进程，Web/QMT 侧更新后也需重启相应进程以加载新协议代码。离线回归见 [JSON 序列化测试](../cfquant/tests/test_json_serialization.py)，不执行真实下单。
+本次修复位于 cfquant 调用 LTtx 的共用协议边界，不修改 LTtx 的全局 JSON 行为。Web LTtx 路由、PipeHub 及自包含极致模式入口同步更新；升级后重启使用 SDK 的 Python 进程，Web/QMT 侧更新后也需重新保存绑定以加载新协议代码。离线回归见 [JSON 序列化测试](../cfquant/tests/test_json_serialization.py)，不执行真实下单。
 
 ### 连接与路由
 
-- 通用模式下，需要 `cfquant_pipe_hub.py` 和 QMT 里的 `CFQUANT_CTYPE_ALL_LOWLAT.py` 在线。
-- 高级模式下，需要普通 QMT 的 `CFQUANT.py` 和极速交易端 QMT 的 `CFQUANT_TRADE_LOWLAT.py` 在线。
+- 极致模式下，前端负责启动 QMT、安装运行环境并部署自包含入口；接口测试需要查询通道和交易通道均在线。
 - 外部自动发现依赖 LTtx 变量，因此本地服务默认会启动 LTtx；Web 重启和定时重启会保留 LTtx，避免外部 `cfquant` Python 库通信入口中断。
 - 不建议外部程序直接探测 `8765` HTTP 端口；端口可能被用户改掉，LTtx 注册信息更稳定。
-- 多账号时请先在 Web“绑定”页配置资金账号、QMT 核心目录、模式和共享行情数据源。
+- 多账号时请先在 Web“绑定”页配置资金账号、QMT 核心目录和共享行情数据源；运行方式固定为极致模式。
