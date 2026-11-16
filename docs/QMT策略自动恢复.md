@@ -4,6 +4,8 @@
 
 ## 生效范围
 
+当同一绑定、同一部署代次的托管策略连续 5 次启动失败时，后台会结束该绑定的 QMT 进程并重新启动登录，随后使用新进程继续检测和恢复策略。重启请求等待新 PID 就绪；重启失败时保留失败状态并等待下一轮处理，不会重复提交同一轮重启。
+
 - 绑定已启用，且开启“自动导入策略”和“策略自动运行”。关闭策略自动运行后，恢复检测不会启动模型。因此，需要手动停策略进行调试时，应先关闭该选项。
 - 仅处理当前绑定模式、当前目录及当前部署代次的托管策略；不会启动历史模式或其他用户策略。高级模式、独立市场按部署任务中的角色分别匹配。
 - 启动前核对策略名称、模型 ID、资金账号、账号 Key、运行方式、主图品种、周期及自动运行开关。重名、字段不符、导入尚未完成、绑定已改变均不启动。
@@ -42,6 +44,7 @@ Python 方法 `runtime.recover_strategy(account_id, account_type=..., bridge_id=
 | `illegal_ip_detected` | 发现并记录非法 IP 告警 |
 | `illegal_ip_popup_result` | 关闭结果，`closed=true` 表示确认已隐藏 |
 | `strategy_start_requested` | 已提交绑定策略启动 |
+| `qmt_process_restart_requested` | 策略连续 5 次启动失败，已请求重启 QMT |
 | `illegal_ip_handled` | 弹窗关闭、策略和通信恢复均已确认 |
 | `illegal_ip_processing_failed` | 处理异常，记录错误原因 |
 | `illegal_ip_recovery_pending` | 退避等待或重试次数已耗尽 |

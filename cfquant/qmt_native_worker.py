@@ -18,7 +18,7 @@ from .qmt_native_files import NativeWorkerFiles, sweep_worker_directories
 
 
 LOGIN_METHODS = frozenset(("already_logged_in", "state", "select_account", "submit",
-                           "fill", "wait_outcome", "acknowledge_failure", "diagnostics"))
+                           "fill", "solve_captcha", "wait_outcome", "acknowledge_failure", "diagnostics"))
 STRATEGY_METHODS = frozenset(("snapshot", "start_strategy", "notices", "dismiss_notice"))
 MAX_MESSAGE = 4 * 1024 * 1024
 

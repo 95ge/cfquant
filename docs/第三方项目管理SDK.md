@@ -252,6 +252,8 @@ runtime = RuntimeManager(
 | GET | `/api/version?remote=1&force_remote=1` | 运行、已安装与远端版本；`remote=0` 只查本地 |
 | POST | `/api/setup/initialize` | 首次初始化，参数沿用账号配置接口 |
 | POST | `/api/account-config` | 保存账号、QMT 路径、模式和策略配置 |
+| GET | `/api/account-config/proxy?account_key=...` | 读取指定绑定的脱敏代理配置 |
+| POST | `/api/account-config/proxy` | 更新绑定代理、白名单和 UDP 策略；`restart=true` 时重启 QMT |
 | POST | `/api/account-config/delete` | 删除指定账号绑定 |
 | GET | `/api/bindings/status` | 账号桥接就绪状态 |
 | POST | `/api/qmt/strategies/recover` | 指定账号绑定，即时检测并尝试恢复已停止的托管策略 |
@@ -262,6 +264,27 @@ runtime = RuntimeManager(
 | POST | `/api/project-updates/rollback` | 回滚，指定 `backup` 名称 |
 | POST | `/api/management/restart` | 重启，支持 `auto_start_qmt` 布尔值或 null |
 | POST | `/api/management/stop` | 停止后台服务 |
+
+代理配置可以随账号绑定一起提交 `qmt_proxy`，也可以单独更新：
+
+```json
+{
+  "account_key": "bridge:STOCK:1000000001",
+  "qmt_proxy": {
+    "enabled": true,
+    "type": "socks5",
+    "host": "127.0.0.1",
+    "port": 1080,
+    "username": "proxy-user",
+    "password": "请求中提交，服务端使用 Windows DPAPI 加密保存",
+    "bypass": ["127.0.0.1", "localhost", "::1", "10.0.0.0/8"],
+    "udp_policy": "direct"
+  },
+  "restart": true
+}
+```
+
+响应只返回 `password_saved`，不会返回代理密码。`udp_policy=proxy` 只允许 SOCKS5 或 SSH；HTTP/HTTPS 代理只能让 UDP 直连。启动 QMT 时服务会注入 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY`；具体 QMT 版本是否读取这些变量需要在目标客户端上抓包确认。
 
 托管实例使用 `X-CFQuant-Management-Key` 请求头，值取自该实例的 `home/management.key`；已有服务也可使用配置的 `X-API-Key`。管理接口始终要求凭据。账号配置的自动启动字段为 `"qmt_auto_login": {"enabled": false}`，服务级启动策略具有优先权。HTTP 更新接口默认触发重启，需自行通过 `boot_id` 变化确认新实例就绪；Python SDK 已封装此等待过程。
 

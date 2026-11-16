@@ -75,7 +75,7 @@ def install_hooks(session, directory, settings, discovery, on_message):
     return script
 
 
-def launch(directory, settings, discovery, qmt_args, reply, commands):
+def launch(directory, settings, discovery, qmt_args, reply, commands, env=None):
     import frida
     import win32api
     import win32event
@@ -94,7 +94,9 @@ def launch(directory, settings, discovery, qmt_args, reply, commands):
             raise RuntimeError('启动已取消')
         ensure_stopped(directory)
         executable = str(directory / 'XtItClient.exe')
-        pid = device.spawn([executable] + list(qmt_args), cwd=str(directory), stdio='pipe')
+        child_env = os.environ.copy()
+        child_env.update({str(key): str(value) for key, value in (env or {}).items()})
+        pid = device.spawn([executable] + list(qmt_args), cwd=str(directory), env=child_env, stdio='pipe')
         session = device.attach(pid)
         session.on('detached', lambda *args: detached.set())
 
@@ -152,7 +154,8 @@ def main():
         if check_only:
             reply({'ready': True})
         else:
-            launch(directory, settings, discovery, request.get('qmt_args', []), reply, commands)
+            launch(directory, settings, discovery, request.get('qmt_args', []), reply, commands,
+                   env=request.get('env') or {})
         return 0
     except Exception as error:
         if not sys.stdout.closed:

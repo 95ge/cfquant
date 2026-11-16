@@ -5119,6 +5119,25 @@ th.num .sort-header {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+  min-width: 0;
+}
+
+.binding-runtime-settings input,
+.binding-runtime-settings select,
+.binding-runtime-settings textarea {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#bindingQmtProxySettings .binding-qmt-autostart-head span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+#bindingQmtProxyStatus {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .binding-runtime-settings p {

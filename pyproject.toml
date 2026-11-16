@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfquant"
-version = "0.2.74"
+version = "0.2.75"
 description = "QMT local bridge and xtquant-compatible Python client."
 license = {text = "MIT"}
 readme = "README.md"
@@ -32,6 +32,7 @@ zmq = ["pyzmq>=25"]
 cfquant = "cfquant.cli:main"
 cfquant-web = "cfquant.cli:web_main"
 cfquant-pipe-hub = "cfquant_pipe_hub:main"
+cfquant-relay = "enterprise_relay.server:main"
 
 [tool.setuptools]
 py-modules = ["cfquant_web_server", "cfquant_pipe_hub"]
@@ -39,11 +40,12 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["cfquant*", "LTtx*", "web_dashboard*", "qmt_scripts*"]
+include = ["cfquant*", "enterprise_relay*", "LTtx*", "web_dashboard*", "qmt_scripts*"]
 namespaces = true
 
 [tool.setuptools.package-data]
 "cfquant" = ["qmt_component_agent.js", "qmt_strategy_agent.js", "qmt_vm_agent.js", "qmt_mac_agent.js", "tools/THIRD_PARTY.md", "tools/upx/*"]
+"enterprise_relay" = ["deploy/*.service", "deploy/*.ps1"]
 "cfquant.tests" = ["*.md", "qmt_vm_native_fixture.js"]
 "LTtx.tx" = ["Config.txt"]
 "web_dashboard" = [

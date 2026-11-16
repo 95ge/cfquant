@@ -22,7 +22,7 @@
 }
 ```
 
-主项目的实现位于 `cfquant/qmt_vm_*.py`、`cfquant/qmt_vm_agent.js`、`cfquant/qmt_mac_agent.js`，无需依赖 `private/qmt_vm_launcher`，独立项目保持原样。`pefile` 随主项目依赖安装，UPX 及许可文件随安装包附带。
+主项目的实现位于 `cfquant/qmt_vm_*.py`、`cfquant/qmt_vm_agent.js`、`cfquant/qmt_mac_agent.js`，无需依赖项目内的内部启动器源码目录，独立项目保持原样。`pefile` 随主项目依赖安装，UPX 及许可文件随安装包附带。
 
 启用后，独立后台进程先创建暂停的 QMT、安装指定钩子，再恢复运行。Web 重载不会主动撤销运行中的钩子；QMT 退出后后台进程自行退出。未完成启动确认时只清理本次新建的进程，不根据历史 PID 终止其他程序。
 

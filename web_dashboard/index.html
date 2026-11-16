@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261112_03">
+  <link rel="stylesheet" href="/styles.css?v=web_20261116_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -3191,6 +3191,66 @@ else:
           <div id="bindingQmtProcessStatus" class="metric-note" role="status" aria-live="polite">输入目录后将检测对应 QMT 进程和 PID。</div>
           <small>保存后自动同步项目代码、QMT 内部策略代码和身份配置到对应目录；无需手工复制。留空时该账号仍可运行，但自动同步、自动更新、脚本定位和多 QMT 部署辅助会失效。</small>
         </label>
+        <section id="bindingQmtProxySettings" class="binding-runtime-settings binding-dialog-wide-row" aria-labelledby="bindingQmtProxyTitle">
+          <div class="binding-qmt-autostart-head">
+            <div>
+              <strong id="bindingQmtProxyTitle">QMT 网络代理</strong>
+              <span class="metric-note">按此绑定启动的 QMT 进程注入代理环境变量；本机地址和白名单保持直连。</span>
+            </div>
+          </div>
+          <label class="toggle">
+            <input id="bindingQmtProxyEnabled" type="checkbox">
+            <span>启用此绑定的代理配置</span>
+          </label>
+          <div id="bindingQmtProxyFields" class="binding-runtime-grid hidden">
+            <label class="field">
+              <span>代理类型</span>
+              <select id="bindingQmtProxyType">
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+                <option value="socks5">SOCKS5</option>
+                <option value="ssh">SSH 动态 SOCKS5</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>代理主机</span>
+              <input id="bindingQmtProxyHost" autocomplete="off" placeholder="代理 IP 或域名">
+            </label>
+            <label class="field">
+              <span>代理端口</span>
+              <input id="bindingQmtProxyPort" type="number" min="1" max="65535" step="1" placeholder="例如 1080">
+            </label>
+            <label class="field">
+              <span>用户名（可选）</span>
+              <input id="bindingQmtProxyUsername" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>密码（留空保留已保存密码）</span>
+              <input id="bindingQmtProxyPassword" type="password" autocomplete="new-password">
+            </label>
+            <label class="field" id="bindingQmtProxyLocalPortField">
+              <span>SSH 本地 SOCKS 端口</span>
+              <input id="bindingQmtProxyLocalPort" type="number" min="1" max="65535" step="1" value="10800">
+            </label>
+            <label class="field">
+              <span>UDP 策略</span>
+              <select id="bindingQmtProxyUdpPolicy">
+                <option value="direct">UDP 直连（推荐，适用于 NTP）</option>
+                <option value="proxy">通过 SOCKS5 UDP</option>
+              </select>
+            </label>
+            <label class="field wide">
+              <span>直连白名单（IP、域名或 CIDR，每行一个）</span>
+              <textarea id="bindingQmtProxyBypass" rows="3" placeholder="127.0.0.1\nlocalhost\n::1"></textarea>
+              <small id="bindingQmtProxyHint">默认包含 127.0.0.1、localhost 和 ::1。HTTP/HTTPS 代理不能承载原生 UDP；SSH 需要本机 OpenSSH 或外部动态 SOCKS 服务。</small>
+            </label>
+            <label class="toggle wide">
+              <input id="bindingQmtProxyClearPassword" type="checkbox">
+              <span>清除已保存的代理密码</span>
+            </label>
+          </div>
+          <p id="bindingQmtProxyStatus" class="metric-note" role="status" aria-live="polite"></p>
+        </section>
         <section id="bindingPythonRuntimePanel" class="binding-python-runtime-panel binding-dialog-wide-row" aria-labelledby="bindingPythonRuntimeTitle">
           <div class="binding-python-runtime-head">
             <div>
@@ -3450,6 +3510,7 @@ else:
         </div>
       </div>
       <div id="bindingQmtProcessPromptStatus" class="binding-qmt-guide-status" role="status"></div>
+      <small class="binding-qmt-auto-close-note">检测到 QMT 后将等待 20 秒自动关闭并继续；也可以提前点击关闭按钮。</small>
       <div class="binding-dialog-actions">
         <button id="bindingQmtProcessStopContinueBtn" class="primary" type="button">关闭 QMT 并继续</button>
         <button id="bindingQmtProcessRecheckBtn" type="button">手动关闭后重新检测</button>
@@ -3585,7 +3646,7 @@ else:
   <script src="/trading-monitor.js?v=20261111_runtime_window_01"></script>
   <script src="/navigation.js?v=web_20261108_nav_03"></script>
   <script src="/activity-log.js?v=web_20261108_logs_01"></script>
-  <script src="/app.js?v=web_20261113_02"></script>
+  <script src="/app.js?v=web_20261116_01"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

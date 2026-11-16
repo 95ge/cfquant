@@ -10,6 +10,7 @@ import email.parser
 import email.policy
 import fnmatch
 import hashlib
+import inspect
 import itertools
 import json
 import math
@@ -19,6 +20,11 @@ from pathlib import Path
 from cfquant.diagnostics import latency_report, SCHEMA as QUOTE_LATENCY_SCHEMA
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
+from cfquant.qmt_proxy import (
+    QmtProxyCredentialStore,
+    normalize_qmt_proxy_settings,
+    qmt_proxy_environment,
+)
 from cfquant.qmt_vm_settings import normalize_qmt_vm_settings, qmt_vm_settings_enabled
 from cfquant.qmt_vm_runtime import start_feature_process, preflight_feature_process
 from cfquant.qmt_dependencies import check_login_dependencies, report_startup_dependencies
@@ -2665,6 +2671,36 @@ class WebRuntimeConfig(object):
                 raise
             return public_binding(row)
 
+    def save_account_proxy(self, account_key, value):
+        """Update only the proxy profile for an existing binding.
+
+        The endpoint intentionally does not restart QMT.  The response marks
+        the binding as requiring a restart because native QMT sockets are
+        created during login/startup.
+        """
+        with self._lock:
+            key = str(account_key or "").strip()
+            row = (self._data.get("account_configs") or {}).get(key)
+            if row is None:
+                raise ValueError("please save the account binding before configuring its proxy")
+            settings = normalize_qmt_proxy_settings(value, row.get("qmt_proxy"), strict=True)
+            password = value.get("password") if isinstance(value, dict) else None
+            clear_password = isinstance(value, dict) and value.get("clear_password") is True
+            if password:
+                QmtProxyCredentialStore(self.path).save(key, password)
+                settings["password_saved"] = True
+            elif clear_password:
+                QmtProxyCredentialStore(self.path).clear(key)
+                settings["password_saved"] = False
+            previous = dict(row)
+            row.update(qmt_proxy=settings, updated_at=time.time())
+            try:
+                self._save_locked()
+            except Exception:
+                self._data["account_configs"][key] = previous
+                raise
+            return public_binding(row)
+
     def _runtime_trade_qmt_dir(self, bridge_id):
         registry = globals().get("RUNTIME_VERSIONS")
         if registry is None:
@@ -2911,6 +2947,7 @@ class WebRuntimeConfig(object):
         qmt_auto_login=None,
         qmt_runtime=None,
         qmt_vm=None,
+        qmt_proxy=None,
         notification_webhook=None,
     ):
         account_id = str(account_id or "").strip()
@@ -2928,6 +2965,9 @@ class WebRuntimeConfig(object):
             account_key = account_key_for(account_id, account_type, bridge_id)
             existing = configs.get(account_key)
             webhook_settings = normalize_webhook(notification_webhook, (existing or {}).get("notification_webhook"))
+            proxy_settings = normalize_qmt_proxy_settings(
+                qmt_proxy, existing=(existing or {}).get("qmt_proxy"), strict=True,
+            )
             runtime_settings = normalize_qmt_runtime_settings(
                 qmt_runtime, existing=(existing or {}).get("qmt_runtime"), strict=True,
             )
@@ -3002,6 +3042,14 @@ class WebRuntimeConfig(object):
                     if requested_channels.intersection(occupied):
                         raise ValueError("自动导入的市场入口需要独立 bridge_id，请清空市场 bridge_id 后重试")
             supplied_password = qmt_auto_login.get("password") if isinstance(qmt_auto_login, dict) else None
+            proxy_password = qmt_proxy.get("password") if isinstance(qmt_proxy, dict) else None
+            proxy_clear_password = isinstance(qmt_proxy, dict) and qmt_proxy.get("clear_password") is True
+            if proxy_password:
+                QmtProxyCredentialStore(self.path).save(account_key, proxy_password)
+                proxy_settings["password_saved"] = True
+            elif proxy_clear_password:
+                QmtProxyCredentialStore(self.path).clear(account_key)
+                proxy_settings["password_saved"] = False
             _validate_qmt_vm_conflicts(dict(account_key=account_key, account_id=account_id,
                 enabled=enabled, qmt_dir=qmt_dir, qmt_trade_dir=qmt_trade_dir, mode=mode,
                 qmt_strategy=strategy_settings, market_routing_enabled=market_routing_enabled,
@@ -3064,6 +3112,7 @@ class WebRuntimeConfig(object):
                 "qmt_strategy": strategy_settings,
                 "qmt_auto_login": auto_login_settings,
                 "qmt_runtime": runtime_settings,
+                "qmt_proxy": proxy_settings,
                 "notification_webhook": webhook_settings,
                 "qmt_vm": vm_settings,
                 "updated_at": now,
@@ -3103,6 +3152,7 @@ class WebRuntimeConfig(object):
                 "market_bridges": market_routes if market_routing_enabled else {},
                 "qmt_auto_login": auto_login_settings,
                 "qmt_vm": vm_settings,
+                "qmt_proxy": proxy_settings,
                 "enabled": enabled,
                 "updated_at": now,
             }
@@ -3858,6 +3908,7 @@ class WebRuntimeConfig(object):
                     ),
                     "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
                     "qmt_vm": normalize_qmt_vm_settings(item.get("qmt_vm")),
+                    "qmt_proxy": normalize_qmt_proxy_settings(item.get("qmt_proxy")),
                     "updated_at": float(item.get("updated_at") or 0),
                 }
         return result
@@ -3904,6 +3955,7 @@ class WebRuntimeConfig(object):
                 "qmt_strategy": normalize_strategy_settings(item.get("qmt_strategy")),
                 "qmt_auto_login": normalize_qmt_auto_login_settings(item.get("qmt_auto_login")),
                 "qmt_vm": normalize_qmt_vm_settings(item.get("qmt_vm")),
+                "qmt_proxy": normalize_qmt_proxy_settings(item.get("qmt_proxy")),
                 "qmt_runtime": normalize_qmt_runtime_settings(item.get("qmt_runtime")),
                 "notification_webhook": normalize_webhook(item.get("notification_webhook")),
                 "data_provider": bool(item.get("data_provider")),
@@ -10973,6 +11025,27 @@ class CfquantProjectUpdater(object):
             json.dump(data, f, ensure_ascii=False, indent=2, sort_keys=True)
 
 
+def _restart_qmt_after_strategy_recovery(job, status):
+    """Restart a binding terminal after five failed native strategy starts."""
+    if WEB_CONFIG is None:
+        return None
+    row = WEB_CONFIG.account_config_by_key(job.get("account_key"))
+    if not row:
+        return None
+    result = qmt_auto_login_restart_for_account(
+        row, row.get("qmt_auto_login"), reason="strategy_recovery"
+    )
+    pid = int(result.get("restart_pid") or result.get("pid") or 0)
+    if not result.get("configured") or not pid:
+        return None
+    return {
+        "qmt_dir": result.get("qmt_dir") or row.get("qmt_dir"),
+        "pid": pid,
+        "restarted": bool(result.get("restarted")),
+        "message": result.get("message", ""),
+    }
+
+
 UPDATER = CfquantUpdater(WEB_CONFIG)
 PROJECT_UPDATER = CfquantProjectUpdater()
 QMT_STRATEGIES = QmtStrategyManager(
@@ -10985,6 +11058,7 @@ QMT_STRATEGY_RECOVERY = QmtStrategyRecoveryScheduler(
     lambda: WEB_CONFIG.account_configs() if WEB_CONFIG is not None
     and management_qmt_start_policy() is not False else {},
     os.path.join(RUNTIME_STATUS_DIR, "qmt_strategy_recovery.json"),
+    terminal_restart=_restart_qmt_after_strategy_recovery,
 )
 
 
@@ -11580,6 +11654,40 @@ def _qmt_auto_login_saved_session(row):
         return json.loads(json.dumps(session, ensure_ascii=False)) if isinstance(session, dict) else {}
 
 
+def _qmt_proxy_for_process(paths):
+    """Return a child-process environment and a redacted proxy status."""
+    settings = paths.get("qmt_proxy") if isinstance(paths, dict) else None
+    account_key = str(paths.get("account_key") or "").strip() if isinstance(paths, dict) else ""
+    if settings is None and WEB_CONFIG is not None:
+        try:
+            target = os.path.normcase(os.path.abspath(paths.get("bin_dir") or ""))
+            for candidate in WEB_CONFIG.account_configs().values():
+                roots = account_qmt_roots(candidate)
+                if any(target == os.path.normcase(os.path.abspath(root)) for root in roots):
+                    settings = candidate.get("qmt_proxy")
+                    account_key = account_key or str(candidate.get("account_key") or "").strip()
+                    break
+        except Exception:
+            settings = None
+    settings = normalize_qmt_proxy_settings(settings)
+    password = str(paths.get("qmt_proxy_password") or "") if isinstance(paths, dict) else ""
+    if settings.get("password_saved") and not password and account_key and WEB_CONFIG is not None:
+        try:
+            password = QmtProxyCredentialStore(WEB_CONFIG.path).password(account_key)
+        except Exception:
+            password = ""
+    environment = os.environ.copy()
+    environment.update(qmt_proxy_environment(settings, password))
+    return environment, {
+        "enabled": bool(settings.get("enabled")),
+        "type": settings.get("type", "none"),
+        "bypass": list(settings.get("bypass") or []),
+        "udp_policy": settings.get("udp_policy", "direct"),
+        "environment_applied": True,
+        "native_qmt_support": "version-dependent",
+    }
+
+
 def _qmt_auto_login_bin_dir(qmt_dir):
     configured = normalize_optional_path(qmt_dir)
     if not configured:
@@ -11983,8 +12091,14 @@ def _qmt_auto_login_start_xtitclient(paths, use_link=False):
     )
     if qmt_vm_settings_enabled(vm_settings):
         restart_arg = str(QMT_AUTO_LOGIN_RESTART_ARG or "").strip()
+        process_env, proxy_status = _qmt_proxy_for_process(paths)
+        proxy_env = {key: process_env[key] for key in (
+            "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+            "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        ) if key in process_env}
         launch = start_feature_process(paths["bin_dir"], vm_settings,
-                                       qmt_args=[restart_arg] if use_link and restart_arg else [])
+                                       qmt_args=[restart_arg] if use_link and restart_arg else [],
+                                       env=proxy_env)
         return {
             "pid": int(launch.get("qmt_pid") or 0),
             "launcher_pid": int(launch.get("launcher_pid") or 0),
@@ -11992,12 +12106,14 @@ def _qmt_auto_login_start_xtitclient(paths, use_link=False):
             "exe_path": paths["exe_path"],
             "bin_dir": paths["bin_dir"],
             "qmt_vm": vm_settings,
+            "proxy": proxy_status,
             "managed_hooks": True,
         }
     command = [paths["exe_path"]]
     restart_arg = str(QMT_AUTO_LOGIN_RESTART_ARG or "").strip()
     if use_link and restart_arg:
         command.append(restart_arg)
+    process_env, proxy_status = _qmt_proxy_for_process(paths)
     creationflags = 0
     if os.name == "nt":
         creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -12007,6 +12123,7 @@ def _qmt_auto_login_start_xtitclient(paths, use_link=False):
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=process_env,
         creationflags=creationflags if os.name == "nt" else 0,
         close_fds=False if os.name == "nt" else True,
     )
@@ -12015,6 +12132,7 @@ def _qmt_auto_login_start_xtitclient(paths, use_link=False):
         "command": command,
         "exe_path": paths["exe_path"],
         "bin_dir": paths["bin_dir"],
+        "proxy": proxy_status,
     }
 
 
@@ -12282,6 +12400,8 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
                 return
             last_phase = phase
             message = {
+                "captcha_solved": "QMT 已自动读取并填写验证码后继续登录",
+                "captcha_restart": "QMT 需要验证码，无法自动读取，将重启客户端并重试登录",
                 "waiting_ready": "等待 QMT 完成启动、版本检查或更新，登录按钮可用后将自动重试",
                 "logging_in": "已提交 QMT 登录，正在等待登录成功",
                 "update_skipped": "已按配置选择不立即升级，继续等待 QMT 登录",
@@ -12295,14 +12415,63 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
                 "login_succeeded": False, "message": message, "error": "",
             })
 
+    def restart_after_challenge(current_pid=None, attempt=1):
+        """Restart this binding when the login dialog still requires a captcha."""
+        if should_cancel():
+            return None
+        with QMT_AUTO_LOGIN_LOCK:
+            if should_cancel():
+                return None
+            stop = _qmt_auto_login_stop_xtitclient(
+                row, paths, session=_qmt_auto_login_saved_session(row)
+            )
+            if should_cancel():
+                return None
+            launch = _qmt_auto_login_start_xtitclient(
+                dict(paths, qmt_vm=row.get("qmt_vm")), use_link=False
+            )
+            running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+            new_pid = _qmt_auto_login_first_pid(running, launch)
+            if not new_pid:
+                return None
+            on_pid(new_pid)
+            _qmt_auto_login_update_session(row, {
+                "login_state": "logging_in", "login_phase": "captcha_restart",
+                "login_succeeded": False, "last_captcha_restart": {
+                    "attempt": int(attempt or 1), "pid": new_pid, "stop": stop,
+                }, "message": "QMT 需要验证码，已结束旧进程并重新启动登录",
+                "error": "",
+            })
+            return {"pid": new_pid, "stop": stop, "launch": launch}
+
+    def call_login(current_pid, *, before_poll=None):
+        """Call login_running_qmt while remaining compatible with older hosts."""
+        from cfquant.qmt_component_login import login_running_qmt
+        kwargs = {
+            "expected_pid": current_pid, "startup_timeout": None,
+            "should_cancel": should_cancel, "on_wait": on_wait,
+        }
+        if before_poll is not None:
+            kwargs["before_poll"] = before_poll
+        try:
+            parameters = inspect.signature(login_running_qmt).parameters.values()
+            supports_challenge = any(
+                parameter.name == "on_challenge" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            supports_challenge = True
+        if supports_challenge:
+            kwargs.update(on_challenge=restart_after_challenge, challenge_retries=1)
+        return login_running_qmt(
+            paths["bin_dir"], account,
+            lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
+            **kwargs,
+        )
+
     try:
         def login(current_pid, before_poll):
-            return login_running_qmt(
-                paths["bin_dir"], account,
-                lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
-                expected_pid=current_pid, startup_timeout=None, should_cancel=should_cancel,
-                on_wait=on_wait, before_poll=before_poll,
-            )
+            return call_login(current_pid, before_poll=before_poll)
         if update_configured:
             launch_options = {}
             if qmt_vm_settings_enabled(row.get("qmt_vm")):
@@ -12321,12 +12490,9 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
             # Keep the established login path for test doubles and clients
             # without a real executable. A real binding uses the native watcher
             # above even when its default policy is to decline updates.
-            result = login_running_qmt(
-                paths["bin_dir"], account,
-                lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
-                expected_pid=pid, startup_timeout=None, should_cancel=should_cancel,
-                on_wait=on_wait,
-            ) if settings["auto_fill_credentials"] else {"outcome": "client_login", "login_succeeded": False, "attempts": []}
+            result = call_login(pid) if settings["auto_fill_credentials"] else {
+                "outcome": "client_login", "login_succeeded": False, "attempts": []
+            }
         outcome = result["outcome"]
         descriptions = {
             "logged_in": "QMT 已自动登录，等待已配置的策略连接",
@@ -12473,6 +12639,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
         with QMT_AUTO_LOGIN_LOCK:
             paths = _qmt_auto_login_paths(qmt_dir)
             paths = dict(paths, qmt_vm=normalize_qmt_vm_settings(row.get("qmt_vm"), strict=True))
+            _proxy_env, proxy_status = _qmt_proxy_for_process(dict(paths, qmt_proxy=row.get("qmt_proxy"),
+                                                                     account_key=_qmt_auto_login_session_key(row)))
             if qmt_vm_settings_enabled(paths["qmt_vm"]):
                 preflight_feature_process(paths["bin_dir"], paths["qmt_vm"])
             if settings["auto_fill_credentials"]:
@@ -12529,6 +12697,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "processes": running,
                 "launch": launch or {},
                 "stop": stop,
+                "proxy": (launch or {}).get("proxy") or proxy_status,
             })
             if restart:
                 result["message"] = (
@@ -15605,6 +15774,7 @@ def save_account_runtime_config(body):
         qmt_auto_login=qmt_auto_login_request,
         qmt_runtime=body.get("qmt_runtime") if "qmt_runtime" in body else None,
         qmt_vm=body.get("qmt_vm") if "qmt_vm" in body else None,
+        qmt_proxy=body.get("qmt_proxy") if "qmt_proxy" in body else None,
         notification_webhook=body.get("notification_webhook") if "notification_webhook" in body else None,
     )
     row_enabled = account_config_is_enabled(row)
@@ -15640,6 +15810,29 @@ def save_account_runtime_config(body):
         "account_pairs": WEB_CONFIG.account_pairs(),
         "account_configs": WEB_CONFIG.account_configs(),
         "bridges": WEB_CONFIG.bridges(),
+    }
+
+
+@serialized_account_configuration
+def save_account_proxy_config(body):
+    """Update a binding proxy without requiring the full binding form."""
+    body = body or {}
+    if not isinstance(body.get("qmt_proxy"), dict):
+        raise ValueError("qmt_proxy must be an object")
+    row = account_config_for_request(body)
+    account_key = str(row.get("account_key") or body.get("account_key") or "").strip()
+    account = WEB_CONFIG.save_account_proxy(account_key, body["qmt_proxy"])
+    restart = parse_bool(body.get("restart")) if "restart" in body else False
+    restart_result = None
+    if restart:
+        restart_result = qmt_auto_login_restart_for_account(account, account.get("qmt_auto_login"), reason="proxy")
+    return {
+        "account": account,
+        "proxy": account.get("qmt_proxy") or {},
+        "restart_requested": restart,
+        "restart": restart_result,
+        "restart_required": True,
+        "account_configs": WEB_CONFIG.account_configs(),
     }
 
 
@@ -15757,6 +15950,7 @@ def delete_account_runtime_config(body):
             bridge_id=(body or {}).get("bridge_id"),
         ) or account_key
         configs.pop(key, None)
+        QmtProxyCredentialStore(WEB_CONFIG.path).clear(key)
         if WEB_CONFIG._data.get("data_provider_account_key") == key:
             WEB_CONFIG._data["data_provider_account_key"] = ""
             WEB_CONFIG._data["data_provider_account_id"] = ""
@@ -15857,6 +16051,7 @@ def initialize_web_setup(body):
         qmt_strategy=body.get("qmt_strategy") if "qmt_strategy" in body else None,
         qmt_auto_login=body.get("qmt_auto_login") if "qmt_auto_login" in body else None,
         qmt_vm=body.get("qmt_vm") if "qmt_vm" in body else None,
+        qmt_proxy=body.get("qmt_proxy") if "qmt_proxy" in body else None,
     )
     qmt_core_deploy = auto_deploy_qmt_core_for_account(
         row,
@@ -18321,6 +18516,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     raise ValueError("请提供 account_key 和 notification_webhook 对象")
                 self._write_json(ok({"account": WEB_CONFIG.save_account_webhook(
                     body.get("account_key"), body["notification_webhook"])}))
+            elif parsed.path == "/api/account-config/proxy":
+                self._write_json(ok(save_account_proxy_config(body)))
             elif parsed.path == "/api/log-cleanup/run":
                 self._write_json(ok(run_log_cleanup(body)))
             elif parsed.path == "/api/updates/github":
@@ -18968,6 +19165,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
                     self._write_json(ok(snapshot))
             elif parsed.path == "/api/bindings/status":
                 self._write_json(ok(binding_status_snapshot()))
+            elif parsed.path == "/api/account-config/proxy":
+                selector = {
+                    key: (query.get(key) or [""])[0]
+                    for key in ("account_id", "account_type", "bridge_id", "account_key")
+                }
+                row = account_config_for_request(selector)
+                self._write_json(ok({"account": row, "proxy": row.get("qmt_proxy") or {}}))
             elif parsed.path == "/api/callbacks":
                 account_id = (query.get("account_id") or [""])[0]
                 account_type = normalize_account_type((query.get("account_type") or ["STOCK"])[0]) if query.get("account_type") else ""

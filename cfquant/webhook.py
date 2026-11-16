@@ -10,6 +10,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from .qmt_proxy import public_qmt_proxy
+
 
 PROVIDERS = ("wecom", "dingtalk", "feishu", "generic")
 
@@ -76,6 +78,7 @@ def public_binding(row):
         return None
     result = dict(row)
     result["notification_webhook"] = public_webhook(row.get("notification_webhook"))
+    result["qmt_proxy"] = public_qmt_proxy(row.get("qmt_proxy"))
     return result
 
 

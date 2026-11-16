@@ -68,6 +68,12 @@ function walk(root) {
       row.enabled = isEnabled(object);
       if (hasType(object, 'QLineEdit')) row.echo_mode = echoMode(object);
       if (hasType(object, 'QAbstractButton')) row.label = label(object);
+      if (hasType(object, 'QLabel')) {
+        const value = Memory.alloc(Process.pointerSize);
+        labelText(object, value);
+        try { row.text = stringData(value).readUtf16String(stringSize(value)); }
+        finally { stringDtor(value); }
+      }
     }
     result.push(row);
     childObjects(object).forEach(child => queue.push({object: child, parent: object.toString()}));
@@ -128,6 +134,22 @@ function submit(root) {
     '?slot_loginClicked@CLoginDialog@TC@@QEAAXXZ', 'void', ['pointer']);
   login(root);
   return {submitted: true};
+}
+
+function captchaCode(root) {
+  const rows = walk(root);
+  const code = rows.map(row => row.text || row.label || '').map(text => {
+    const match = String(text).match(/(?:\u9a8c\u8bc1\u7801|captcha)\s*[:\uff1a]?\s*([A-Za-z0-9]{4,8})/i);
+    return match && match[1];
+  }).find(Boolean);
+  if (!code) return {solved: false, reason: 'captcha image/code is not readable'};
+  const inputs = rows.filter(row => row.visible && row.enabled && row.echo_mode === 0);
+  if (inputs.length !== 1) return {solved: false, reason: 'captcha input is not uniquely identifiable'};
+  const text = Memory.allocUtf16String(code), string = Memory.alloc(Process.pointerSize);
+  stringCtor(string, text, code.length);
+  try { setText(ptr(inputs[0].address), string); }
+  finally { stringDtor(string); text.writeByteArray(new Uint8Array((code.length + 1) * 2)); }
+  return {solved: true, characters: code.length, input_method: 'QLineEdit::setText'};
 }
 
 function loginIdentity(root) {
@@ -220,6 +242,7 @@ rpc.exports = {
     });
   },
   submit(hwnd) { return onGui(hwnd, () => submit(getRoot(hwnd))); },
+  captchacode(hwnd) { return onGui(hwnd, () => captchaCode(getRoot(hwnd))); },
   close(hwnd) { return onGui(hwnd, () => ({closed: closeWidget(getRoot(hwnd))})); },
   clicklabel(hwnd, text) {
     return onGui(hwnd, () => {

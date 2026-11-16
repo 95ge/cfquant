@@ -161,7 +161,8 @@ def match_models(snapshot, expected):
 class QmtStrategyRecovery:
     def __init__(self, accounts_provider, *, backend_factory=None,
                  job_is_current=lambda job: True, clock=time.time, interval=20.0,
-                 notice_probe=visible_notice_windows, event_sink=None, bridge_verifier=confirm_recovery_bridge):
+                 notice_probe=visible_notice_windows, event_sink=None, bridge_verifier=confirm_recovery_bridge,
+                 terminal_restart=None):
         self.accounts_provider = accounts_provider
         self._worker_host = StrategyWorkerHost() if backend_factory is None else None
         self.backend_factory = backend_factory or self._worker_host
@@ -171,6 +172,7 @@ class QmtStrategyRecovery:
         self.notice_probe = notice_probe
         self.event_sink = event_sink or RecoveryJournal(Path("runtime/logs/qmt_strategy_recovery"))
         self.bridge_verifier = bridge_verifier
+        self.terminal_restart = terminal_restart
 
     def close(self):
         if self._worker_host is not None:
@@ -263,6 +265,7 @@ class QmtStrategyRecovery:
         status.pop("error", None)
         status.pop("native_failure", None)
         backend = None
+        terminal_restarted = False
         try:
             backend = self.backend_factory(job["root"])
             if (status.get("pid"), status.get("generation")) != (backend.pid, job["generation"]):
@@ -298,7 +301,32 @@ class QmtStrategyRecovery:
                     attempts = dict(status.get("attempts") or {})
                     status["attempts"] = attempts
                     if any(attempts.get(target["name"], 0) >= 5 for target in stopped):
-                        status["state"] = "retry_exhausted"
+                        if self.terminal_restart and not status.get("terminal_restart_pending"):
+                            status["terminal_restart_pending"] = True
+                            try:
+                                restart = self.terminal_restart(job, status)
+                            except Exception as error:
+                                status["state"] = "terminal_restart_failed"
+                                status["terminal_restart_pending"] = False
+                                status["error"] = str(error)
+                                status["next_check_at"] = now + max(self.interval, 60)
+                            else:
+                                if restart:
+                                    status["state"] = "terminal_restart_requested"
+                                    terminal_restarted = True
+                                    status["terminal_restart"] = restart if isinstance(restart, dict) else {"result": restart}
+                                    status["restart_requested_at"] = now
+                                    status["next_check_at"] = now + 1
+                                    self._event(job, status, "qmt_process_restart_requested", **(
+                                        restart if isinstance(restart, dict) else {"result": restart}
+                                    ))
+                                else:
+                                    status["state"] = "terminal_restart_failed"
+                                    status["terminal_restart_pending"] = False
+                                    status["error"] = "QMT process restart did not return a new process"
+                                    status["next_check_at"] = now + max(self.interval, 60)
+                        else:
+                            status["state"] = "terminal_restart_pending" if status.get("terminal_restart_pending") else "retry_exhausted"
                     elif now < status.get("retry_after", 0):
                         status["state"] = "backoff"
                     else:
@@ -321,7 +349,7 @@ class QmtStrategyRecovery:
                             else:
                                 attempts[target["name"]] -= 1
                                 status["retry_after"] = now
-            if not inspect_only:
+            if not inspect_only and not terminal_restarted:
                 self._confirm_incident(job, status, backend, expected)
                 if status.get("state") in ("retry_exhausted", "backoff") and status.get("incident"):
                     if status.get("last_logged_state") != status["state"]:
@@ -346,7 +374,7 @@ class QmtStrategyRecovery:
 
 class QmtStrategyRecoveryScheduler:
     """Separate worker: native GUI waits must not delay the Pipe control loop."""
-    def __init__(self, manager, accounts_provider, report_path, interval=20.0):
+    def __init__(self, manager, accounts_provider, report_path, interval=20.0, terminal_restart=None):
         self.manager = manager
         self.accounts_provider = accounts_provider
         self.report_path = Path(report_path)
@@ -361,7 +389,8 @@ class QmtStrategyRecoveryScheduler:
         except (OSError, ValueError):
             pass
         self.recovery = QmtStrategyRecovery(accounts_provider, job_is_current=self._current, interval=interval,
-            event_sink=RecoveryJournal(self.report_path.parent.parent / "logs/qmt_strategy_recovery"))
+            event_sink=RecoveryJournal(self.report_path.parent.parent / "logs/qmt_strategy_recovery"),
+            terminal_restart=terminal_restart)
 
     def _current(self, job):
         if self.stop_event.is_set():
@@ -450,12 +479,16 @@ class QmtStrategyRecoveryScheduler:
                     recovery = {}
                 target["recovery"] = recovery
                 state = recovery.get("state")
-                if state in ("start_requested", "backoff", "retry_exhausted"):
+                if state in ("start_requested", "backoff", "retry_exhausted", "terminal_restart_requested",
+                             "terminal_restart_pending", "terminal_restart_failed"):
                     target["state"] = "waiting_start"
                     target["message"] = {
                         "start_requested": "已检测到托管策略停止，已直接提交启动，等待通道恢复",
                         "backoff": "托管策略尚未恢复，等待冷却后重试",
                         "retry_exhausted": "托管策略连续启动失败，已暂停重试，请检查 QMT 提示",
+                        "terminal_restart_requested": "策略连续启动失败 5 次，已关闭并重启 QMT，正在等待再次登录和恢复策略",
+                        "terminal_restart_pending": "策略已触发 QMT 重启，等待新进程就绪后再检测。",
+                        "terminal_restart_failed": "策略连续启动失败 5 次，QMT 重启失败，请检查组件进程与权限",
                     }[state]
                 elif state == "detection_only":
                     target["state"] = "waiting_manual_start"

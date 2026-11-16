@@ -42,7 +42,7 @@ def preflight_feature_process(qmt_dir, settings):
     return payload
 
 
-def start_feature_process(qmt_dir, settings, *, qmt_args=None, timeout=120):
+def start_feature_process(qmt_dir, settings, *, qmt_args=None, env=None, timeout=120):
     """Return the real QMT PID after hooks are installed and it is resumed.
 
     Until a successful handshake, closing stdin makes the worker dispose of its
@@ -81,7 +81,8 @@ def start_feature_process(qmt_dir, settings, *, qmt_args=None, timeout=120):
         return payload
 
     try:
-        request = {'directory': str(qmt_dir), 'settings': settings, 'qmt_args': list(qmt_args or [])}
+        request = {'directory': str(qmt_dir), 'settings': settings, 'qmt_args': list(qmt_args or []),
+                   'env': dict(env or {})}
         process.stdin.write(json.dumps(request) + '\n')
         process.stdin.flush()
         launch = receive('ready')

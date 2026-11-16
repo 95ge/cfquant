@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261113_02';
+const FRONTEND_VERSION = 'web_20261116_01';
 
 const state = {
   accountId: '',
@@ -174,6 +174,11 @@ const state = {
   bindingQmtProcessCheckToken: 0,
   bindingQmtProcessResolver: null,
   bindingQmtProcessPromptResults: [],
+  bindingQmtProcessAutoCloseTimer: null,
+  bindingQmtProcessCountdownTimer: null,
+  bindingQmtProcessAutoCloseDeadline: 0,
+  bindingQmtProcessStopping: false,
+  bindingQmtProcessStatusOverride: false,
   bindingQmtRestartTargets: [],
   updateQmtRestartTargets: [],
 };
@@ -9955,6 +9960,8 @@ function renderCachedBindingStatuses() {
 async function saveCurrentAccountPair() {
   const qmtVm = readBindingVmSettings();
   if (!qmtVm) return;
+  const qmtProxy = readBindingQmtProxySettings();
+  if (!qmtProxy) return;
   const accountId = selectedAccount();
   const accountType = selectedAccountType();
   const accountKey = selectedAccountKey();
@@ -10012,6 +10019,7 @@ async function saveCurrentAccountPair() {
       data_provider: dataProvider,
       enabled,
       qmt_auto_login: qmtAutoLoginSettings,
+      qmt_proxy: qmtProxy,
       qmt_vm: qmtVm,
       market_routing_enabled: marketRoutingEnabled,
       market_bridges: marketBridges,
@@ -10254,6 +10262,79 @@ async function saveBindingWebhookSettings() {
   }
 }
 
+function fillBindingQmtProxySettings(settings = {}) {
+  const value = settings || {};
+  const enabled = value.enabled === true;
+  if ($('bindingQmtProxyEnabled')) $('bindingQmtProxyEnabled').checked = enabled;
+  if ($('bindingQmtProxyType')) $('bindingQmtProxyType').value = ['http', 'https', 'socks5', 'ssh'].includes(value.type) ? value.type : 'socks5';
+  if ($('bindingQmtProxyHost')) $('bindingQmtProxyHost').value = value.host || '';
+  if ($('bindingQmtProxyPort')) $('bindingQmtProxyPort').value = value.port || '';
+  if ($('bindingQmtProxyUsername')) $('bindingQmtProxyUsername').value = value.username || '';
+  if ($('bindingQmtProxyPassword')) {
+    $('bindingQmtProxyPassword').value = '';
+    $('bindingQmtProxyPassword').dataset.saved = value.password_saved ? 'true' : 'false';
+  }
+  if ($('bindingQmtProxyLocalPort')) $('bindingQmtProxyLocalPort').value = value.local_bind_port || 10800;
+  if ($('bindingQmtProxyUdpPolicy')) $('bindingQmtProxyUdpPolicy').value = value.udp_policy === 'proxy' ? 'proxy' : 'direct';
+  if ($('bindingQmtProxyBypass')) $('bindingQmtProxyBypass').value = (value.bypass || ['127.0.0.1', 'localhost', '::1']).join('\n');
+  if ($('bindingQmtProxyClearPassword')) $('bindingQmtProxyClearPassword').checked = false;
+  syncBindingQmtProxySettings();
+}
+
+function syncBindingQmtProxySettings() {
+  const enabled = !!$('bindingQmtProxyEnabled')?.checked;
+  const type = $('bindingQmtProxyType')?.value || 'socks5';
+  $('bindingQmtProxyFields')?.classList.toggle('hidden', !enabled);
+  $('bindingQmtProxyLocalPortField')?.classList.toggle('hidden', type !== 'ssh');
+  const udp = $('bindingQmtProxyUdpPolicy');
+  if (udp) {
+    const proxyOption = udp.querySelector('option[value="proxy"]');
+    if (proxyOption) proxyOption.disabled = enabled && !['socks5', 'ssh'].includes(type);
+    if (proxyOption?.disabled && udp.value === 'proxy') udp.value = 'direct';
+  }
+  const password = $('bindingQmtProxyPassword');
+  const status = $('bindingQmtProxyStatus');
+  if (status) {
+    const saved = password?.dataset.saved === 'true';
+    status.textContent = enabled
+      ? `${type.toUpperCase()} 代理将在下次启动 QMT 时注入；${saved ? '代理密码已加密保存。' : '尚未保存代理密码。'}`
+      : '代理关闭，QMT 将按本机网络配置连接。';
+  }
+}
+
+function readBindingQmtProxySettings() {
+  const enabled = !!$('bindingQmtProxyEnabled')?.checked;
+  const type = $('bindingQmtProxyType')?.value || 'socks5';
+  const host = String($('bindingQmtProxyHost')?.value || '').trim();
+  const port = Number($('bindingQmtProxyPort')?.value || 0);
+  const username = String($('bindingQmtProxyUsername')?.value || '').trim();
+  const password = String($('bindingQmtProxyPassword')?.value || '');
+  const localPort = Number($('bindingQmtProxyLocalPort')?.value || 10800);
+  const udpPolicy = $('bindingQmtProxyUdpPolicy')?.value === 'proxy' ? 'proxy' : 'direct';
+  const bypass = String($('bindingQmtProxyBypass')?.value || '')
+    .split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean);
+  if (enabled && (!host || !Number.isInteger(port) || port < 1 || port > 65535)) {
+    setBindingNotice('启用代理时请填写有效的代理主机和端口。', 'error', { autoHide: false });
+    $('bindingQmtProxyHost')?.focus();
+    return null;
+  }
+  if (enabled && type === 'ssh' && (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535)) {
+    setBindingNotice('SSH 本地 SOCKS 端口必须是 1–65535 的整数。', 'error', { autoHide: false });
+    $('bindingQmtProxyLocalPort')?.focus();
+    return null;
+  }
+  if (enabled && udpPolicy === 'proxy' && !['socks5', 'ssh'].includes(type)) {
+    setBindingNotice('HTTP/HTTPS 代理不能承载原生 UDP，请选择 UDP 直连或 SOCKS5。', 'error', { autoHide: false });
+    return null;
+  }
+  return {
+    enabled, type, host, port, username, bypass, udp_policy: udpPolicy,
+    local_bind_port: localPort,
+    ...(password ? { password } : {}),
+    ...( $('bindingQmtProxyClearPassword')?.checked ? { clear_password: true } : {}),
+  };
+}
+
 function syncBindingForm() {
   const form = $('bindingForm');
   if (!form) return;
@@ -10266,6 +10347,7 @@ function syncBindingForm() {
   fillBindingRuntimeSettings(config ? (config.qmt_runtime || {}) : undefined);
   fillBindingVmSettings(config?.qmt_vm);
   fillBindingWebhookSettings(config?.notification_webhook);
+  fillBindingQmtProxySettings(config?.qmt_proxy);
   if (form.display_name) form.display_name.value = config ? String(config.display_name || config.account_name || '') : '';
   if (form.qmt_dir) form.qmt_dir.value = qmtDeploymentPath(config && config.qmt_dir ? config.qmt_dir : '');
   if (form.mode) form.mode.value = config && config.mode ? config.mode : DEFAULT_BINDING_MODE;
@@ -10316,6 +10398,7 @@ function fillBindingForm(values = {}) {
   fillBindingRuntimeSettings(values.qmtRuntime);
   fillBindingVmSettings(values.qmtVm);
   fillBindingWebhookSettings(values.notificationWebhook);
+  fillBindingQmtProxySettings(values.qmtProxy);
   if (form.display_name) form.display_name.value = values.displayName || '';
   form.account_id.value = values.accountId || '';
   if (form.account_type) form.account_type.value = normalizeAccountType(values.accountType || 'STOCK');
@@ -10369,6 +10452,7 @@ function openBindingDialog(options = {}) {
     qmtAutoLogin: config ? config.qmt_auto_login : options.qmtAutoLogin,
     qmtRuntime: config ? (config.qmt_runtime || {}) : options.qmtRuntime,
     qmtVm: config ? config.qmt_vm : options.qmtVm,
+    qmtProxy: config ? config.qmt_proxy : options.qmtProxy,
     notificationWebhook: config ? config.notification_webhook : undefined,
   });
   const editing = !!accountId;
@@ -10551,7 +10635,18 @@ async function checkBindingQmtProcesses(targets = bindingQmtProcessTargetsFromFo
   }
 }
 
+function clearBindingQmtProcessAutoClose() {
+  if (state.bindingQmtProcessAutoCloseTimer) clearTimeout(state.bindingQmtProcessAutoCloseTimer);
+  if (state.bindingQmtProcessCountdownTimer) clearInterval(state.bindingQmtProcessCountdownTimer);
+  state.bindingQmtProcessAutoCloseTimer = null;
+  state.bindingQmtProcessCountdownTimer = null;
+  state.bindingQmtProcessAutoCloseDeadline = 0;
+}
+
 function closeBindingQmtProcessPrompt(result) {
+  clearBindingQmtProcessAutoClose();
+  state.bindingQmtProcessStopping = false;
+  state.bindingQmtProcessStatusOverride = false;
   const overlay = $('bindingQmtProcessOverlay');
   if (overlay) {
     overlay.classList.add('hidden');
@@ -10565,6 +10660,8 @@ function closeBindingQmtProcessPrompt(result) {
 }
 
 function showBindingQmtProcessPrompt(results, options = {}) {
+  clearBindingQmtProcessAutoClose();
+  state.bindingQmtProcessStopping = false;
   const overlay = $('bindingQmtProcessOverlay');
   const title = $('bindingQmtProcessTitle');
   const subtitle = overlay && overlay.querySelector('.binding-dialog-head span');
@@ -10580,14 +10677,31 @@ function showBindingQmtProcessPrompt(results, options = {}) {
   if (stopButton) stopButton.textContent = updating ? '关闭 QMT 并继续更新' : '关闭 QMT 并继续';
   if (cancelButton) cancelButton.textContent = updating ? '取消更新' : '取消保存';
   state.bindingQmtProcessPromptResults = results || [];
-  if (status) status.textContent = results.filter((item) => item.running).map((item) => `${item.label || 'QMT'}：PID ${item.pids.join(', ')}`).join('；');
+  const running = results.filter((item) => item.running);
+  const renderCountdown = () => {
+    if (!status || state.bindingQmtProcessStopping || state.bindingQmtProcessStatusOverride) return;
+    const seconds = Math.max(0, Math.ceil((state.bindingQmtProcessAutoCloseDeadline - Date.now()) / 1000));
+    const details = running.map((item) => `${item.label || 'QMT'} PID ${item.pids.join(', ')}`).join('；');
+    status.textContent = `${details}${details ? '；' : ''}${seconds} 秒后自动关闭 QMT 并继续，可提前点击“关闭 QMT 并继续”`;
+  };
+  state.bindingQmtProcessAutoCloseDeadline = Date.now() + 20000;
+  renderCountdown();
   overlay.classList.remove('hidden');
   overlay.setAttribute('aria-hidden', 'false');
   document.body.classList.add('binding-dialog-open');
+  state.bindingQmtProcessCountdownTimer = setInterval(renderCountdown, 1000);
+  state.bindingQmtProcessAutoCloseTimer = setTimeout(() => {
+    state.bindingQmtProcessAutoCloseTimer = null;
+    stopBindingQmtProcessesAndContinue();
+  }, 20000);
   return new Promise((resolve) => { state.bindingQmtProcessResolver = resolve; });
 }
 
 async function stopBindingQmtProcessesAndContinue() {
+  if (state.bindingQmtProcessStopping) return;
+  state.bindingQmtProcessStopping = true;
+  state.bindingQmtProcessStatusOverride = false;
+  clearBindingQmtProcessAutoClose();
   const running = (state.bindingQmtProcessPromptResults || []).filter((item) => item.running && item.qmt_dir);
   const status = $('bindingQmtProcessPromptStatus');
   const button = $('bindingQmtProcessStopContinueBtn');
@@ -10604,12 +10718,14 @@ async function stopBindingQmtProcessesAndContinue() {
     });
     const remaining = (data.targets || []).filter((item) => item.after && item.after.running);
     if (remaining.length) {
+      state.bindingQmtProcessStopping = false;
       if (status) status.textContent = remaining.map((item) => `${item.qmt_dir}：仍在运行，PID ${(item.after.pids || []).join(', ')}`).join('；');
       return;
     }
     state.bindingQmtRestartTargets = running.map((item) => ({ label: item.label || 'QMT', qmt_dir: item.qmt_dir }));
     closeBindingQmtProcessPrompt({ stopped: true });
   } catch (error) {
+    state.bindingQmtProcessStopping = false;
     if (status) status.textContent = `关闭 QMT 失败：${error.message}`;
   } finally {
     if (button) button.disabled = false;
@@ -10635,6 +10751,7 @@ async function restartBindingQmtProcessesAfterSave() {
 }
 
 async function recheckBindingQmtProcesses() {
+  state.bindingQmtProcessStatusOverride = true;
   const targets = (state.bindingQmtProcessPromptResults || []).map((item) => ({
     label: item.label, path: item.qmt_dir,
   })).filter((item) => item.path);
@@ -11057,6 +11174,8 @@ async function submitBindingForm(event) {
   event.preventDefault();
   const notificationWebhook = readBindingWebhookSettings();
   if (!notificationWebhook) return;
+  const qmtProxy = readBindingQmtProxySettings();
+  if (!qmtProxy) return;
   const qmtVm = readBindingVmSettings();
   if (!qmtVm) return;
   const form = event.currentTarget;
@@ -11157,6 +11276,7 @@ async function submitBindingForm(event) {
       data_provider: dataProvider,
       enabled,
       qmt_auto_login: qmtAutoLoginSettings,
+      qmt_proxy: qmtProxy,
       market_routing_enabled: marketRoutingEnabled,
       market_bridges: marketBridges,
       qmt_strategy: strategySettings,
@@ -11172,6 +11292,10 @@ async function submitBindingForm(event) {
     }
     if (qmtAutoLoginSettings.password && !(responseAccount.qmt_auto_login && responseAccount.qmt_auto_login.password_saved)) {
       throw new Error('当前后端未保存 QMT 登录密码，请重启项目后重新保存。');
+    }
+    if (!responseAccount.qmt_proxy || responseAccount.qmt_proxy.enabled !== qmtProxy.enabled
+        || (qmtProxy.enabled && responseAccount.qmt_proxy.type !== qmtProxy.type)) {
+      throw new Error('QMT 代理配置未被后端保存，请重启 Web 服务后重试。');
     }
     if (normalizeTransportMode(mode) !== 'lttx' && qmtRuntime
         && (!responseAccount.qmt_runtime
@@ -15613,6 +15737,9 @@ async function boot() {
   $('bindingWebhookEnabled').addEventListener('change', syncBindingWebhookSettings);
   $('bindingWebhookSaveBtn').addEventListener('click', saveBindingWebhookSettings);
   $('bindingWebhookProvider').addEventListener('change', syncBindingWebhookSettings);
+  ['bindingQmtProxyEnabled', 'bindingQmtProxyType', 'bindingQmtProxyUdpPolicy'].forEach((id) => {
+    $(id)?.addEventListener('change', syncBindingQmtProxySettings);
+  });
   $('bindingWebhookClearBtn').addEventListener('click', () => {
     fillBindingWebhookSettings();
     $('bindingWebhookSettings').dataset.clear = 'true';

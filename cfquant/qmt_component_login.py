@@ -63,6 +63,27 @@ def auto_login(backend, password_provider, *, retry_not_ready=False, login_accou
     """
     attempts = []
     password_requested = False
+    captcha_attempted = False
+    captcha_solved = False
+
+    def solve_captcha_once():
+        """Best-effort native captcha extraction; never guesses a code."""
+        nonlocal captcha_attempted, captcha_solved
+        if captcha_attempted:
+            return False
+        captcha_attempted = True
+        solver = getattr(backend, "solve_captcha", None)
+        if not callable(solver):
+            return False
+        try:
+            solved = solver()
+        except Exception:
+            return False
+        if isinstance(solved, dict):
+            captcha_solved = bool(solved.get("solved"))
+        else:
+            captcha_solved = bool(solved)
+        return captcha_solved
 
     def result(outcome):
         return {"outcome": outcome, "login_succeeded": outcome in ("logged_in", "already_logged_in"),
@@ -76,8 +97,16 @@ def auto_login(backend, password_provider, *, retry_not_ready=False, login_accou
                 backend.select_account(login_account)
             return result("already_logged_in")
         state = backend.state()
-        if state.get("notice") in ("challenge", "network_error"):
-            return result(state["notice"])
+        if state.get("notice") == "challenge":
+            if captcha_solved:
+                state["notice"] = None
+            elif solve_captcha_once():
+                on_wait("captcha_solved")
+                continue
+            else:
+                return result("challenge")
+        if state.get("notice") == "network_error":
+            return result("network_error")
         if not state.get("busy"):
             if not password_requested or not state.get("has_password"):
                 if not password_requested:
@@ -117,6 +146,18 @@ def auto_login(backend, password_provider, *, retry_not_ready=False, login_accou
         if should_cancel():
             return result("cancelled")
         outcome = backend.wait_outcome()
+        if outcome == "challenge":
+            if not captcha_solved:
+                solve_captcha_once()
+            if captcha_solved:
+                try:
+                    backend.submit()
+                except QmtNotReady:
+                    pass
+                else:
+                    attempts.append("captcha")
+                    on_wait("logging_in")
+                    continue
         if outcome != "timeout" or not retry_not_ready:
             return result(outcome)
         on_wait("logging_in")
@@ -272,6 +313,21 @@ class QtLoginBackend:
         if not self.api.submit(str(self.hwnd))["result"]["submitted"]:
             raise QmtNotReady("Login is not ready")
 
+    def solve_captcha(self):
+        """Fill a captcha only when the native agent can read it exactly."""
+        if self.session.is_detached or not self.hwnd:
+            raise QmtProcessExited("QMT automation session detached")
+        reader = getattr(self.api, "captchacode", None)
+        if not callable(reader):
+            return False
+        response = reader(str(self.hwnd)) or {}
+        if not isinstance(response, dict):
+            return False
+        result = response.get("result") or {}
+        if not isinstance(result, dict):
+            return False
+        return bool(result.get("solved"))
+
     def fill(self, password):
         self.state()
         self.api.fill(str(self.hwnd), password, False)
@@ -370,7 +426,8 @@ def main():
 
 def login_running_qmt(directory, login_account="", password_provider=lambda: "", expected_pid=None,
                       startup_timeout=60, timeout=40, *, should_cancel=lambda: False,
-                      on_wait=lambda phase: None, before_poll=lambda: None, executable_path=None):
+                      on_wait=lambda phase: None, before_poll=lambda: None, executable_path=None,
+                      on_challenge=None, challenge_retries=1):
     """Wait for QMT startup/updates and observe login until success or rejection.
 
     The web worker uses startup_timeout=None to wait while its process is alive.
@@ -384,35 +441,67 @@ def login_running_qmt(directory, login_account="", password_provider=lambda: "",
         return cancelled()
 
     deadline = None if startup_timeout is None else time.monotonic() + startup_timeout
-    backend = None
+    current_pid = expected_pid
+    challenge_count = 0
+    all_attempts = []
     while True:
-        if should_cancel():
-            return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
+        backend = None
+        while True:
+            if should_cancel():
+                return {"outcome": "cancelled", "login_succeeded": False, "attempts": all_attempts,
+                        "challenge_restarts": challenge_count}
+            try:
+                backend_kwargs = dict(expected_pid=current_pid, should_cancel=should_cancel)
+                if executable_path:
+                    backend_kwargs["executable_path"] = executable_path
+                backend = IsolatedLoginBackend(Path(directory), timeout, **backend_kwargs)
+                current_pid = getattr(backend, "pid", None) or current_pid
+                break
+            except QmtAutomationCancelled:
+                return {"outcome": "cancelled", "login_succeeded": False, "attempts": all_attempts,
+                        "challenge_restarts": challenge_count}
+            except QmtProcessExited:
+                return {"outcome": "process_exited", "login_succeeded": False, "attempts": all_attempts,
+                        "challenge_restarts": challenge_count}
+            except QmtNotReady:
+                if deadline is not None and time.monotonic() >= deadline:
+                    return {"outcome": "startup_timeout", "login_succeeded": False, "attempts": all_attempts,
+                            "challenge_restarts": challenge_count}
+                on_wait("waiting_ready")
+                time.sleep(0.5)
         try:
-            backend_kwargs = dict(expected_pid=expected_pid, should_cancel=should_cancel)
-            if executable_path:
-                backend_kwargs["executable_path"] = executable_path
-            backend = IsolatedLoginBackend(Path(directory), timeout, **backend_kwargs)
-            break
+            backend.should_cancel = should_cancel
+            result = auto_login(backend, password_provider, retry_not_ready=True, login_account=login_account,
+                                should_cancel=should_cancel, on_wait=on_wait)
         except QmtAutomationCancelled:
-            return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
+            result = {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
         except QmtProcessExited:
-            return {"outcome": "process_exited", "login_succeeded": False, "attempts": []}
-        except QmtNotReady:
-            if deadline is not None and time.monotonic() >= deadline:
-                return {"outcome": "startup_timeout", "login_succeeded": False, "attempts": []}
-            on_wait("waiting_ready")
-            time.sleep(0.5)
-    try:
-        backend.should_cancel = should_cancel
-        return auto_login(backend, password_provider, retry_not_ready=True, login_account=login_account,
-                          should_cancel=should_cancel, on_wait=on_wait)
-    except QmtAutomationCancelled:
-        return {"outcome": "cancelled", "login_succeeded": False, "attempts": []}
-    except QmtProcessExited:
-        return {"outcome": "process_exited", "login_succeeded": False, "attempts": []}
-    finally:
-        backend.close()
+            result = {"outcome": "process_exited", "login_succeeded": False, "attempts": []}
+        finally:
+            backend.close()
+        all_attempts.extend(result.get("attempts") or [])
+        result["attempts"] = all_attempts
+        result["challenge_restarts"] = challenge_count
+        if result.get("outcome") != "challenge" or not callable(on_challenge):
+            return result
+        if challenge_count >= max(0, int(challenge_retries or 0)) or should_cancel():
+            return result
+        challenge_count += 1
+        on_wait("captcha_restart")
+        try:
+            restart = on_challenge(current_pid, challenge_count)
+        except TypeError:
+            # Permit small integrations that expose a no-argument callback.
+            restart = on_challenge()
+        except Exception as error:
+            result["challenge_restart_error"] = str(error)
+            return result
+        if not restart:
+            return result
+        if isinstance(restart, dict):
+            current_pid = restart.get("pid") or restart.get("qmt_pid") or restart.get("process_id")
+        else:
+            current_pid = restart
 
 
 if __name__ == "__main__":

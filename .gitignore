@@ -95,6 +95,9 @@ pip_library_dev/
 # Local private docs; keep sensitive accounts, broker paths, internal analysis and test reports out of GitHub.
 private_docs/
 
+# Local internal design and product documents; publish only reviewed public summaries.
+private/
+
 # Local video synthesis workspace and generated media.
 remotion_intro/
 *.mp4

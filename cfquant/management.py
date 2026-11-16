@@ -376,6 +376,33 @@ class AccountManager:
     def status(self, timeout=None):
         return self.runtime._request("GET", "/api/bindings/status", timeout=timeout)
 
+    def proxy(self, account_id=None, *, account_type="STOCK", bridge_id=None,
+              account_key=None, timeout=None):
+        """Return the sanitized proxy profile for one binding."""
+        selectors = {"account_id": account_id, "account_type": account_type,
+                     "bridge_id": bridge_id, "account_key": account_key}
+        body = {key: value for key, value in selectors.items()
+                if value is not None and str(value).strip()}
+        if not body.get("account_id") and not body.get("account_key"):
+            raise ValueError("account_id or account_key is required")
+        query = urllib.parse.urlencode(body)
+        result = self.runtime._request("GET", "/api/account-config/proxy?" + query, timeout=timeout)
+        return result.get("proxy") or {}
+
+    def set_proxy(self, proxy, account_id=None, *, account_type="STOCK", bridge_id=None,
+                  account_key=None, restart=False, timeout=180):
+        """Save a binding proxy profile and optionally restart QMT."""
+        if not isinstance(proxy, dict):
+            raise ValueError("proxy must be a dict")
+        body = {key: value for key, value in {
+            "account_id": account_id, "account_type": account_type,
+            "bridge_id": bridge_id, "account_key": account_key,
+        }.items() if value is not None and str(value).strip()}
+        if not body.get("account_id") and not body.get("account_key"):
+            raise ValueError("account_id or account_key is required")
+        body.update(qmt_proxy=dict(proxy), restart=bool(restart))
+        return self.runtime._request("POST", "/api/account-config/proxy", body, timeout=timeout)
+
     def recover_strategy(self, account_id=None, *, account_type=None, bridge_id=None,
                          account_key=None, timeout=180):
         """Check and recover this binding's stopped managed QMT strategies.

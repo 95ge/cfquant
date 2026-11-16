@@ -42,6 +42,19 @@ def test_binding_settings_preserve_partial_edits_and_reload(config):
     assert save(config, qmt_runtime={'log_enabled': None})['qmt_runtime']['log_enabled'] is None
 
 
+def test_proxy_settings_round_trip_and_public_secret_shape(config):
+    row = save(config, qmt_proxy={
+        'enabled': True, 'type': 'socks5', 'host': '127.0.0.1', 'port': 1080,
+        'bypass': ['broker.example.com'], 'udp_policy': 'direct',
+    })
+    assert row['qmt_proxy']['type'] == 'socks5'
+    assert 'password' not in row['qmt_proxy']
+    restored = web.WebRuntimeConfig(config.path, config.settings_db_path)
+    saved = next(iter(restored.account_configs().values()))['qmt_proxy']
+    assert saved['host'] == '127.0.0.1'
+    assert '127.0.0.1' in saved['bypass']
+
+
 @pytest.mark.parametrize('mode', ['ctypes', 'lttx', 'lite'])
 def test_edit_without_mode_keeps_existing_binding_mode(config, tmp_path, mode):
     paths = dict(qmt_dir=str(tmp_path / 'normal'), qmt_trade_dir=str(tmp_path / 'trade'))

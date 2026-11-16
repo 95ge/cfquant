@@ -1,0 +1,22 @@
+[Unit]
+Description=CFQuant Enterprise Relay Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cfquant-relay
+Group=cfquant-relay
+WorkingDirectory=/opt/cfquant-relay
+EnvironmentFile=-/etc/cfquant-relay/relay.env
+ExecStart=/opt/cfquant-relay/.venv/bin/python -m enterprise_relay.server --data-dir /var/lib/cfquant-relay
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cfquant-relay /var/log/cfquant-relay
+
+[Install]
+WantedBy=multi-user.target
