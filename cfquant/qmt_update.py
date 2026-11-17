@@ -366,8 +366,12 @@ def manage_qmt_startup(directory, pid, login, *, auto_update=False,
                 # Catch the updater in the gap between the final login poll and
                 # completion, and continue handling any background download.
                 monitor.before_poll()
-                while monitor.active and not should_cancel():
-                    on_wait("update_background")
+                # A client downgraded to manual login may still launch a late
+                # updater. Observe it without calling the login callback again.
+                manual_deadline = time.monotonic() + 90 if result.get("outcome") == "manual_login_required" else 0
+                while (monitor.active or time.monotonic() < manual_deadline) and not should_cancel():
+                    if monitor.active:
+                        on_wait("update_background")
                     time.sleep(0.5)
                     monitor.before_poll()
             if should_cancel():

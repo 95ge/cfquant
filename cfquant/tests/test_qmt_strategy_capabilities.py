@@ -258,7 +258,7 @@ def test_strategy_environment_checks_qt_abi_without_exact_version_pin(tmp_path, 
         with pytest.raises(RuntimeError, match='ABI'):
             _verify_environment_native(tmp_path, strategy=True)
     # Login retains its existing independently validated compatibility policy.
-    if qt_version == (5,6,2):
+    if qt_version in ((5,6,2), (5,15,2)):
         _verify_environment_native(tmp_path)
     else:
         with pytest.raises(RuntimeError, match='5.6.2'):

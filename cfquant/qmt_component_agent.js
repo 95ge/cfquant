@@ -3,7 +3,18 @@
 const core = Process.getModuleByName('Qt5Core.dll');
 const widgets = Process.getModuleByName('Qt5Widgets.dll');
 const user32 = Process.getModuleByName('user32.dll');
-const fn = (mod, name, ret, args) => new NativeFunction(mod.getExportByName(name), ret, args);
+const fn = (mod, name, ret, args) => {
+  const address = mod.findExportByName(name);
+  if (!address) throw new Error('QMT 登录组件缺少接口: ' + mod.name + '!' + name);
+  return new NativeFunction(address, ret, args);
+};
+if (Process.arch !== 'x64' || Process.pointerSize !== 8) throw new Error('QMT 登录组件需要 x64 客户端');
+// Read the loaded library's build string, not the on-disk DLL that an updater
+// may already have replaced. Vendor Windows builds do not always export qVersion.
+const qtBuild = fn(core, '?build@QLibraryInfo@@SAPEBDXZ', 'pointer', [])().readUtf8String();
+const qtMatch = /^Qt (\d+\.\d+\.\d+)(?:\s|$)/.exec(qtBuild || '');
+const qtVersion = qtMatch ? qtMatch[1] : 'unknown';
+if (!['5.6.2', '5.15.2'].includes(qtVersion)) throw new Error('QMT 已加载未适配的 Qt ' + qtVersion);
 const findWidget = fn(widgets, '?find@QWidget@@SAPEAV1@_K@Z', 'pointer', ['uint64']);
 const children = fn(core, '?children@QObject@@QEBAAEBV?$QList@PEAVQObject@@@@XZ', 'pointer', ['pointer']);
 const inherits = fn(core, '?inherits@QObject@@QEBA_NPEBD@Z', 'bool', ['pointer', 'pointer']);
@@ -40,8 +51,13 @@ function typeName(object) {
 
 function childObjects(object) {
   const d = children(object).readPointer();
+  if (d.isNull()) throw new Error('Unexpected null QList data');
+  // QList<QObject*> has the same header on the two verified Qt 5 versions:
+  // refcount, capacity, begin, end, then pointer-sized elements.
+  const capacity = d.add(4).readS32();
   const begin = d.add(8).readS32(), end = d.add(12).readS32();
-  if (begin < 0 || end < begin || end - begin > 5000) throw new Error('Unexpected QList layout');
+  if (capacity < 0 || begin < 0 || end < begin || end > capacity || end - begin > 5000)
+    throw new Error('Unexpected QList layout');
   const result = [];
   for (let i = begin; i < end; i++) result.push(d.add(16 + i * Process.pointerSize).readPointer());
   return result;
@@ -190,6 +206,7 @@ Interceptor.attach(user32.getExportByName('DispatchMessageW'), {
 });
 
 rpc.exports = {
+  compatibility() { return {qt_version: qtVersion, architecture: Process.arch}; },
   selectaccount(hwnd, account, replace = false) {
     return onGui(hwnd, () => {
       const root = getRoot(hwnd);

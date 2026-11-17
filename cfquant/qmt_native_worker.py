@@ -31,6 +31,11 @@ class QmtAutomationCancelled(QmtAutomationError):
     pass
 
 
+class QmtLoginUnsupported(QmtAutomationError):
+    """The client can run, but its Qt version cannot automate credential entry."""
+    pass
+
+
 class NativeWorker:
     def __init__(self, kind, directory, *, timeout=40, expected_pid=None,
                  should_cancel=lambda: False, command=None, executable_path=None):
@@ -163,7 +168,8 @@ class NativeWorker:
         from .qmt_component_login import QmtNotReady, QmtProcessExited
         from .qmt_dependencies import QmtDependencyError
         from .qmt_strategy_recovery import UnsupportedQmt
-        errors = {cls.__name__: cls for cls in (QmtNotReady, QmtProcessExited, QmtDependencyError, UnsupportedQmt)}
+        errors = {cls.__name__: cls for cls in (QmtNotReady, QmtProcessExited, QmtDependencyError,
+                                               UnsupportedQmt, QmtAutomationError, QmtLoginUnsupported)}
         raise errors.get(reply.get("error_type"), RuntimeError)(reply.get("error") or "QMT native operation failed")
 
     def __getattr__(self, name):

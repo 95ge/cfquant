@@ -12354,9 +12354,20 @@ def _qmt_component_login_preflight(paths, settings):
     verify_environment(paths["bin_dir"])
 
 
+def _qmt_manual_login_status(reason):
+    """Runtime-only fallback; never change the saved automation preference."""
+    return {
+        "state": "manual_login_required", "login_state": "manual_login_required", "login_phase": "",
+        "login_succeeded": False, "login_attempts": [], "login_degraded": True,
+        "effective_auto_fill_credentials": False, "compatibility_warning": str(reason),
+        "message": "QMT 已启动，请手动登录；本次已暂停自动填写账号密码，原设置保留。原因：%s" % reason,
+        "error": "",
+    }
+
+
 def _qmt_component_login_worker(row, paths, pid, config_path):
     from cfquant.qmt_component_login import login_running_qmt
-    from cfquant.qmt_native_worker import QmtAutomationError
+    from cfquant.qmt_native_worker import QmtAutomationError, QmtLoginUnsupported
     from cfquant.qmt_dependencies import QmtDependencyError
     from cfquant.qmt_credentials import QmtCredentialStore
     from cfquant.qmt_update import manage_qmt_startup
@@ -12374,6 +12385,8 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
     account = settings.get("login_account", "")
     key = _qmt_component_job_key(paths["bin_dir"])
     last_phase = None
+    manual_reason = str(paths.get("login_compatibility_warning") or "")
+    manual_pid = pid if manual_reason else None
 
     def should_cancel():
         with QMT_AUTO_LOGIN_LOCK:
@@ -12399,6 +12412,9 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
             if phase == last_phase or should_cancel():
                 return
             last_phase = phase
+            if phase == "manual_login_required":
+                _qmt_auto_login_update_session(row, _qmt_manual_login_status(manual_reason))
+                return
             message = {
                 "captcha_solved": "QMT 已自动读取并填写验证码后继续登录",
                 "captcha_restart": "QMT 需要验证码，无法自动读取，将重启客户端并重试登录",
@@ -12410,10 +12426,17 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
                 "update_restarting": "QMT 安装完成，正在等待安装程序退出并重启客户端",
                 "update_background": "已拒绝立即升级，正在监测客户端后台下载及后续提示",
             }.get(phase, "正在处理 QMT 启动")
-            _qmt_auto_login_update_session(row, {
+            status = {
                 "state": "logging_in", "login_state": "logging_in", "login_phase": phase,
                 "login_succeeded": False, "message": message, "error": "",
-            })
+                "login_degraded": bool(manual_reason), "compatibility_warning": manual_reason,
+                "effective_auto_fill_credentials": settings["auto_fill_credentials"] and not manual_reason,
+            }
+            if manual_reason:
+                status.update(_qmt_manual_login_status(manual_reason))
+                status["login_phase"] = phase
+                status["message"] += "；" + message
+            _qmt_auto_login_update_session(row, status)
 
     def restart_after_challenge(current_pid=None, attempt=1):
         """Restart this binding when the login dialog still requires a captcha."""
@@ -12446,6 +12469,12 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
 
     def call_login(current_pid, *, before_poll=None):
         """Call login_running_qmt while remaining compatible with older hosts."""
+        nonlocal manual_reason, manual_pid
+        if manual_pid != current_pid:
+            manual_reason, manual_pid = "", None
+        if manual_reason:
+            on_wait("manual_login_required")
+            return {"outcome": "manual_login_required", "login_succeeded": False, "attempts": []}
         from cfquant.qmt_component_login import login_running_qmt
         kwargs = {
             "expected_pid": current_pid, "startup_timeout": None,
@@ -12463,11 +12492,16 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
             supports_challenge = True
         if supports_challenge:
             kwargs.update(on_challenge=restart_after_challenge, challenge_retries=1)
-        return login_running_qmt(
-            paths["bin_dir"], account,
-            lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
-            **kwargs,
-        )
+        try:
+            return login_running_qmt(
+                paths["bin_dir"], account,
+                lambda: QmtCredentialStore(config_path).password(paths["bin_dir"], account),
+                **kwargs,
+            )
+        except QmtLoginUnsupported as error:
+            manual_reason, manual_pid = str(error), current_pid
+            on_wait("manual_login_required")
+            return {"outcome": "manual_login_required", "login_succeeded": False, "attempts": []}
 
     try:
         def login(current_pid, before_poll):
@@ -12524,6 +12558,12 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
                    "login_attempts": result.get("attempts", []), "message": message,
                    "update_count": result.get("update_count", 0),
                    "error": "" if result.get("login_succeeded") or outcome == "client_login" else message}
+        updates.update(login_degraded=False, compatibility_warning="",
+                       effective_auto_fill_credentials=settings["auto_fill_credentials"])
+        if outcome == "manual_login_required":
+            updates.update(_qmt_manual_login_status(manual_reason))
+            if pending:
+                updates["message"] += "；" + pending
     except (QmtAutomationError, QmtDependencyError) as error:
         updates = {"state": "login_failed", "login_state": "component_unavailable", "login_phase": "",
                    "login_succeeded": False, "error": str(error), "message": str(error)}
@@ -12533,6 +12573,9 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
                    "error": "QMT 组件登录失败，请检查客户端版本、登录账号及自动登录依赖",
                    "message": "QMT 组件登录失败，请检查客户端版本、登录账号及自动登录依赖"}
     # Do not let a stale worker overwrite a later process's state.
+    if updates.get("error"):
+        updates.update(login_degraded=False, compatibility_warning="",
+                       effective_auto_fill_credentials=False)
     with QMT_AUTO_LOGIN_LOCK:
         if QMT_COMPONENT_JOBS.get(key) is not threading.current_thread():
             return
@@ -12585,6 +12628,9 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
         "enabled": bool(settings["enabled"]),
         "auto_fill_credentials": settings["auto_fill_credentials"],
         "auto_update": settings.get("auto_update", False),
+        "login_degraded": False,
+        "compatibility_warning": "",
+        "effective_auto_fill_credentials": settings["auto_fill_credentials"],
         "configured": False,
         "started": False,
         "restarted": False,
@@ -12607,9 +12653,13 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 QMT_COMPONENT_JOBS.pop(_qmt_component_job_key(qmt_dir), None)
     if not settings["enabled"]:
         result["message"] = "QMT 自动启动未启用"
+        result["effective_auto_fill_credentials"] = False
         _qmt_auto_login_update_session(row, {
             "enabled": False,
             "state": "disabled",
+            "login_state": "disabled", "login_phase": "", "login_succeeded": False,
+            "login_degraded": False, "compatibility_warning": "",
+            "effective_auto_fill_credentials": False,
             "qmt_dir": qmt_dir,
             "restart_times": list(settings["restart_times"]),
             "message": result["message"],
@@ -12644,17 +12694,30 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             if qmt_vm_settings_enabled(paths["qmt_vm"]):
                 preflight_feature_process(paths["bin_dir"], paths["qmt_vm"])
             if settings["auto_fill_credentials"]:
-                _qmt_component_login_preflight(paths, settings)
+                from cfquant.qmt_native_worker import QmtLoginUnsupported
+                try:
+                    _qmt_component_login_preflight(paths, settings)
+                except QmtLoginUnsupported as error:
+                    paths["login_compatibility_warning"] = str(error)
+            manual_reason = str(paths.get("login_compatibility_warning") or "")
             key = _qmt_component_job_key(paths["bin_dir"])
             running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
             job = QMT_COMPONENT_JOBS.get(key)
+            session = _qmt_auto_login_saved_session(row)
+            # If compatibility changed while a worker was active, replace that
+            # worker so its cancellation check stops any credential submission.
+            same_login_mode = bool(manual_reason) == bool(session.get("login_degraded"))
             if (settings["auto_fill_credentials"] and not restart and job and job.is_alive()
+                    and same_login_mode
                     and any(process["pid"] == getattr(job, "qmt_pid", None) for process in running)):
                 result.update(configured=True, login_state="logging_in", message="该 QMT 正在启动登录，请等待本次操作完成")
+                if manual_reason:
+                    result.update(_qmt_manual_login_status(manual_reason))
+                    result["pid"] = job.qmt_pid
                 return result
-            # Every new login task uses a fresh process, including a failed
-            # terminal left behind when the web service was stopped.
-            restart = bool(restart or running)
+            # Credential automation needs a fresh process. Manual fallback
+            # keeps the running terminal unless a restart was explicitly requested.
+            restart = bool(restart or (running and not manual_reason))
             QMT_COMPONENT_JOBS.pop(key, None)
             stop = None
             if restart:
@@ -12722,9 +12785,12 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             result["strategy_deploy_message"] = (
                 "策略部署等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成部署"
                 if result["strategy_deploy_deferred"] else "")
+            if manual_reason:
+                result.update(_qmt_manual_login_status(manual_reason))
+                login_state = "manual_login_required"
             if result["strategy_deploy_message"]:
                 result["message"] += "；" + result["strategy_deploy_message"]
-            _qmt_auto_login_update_session(row, {
+            session_update = {
                 "enabled": True,
                 "auto_fill_credentials": settings["auto_fill_credentials"],
                 "auto_update": settings.get("auto_update", False),
@@ -12749,13 +12815,19 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "strategy_deploy_message": result["strategy_deploy_message"],
                 "message": result["message"],
                 "error": "",
-            })
+                "login_degraded": bool(manual_reason), "compatibility_warning": manual_reason,
+                "effective_auto_fill_credentials": settings["auto_fill_credentials"] and not manual_reason,
+            }
+            _qmt_auto_login_update_session(row, session_update)
             login_row = dict(row, qmt_auto_login=settings)
             if pid and (settings["auto_fill_credentials"] or "auto_update" in settings):
                 _qmt_queue_component_login(login_row, paths, pid)
     except Exception as error:
         result.update({
             "configured": False,
+            "effective_auto_fill_credentials": False,
+            "login_state": "component_unavailable", "login_succeeded": False,
+            "login_degraded": False, "compatibility_warning": "",
             "error": str(error),
             "message": "QMT 自动启动配置失败: %s" % error,
         })
@@ -12767,12 +12839,15 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
         _qmt_auto_login_update_session(row, {
             "enabled": True,
             "state": "error",
+            "login_state": "component_unavailable", "login_phase": "", "login_succeeded": False,
             "qmt_dir": qmt_dir,
             "restart_times": list(settings["restart_times"]),
             "error": str(error),
             "message": result["message"],
             "dependency_error": result.get("dependency_error", False),
             "dependencies": result.get("dependencies"),
+            "login_degraded": False, "compatibility_warning": "",
+            "effective_auto_fill_credentials": False,
         })
     return result
 

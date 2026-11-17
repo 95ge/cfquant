@@ -1,4 +1,4 @@
-"""Explicit QMT component login for a configured binding (Windows, Qt 5.6.2 x64).
+"""Explicit QMT component login (Windows, Qt 5.6.2 / 5.15.2 x64).
 
 Run with --binding NAME. Password is requested only if needed, using --prompt
 or stdin. This tool never starts/stops QMT; it replaces the login form contents.
@@ -13,7 +13,35 @@ from pathlib import Path
 import sys
 import time
 
-from .qmt_native_worker import IsolatedLoginBackend, QmtAutomationCancelled, verify_environment_isolated
+from .qmt_native_worker import (
+    IsolatedLoginBackend, QmtAutomationCancelled, QmtAutomationError,
+    QmtLoginUnsupported, verify_environment_isolated,
+)
+
+
+LOGIN_QT_VERSIONS = frozenset(((5, 6, 2, 0), (5, 15, 2, 0)))
+
+
+def _qt_version_tuple(info):
+    return (info["FileVersionMS"] >> 16, info["FileVersionMS"] & 0xffff,
+            info["FileVersionLS"] >> 16, info["FileVersionLS"] & 0xffff)
+
+
+def _validate_login_modules(directory, modules):
+    """Reject mixed installation paths before interpreting native Qt objects."""
+    for name in ("Qt5Core.dll", "Qt5Widgets.dll", "LoginDialog.dll"):
+        loaded = modules.get(name)
+        if not loaded:
+            raise QmtNotReady("QMT login modules are still loading")
+        if Path(loaded).resolve() != (Path(directory) / name).resolve():
+            raise QmtAutomationError("QMT 已加载的 %s 不属于当前绑定目录，请正常退出并重启此绑定 QMT" % name)
+
+
+def _validate_loaded_qt(expected, actual):
+    if actual != expected:
+        raise QmtAutomationError(
+            "QMT 已加载 Qt %s，磁盘组件为 Qt %s，版本不一致；请正常退出并重启此绑定 QMT"
+            % (actual, expected))
 
 
 class QmtNotReady(VersionedErrorMixin, RuntimeError):
@@ -38,13 +66,15 @@ def _verify_environment_native(directory, *, strategy=False, executable_path=Non
     modules = {name: import_login_module(name) for name in LOGIN_MODULES}
     win32api = modules["win32api"]
     directory = Path(directory)
+    versions = {}
     for module in ("Qt5Core.dll", "Qt5Widgets.dll"):
-        version = win32api.GetFileVersionInfo(str(directory / module), "\\")
+        version = _qt_version_tuple(win32api.GetFileVersionInfo(str(directory / module), "\\"))
+        versions[module] = version
         if strategy:
-            if version["FileVersionMS"] >> 16 != 5:
+            if version[0] != 5:
                 raise RuntimeError("QMT 策略检测需要兼容的 Qt 5 接口，当前组件 ABI 不受支持")
-        elif (version["FileVersionMS"], version["FileVersionLS"]) != ((5 << 16) | 6, 2 << 16):
-            raise RuntimeError("QMT 组件自动登录当前仅支持 Qt 5.6.2，请先适配此客户端版本")
+    if not strategy and len(set(versions.values())) != 1:
+        raise QmtAutomationError("QMT 的 Qt5Core.dll 与 Qt5Widgets.dll 版本不一致，请先完成客户端更新后重试")
     executable = Path(executable_path) if executable_path else directory / "XtItClient.exe"
     with executable.open("rb") as stream:
         stream.seek(0x3C)
@@ -52,6 +82,11 @@ def _verify_environment_native(directory, *, strategy=False, executable_path=Non
         stream.seek(offset + 4)
         if int.from_bytes(stream.read(2), "little") != 0x8664:
             raise RuntimeError("QMT 原生组件操作需要 64 位客户端")
+    if not strategy and versions["Qt5Core.dll"] not in LOGIN_QT_VERSIONS:
+        raise QmtLoginUnsupported(
+            "QMT 自动登录暂不支持 Qt5Core.dll 的 Qt %s；已适配 Qt 5.6.2、5.15.2 x64。"
+            "请在 QMT 中手动登录。" % ".".join(map(str, versions["Qt5Core.dll"])))
+    return {"qt_version": ".".join(map(str, versions["Qt5Core.dll"][:3]))}
 
 
 def auto_login(backend, password_provider, *, retry_not_ready=False, login_account=None,
@@ -218,10 +253,7 @@ class QtLoginBackend:
         self.pid = matches[0].pid
         if expected_pid is not None and self.pid != expected_pid:
             raise RuntimeError("QMT process changed; stopping this login attempt")
-        if strategy:
-            _verify_environment_native(directory, strategy=True, executable_path=executable_path)
-        else:
-            _verify_environment_native(directory, executable_path=executable_path)
+        compatibility = _verify_environment_native(directory, strategy=strategy, executable_path=executable_path)
         self.mutex = win32event.CreateMutex(None, False, "Local\\CFQuantQmtComponentLogin_" + str(self.pid))
         acquired = win32event.WaitForSingleObject(self.mutex, 0)
         if acquired not in (0, 0x80):
@@ -233,17 +265,23 @@ class QtLoginBackend:
             modules = ["Qt5Core.dll", "Qt5Widgets.dll"]
             if not strategy:
                 modules.append("LoginDialog.dll")
-            readiness = self.session.create_script("rpc.exports.ready = () => %s.every(n => Process.findModuleByName(n) !== null);" % json.dumps(modules))
+            readiness = self.session.create_script(
+                "rpc.exports.ready = () => Object.fromEntries(%s.map(n => "
+                "[n, Process.findModuleByName(n)?.path || null]));" % json.dumps(modules))
             readiness.load()
             ready = readiness.exports_sync.ready()
             readiness.unload()
-            if not ready:
+            if not all(ready.values()):
                 raise QmtNotReady("QMT login modules are still loading")
+            if not strategy:
+                _validate_login_modules(directory, ready)
             source = "" if strategy else Path(__file__).with_name("qmt_component_agent.js").read_text(encoding="utf-8")
             script = self.session.create_script(source + "\n" + agent_extension)
             script.on("message", lambda message, data: self.messages.append("agent_error") if message.get("type") == "error" else None)
             script.load()
             self.script, self.api = script, script.exports_sync
+            if not strategy:
+                _validate_loaded_qt(compatibility["qt_version"], self.api.compatibility()["qt_version"])
             self.existing_main = False
             self.main_hwnd = None
             for hwnd in self.windows():

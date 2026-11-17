@@ -315,3 +315,21 @@ def test_disabling_fill_discards_pending_saved_password_reveal(page, frontend_ur
     expect(page.locator('#bindingQmtPasswordToggle')).to_be_disabled()
     assert 'password' not in page.evaluate('readBindingQmtAutoLoginSettings()')
     assert errors == []
+
+
+def test_manual_compatibility_fallback_shows_warning_and_keeps_auto_fill_preference(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    saved_binding(page)
+    page.evaluate("""() => {
+      renderBindingQmtAutoLoginStatus({enabled:true, auto_fill_credentials:true,
+        effective_auto_fill_credentials:false, pid:1234, login_degraded:true,
+        login_succeeded:false, login_state:'manual_login_required',
+        message:'Qt 5.15.3 暂未适配，请手动登录；原设置保留。', restart_times:['09:00']});
+    }""")
+    panel = page.locator('#bindingQmtAutoLoginStatus')
+    expect(panel.locator('.is-warn b')).to_have_text('等待手动登录')
+    expect(panel).to_contain_text('Qt 5.15.3')
+    expect(panel).to_contain_text('原设置保留')
+    expect(panel.locator('.is-success')).to_have_count(0)
+    expect(page.locator('#bindingQmtAutoFillCredentials')).to_be_checked()
+    assert errors == []

@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261116_01';
+const FRONTEND_VERSION = 'web_20261117_01';
 
 const state = {
   accountId: '',
@@ -1431,8 +1431,9 @@ function bindingQmtAutoLoginStatusHtml(autoLogin) {
     ...(autoLogin.restart && autoLogin.restart.pid ? [autoLogin.restart.pid] : []),
     ...processPids,
   ].map((value) => Number(value || 0)).filter((value, index, list) => value > 0 && list.indexOf(value) === index);
-  const status = autoLogin.error ? 'error' : (pidValues.length ? 'success' : 'warn');
-  const label = autoLogin.login_succeeded ? '已登录' : autoLogin.login_state === 'logging_in' ? '正在登录' : autoLogin.error
+  const manualLogin = autoLogin.login_state === 'manual_login_required';
+  const status = autoLogin.error ? 'error' : (manualLogin ? 'warn' : (pidValues.length ? 'success' : 'warn'));
+  const label = autoLogin.login_succeeded ? '已登录' : manualLogin ? '等待手动登录' : autoLogin.login_state === 'logging_in' ? '正在登录' : autoLogin.error
     ? (autoLogin.dependency_error ? '组件不可用' : (autoLogin.login_state ? '登录失败' : '自动启动失败'))
     : (autoLogin.login_state === 'client_login' ? '由 QMT 自行登录' : (autoLogin.restarted ? '已重启' : (autoLogin.started ? '已启动' : (pidValues.length ? '已运行' : '已启用'))));
   rows.push(`<div class="binding-qmt-status-row is-${status}">
