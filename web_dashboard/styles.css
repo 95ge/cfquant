@@ -5130,6 +5130,28 @@ th.num .sort-header {
   max-width: 100%;
 }
 
+#bindingQmtProxySettings .binding-qmt-autostart-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+#bindingQmtProxySettings .binding-qmt-autostart-head > div {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.binding-qmt-proxy-body {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+#bindingQmtProxySettings .hidden {
+  display: none;
+}
+
 #bindingQmtProxySettings .binding-qmt-autostart-head span {
   white-space: normal;
   overflow-wrap: anywhere;

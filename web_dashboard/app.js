@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261117_01';
+const FRONTEND_VERSION = 'web_20261118_01';
 
 const state = {
   accountId: '',
@@ -464,6 +464,12 @@ function qmtStartupInstruction(values = {}) {
   const strategy = values.qmt_strategy || {};
   const autoLogin = values.qmt_auto_login || {};
   if (values.enabled === false) return '账号绑定已停用；需要使用时，请启用绑定并保存。';
+  if (autoLogin.strategy_bootstrap_phase === 'error') {
+    return autoLogin.strategy_bootstrap_error || autoLogin.message || 'QMT 首次初始化未完成，请查看绑定状态中的处理建议。';
+  }
+  if (['waiting_login', 'closing', 'configuring', 'restarting'].includes(autoLogin.strategy_bootstrap_phase)) {
+    return autoLogin.strategy_deploy_message || autoLogin.message || '正在自动完成 QMT 首次初始化，请保持 cfquant 运行。';
+  }
   const needsAction = (target) => ['waiting_exit', 'waiting_import', 'waiting_import_save', 'waiting_start', 'waiting_manual_start', 'waiting_account'].includes(target.state)
     && !(target.state === 'waiting_start' && qmtAutoLoginGuideEnabled(autoLogin));
   const actionableWaiting = targets.some(needsAction);
@@ -1432,10 +1438,12 @@ function bindingQmtAutoLoginStatusHtml(autoLogin) {
     ...processPids,
   ].map((value) => Number(value || 0)).filter((value, index, list) => value > 0 && list.indexOf(value) === index);
   const manualLogin = autoLogin.login_state === 'manual_login_required';
-  const status = autoLogin.error ? 'error' : (manualLogin ? 'warn' : (pidValues.length ? 'success' : 'warn'));
-  const label = autoLogin.login_succeeded ? '已登录' : manualLogin ? '等待手动登录' : autoLogin.login_state === 'logging_in' ? '正在登录' : autoLogin.error
+  const initializing = ['waiting_login', 'closing', 'configuring', 'restarting'].includes(autoLogin.strategy_bootstrap_phase);
+  const status = autoLogin.error || autoLogin.strategy_bootstrap_phase === 'error' ? 'error' : (manualLogin || initializing ? 'warn' : (pidValues.length ? 'success' : 'warn'));
+  const bootstrapLabels = { waiting_login: '首次登录中', closing: '正在保存账号配置', configuring: '正在配置策略账户', restarting: '正在重新登录', error: '首次初始化未完成' };
+  const label = bootstrapLabels[autoLogin.strategy_bootstrap_phase] || (autoLogin.login_succeeded ? '已登录' : manualLogin ? '等待手动登录' : autoLogin.login_state === 'logging_in' ? '正在登录' : autoLogin.error
     ? (autoLogin.dependency_error ? '组件不可用' : (autoLogin.login_state ? '登录失败' : '自动启动失败'))
-    : (autoLogin.login_state === 'client_login' ? '由 QMT 自行登录' : (autoLogin.restarted ? '已重启' : (autoLogin.started ? '已启动' : (pidValues.length ? '已运行' : '已启用'))));
+    : (autoLogin.login_state === 'client_login' ? '由 QMT 自行登录' : (autoLogin.restarted ? '已重启' : (autoLogin.started ? '已启动' : (pidValues.length ? '已运行' : '已启用')))));
   rows.push(`<div class="binding-qmt-status-row is-${status}">
     <strong>运行状态</strong>
     <span><b>${esc(label)}</b>${autoLogin.message ? ` <small>${esc(autoLogin.message)}</small>` : ''}</span>
@@ -3198,7 +3206,8 @@ function mountQmtStrategySettings() {
       <label class="field"><span>模型运行方式</span><select id="${prefix}StrategyRunMode"><option value="1" selected>实盘运行</option><option value="0">模拟运行</option></select></label>
       <label class="toggle"><input id="${prefix}StrategyAutorun" type="checkbox" checked><span>QMT 启动后自动运行</span></label>
       <label class="field"><span>主图品种</span><input id="${prefix}StrategyStock" value="SH000300" autocomplete="off"></label>
-      <details class="wide"><summary>模型账号 Key（自动识别 / 手动指定）</summary>
+      <details class="wide"><summary>模型账号 Key（自动识别，通常无需填写）</summary>
+        <small>新装 QMT 在启用自动启动、自动输入账号密码及策略管理后，会自动完成首次登录、退出、账户识别和重新启动。</small>
         <div class="qmt-strategy-account-keys">${[['normal', '普通端'], ['trade', '高级模式交易端'], ['SH', '上海交易端'], ['SZ', '深圳交易端']].map(([role, label]) => `
           <label class="field"><span>${label}</span><input id="${prefix}StrategyKey_${role}" autocomplete="off" placeholder="自动识别"></label>`).join('')}
         </div>
@@ -6101,6 +6110,14 @@ async function ensureWebAuth() {
 
 function renderLogCleanup(info) {
   state.logCleanup = info || {};
+  const managed = !!state.logCleanup.managed_by_desktop;
+  $('logCleanupForm')?.querySelectorAll('input, button, select').forEach(control => { control.disabled = managed; });
+  if (managed) {
+    const policy = state.logCleanup.policy || {};
+    const label = policy.mode === 'forever' ? '永久保存' : policy.mode === 'size' ? `容量上限 ${(policy.max_bytes / 1024 / 1024).toFixed(0)} MB` : `保留 ${policy.days} 天`;
+    if ($('logCleanupStatus')) $('logCleanupStatus').textContent = `桌面端统一管理：${label}。请在 EXE 的“设置 → 数据与日志”修改或清理。`;
+    return;
+  }
   const enabled = !!state.logCleanup.qmt_userdata_log_cleanup_enabled;
   const toggle = $('cleanupQmtUserdataLogs');
   if (toggle) toggle.checked = enabled;
@@ -10263,6 +10280,15 @@ async function saveBindingWebhookSettings() {
   }
 }
 
+function setBindingQmtProxyOpen(open) {
+  $('bindingQmtProxyBody')?.classList.toggle('hidden', !open);
+  const button = $('bindingQmtProxyToggle');
+  if (button) {
+    button.setAttribute('aria-expanded', String(!!open));
+    button.textContent = open ? '收起设置' : '展开设置';
+  }
+}
+
 function fillBindingQmtProxySettings(settings = {}) {
   const value = settings || {};
   const enabled = value.enabled === true;
@@ -10279,12 +10305,14 @@ function fillBindingQmtProxySettings(settings = {}) {
   if ($('bindingQmtProxyUdpPolicy')) $('bindingQmtProxyUdpPolicy').value = value.udp_policy === 'proxy' ? 'proxy' : 'direct';
   if ($('bindingQmtProxyBypass')) $('bindingQmtProxyBypass').value = (value.bypass || ['127.0.0.1', 'localhost', '::1']).join('\n');
   if ($('bindingQmtProxyClearPassword')) $('bindingQmtProxyClearPassword').checked = false;
+  setBindingQmtProxyOpen(false);
   syncBindingQmtProxySettings();
 }
 
 function syncBindingQmtProxySettings() {
   const enabled = !!$('bindingQmtProxyEnabled')?.checked;
   const type = $('bindingQmtProxyType')?.value || 'socks5';
+  if ($('bindingQmtProxySummary')) $('bindingQmtProxySummary').textContent = enabled ? `已启用 · ${type.toUpperCase()}` : '未启用';
   $('bindingQmtProxyFields')?.classList.toggle('hidden', !enabled);
   $('bindingQmtProxyLocalPortField')?.classList.toggle('hidden', type !== 'ssh');
   const udp = $('bindingQmtProxyUdpPolicy');
@@ -10315,16 +10343,19 @@ function readBindingQmtProxySettings() {
   const bypass = String($('bindingQmtProxyBypass')?.value || '')
     .split(/[\s,;]+/).map((item) => item.trim()).filter(Boolean);
   if (enabled && (!host || !Number.isInteger(port) || port < 1 || port > 65535)) {
+    setBindingQmtProxyOpen(true);
     setBindingNotice('启用代理时请填写有效的代理主机和端口。', 'error', { autoHide: false });
     $('bindingQmtProxyHost')?.focus();
     return null;
   }
   if (enabled && type === 'ssh' && (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535)) {
+    setBindingQmtProxyOpen(true);
     setBindingNotice('SSH 本地 SOCKS 端口必须是 1–65535 的整数。', 'error', { autoHide: false });
     $('bindingQmtProxyLocalPort')?.focus();
     return null;
   }
   if (enabled && udpPolicy === 'proxy' && !['socks5', 'ssh'].includes(type)) {
+    setBindingQmtProxyOpen(true);
     setBindingNotice('HTTP/HTTPS 代理不能承载原生 UDP，请选择 UDP 直连或 SOCKS5。', 'error', { autoHide: false });
     return null;
   }
@@ -11520,6 +11551,11 @@ async function loadBindingStatuses() {
   if (loginStatus && loginStatus.qmt_auto_login && loginStatus.qmt_auto_login.state) {
     state.bindingQmtGuideAutoLogin = { ...(state.bindingQmtGuideAutoLogin || {}), ...loginStatus.qmt_auto_login };
     renderBindingQmtAutoLoginStatus(state.bindingQmtGuideAutoLogin);
+    if (state.bindingQmtGuideValues) {
+      state.bindingQmtGuideValues.qmt_auto_login = state.bindingQmtGuideAutoLogin;
+      state.bindingQmtGuideValues.qmt_strategy_deploy = loginStatus.qmt_strategy_deploy;
+      if ($('bindingQmtGuideInstruction')) $('bindingQmtGuideInstruction').textContent = qmtStartupInstruction(state.bindingQmtGuideValues);
+    }
   }
   saveAccountConfigCache();
   const statusByKey = new Map();
@@ -15738,6 +15774,10 @@ async function boot() {
   $('bindingWebhookEnabled').addEventListener('change', syncBindingWebhookSettings);
   $('bindingWebhookSaveBtn').addEventListener('click', saveBindingWebhookSettings);
   $('bindingWebhookProvider').addEventListener('change', syncBindingWebhookSettings);
+  $('bindingQmtProxyToggle')?.addEventListener('click', () => {
+    setBindingQmtProxyOpen($('bindingQmtProxyToggle').getAttribute('aria-expanded') !== 'true');
+  });
+  $('bindingQmtProxyBody')?.addEventListener('invalid', () => setBindingQmtProxyOpen(true), true);
   ['bindingQmtProxyEnabled', 'bindingQmtProxyType', 'bindingQmtProxyUdpPolicy'].forEach((id) => {
     $(id)?.addEventListener('change', syncBindingQmtProxySettings);
   });

@@ -414,6 +414,22 @@ class QtLoginBackend:
                     foreground_after=self.gui.GetForegroundWindow(),
                     script_errors=list(self.messages))
 
+    def request_exit(self, account):
+        """Ask the verified main window to save and exit, without terminating it."""
+        if not account or not self.already_logged_in():
+            raise QmtNotReady("QMT 尚未确认登录，无法自动完成首次初始化")
+        self.select_account(account)
+        self.gui.PostMessage(self.main_hwnd, 0x0010, 0, 0)  # WM_CLOSE
+        return {"requested": True}
+
+    def confirm_exit(self):
+        for hwnd in self.windows():
+            if hwnd != self.main_hwnd:
+                result = self.api.confirmexit(str(hwnd))["result"]
+                if result.get("confirmed"):
+                    return result
+        return {"confirmed": False}
+
     def close(self):
         try:
             from .qmt_dependencies import import_login_module

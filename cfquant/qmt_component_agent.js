@@ -248,6 +248,21 @@ rpc.exports = {
       return {kind: noticeKind(rows)};
     });
   },
+  confirmexit(hwnd) {
+    return onGui(hwnd, () => {
+      const root = getRoot(hwnd);
+      if (!hasType(root, 'QDialog')) return {confirmed: false};
+      const rows = walk(root);
+      const text = rows.filter(row => row.visible).map(row => row.text || '').join(' ');
+      if (!/(?:是否|确定|确认).{0,12}(?:退出|关闭)(?:本|当前|该)?(?:系统|程序|客户端|软件|QMT)/.test(text)
+          && !/^\s*(?:您)?(?:是否|确定|确认)(?:要)?退出(?:吗)?[？?！!。\s]*$/.test(text)) return {confirmed: false};
+      const buttons = rows.filter(row => row.visible && row.enabled &&
+        /^(?:确定|确认|是|退出|Yes|OK)(?:\(&[A-Za-z]\))?$/.test(row.label || ''));
+      if (buttons.length !== 1) return {confirmed: false};
+      buttonClick(ptr(buttons[0].address));
+      return {confirmed: true};
+    });
+  },
   acknowledge(hwnd) {
     return onGui(hwnd, () => {
       const rows = walk(getRoot(hwnd));

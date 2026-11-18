@@ -201,6 +201,8 @@ try:
     os.makedirs(QMT_RUNTIME_MARKER_DIR, exist_ok=True)
     os.makedirs(RUNTIME_AVATAR_DIR, exist_ok=True)
 except Exception:
+    if os.environ.get("CFQUANT_DATA_ROOT"):
+        raise RuntimeError("安装目录中的运行数据不可写，请检查目录权限或磁盘空间")
     RUNTIME_DIR = os.path.join(tempfile.gettempdir(), "cfquant", "runtime")
     RUNTIME_CONFIG_DIR = os.path.join(RUNTIME_DIR, "config")
     RUNTIME_DB_DIR = os.path.join(RUNTIME_DIR, "db")
@@ -230,6 +232,8 @@ LOG_DIR = os.path.abspath(os.environ.get("CFQUANT_LOG_DIR") or os.path.join(STAT
 try:
     LOG_COMPONENT_DIRS = component_log_dirs(LOG_DIR)
 except Exception:
+    if os.environ.get("CFQUANT_DATA_ROOT"):
+        raise RuntimeError("安装目录中的日志目录不可写，请检查目录权限或磁盘空间")
     LOG_DIR = os.path.join(tempfile.gettempdir(), "cfquant", "log")
     try:
         LOG_COMPONENT_DIRS = component_log_dirs(LOG_DIR)
@@ -3518,6 +3522,14 @@ class WebRuntimeConfig(object):
             return bool(self._data.get("cleanup_qmt_userdata_logs"))
 
     def log_cleanup_info(self):
+        if os.environ.get("CFQUANT_DATA_ROOT"):
+            from cfquant.data_storage import read_policy, safe_root
+            policy = read_policy(safe_root(os.environ["CFQUANT_DATA_ROOT"]))
+            return {"managed_by_desktop": True, "policy": policy,
+                    "retention_days": policy["days"] if policy["mode"] == "days" else None,
+                    "local_cfquant_logs_enabled": policy["mode"] != "forever",
+                    "qmt_userdata_log_cleanup_enabled": False, "log_root": LOG_DIR,
+                    "log_directories": dict(LOG_COMPONENT_DIRS)}
         with self._lock:
             configured_days = self._data.get("log_retention_days", LOG_RETENTION_DAYS)
         try:
@@ -3533,6 +3545,8 @@ class WebRuntimeConfig(object):
         }
 
     def set_log_cleanup_settings(self, cleanup_qmt_userdata_logs=None, retention_days=None):
+        if os.environ.get("CFQUANT_DATA_ROOT"):
+            raise ValueError("日志策略由桌面端统一管理，请在 EXE 设置中的“数据与日志”修改")
         with self._lock:
             if cleanup_qmt_userdata_logs is not None:
                 self._data["cleanup_qmt_userdata_logs"] = bool(cleanup_qmt_userdata_logs)
@@ -8260,6 +8274,9 @@ def cleanup_files_by_age(root_dir, patterns=None, retention_days=LOG_RETENTION_D
 
 
 def cleanup_cfquant_local_logs(retention_days=LOG_RETENTION_DAYS):
+    if os.environ.get("CFQUANT_DATA_ROOT"):
+        from cfquant.data_storage import cleanup
+        return cleanup(os.environ["CFQUANT_DATA_ROOT"])
     targets = [
         (LOG_DIR, ["*.log", "*.csv", "*.txt"], True),
         (BASE_DIR, ["*.log"], False),
@@ -12365,6 +12382,79 @@ def _qmt_manual_login_status(reason):
     }
 
 
+def _qmt_bootstrap_graceful_exit(row, paths, pid, should_cancel=lambda: False, timeout=30.0):
+    """Preserve QMT's first-login config; never force-kill on this path."""
+    from cfquant.qmt_native_worker import IsolatedLoginBackend, QmtAutomationCancelled
+    if should_cancel():
+        raise QmtAutomationCancelled("QMT 首次初始化已取消")
+    running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+    if not running:
+        return {"exit_confirmed": True}
+    if not pid or {item["pid"] for item in running} != {pid}:
+        raise RuntimeError("QMT 进程已改变，已停止首次初始化，请重新启动此绑定")
+    backend = IsolatedLoginBackend(paths["bin_dir"], timeout=5, expected_pid=pid,
+                                   should_cancel=should_cancel)
+    try:
+        backend.request_exit((row.get("qmt_auto_login") or {}).get("login_account", ""))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if should_cancel():
+                raise QmtAutomationCancelled("QMT 首次初始化已取消")
+            running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+            if not running:
+                return {"requested_pids": [pid], "exit_confirmed": True, "graceful": True}
+            if {item["pid"] for item in running} != {pid}:
+                raise RuntimeError("QMT 进程已改变，已停止首次初始化，请重新启动此绑定")
+            try:
+                backend.confirm_exit()
+            except Exception:
+                # A successful exit can detach the native session before its reply.
+                if _qmt_auto_login_processes(paths["bin_dir"], strict=True):
+                    raise
+            time.sleep(0.2)
+        raise RuntimeError("QMT 尚未正常退出，请处理退出确认窗口，正常退出后在绑定页面重新启动")
+    finally:
+        backend.close()
+
+
+def _qmt_complete_strategy_bootstrap(row, paths, pid, should_cancel):
+    """Continue the saved binding after its first successful automatic login."""
+    def phase(name, message):
+        with QMT_AUTO_LOGIN_LOCK:
+            if should_cancel():
+                return False
+            _qmt_auto_login_update_session(row, {
+                "strategy_bootstrap_phase": name, "strategy_bootstrap_error": "",
+                "strategy_deploy_message": message, "message": message,
+            })
+            return True
+
+    try:
+        if not phase("closing", "首次登录成功，正在正常退出 QMT 并保存账号配置"):
+            return
+        _qmt_bootstrap_graceful_exit(row, paths, pid, should_cancel=should_cancel)
+        # Serialize offline configuration and the second launch with other starts.
+        with QMT_AUTO_LOGIN_LOCK:
+            if not phase("configuring", "正在自动识别策略账户并配置 QMT 模型"):
+                return
+            preparation = QMT_STRATEGIES.prepare_for_start(paths["bin_dir"]) or {}
+            if preparation.get("waiting_account"):
+                raise RuntimeError("首次登录后仍未识别到策略账户，请核对资金账号和账户类型后重新保存绑定")
+            if not phase("restarting", "策略账户已配置，正在再次启动并登录 QMT"):
+                return
+            result = qmt_auto_login_apply_for_account(row, reason="strategy-bootstrap-final")
+            if result.get("error") or not result.get("configured"):
+                raise RuntimeError(result.get("message") or "QMT 第二次启动未完成，请在绑定页面重新启动")
+    except Exception as error:
+        with QMT_AUTO_LOGIN_LOCK:
+            if not should_cancel():
+                message = "QMT 首次初始化未完成：%s" % error
+                _qmt_auto_login_update_session(row, {
+                    "strategy_bootstrap_phase": "error", "strategy_bootstrap_error": message,
+                    "strategy_deploy_message": message, "message": message, "error": message,
+                })
+
+
 def _qmt_component_login_worker(row, paths, pid, config_path):
     from cfquant.qmt_component_login import login_running_qmt
     from cfquant.qmt_native_worker import QmtAutomationError, QmtLoginUnsupported
@@ -12580,8 +12670,25 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
         if QMT_COMPONENT_JOBS.get(key) is not threading.current_thread():
             return
         if not should_cancel():
+            bootstrap_phase = _qmt_auto_login_saved_session(row).get("strategy_bootstrap_phase")
+            if bootstrap_phase == "restarting" and updates.get("login_succeeded"):
+                updates.update(strategy_bootstrap_phase="complete", strategy_bootstrap_error="",
+                               message="QMT 首次初始化已完成，已重新登录，等待托管策略连接")
+            elif bootstrap_phase in ("waiting_login", "restarting") and updates.get("error"):
+                updates.update(strategy_bootstrap_phase="error", strategy_bootstrap_error=updates["error"])
+            elif bootstrap_phase in ("waiting_login", "restarting") and updates.get("login_degraded"):
+                updates.update(strategy_bootstrap_phase="", strategy_bootstrap_error="",
+                               strategy_deploy_message="请完成手动登录，正常退出后在绑定页面重新启动以继续配置策略")
+                updates["message"] = _qmt_manual_login_status(updates.get("compatibility_warning"))["message"]
+                updates["message"] += "；" + updates["strategy_deploy_message"]
             _qmt_auto_login_update_session(row, updates)
-        QMT_COMPONENT_JOBS.pop(key, None)
+    try:
+        if paths.get("strategy_bootstrap_pending") and updates.get("login_succeeded") and not should_cancel():
+            _qmt_complete_strategy_bootstrap(row, paths, pid, should_cancel)
+    finally:
+        with QMT_AUTO_LOGIN_LOCK:
+            if QMT_COMPONENT_JOBS.get(key) is threading.current_thread():
+                QMT_COMPONENT_JOBS.pop(key, None)
 
 
 def _qmt_queue_component_login(row, paths, pid):
@@ -12660,6 +12767,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             "login_state": "disabled", "login_phase": "", "login_succeeded": False,
             "login_degraded": False, "compatibility_warning": "",
             "effective_auto_fill_credentials": False,
+            "strategy_bootstrap_phase": "", "strategy_bootstrap_error": "",
             "qmt_dir": qmt_dir,
             "restart_times": list(settings["restart_times"]),
             "message": result["message"],
@@ -12711,6 +12819,10 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                     and same_login_mode
                     and any(process["pid"] == getattr(job, "qmt_pid", None) for process in running)):
                 result.update(configured=True, login_state="logging_in", message="该 QMT 正在启动登录，请等待本次操作完成")
+                for field in ("strategy_bootstrap_phase", "strategy_bootstrap_error",
+                              "strategy_deploy_deferred", "strategy_deploy_message"):
+                    if field in session:
+                        result[field] = session[field]
                 if manual_reason:
                     result.update(_qmt_manual_login_status(manual_reason))
                     result["pid"] = job.qmt_pid
@@ -12743,6 +12855,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 # old QMT was still running. The background deployer cannot
                 # catch an immediate stop/start, so finish offline work here.
                 preparation = QMT_STRATEGIES.prepare_for_start(paths["bin_dir"]) or {}
+                if reason == "strategy-bootstrap-final" and preparation.get("waiting_account"):
+                    raise RuntimeError("策略账户配置尚未完成，已停止第二次启动，请核对资金账号和账户类型")
                 launch = _qmt_auto_login_start_xtitclient(paths, use_link=False)
                 running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
             pid = _qmt_auto_login_first_pid(running, launch)
@@ -12782,7 +12896,18 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 result["message"] += "；由 QMT 自行登录，未自动填写账号密码或点击登录；若仅记住密码，请手动登录"
             result["login_state"] = login_state
             result["strategy_deploy_deferred"] = bool(preparation.get("waiting_account"))
+            # Runtime installation owns its own stop/switch/start sequence.
+            bootstrap_pending = (result["strategy_deploy_deferred"]
+                                 and settings["auto_fill_credentials"] and not manual_reason
+                                 and not reason.startswith("python-runtime-bootstrap-")
+                                 and reason != "strategy-bootstrap-final")
+            paths["strategy_bootstrap_pending"] = bootstrap_pending
+            result["strategy_bootstrap_phase"] = ("waiting_login" if bootstrap_pending else
+                                                   "restarting" if reason == "strategy-bootstrap-final" else "")
+            result["strategy_bootstrap_error"] = ""
             result["strategy_deploy_message"] = (
+                "正在自动完成首次登录、正常退出、识别策略账户和重新启动，请保持 cfquant 运行"
+                if bootstrap_pending else
                 "策略部署等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成部署"
                 if result["strategy_deploy_deferred"] else "")
             if manual_reason:
@@ -12812,6 +12937,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                 "last_reason": reason,
                 "last_stop": stop,
                 "strategy_deploy_deferred": result["strategy_deploy_deferred"],
+                "strategy_bootstrap_phase": result["strategy_bootstrap_phase"],
+                "strategy_bootstrap_error": "",
                 "strategy_deploy_message": result["strategy_deploy_message"],
                 "message": result["message"],
                 "error": "",
@@ -12830,6 +12957,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             "login_degraded": False, "compatibility_warning": "",
             "error": str(error),
             "message": "QMT 自动启动配置失败: %s" % error,
+            "strategy_bootstrap_phase": "error" if reason == "strategy-bootstrap-final" else "",
+            "strategy_bootstrap_error": str(error) if reason == "strategy-bootstrap-final" else "",
         })
         from cfquant.qmt_dependencies import QmtDependencyError
         if isinstance(error, QmtDependencyError):
@@ -12846,6 +12975,8 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             "message": result["message"],
             "dependency_error": result.get("dependency_error", False),
             "dependencies": result.get("dependencies"),
+            "strategy_bootstrap_phase": result["strategy_bootstrap_phase"],
+            "strategy_bootstrap_error": result["strategy_bootstrap_error"],
             "login_degraded": False, "compatibility_warning": "",
             "effective_auto_fill_credentials": False,
         })
@@ -14104,7 +14235,7 @@ class LogCleanupManager(object):
             result["local"] = {"error": str(e)}
             safe_print("cfquant local log cleanup failed: %s" % e)
 
-        if WEB_CONFIG.qmt_userdata_log_cleanup_enabled():
+        if WEB_CONFIG.qmt_userdata_log_cleanup_enabled() and not os.environ.get("CFQUANT_DATA_ROOT"):
             result["qmt"] = self._cleanup_qmt_userdata_logs(configured_days)
 
         result["finished_at"] = time.time()
@@ -17991,7 +18122,8 @@ def _qmt_python_runtime_bootstrap_restart(row, settings, manager, runtime, accou
     session = _qmt_wait_for_runtime_bootstrap_login(row, paths)
 
     phase("stop", "首次登录完成，正在关闭 QMT 以写入账号配置和策略")
-    stop = _qmt_auto_login_stop_xtitclient(row, paths, session=session)
+    stop = _qmt_bootstrap_graceful_exit(
+        dict(row, qmt_auto_login=settings), paths, session.get("pid") or first.get("pid"))
     try:
         switched = manager.switch_account(runtime, account_id=account_id)
     except Exception as error:

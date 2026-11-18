@@ -319,6 +319,22 @@ def test_backend_detects_new_main_window_and_rejects_wrong_account():
         backend.select_account("fixture-user")
 
 
+def test_graceful_exit_verifies_logged_in_account_before_posting_close():
+    from types import SimpleNamespace
+    from cfquant.qmt_component_login import QtLoginBackend
+    backend = QtLoginBackend.__new__(QtLoginBackend)
+    backend.session = SimpleNamespace(is_detached=False)
+    backend.existing_main, backend.main_hwnd, backend.hwnd = True, 456, None
+    messages = []
+    backend.gui = SimpleNamespace(GetWindowText=lambda hwnd: "fixture-user - QMT",
+                                  PostMessage=lambda *args: messages.append(args))
+    with pytest.raises(RuntimeError):
+        backend.request_exit("other-user")
+    assert not messages
+    assert backend.request_exit("fixture-user")["requested"]
+    assert messages == [(456, 0x0010, 0, 0)]
+
+
 def test_native_outcome_wait_can_be_cancelled_before_timeout(login_clock):
     from types import SimpleNamespace
     from cfquant.qmt_component_login import QtLoginBackend

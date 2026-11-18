@@ -510,7 +510,7 @@ def test_runtime_bootstrap_starts_stops_and_starts_managed_qmt(tmp_path, monkeyp
     monkeypatch.setattr(web, "_qmt_auto_login_paths", lambda _: paths)
     monkeypatch.setattr(web, "_qmt_wait_for_runtime_bootstrap_login",
                         lambda row, paths: {"login_succeeded": True, "login_state": "logged_in"})
-    monkeypatch.setattr(web, "_qmt_auto_login_stop_xtitclient",
+    monkeypatch.setattr(web, "_qmt_bootstrap_graceful_exit",
                         lambda *args, **kwargs: {"exit_confirmed": True})
     calls = []
 
