@@ -45,6 +45,19 @@ $env:CFQUANT_QMT_AUTOMATION = "0"
 
 项目启动时会用实际运行 Web 服务的 Python 解释器检查 `frida`、`win32api`、`win32crypt`、`win32event`、`win32gui` 和 `win32process` 是否可以导入。检查只读取环境，不会在每次启动时强制重装；版本已满足但 DLL 已损坏或与旧文件冲突时也会明确报告。网页的“自动登录组件检测”会显示解释器路径、环境类型、失败模块和修复命令，可复制到同一台电脑的 PowerShell 执行。Conda 环境使用绑定当前前缀的 `conda install --prefix ... --force-reinstall` 命令；venv 和普通 Python 环境都使用探测到的解释器执行 `python -m pip`，只有普通 Python 环境会附带 `pywin32_postinstall`，venv 不运行该脚本。依赖异常时可以选择改为手动启动并登录 QMT，绑定配置仍可继续使用。
 
+Python 3.8–3.10 的外部 Web 服务需要 `typing_extensions>=4.4`。Frida 17.16.4
+虽然声明支持旧版 Python，但直接从标准库导入了新版类型标注，可能出现
+`cannot import name 'NotRequired' from 'typing'`，更早的 Python 还可能缺少 `ParamSpec`。
+CFQuant 在组件检测和实际自动化加载时，为 Frida 的同步、异步 Python 模块使用
+`typing_extensions`，不修改 Frida 安装文件，也不向标准库 `typing` 添加成员。
+Python 3.11 及以上沿用原生类型标注。
+
+遇到上述错误，应更新包含此修复的 CFQuant；只重装相同版本的 Frida 或只安装
+`typing_extensions` 不会改变旧版 CFQuant 的导入方式。兼容依赖缺失或过旧时，
+检测页会生成绑定当前解释器的安装、升级命令。只有 pywin32 检测失败且使用独立
+Python 时，才需要执行对应的 `pywin32_postinstall`；仅 Frida 失败时无需运行它。
+这里的 Python 指外部 Web 服务解释器，QMT 内置 Python 3.6 无需切换。
+
 先启动对应 QMT，然后从项目目录执行：
 
 ```powershell

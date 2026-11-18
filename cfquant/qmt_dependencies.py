@@ -2,6 +2,7 @@
 
 from .diagnostic_context import VersionedErrorMixin
 from ._pywin32_runtime import prepare_pywin32_runtime
+from ._frida_runtime import TYPING_REQUIREMENT, prepare_frida_runtime
 import copy
 import importlib
 import importlib.metadata
@@ -20,9 +21,13 @@ FRIDA_VERSION = "17.16.4"
 FRIDA_REQUIREMENT = "frida==" + FRIDA_VERSION
 _LOCK = threading.Lock()
 _CACHE = {}
-_PROBE_CODE = "RUNTIME_HELPER = %s\n" % ascii(os.path.join(os.path.dirname(__file__), "_pywin32_runtime.py")) + r'''
+_PROBE_CODE = (
+    "RUNTIME_HELPER = %s\n" % ascii(os.path.join(os.path.dirname(__file__), "_pywin32_runtime.py"))
+    + "FRIDA_HELPER = %s\n" % ascii(os.path.join(os.path.dirname(__file__), "_frida_runtime.py"))
+) + r'''
 import importlib, importlib.metadata, json, os, pathlib, runpy, sys
 runtime = runpy.run_path(RUNTIME_HELPER)
+frida_runtime = runpy.run_path(FRIDA_HELPER)
 runtime_info = {}
 runtime_error = None
 try:
@@ -34,14 +39,16 @@ for name in MODULES:
     try:
         if name.startswith('win32') and runtime_error is not None:
             raise runtime_error
-        if name == 'frida' and importlib.metadata.version('frida') != FRIDA_VERSION:
-            raise RuntimeError('Unsupported Frida version; install frida==' + FRIDA_VERSION)
+        if name == 'frida':
+            if importlib.metadata.version('frida') != FRIDA_VERSION:
+                raise RuntimeError('Unsupported Frida version; install frida==' + FRIDA_VERSION)
+            frida_runtime['prepare_frida_runtime']()
         module = importlib.import_module(name)
         checks.append(dict(name=name, ok=True, path=getattr(module, '__file__', '')))
     except Exception as error:
         checks.append(dict(name=name, ok=False, error=str(error), error_type=type(error).__name__))
 packages = {}
-for name in ('pywin32', 'frida'):
+for name in ('pywin32', 'frida', 'typing_extensions'):
     try:
         packages[name] = importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
@@ -101,13 +108,23 @@ def _finish_report(report):
                 commands.append(python + " -m pip install --no-cache-dir --upgrade --force-reinstall 'pywin32>=306'")
                 if environment == "python":
                     commands.append(python + " -m pywin32_postinstall -install")
-        if any(item["name"] == "frida" for item in failed):
-            commands.append(python + " -m pip install --no-cache-dir --force-reinstall '" + FRIDA_REQUIREMENT + "'")
+        frida_failure = next((item for item in failed if item["name"] == "frida"), None)
+        if frida_failure:
+            if frida_failure.get("error_type") == "FridaTypingCompatibilityError":
+                commands.append(python + " -m pip install --upgrade '" + TYPING_REQUIREMENT + "'")
+            else:
+                commands.append(python + " -m pip install --no-cache-dir --force-reinstall '" + FRIDA_REQUIREMENT + "'")
         commands.append(python + " -c " + _ps_quote(
             "from cfquant.qmt_dependencies import report_startup_dependencies; "
             "r=report_startup_dependencies(); raise SystemExit(0 if r['ok'] else 1)"))
     report["repair_commands"] = commands
-    if environment == "conda":
+    win32_failed = any(item["name"].startswith("win32") for item in failed)
+    if not win32_failed:
+        label = {"conda": "Conda", "venv": "venv 虚拟", "python": "独立 Python"}[environment]
+        report["repair_note"] = (
+            "已检测到%s环境。先停止 CFQuant，在 PowerShell 中执行下面的命令；"
+            "命令已绑定当前 Python。验证通过后重启 CFQuant，再重新检测。" % label)
+    elif environment == "conda":
         report["repair_note"] = (
             "已检测到 Conda 环境。pywin32 已安装但提示“找不到指定的程序”时，通常是新版组件加载了残留的旧版 DLL。"
             "先停止 CFQuant，在已激活该环境的 PowerShell 中逐行执行下面的命令；命令已绑定当前环境。"
@@ -178,6 +195,8 @@ def import_login_module(name):
     if name == "frida":
         require_compatible_frida()
     try:
+        if name == "frida":
+            prepare_frida_runtime()
         if name.startswith("win32"):
             prepare_pywin32_runtime()
         return importlib.import_module(name)

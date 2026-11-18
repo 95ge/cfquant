@@ -27,7 +27,7 @@ import importlib
 import json
 import traceback
 
-EXTERNAL_MODULES = ("cfquant.qmt_dependencies", "cfquant._pywin32_runtime",
+EXTERNAL_MODULES = ("cfquant.qmt_dependencies", "cfquant._pywin32_runtime", "cfquant._frida_runtime",
                     "frida", "win32api", "win32crypt", "win32event",
                     "win32gui", "win32process")
 
