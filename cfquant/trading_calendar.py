@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Market dates from the same calendar dependency used by LTtx, outside QMT."""
 import datetime
+import sys
 from functools import lru_cache
 from numbers import Integral
 
@@ -32,10 +33,15 @@ def _today():
 def _get_calendar(name):
     try:
         import pandas_market_calendars as mcal
-    except ImportError as error:
+    except (ImportError, TypeError) as error:
+        requirement = ("pandas-market-calendars==5.2.2" if sys.version_info < (3, 10)
+                       else "pandas-market-calendars>=5.2.2")
+        command = 'python -m pip install "%s"' % requirement
+        if sys.version_info < (3, 9):
+            command += ' "backports.zoneinfo>=0.2.1"'
         raise ImportError(
-            "get_trading_dates requires pandas-market-calendars in the external Python "
-            "environment; run: python -m pip install -U pandas-market-calendars"
+            "get_trading_dates requires compatible calendar dependencies in the external Python "
+            "environment; run with the Web service Python: " + command
         ) from error
     return mcal.get_calendar(name)
 

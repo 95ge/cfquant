@@ -753,7 +753,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.79"
+CORE_VERSION = "0.2.80"
 
 # BEGIN GENERATED DIAGNOSTIC CONTEXT
 """Version context for cfquant diagnostics without changing application logging."""

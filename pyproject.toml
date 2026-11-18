@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfquant"
-version = "0.2.79"
+version = "0.2.80"
 description = "QMT local bridge and xtquant-compatible Python client."
 license = {text = "MIT"}
 readme = "README.md"
@@ -17,7 +17,9 @@ dependencies = [
   "pycryptodome>=3.20",
   "pytz",
   "tabulate",
-  "pandas-market-calendars",
+  "pandas-market-calendars==5.2.2; python_version < '3.10'",
+  "pandas-market-calendars>=5.2.2; python_version >= '3.10'",
+  "backports.zoneinfo>=0.2.1; python_version < '3.9'",
   "importlib-resources>=5",
   "frida==17.16.4; sys_platform == 'win32'",
   "typing_extensions>=4.4; python_version < '3.11'",

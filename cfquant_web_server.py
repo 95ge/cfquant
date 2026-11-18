@@ -18478,7 +18478,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
     def _handle_remote_agent(self, parsed):
         from cfquant.remote_adapter import LOCAL_PATHS, handle
         try:
-            operation = parsed.path.removeprefix("/api/remote-agent/")
+            prefix = "/api/remote-agent/"
+            operation = parsed.path[len(prefix):] if parsed.path.startswith(prefix) else parsed.path
             if operation not in LOCAL_PATHS:
                 raise remote_agent_module.RemoteError("not_found", "接口不存在")
             config = remote_agent_module.Config(WEB_CONFIG.path).read()

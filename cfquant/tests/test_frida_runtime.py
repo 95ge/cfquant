@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 OLD_TYPING = '''
 import builtins, sys, types, typing, typing_extensions
 original_import = builtins.__import__
+original_list = builtins.list
 old_typing = types.ModuleType('typing')
 old_typing.__dict__.update(vars(typing))
 for name in ('NotRequired', 'ParamSpec'):
@@ -24,8 +25,12 @@ FRIDA_SOURCE = '''
 from typing import NotRequired, TypedDict, ParamSpec
 class Message(TypedDict):
     type: str
-    payload: NotRequired[str]
+    payload: NotRequired[list[str]]
 P = ParamSpec('P')
+def convert(values: tuple[dict[str, list[int]], ...]) -> list[int]:
+    return list(values[0]['items'])
+async def convert_async(values: list[int]) -> list[int]:
+    return list(values)
 '''
 
 
@@ -41,10 +46,14 @@ def frida_package(tmp_path):
     return tmp_path
 
 
-def run_child(source, root):
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join((str(root), str(ROOT))),
+def run_child(source, root, executable=None):
+    paths = [str(root), str(ROOT)]
+    if executable:
+        paths.extend(os.environ.get('CFQUANT_TEST_SITE38', '').split(os.pathsep))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(path for path in paths if path),
                CFQUANT_QMT_NO_FILE_IO='1')
-    result = subprocess.run([sys.executable, '-B', '-c', source], cwd=str(root), env=env,
+    env.pop('PYTHONHOME', None)
+    result = subprocess.run([executable or sys.executable, '-B', '-c', source], cwd=str(root), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
                             timeout=20, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     assert result.returncode == 0, result.stderr
@@ -52,11 +61,16 @@ def run_child(source, root):
 
 
 @pytest.mark.parametrize('cached', [False, True])
-def test_frida_sync_and_async_imports_keep_optional_keys_and_stdlib_unchanged(frida_package, cached):
+@pytest.mark.parametrize('runtime', ['host', 'python38'])
+def test_frida_sync_and_async_imports_keep_optional_keys_and_stdlib_unchanged(frida_package, cached, runtime):
+    executable = None
+    if runtime == 'python38':
+        executable = os.environ.get('CFQUANT_TEST_PYTHON38')
+        if not executable:
+            pytest.skip('Set CFQUANT_TEST_PYTHON38 for actual Python 3.8 annotations')
     if cached:
-        import py_compile
-        for path in (frida_package / 'frida').glob('*.py'):
-            py_compile.compile(str(path), doraise=True)
+        run_child('import compileall; assert compileall.compile_dir("frida", quiet=1)',
+                  frida_package, executable)
     run_child(OLD_TYPING + '''
 from cfquant.qmt_dependencies import import_login_module
 first = import_login_module('frida')
@@ -65,16 +79,19 @@ import frida.aio
 for module in (first, frida.aio):
     assert module.Message.__required_keys__ == frozenset(('type',))
     assert module.Message.__optional_keys__ == frozenset(('payload',))
+    assert module.convert(({'items': (1, 2)},)) == [1, 2]
+    assert __import__('asyncio').run(module.convert_async((3, 4))) == [3, 4]
 assert not hasattr(old_typing, 'NotRequired')
 assert not hasattr(old_typing, 'ParamSpec')
 assert builtins.__import__ is original_import
+assert builtins.list is original_list
 try:
     from typing import NotRequired
 except ImportError:
     pass
 else:
     raise AssertionError('Compatibility escaped into another module')
-''', frida_package)
+''', frida_package, executable)
 
 
 def test_dependency_probe_uses_the_same_frida_compatibility(frida_package):

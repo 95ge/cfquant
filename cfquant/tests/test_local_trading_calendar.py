@@ -105,6 +105,22 @@ def test_missing_dependency_has_actionable_error(monkeypatch):
         xtdata.get_trading_dates("SH", count=1)
 
 
+def test_incompatible_calendar_annotations_have_actionable_error(monkeypatch):
+    import builtins
+    original_import = builtins.__import__
+    def incompatible(name, *args, **kwargs):
+        if name == 'pandas_market_calendars':
+            raise TypeError("unsupported operand type(s) for |: 'type' and 'NoneType'")
+        return original_import(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, '__import__', incompatible)
+    with pytest.raises(ImportError, match='python -m pip install') as failure:
+        xtdata.get_trading_dates('SH', count=1)
+    assert isinstance(failure.value.__cause__, TypeError)
+    message = str(failure.value)
+    assert ('pandas-market-calendars==5.2.2' in message) == (sys.version_info < (3, 10))
+    assert ('backports.zoneinfo' in message) == (sys.version_info < (3, 9))
+
+
 def test_old_calendar_cannot_guess_current_holidays(monkeypatch):
     old = SimpleNamespace(adhoc_holidays=[datetime.datetime(2025, 10, 8)])
     monkeypatch.setattr(calendar, "_get_calendar", lambda name: old)

@@ -65,7 +65,10 @@ def test_secrets_not_returned_and_config_is_per_deployment(agent):
 
 @pytest.mark.skipif(os.name!='nt',reason='Windows DPAPI')
 def test_windows_dpapi_roundtrip_and_ciphertext(tmp_path):
-    pytest.importorskip('win32crypt')
+    # Follow the application's DLL selection before importing any win32 module.
+    # A raw import can load a stale Conda/postinstall DLL into this test process.
+    from cfquant.qmt_dependencies import import_login_module
+    import_login_module('win32crypt')
     config=rm.Config(tmp_path/'native.json');config.update(enabled=True,api_key='synthetic-native-secret')
     assert config.read()['api_key']=='synthetic-native-secret'
     assert 'synthetic-native-secret' not in config.path.read_text()

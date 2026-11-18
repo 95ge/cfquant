@@ -52,6 +52,11 @@ CFQuant 在组件检测和实际自动化加载时，为 Frida 的同步、异�
 `typing_extensions`，不修改 Frida 安装文件，也不向标准库 `typing` 添加成员。
 Python 3.11 及以上沿用原生类型标注。
 
+Python 3.8 还不支持 Frida 中的 `list[T]` 等内置泛型标注。CFQuant 0.2.80 起
+会在加载 Frida 时将这些标注转换为兼容形式；处理仅在内存中进行，保留
+`TypedDict` 的必填、可选字段语义，不替换 `list()` 等运行时内置类型。
+仅升级到 0.2.79 尚不足以解决 Python 3.8 的这类错误。
+
 遇到上述错误，应更新包含此修复的 CFQuant；只重装相同版本的 Frida 或只安装
 `typing_extensions` 不会改变旧版 CFQuant 的导入方式。兼容依赖缺失或过旧时，
 检测页会生成绑定当前解释器的安装、升级命令。只有 pywin32 检测失败且使用独立
