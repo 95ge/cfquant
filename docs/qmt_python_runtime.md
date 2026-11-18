@@ -10,6 +10,17 @@ Python 3.6/3.12 运行时。它读取 QMT 官方 `update36.cfg` 或
 仍可使用 Python 3.6；QMT 策略加载桥接模块时不会导入或导出这组管理类，
 避免管理模块使用的新版 Python 语法和 `dataclasses` 阻断策略启动。
 
+QMT 内的 Python 3.6 和 3.12 均可加载日志、桥接及消息通知模块。代理配置的
+读取与脱敏不加载自动登录或 pywin32 依赖；只有外部服务实际保存、解密代理密码时，
+才加载这些组件。外部 cfquant 服务的 Python 3.8+ 要求不变。
+
+如果升级后，QMT 在 `_install_logging_compat` 阶段提示
+`ModuleNotFoundError: No module named 'importlib.metadata'`，请更新包含兼容性修复的
+cfquant，并将修复同步到报错堆栈指向的实际包目录（例如 `bin.x64/cfquant`）。
+停止并重新启动桥接策略；若仍加载旧模块，请重启对应 QMT，使进程内的模块缓存失效。
+仅更新外部 Python 环境中的安装包不会替换 QMT 目录内的副本；此次修复无需升级
+QMT 的 Python 3.6，也无需在其中额外安装 `importlib-metadata`。
+
 ## 官网镜像和故障切换
 
 运行库下载器会先访问 `https://cfquant.org` 的运行库镜像状态接口。接口使用

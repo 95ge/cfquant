@@ -17,9 +17,6 @@ from pathlib import Path
 import re
 import threading
 
-from .qmt_dependencies import QmtDependencyError, import_login_module
-
-
 SUPPORTED_PROXY_TYPES = ("none", "http", "https", "socks5", "ssh")
 SUPPORTED_UDP_POLICIES = ("direct", "proxy")
 DEFAULT_BYPASS = ("127.0.0.1", "localhost", "::1")
@@ -228,6 +225,10 @@ class QmtProxyCredentialStore:
             raise ValueError("account_key is required for a proxy password")
         if not isinstance(password, str) or not password or len(password) > 4096:
             raise ValueError("proxy password cannot be empty or exceed 4096 characters")
+        # Public proxy settings are also imported by QMT's Python 3.6 bridge.
+        # Load the external login/pywin32 runtime only for credential access.
+        from .qmt_dependencies import QmtDependencyError, import_login_module
+
         try:
             encrypted = import_login_module("win32crypt").CryptProtectData(
                 password.encode("utf-8"), "CFQuant QMT proxy", self._entropy(key), None, None, 1)
@@ -249,6 +250,8 @@ class QmtProxyCredentialStore:
             entry = self._read().get(key, {})
         if not isinstance(entry, dict) or not entry.get("secret"):
             return ""
+        from .qmt_dependencies import QmtDependencyError, import_login_module
+
         try:
             raw = base64.b64decode(entry["secret"])
             return import_login_module("win32crypt").CryptUnprotectData(
