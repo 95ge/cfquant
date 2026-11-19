@@ -6,7 +6,9 @@
 
 - [项目指南](PROJECT_GUIDE.md)：CFQuant 组成、首次部署和基本配置。
 - [API 参考](API_REFERENCE.md)：Python 兼容 API 和 Web API。
-- [AI Agent 接入指南](AI_AGENT_INTEGRATION.md)：自动化读取、配置和受控操作边界。
+- [AI 接入总览](AI_AGENT_INTEGRATION.md)：区分 MCP 工具调用和策略代码迁移。
+- [AI MCP 交易指南](AI_MCP_TRADING.md)：MCP 适配示例、客户端配置、查询与交易确认。
+- [AI 策略迁移指南](AI_STRATEGY_MIGRATION.md)：改造前后代码、只读验证、回调和 AI 任务示例。
 - [外部 Python 接入](外部Python接入.md)：在用户项目中使用 CFQuant。
 - [第三方项目管理 SDK](第三方项目管理SDK.md)：项目生命周期和管理接口。
 
@@ -42,7 +44,7 @@
 ## 版本与历史说明
 
 - [版本日志](版本日志.md)
-- [高级模式部署指南（已废弃）](高级模式部署指南.md)
+- [高级模式部署指南](高级模式部署指南.md)
 - [通用模式部署指南（已废弃）](通用模式部署指南.md)
 - [文档维护规范](文档维护规范.md)
 

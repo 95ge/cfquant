@@ -118,6 +118,7 @@ pic/
 公众号/
 
 tem_delete/
+temp/
 
 # Per-deployment remote credentials, status and task journal.
 *.remote_management.secure.json
@@ -125,3 +126,5 @@ tem_delete/
 *.remote_management*.lock
 *.remote_management*.sqlite3*
 runtime/logs/
+runtime/audit/
+runtime/release-*-tests/

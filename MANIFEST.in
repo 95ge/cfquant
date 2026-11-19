@@ -16,6 +16,7 @@ recursive-include LTtx *.py
 include LTtx/tx/Config.txt
 
 recursive-include web_dashboard *.html *.css *.js *.svg *.png
+recursive-include web_dashboard/docs *.md
 recursive-include qmt_scripts *.py *.md
 recursive-include enterprise_relay *.py *.md *.service *.ps1
 

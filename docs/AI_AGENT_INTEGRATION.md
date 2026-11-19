@@ -1,72 +1,55 @@
-# CFQuant AI Agent 接入指南
+# CFQuant AI 接入指南
 
-本指南面向能执行 HTTP 请求或 Python 代码的 agent。CFQuant 的 agent 接入重点有两类：帮助用户把已有 MiniQMT 策略切换到大 QMT，以及在桥接完成后读取状态、配置账户和调用兼容 API。推荐先把 agent 限定为“读取与迁移建议”，用户确认后再开放配置、交易和生命周期权限。
+CFQuant 的 AI 接入分为两条路径。请先选择任务，再把对应指南交给 AI，避免把“调用交易工具”和“修改策略代码”混为一谈。
 
-## MiniQMT 策略迁移任务
+## 路径一：AI 通过 MCP 查询与交易
 
-agent 处理迁移时应保持策略业务代码不变，优先检查：
-
-1. 策略是否使用 `xtdata`、`XtQuantTrader`、`StockAccount` 和 `xtconstant` 等兼容入口。
-2. 目标 Python 环境是否安装 `cfquant`，并确认 `python -c "import cfquant; print(cfquant.__version__)"` 的解释器就是运行策略的解释器。
-3. Web 控制台是否已经绑定大 QMT 目录、账户类型和资金账号；当前运行方式固定为极致模式。
-4. 是否需要把 `from xtquant ...` 改为 `from cfquant ...`；函数名、参数顺序、回调注册方式通常保持不变。
-5. 先用行情、资金和持仓只读调用验证路由，再请求用户确认真实交易。
-
-不要把原 MiniQMT 的 `userdata_mini` 目录直接填成大 QMT 目录，也不要为了“兼容”自动改写策略的交易数量、价格或买卖方向。
-
-## 最小接入流程
+适合在支持 MCP 的 AI 客户端里，用自然语言查询行情、资金、持仓，并在用户确认后提交交易。用户得到的是工具调用结果和真实委托状态。
 
 ```text
-health -> config -> server-access/auth -> data probe -> user confirmation -> action -> status verification
+AI 客户端 → MCP 适配服务 → CFQuant HTTP API → 大 QMT
 ```
 
-1. `GET /api/health` 确认服务在线。
-2. `GET /api/config` 获取 `bridge_id`、账户键、传输层、大 QMT 桥接状态和绑定信息；不要向用户展示响应中的密钥。
-3. 使用 `X-API-Key` 或 Web Token 建立认证。密钥从环境变量或操作系统密钥存储读取，禁止写入仓库。
-4. 先执行只读行情、资金或持仓查询，确认账户路由正确。
-5. 对下单、撤单、启动/停止、更新、重置等副作用操作，向用户展示即将执行的账户、标的、数量、价格和影响，并等待明确确认。
-6. 调用后轮询查询接口，报告真实状态；不要仅依据 HTTP 200 判断成交或启动成功。
+当前 CFQuant 提供 HTTP API 和 Python SDK，尚未内置 MCP 服务端；8765 不是可以直接填写的 MCP 地址。详细指南包含独立 MCP 环境、完整适配示例、客户端配置、只读查询指令，以及人工确认后的限价买入示例。
 
-## 推荐 agent 工具
+阅读 [AI MCP 交易指南](AI_MCP_TRADING.md)。
 
-```python
-import os, requests
+## 路径二：用 AI 改造原有策略
 
-BASE = os.getenv("CFQUANT_BASE_URL", "http://127.0.0.1:8765")
-HEADERS = {"X-API-Key": os.environ["CFQUANT_API_KEY"]}
+适合已有 MiniQMT / `xtquant` 策略，希望由 AI 修改代码，使策略通过 `cfquant` 接入已绑定的大 QMT。用户得到的是修改后的 Python 代码、兼容性说明和验证结果。
 
-def cfquant_get(path, **params):
-    response = requests.get(BASE + path, headers=HEADERS, params=params, timeout=10)
-    response.raise_for_status()
-    return response.json()
-
-def cfquant_post(path, body):
-    response = requests.post(BASE + path, headers=HEADERS, json=body, timeout=20)
-    response.raise_for_status()
-    result = response.json()
-    if not result.get("ok"):
-        raise RuntimeError(result.get("error", "CFQuant request failed"))
-    return result.get("data")
+```text
+原策略 → AI 检查与改造 → cfquant Python SDK → 大 QMT
 ```
 
-## 权限分级
+这条路径不要求安装 MCP。主要工作是导入迁移、账号与桥接路由调整、接口兼容核对，以及行情、查询和回调验证；保留原策略的信号、仓位、方向、数量、价格和风控逻辑。
 
-- `read`: health、config、version、行情、资金、持仓、日志状态。
-- `configure`: 账户绑定、Python 环境、传输层、通知和监控设置。
-- `trade`: 委托、撤单、条件单、算法单和订单计划。
-- `lifecycle`: 启停 QMT、重启 Web、更新、回滚和策略恢复。
+阅读 [AI 策略迁移指南](AI_STRATEGY_MIGRATION.md)，其中有改造前后对照、完整只读验证脚本、交易与回调片段和可直接复制给 AI 的任务说明。
 
-默认只授予 `read`。将 `trade` 与 `lifecycle` 作为每次任务的临时权限；执行前必须回显关键参数，执行后必须验证状态。
+## 在 8765 页面阅读或复制
 
-## 安全边界
+打开本地控制台（默认 `http://127.0.0.1:8765`），进入“使用教程 → AI 接入文档”，切换“通过 MCP 查询与交易”或“改造原有策略”。复制全文和复制地址均对应当前选中的指南。
 
-- 不读取、猜测或输出账户密码、API Key、Web Token 和内部密钥。
-- 不把远程管理接口暴露到公网；优先 loopback、VPN 或防火墙白名单。
-- 不在没有用户确认时发送真实订单，即使用户消息只说“测试一下”。模拟盘也要明确账户类型。
-- 遇到 `401/409` 时先报告原因并读取状态，不通过重复请求绕过保护。
-- 配置变更前保存 `/api/config`；失败时只恢复本次变更涉及的字段。
+- 总览原文：`GET /docs/AI_AGENT_INTEGRATION.md`。
+- MCP 路径：`GET /docs/AI_MCP_TRADING.md`。
+- 策略迁移路径：`GET /docs/AI_STRATEGY_MIGRATION.md`。
+- 通用接口参考：`GET /docs/API_REFERENCE.md`。
 
-## 任务模板
+这些地址返回 UTF-8 Markdown。使用当前控制台的主机和端口；`127.0.0.1` 只能由本机程序访问。其他设备上的 AI 无法访问本地地址时，复制对应指南全文粘贴到对话中。
 
-agent 应在每次任务中记录：目标账户、账户类型、bridge_id、数据时间、请求路径、脱敏后的参数、返回 code，以及最终状态。完整接口清单见 [API_REFERENCE.md](API_REFERENCE.md)。
+## 两条路径共同遵守的操作边界
 
+1. 先确认目标资金账号、账户类型和 `bridge_id`，先做只读验证。
+2. 密钥由本地环境或操作系统密钥存储提供，不输出、不提交到仓库，不要求在 CFQuant 填写模型账号 Key。
+3. 下单、撤单、配置修改、启停和更新均按任务授权范围执行；真实交易前展示参数并取得用户明确确认。
+4. 下单接口成功不等于成交，必须查询委托、成交或回调确认实际结果。
+5. 网络超时后先核对实际委托，不增加盲目重下单逻辑。
+6. 在“系统设置 → API Key”中，为每个 MCP 客户端创建独立 Key，按需选择 `query`（查询）、`trade`（交易）和具体绑定账号；不要把管理员 Key 交给 AI。配置、Key 管理、服务启停及未开放接口不能由受限 Key 调用。
+
+## 独立 Key、限流和审计
+
+支持创建多个 Key，随时编辑名称、权限、账号范围、限流和启用状态；管理员可重新查看密钥，删除后立即失效。默认每分钟 60 次请求、每秒 5 次请求，交易另限每分钟 10 笔，三个窗口同时校验。操作审计单独保存，删除 Key 不删除历史。
+
+完整管理接口、账号校验规则、存储位置和错误处理见 [API 参考](API_REFERENCE.md)。
+
+通用 HTTP 接口、认证与返回说明见 [API 参考](API_REFERENCE.md)。

@@ -767,7 +767,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.80"
+CORE_VERSION = "0.2.81"
 
 # BEGIN GENERATED DIAGNOSTIC CONTEXT
 """Version context for cfquant diagnostics without changing application logging."""
@@ -2578,6 +2578,8 @@ def dispatch_inner_api(bridge, action, params, msg):
 
 def _publish_inner_callback(name, *args):
     bridge = globals().get('_normal_bridge')
+    if globals().get('_LITE_ROLE') == 'trade':
+        return
     if bridge is not None:
         pass
         try:
@@ -2898,7 +2900,8 @@ class TxTradeBridge(object):
             "qmt_runtime_mode": "lite_extreme_pipe",
             "runtime_label": "极致模式",
             "transport": "lite",
-            "transport_mode": "lite",
+            "transport_mode": RUNTIME_CONFIG.get("mode", "lite"),
+            "qmt_role": globals().get("_LITE_ROLE", "combined"),
             "bridge": type(self).__name__,
             "bridge_id": self.bridge_id,
             "account_id": self.account_id,
@@ -8921,7 +8924,8 @@ class PipeNormalQmtBridge(NormalQmtBridge):
         data = super(PipeNormalQmtBridge, self)._status_extra()
         data.update({
             "transport": "lite",
-            "transport_mode": "lite",
+            "transport_mode": RUNTIME_CONFIG.get("mode", "lite"),
+            "qmt_role": globals().get("_LITE_ROLE", "combined"),
             "pipe_transport": "pipe",
             "pipe_name": self.pipe_name,
             "pipe_request_channels": list(self.request_channels),
@@ -9035,7 +9039,8 @@ class PipeTradeBridge(TxTradeBridge):
     def _status_extra(self):
         return {
             "transport": "lite",
-            "transport_mode": "lite",
+            "transport_mode": RUNTIME_CONFIG.get("mode", "lite"),
+            "qmt_role": globals().get("_LITE_ROLE", "combined"),
             "pipe_transport": "pipe",
             "pipe_name": self.pipe_name,
             "pipe_connected": self.tx is not None and self.tx._get_conn() is not None,
@@ -9565,14 +9570,41 @@ class ManagedPipeRuntime(object):
             print(versioned_message("cfquant strategy shutdown failed: %s" % self.failure))
 # END GENERATED PIPE RUNTIME
 
+def lite_role_settings(config, channels):
+    """A split deployment owns one request channel per QMT process."""
+    advanced = config.get("mode") == "lite_advanced"
+    role = str(config.get("qmt_role") or "normal") if advanced else "combined"
+    if advanced and role not in ("normal", "trade"):
+        raise ValueError("invalid ctypes advanced QMT role: %s" % role)
+    return role, channels["trade" if role == "trade" else "normal"]
+
+
+def configure_lite_role_callbacks(bridge, role):
+    if role != "trade":
+        return
+
+    def local_trade_callback(event_name, obj):
+        # The trade process still resolves its own pending requests. Only the
+        # normal process publishes account callbacks to external subscribers.
+        if event_name == "trader:on_stock_order":
+            data = bridge._format_trade_detail(obj, "order")
+            bridge._enrich_order_request_fields(data)
+            bridge._resolve_pending_sync_order_callback(data)
+            bridge._handle_async_order_callback(data)
+            bridge._remember_order_callback_fields(data)
+
+    bridge.publish_callback_event = local_trade_callback
+
+
+_LITE_ROLE, _LITE_REQUEST_CHANNEL = lite_role_settings(RUNTIME_CONFIG, BRIDGE_CHANNELS)
 _managed_runtime = ManagedPipeRuntime(RUNTIME_CONFIG.get("managed_strategy")).acquire()
 _managed_runtime.namespace = globals()
 try:
     _normal_bridge = start_pipe_normal_bridge(
         None,
         pipe_name=PIPE_NAME,
-        request_channel=BRIDGE_CHANNELS["normal"],
-        request_channels=[BRIDGE_CHANNELS["normal"]],
+        request_channel=_LITE_REQUEST_CHANNEL,
+        request_channels=[_LITE_REQUEST_CHANNEL],
         callback_event_channel=BRIDGE_CHANNELS["callback"],
         bridge_id=BRIDGE_ID,
         account_id=DEFAULT_ACCOUNT_ID,
@@ -9592,9 +9624,11 @@ try:
         account_id=DEFAULT_ACCOUNT_ID,
         show=True,
         connect_timeout_ms=PIPE_CONNECT_TIMEOUT_MS,
-    )
+    ) if _LITE_ROLE == "combined" else None
+    configure_lite_role_callbacks(_normal_bridge, _LITE_ROLE)
     for _account_bridge in (_normal_bridge, _trade_bridge):
-        _account_bridge.account_type = DEFAULT_ACCOUNT_TYPE
+        if _account_bridge is not None:
+            _account_bridge.account_type = DEFAULT_ACCOUNT_TYPE
 except BaseException:
     _managed_runtime.close()
     raise
@@ -9669,7 +9703,8 @@ def _attach_normal_status_extra():
         data = original_status_extra()
         data.update({
             "transport": "lite",
-            "transport_mode": "lite",
+            "transport_mode": RUNTIME_CONFIG.get("mode", "lite"),
+            "qmt_role": globals().get("_LITE_ROLE", "combined"),
             "qmt_runtime_mode": "lite_extreme_pipe",
             "qmt_runtime_label": "极致模式",
             "qmt_runtime_core_version": CORE_VERSION,

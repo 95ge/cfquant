@@ -933,6 +933,7 @@ def test_save_account_runtime_config_parses_string_disabled(monkeypatch, tmp_pat
     monkeypatch.setattr(web, "callback_channels", lambda: [])
 
     result = web.save_account_runtime_config({"qmt_auto_login": {"enabled": False},
+        "qmt_strategy": {"enabled": False, "autorun": False},
         "account_id": "77557115",
         "account_type": "stock",
         "enabled": "false",
@@ -953,6 +954,8 @@ def test_binding_status_snapshot_does_not_probe_disabled_accounts(monkeypatch, t
         account_id="77557115",
         account_type="STOCK",
         bridge_id="acct_disabled",
+        qmt_strategy={"enabled": False, "autorun": False},
+        qmt_auto_login={"enabled": False},
         enabled=False,
     )
     monkeypatch.setattr(web, "WEB_CONFIG", config)
@@ -982,6 +985,8 @@ def test_update_account_qmt_core_runs_for_disabled_binding(monkeypatch, tmp_path
         account_type="STOCK",
         bridge_id="acct_disabled",
         qmt_dir=str(tmp_path / "QMT" / "bin.x64"),
+        qmt_strategy={"enabled": False, "autorun": False},
+        qmt_auto_login={"enabled": False},
         enabled=False,
     )
     deploy_calls = []

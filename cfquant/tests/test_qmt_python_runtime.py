@@ -152,6 +152,70 @@ def runtime_fixture(tmp_path, version="2.1.33.0", configured="py36", installed=(
     return QmtPythonRuntime(root, account_id="TEST_ONLY")
 
 
+@pytest.mark.parametrize("mode", ["lite_advanced", "lttx"])
+@pytest.mark.parametrize("auto_fill", [False, True])
+def test_trade_runtime_job_switches_and_restarts_only_trade_qmt(tmp_path, monkeypatch, mode, auto_fill):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import cfquant.qmt_credentials as credentials
+    import cfquant_web_server as web
+    normal = runtime_fixture(tmp_path / "normal", configured="py312")
+    trade = runtime_fixture(tmp_path / "trade", configured="py312")
+    normal_config = normal.qmt_dir / "userdata/users/TEST_ONLY/Config.xml"
+    original = normal_config.read_bytes()
+    row = dict(account_id="TEST_ONLY", account_key="test-binding", mode=mode,
+        qmt_dir=str(normal.qmt_dir), qmt_trade_dir=str(trade.bin_dir),
+        qmt_strategy={"enabled": False}, qmt_auto_login={"enabled": True, "auto_fill_credentials": auto_fill, "login_account": "fixture-login"})
+    monkeypatch.setattr(web, "WEB_CONFIG", SimpleNamespace(path=str(tmp_path / "settings.json"), account_configs=lambda: {"test": row}))
+    store = Mock()
+    store.password.return_value = "fixture-password"
+    monkeypatch.setattr(credentials, "QmtCredentialStore", lambda path: store)
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", {})
+    monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
+    monkeypatch.setattr(web, "emit_download_progress", lambda *a, **kw: None)
+    monkeypatch.setattr(QmtPythonRuntime, "_qmt_processes", lambda self: [])
+    monkeypatch.setattr(QmtPythonRuntime, "restart_qmt", lambda self: pytest.fail("must use managed target restart"))
+    restarts = []
+    def restart(target, settings, **kwargs):
+        restarts.append(target)
+        return {"configured": True, "pid": 456}
+    monkeypatch.setattr(web, "qmt_auto_login_restart_for_account", restart)
+    body = dict(qmt_dir=str(trade.bin_dir), account_id="TEST_ONLY", runtime="py36",
+        reuse_installed=True, restart=True, job_id="trade-runtime")
+    web.start_qmt_python_runtime_job(body)
+    web._run_qmt_python_runtime_job(body["job_id"], body)
+    job = web._qmt_python_job_snapshot(body["job_id"])
+    assert job["state"] == "done"
+    assert trade.binding_status()["selected_runtime"] == "py36"
+    assert normal_config.read_bytes() == original
+    assert normal.binding_status()["selected_runtime"] == "py312"
+    assert len(restarts) == 1
+    target = restarts[0]
+    assert Path(target["qmt_dir"]) == trade.bin_dir
+    assert target["qmt_role"] == "trade"
+    assert target["_qmt_binding_source_row"]["qmt_dir"] == row["qmt_dir"]
+    assert web._qmt_auto_login_session_key(target) != web._qmt_auto_login_session_key(row)
+    assert row["qmt_dir"] == str(normal.qmt_dir)
+    if auto_fill:
+        store.password.assert_called_once_with(str(normal.qmt_dir), "fixture-login")
+        store.save.assert_called_once_with(str(trade.bin_dir), "fixture-login", "fixture-password")
+    else:
+        store.save.assert_not_called()
+
+
+def test_two_qmt_runtime_capabilities_are_checked_independently(tmp_path, monkeypatch):
+    import cfquant_web_server as web
+    normal = runtime_fixture(tmp_path / "normal", version="2.1.33.0")
+    trade = runtime_fixture(tmp_path / "trade", version="2.1.32.0", installed=("py36",))
+    first = web.qmt_python_runtime_status(dict(qmt_dir=str(normal.qmt_dir), account_id="TEST_ONLY", runtime="py36", refresh=False))
+    second = web.qmt_python_runtime_status(dict(qmt_dir=str(trade.qmt_dir), account_id="TEST_ONLY", runtime="py36", refresh=False))
+    assert first["binding"]["py312_supported"]
+    assert not second["binding"]["py312_supported"]
+    monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", {})
+    with pytest.raises(QmtPythonRuntimeError):
+        web.start_qmt_python_runtime_job(dict(qmt_dir=str(trade.qmt_dir), account_id="TEST_ONLY", runtime="py312"))
+
+
 @pytest.mark.parametrize("version, supported", [
     ("2.1.32.99", False), ("2.1.33", True), ("2.1.33.0", True),
     ("2.1.34.0", True), ("", False), ("unknown", False), ("20261109", False),

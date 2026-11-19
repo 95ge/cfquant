@@ -119,6 +119,7 @@ _prepend_import_path(_PROJECT_DIR)
 _prepend_import_path(_LTTX_TX_DIR)
 
 from cfquant.client import CfquantError, CfquantTimeout, LTtxRpcClient
+from cfquant.api_access import ApiAccessStore, AccessDenied, DEFAULT_LIMITS, permission_for, ACCOUNT_OPTIONAL
 from cfquant.batch_orders import (
     CFTRADER_BATCH_ACTIONS, CFTRADER_BATCH_CANCEL_ACTIONS, CFTRADER_BATCH_ORDER_ACTIONS,
     batch_cancel_result_rows, batch_rejected, batch_result, batch_result_rows, batch_unknown,
@@ -462,10 +463,24 @@ def static_assets_available():
     return _package_static_file("index.html") is not None
 
 
+PUBLIC_AI_DOCUMENT_PATHS = frozenset((
+    "docs/AI_AGENT_INTEGRATION.md",
+    "docs/AI_MCP_TRADING.md",
+    "docs/AI_STRATEGY_MIGRATION.md",
+    "docs/API_REFERENCE.md",
+))
+
+
 def read_static_asset(path):
     rel_path = _safe_static_rel_path(path)
     if not rel_path:
         raise PermissionError("forbidden static path")
+    # Only publish these public guides, never expose the project document tree.
+    if rel_path in PUBLIC_AI_DOCUMENT_PATHS:
+        source_path = os.path.join(_SOURCE_ROOT, *rel_path.split("/"))
+        if os.path.isfile(source_path):
+            with open(source_path, "rb") as f:
+                return rel_path, f.read()
     static_root = os.path.abspath(STATIC_DIR)
     full_path = os.path.abspath(os.path.join(static_root, rel_path.replace("/", os.sep)))
     try:
@@ -2871,7 +2886,7 @@ class WebRuntimeConfig(object):
             default_config.get("mode") or DEFAULT_BINDING_MODE
         )
         default_qmt_trade_dir = default_config.get("qmt_trade_dir") or ""
-        if not default_qmt_trade_dir and default_mode == "lttx":
+        if not default_qmt_trade_dir and is_advanced_transport_mode(default_mode):
             default_qmt_trade_dir = self._runtime_trade_qmt_dir(
                 default_config.get("bridge_id") or DEFAULT_BRIDGE_ID
             )
@@ -2904,12 +2919,16 @@ class WebRuntimeConfig(object):
             "mode": "custom" if configured else "default",
             "python_executable": executable,
             "configured_executable": configured,
+            "purpose": "sdk_install",
+            "runtime_executable": runtime_python_executable(),
             "exists": bool(executable and os.path.isfile(executable)),
             "is_current": os.path.normcase(os.path.abspath(executable)) == os.path.normcase(os.path.abspath(sys.executable)),
         }
 
     def set_python_environment(self, executable=None):
         normalized = normalize_python_executable(executable, allow_empty=True)
+        if normalized:
+            install_python_sdk(normalized)
         with self._lock:
             self._data["python_executable"] = normalized
             self._save_locked()
@@ -2978,15 +2997,17 @@ class WebRuntimeConfig(object):
             # Older clients may omit mode when editing an existing binding.
             # Preserve saved selections; new bindings use the standalone Lite bridge.
             mode = normalize_transport_mode(mode or (existing or {}).get("mode") or DEFAULT_BINDING_MODE)
-            if mode == "lttx" and enabled is not False:
+            if is_advanced_transport_mode(mode) and enabled is not False:
                 if not qmt_dir:
                     raise ValueError("高级模式需要填写普通 QMT 核心目录")
                 if not qmt_trade_dir:
                     raise ValueError("高级模式需要填写极速交易端 QMT 核心目录")
                 if os.path.normcase(str(qmt_root(qmt_dir))) == os.path.normcase(str(qmt_root(qmt_trade_dir))):
                     raise ValueError("高级模式的两个 QMT 核心目录必须不同")
-            if mode != "lttx":
+            if not is_advanced_transport_mode(mode):
                 qmt_trade_dir = ""
+            if mode == "lite_advanced" and parse_config_bool(market_routing_enabled if market_routing_enabled is not None else (existing or {}).get("market_routing_enabled"), False):
+                raise ValueError("ctypes 高级模式使用行情回调端与交易端两个 QMT，请关闭同账号独立市场路由")
             strategy_source = qmt_strategy if qmt_strategy is not None else (existing or {}).get("qmt_strategy")
             if not existing:
                 strategy_source = dict({"enabled": True, "autorun": True},
@@ -4034,6 +4055,8 @@ def bridge_channels(bridge_id=None):
 
 def normalize_transport_mode(value):
     value = str(value or "ctypes").strip().lower()
+    if value == "lite_advanced":
+        return value
     if value in ("pipe", "ctypes", "named_pipe", "named-pipe", "universal", "universal_ctypes"):
         return "ctypes"
     if value in ("lite", "extreme", "extreme_lite", "lite_extreme", "lite_extreme_pipe", "extreme_pipe", "cfquant_lite", "ultimate"):
@@ -4044,7 +4067,11 @@ def normalize_transport_mode(value):
 
 
 def is_ctypes_transport_mode(mode):
-    return normalize_transport_mode(mode) in ("ctypes", "lite")
+    return normalize_transport_mode(mode) in ("ctypes", "lite", "lite_advanced")
+
+
+def is_advanced_transport_mode(mode):
+    return normalize_transport_mode(mode) in ("lttx", "lite_advanced")
 
 
 def transport_client_mode(mode):
@@ -4053,6 +4080,8 @@ def transport_client_mode(mode):
 
 def transport_mode_label(mode):
     mode = normalize_transport_mode(mode)
+    if mode == "lite_advanced":
+        return "高级模式"
     if mode == "lite":
         return "极致模式"
     return "通用模式" if mode == "ctypes" else "高级模式"
@@ -4060,6 +4089,8 @@ def transport_mode_label(mode):
 
 def transport_mode_detail_label(mode):
     mode = normalize_transport_mode(mode)
+    if mode == "lite_advanced":
+        return "ctypes 行情回调 / 独立交易双端"
     if mode == "lite":
         return "纯 ctypes 自包含版"
     return "ctypes 通用版" if mode == "ctypes" else "LTtx 普通/极速双桥"
@@ -4071,7 +4102,7 @@ def transport_mode_summary(mode):
         "mode": mode,
         "label": transport_mode_label(mode),
         "detail_label": transport_mode_detail_label(mode),
-        "request_scope": "纯 ctypes 单文件双通道" if mode == "lite" else ("单文件双通道" if mode == "ctypes" else "普通桥 + 交易桥"),
+        "request_scope": "ctypes 行情回调端 + 交易端" if mode == "lite_advanced" else ("纯 ctypes 单文件双通道" if mode == "lite" else ("单文件双通道" if mode == "ctypes" else "普通桥 + 交易桥")),
     }
 
 
@@ -4413,6 +4444,8 @@ def lttx_runtime_enabled():
 
 def default_runtime_client_mode():
     modes = configured_runtime_modes()
+    if modes == {"lite_advanced"}:
+        return "lite_advanced"
     if modes == {"lttx"}:
         return "lttx"
     if modes == {"lite"}:
@@ -4467,6 +4500,13 @@ def action_channel_attempts(action, requested_channel, selected_channel, mode=No
 def forced_channel_for_action(action, mode=None, params=None):
     action = str(action or "")
     mode = normalize_transport_mode(mode or default_runtime_client_mode())
+    if mode == "lite_advanced":
+        if action.startswith(("xtdata.", "qmt_inner.")) or action in (
+            "xttrader.subscribe", "xttrader.unsubscribe", "cfquant.account_subscription_status",
+        ):
+            return "normal"
+        if action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS or action == "cfquant.query_info":
+            return "trade"
     if xtdata_action_requires_normal_bridge(action, params=params):
         return "normal"
     if mode == "lttx" and (action.startswith("xttrader.") or action in CFTRADER_BATCH_ACTIONS
@@ -4647,7 +4687,7 @@ class GlobalTxClient(object):
             raise last_error
 
     def close(self, mode=None):
-        modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lite", "lttx"]
+        modes = [normalize_transport_mode(mode)] if mode else ["ctypes", "lite", "lite_advanced", "lttx"]
         with self._lock:
             clients = [self._clients.pop(item, None) for item in modes]
         for client in clients:
@@ -8221,14 +8261,23 @@ def normalize_python_executable(value, allow_empty=False):
 
 
 def runtime_python_executable():
-    config = globals().get("WEB_CONFIG")
-    try:
-        if config is not None:
-            return config.python_executable()
-    except Exception:
-        pass
+    # The EXE launches this service with the bundled Python. User preferences
+    # select only the SDK installation target, never the application runtime.
     return sys.executable
 
+
+def install_python_sdk(executable):
+    """Install this release in the user's environment before saving its path."""
+    if not os.path.isfile(os.path.join(BASE_DIR, "pyproject.toml")):
+        raise RuntimeError("当前程序缺少 SDK 安装源，无法安装 CFQuant SDK")
+    result = _editable_install._run_pip_command(
+        _editable_install.source_install_args(BASE_DIR, python_exe=executable),
+        BASE_DIR,
+        timeout=SOURCE_EDITABLE_INSTALL_TIMEOUT_SECONDS,
+    )
+    if not result.get("ok"):
+        raise RuntimeError("CFQuant SDK 安装失败：%s" % (result.get("output") or result.get("error") or "pip 安装失败"))
+    return result
 
 
 def cleanup_files_by_age(root_dir, patterns=None, retention_days=LOG_RETENTION_DAYS, recursive=True):
@@ -8303,6 +8352,10 @@ def cleanup_cfquant_local_logs(retention_days=LOG_RETENTION_DAYS):
 
 
 WEB_CONFIG = WebRuntimeConfig(WEB_CONFIG_FILE)
+ACCESS_KEYS = ApiAccessStore(
+    os.path.join(RUNTIME_CONFIG_DIR, "api_keys.sqlite3"),
+    os.path.join(RUNTIME_DIR, "audit", "api_keys.sqlite3"),
+)
 refresh_monitor_accounts()
 UPDATER = None
 
@@ -9178,7 +9231,7 @@ class CfquantUpdater(object):
                 continue
             if row.get("enabled", True) is False:
                 continue
-            if normalize_transport_mode(row.get("mode") or "ctypes") != "lttx":
+            if not is_advanced_transport_mode(row.get("mode") or "ctypes"):
                 continue
             trade_dir = normalize_optional_path(
                 row.get("qmt_trade_dir")
@@ -11235,7 +11288,7 @@ def _write_qmt_bridge_identity_for_dir(row, qmt_dir_override=None, qmt_role="nor
 def write_qmt_bridge_identity(row):
     row = row or {}
     result = _write_qmt_bridge_identity_for_dir(row)
-    if normalize_transport_mode(row.get("mode") or "ctypes") != "lttx":
+    if not is_advanced_transport_mode(row.get("mode") or "ctypes"):
         return result
     trade_dir = normalize_optional_path(
         row.get("qmt_trade_dir")
@@ -11500,7 +11553,7 @@ def auto_deploy_qmt_core_for_account(row, enabled=True):
     account_key = str(row.get("account_key") or "").strip()
     account_keys = [account_key] if account_key else []
     add_target(row.get("qmt_dir") or row.get("python_dir"), "normal", row.get("bridge_id"), account_keys)
-    if normalize_transport_mode(row.get("mode") or "ctypes") == "lttx":
+    if is_advanced_transport_mode(row.get("mode") or "ctypes"):
         add_target(
             row.get("qmt_trade_dir")
             or row.get("trade_qmt_dir")
@@ -11614,7 +11667,8 @@ def _qmt_auto_login_session_key(row):
     row = row or {}
     account_key = str(row.get("account_key") or "").strip()
     if account_key:
-        return account_key
+        scope = str(row.get("_qmt_session_scope") or "")
+        return account_key + ("::" + scope if scope else "")
     account_id = str(row.get("account_id") or "").strip()
     account_type = normalize_account_type(row.get("account_type") or "STOCK")
     bridge_id = normalize_bridge_id(row.get("bridge_id") or DEFAULT_BRIDGE_ID)
@@ -12798,7 +12852,7 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             paths = _qmt_auto_login_paths(qmt_dir)
             paths = dict(paths, qmt_vm=normalize_qmt_vm_settings(row.get("qmt_vm"), strict=True))
             _proxy_env, proxy_status = _qmt_proxy_for_process(dict(paths, qmt_proxy=row.get("qmt_proxy"),
-                                                                     account_key=_qmt_auto_login_session_key(row)))
+                account_key=_qmt_auto_login_session_key(row.get("_qmt_binding_source_row") or row)))
             if qmt_vm_settings_enabled(paths["qmt_vm"]):
                 preflight_feature_process(paths["bin_dir"], paths["qmt_vm"])
             if settings["auto_fill_credentials"]:
@@ -12810,6 +12864,11 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
             manual_reason = str(paths.get("login_compatibility_warning") or "")
             key = _qmt_component_job_key(paths["bin_dir"])
             running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+            if reason == "process_exit" and running:
+                # Another start may have won the race after the watchdog scan.
+                result.update(configured=True, pid=_qmt_auto_login_first_pid(running, None),
+                              message="QMT 已恢复运行，无需再次启动")
+                return result
             job = QMT_COMPONENT_JOBS.get(key)
             session = _qmt_auto_login_saved_session(row)
             # If compatibility changed while a worker was active, replace that
@@ -12846,9 +12905,10 @@ def qmt_auto_login_apply_for_account(row, request=None, restart=False, reason="s
                     # managed package after the old process has exited.  This
                     # keeps the injected strategy code in lockstep with the
                     # current Web source even when no Web restart occurred.
-                    identity = write_qmt_bridge_identity(row)
-                    identity["market_identities"] = write_qmt_market_bridge_identities(row)
-                    deployment = configure_account_qmt_strategies(row, identity, force=True)
+                    binding_row = row.get("_qmt_binding_source_row") or row
+                    identity = write_qmt_bridge_identity(binding_row)
+                    identity["market_identities"] = write_qmt_market_bridge_identities(binding_row)
+                    deployment = configure_account_qmt_strategies(binding_row, identity, force=True)
                     if deployment.get("error"):
                         raise RuntimeError(deployment["error"])
                 # Startup refresh may have rebuilt a managed package while the
@@ -13079,6 +13139,98 @@ class QmtAutoLoginRestartScheduler:
 QMT_AUTO_LOGIN_RESTART_SCHEDULER = QmtAutoLoginRestartScheduler()
 
 
+class QmtProcessWatchdog(QmtAutoLoginRestartScheduler):
+    """Observe terminal identity without injecting; recover saved auto-start bindings."""
+
+    def __init__(self, interval=10.0, clock=time.monotonic):
+        super().__init__(interval)
+        self.clock = clock
+        self.observed = {}
+
+    def run_pending(self):
+        policy = management_qmt_start_policy()
+        if policy is False or WEB_CONFIG is None:
+            self.observed.clear()
+            return []
+        results, seen = [], set()
+        with self._lock:
+            for row in WEB_CONFIG.account_configs().values():
+                if not isinstance(row, dict):
+                    continue
+                settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+                if not account_config_is_enabled(row) or (policy is None and not settings["enabled"]):
+                    continue
+                directory = row.get("qmt_dir") or row.get("python_dir")
+                if not directory:
+                    continue
+                key = _qmt_component_job_key(directory)
+                if key in seen:
+                    continue
+                seen.add(key)
+                try:
+                    with QMT_AUTO_LOGIN_LOCK:
+                        paths = _qmt_auto_login_paths(directory)
+                        now = self.clock()
+                        state = self.observed.setdefault(key, {"attempts": 0})
+                        session = _qmt_auto_login_saved_session(row)
+                        running = _qmt_auto_login_processes(paths["bin_dir"], strict=True)
+                        if running:
+                            state.pop("missing_since", None)
+                            state.setdefault("stable_since", now)
+                            state["armed"] = True
+                            if now - state["stable_since"] >= 300:
+                                state["attempts"] = 0
+                                state.pop("retry_at", None)
+                            continue
+                        state.pop("stable_since", None)
+                        # A saved launch also arms recovery across a Web reload.
+                        if not state.get("armed") and not session.get("pid"):
+                            continue
+                        job = QMT_COMPONENT_JOBS.get(key)
+                        if job and job.is_alive():
+                            state.pop("missing_since", None)
+                            continue  # Login/update/bootstrap owns its process transitions.
+                        with QMT_PYTHON_RUNTIME_JOBS_LOCK:
+                            runtime_busy = any(
+                                task.get("state") in ("queued", "running")
+                                and _qmt_component_job_key(task.get("qmt_dir") or "") == key
+                                for task in QMT_PYTHON_RUNTIME_JOBS.values())
+                        if runtime_busy or session.get("state") == "waiting_deploy":
+                            state.pop("missing_since", None)
+                            continue
+                        missing = state.setdefault("missing_since", now)
+                        if now - missing < self.interval or now < state.get("retry_at", 0):
+                            continue
+                        state["attempts"] += 1
+                        delay = min(300, 60 * 2 ** min(state["attempts"] - 1, 3))
+                        state["retry_at"] = now + delay
+                        _record_monitor_notification("record_qmt_restart", _qmt_auto_login_session_key(row),
+                                                     "started", {"reason": "process_exit"})
+                        result = qmt_auto_login_apply_for_account(row, settings, restart=False,
+                                                                 reason="process_exit")
+                        recovery = {"attempts": state["attempts"], "retry_after_seconds": delay,
+                                    "last_attempt_at": time.time(), "result": result}
+                        _qmt_auto_login_update_session(row, {"process_recovery": recovery})
+                        phase = "success" if result.get("configured") and not result.get("error") else "failed"
+                        _record_monitor_notification("record_qmt_restart", _qmt_auto_login_session_key(row),
+                                                     phase, {"reason": "process_exit", "result": result})
+                        safe_print("QMT 退出自动恢复 account=%s attempt=%s configured=%s error=%s" % (
+                            _qmt_auto_login_session_key(row), state["attempts"],
+                            bool(result.get("configured")), result.get("error") or ""))
+                        results.append(result)
+                except Exception as error:
+                    # An inaccessible terminal is not evidence that it exited.
+                    if key in self.observed:
+                        self.observed[key].pop("missing_since", None)
+                    safe_print("QMT 进程守护检查失败 account=%s error=%s" % (
+                        _qmt_auto_login_session_key(row), error))
+            self.observed = {key: value for key, value in self.observed.items() if key in seen}
+        return results
+
+
+QMT_PROCESS_WATCHDOG = QmtProcessWatchdog()
+
+
 def start_configured_qmt_on_web_startup():
     """Start saved bindings whose automatic QMT startup setting is enabled."""
     configs = WEB_CONFIG.account_configs() if WEB_CONFIG is not None else {}
@@ -13180,7 +13332,7 @@ def auto_deploy_qmt_core_for_all_accounts(source_dir=None, sync_entry_scripts=Fa
             "normal",
             row,
         )
-        if normalize_transport_mode(row.get("mode") or "ctypes") == "lttx":
+        if is_advanced_transport_mode(row.get("mode") or "ctypes"):
             add_target(
                 row.get("qmt_trade_dir")
                 or row.get("trade_qmt_dir")
@@ -16613,6 +16765,11 @@ def api_key_info(include_secret=True):
 
 def save_api_key(body):
     body = body or {}
+    if str(body.get("api_key") or "").strip().startswith("cfqm_"):
+        raise ValueError("受限 MCP Key 不能设为管理员 Key，请使用独立的管理员密钥")
+    if (not body.get("generate") and not str(body.get("api_key") or "").strip()
+            and ACCESS_KEYS.has_keys() and not WEB_CONFIG.web_auth_enabled()):
+        raise ValueError("存在受限 Key 时，请先启用网页登录，再移除管理员 Key")
     if parse_bool(body.get("generate")):
         return WEB_CONFIG.generate_api_key()
     return WEB_CONFIG.set_api_key(body.get("api_key"))
@@ -18159,6 +18316,28 @@ def _qmt_python_job_snapshot(job_id):
         return dict(job) if job else None
 
 
+def _qmt_python_runtime_binding_row(manager, account_id):
+    """Scope a library restart to its terminal while preserving binding deployment roles."""
+    if WEB_CONFIG is None or not account_id:
+        return None
+    for candidate in WEB_CONFIG.account_configs().values():
+        if str(candidate.get("account_id") or "") != account_id:
+            continue
+        directories = [("normal", candidate.get("qmt_dir"))]
+        if is_advanced_transport_mode(candidate.get("mode") or "ctypes"):
+            directories.append(("trade", candidate.get("qmt_trade_dir")))
+        for role, directory in directories:
+            if not directory:
+                continue
+            if os.path.normcase(str(qmt_root(directory))) != os.path.normcase(str(manager.qmt_dir)):
+                continue
+            if role == "normal":
+                return candidate
+            return dict(candidate, qmt_dir=str(manager.bin_dir), qmt_role=role,
+                        _qmt_binding_source_row=candidate, _qmt_session_scope="runtime-trade")
+    return None
+
+
 def _run_qmt_python_runtime_job(job_id, body):
     account_id = str(body.get("account_id") or "")
     last_emit = [0.0]
@@ -18183,21 +18362,20 @@ def _run_qmt_python_runtime_job(job_id, body):
             job.update(state="running", updated_at=time.time())
     try:
         manager, runtime = _qmt_python_runtime_row(body)
-        row = None
-        if WEB_CONFIG is not None and account_id:
-            for candidate in WEB_CONFIG.account_configs().values():
-                if str(candidate.get("account_id") or "") == account_id:
-                    try:
-                        candidate_dir = Path(str(candidate.get("qmt_dir") or "")).resolve()
-                        if candidate_dir == manager.qmt_dir or candidate_dir == manager.bin_dir:
-                            row = candidate
-                            break
-                    except (OSError, ValueError):
-                        continue
+        row = _qmt_python_runtime_binding_row(manager, account_id)
 
         def restart_qmt():
             # Existing bindings retain their managed login/recovery flow.
             if row is not None:
+                source = row.get("_qmt_binding_source_row")
+                settings = normalize_qmt_auto_login_settings(row.get("qmt_auto_login"))
+                if source and settings.get("auto_fill_credentials"):
+                    from cfquant.qmt_credentials import QmtCredentialStore
+                    store = QmtCredentialStore(WEB_CONFIG.path)
+                    account = settings.get("login_account", "")
+                    password = store.password(source.get("qmt_dir"), account)
+                    if password:
+                        store.save(str(manager.bin_dir), account, password)
                 result = _qmt_python_runtime_bootstrap_restart(
                     row, row.get("qmt_auto_login"), manager, runtime, account_id,
                     body=body, progress_callback=progress)
@@ -18475,6 +18653,182 @@ def download_financial_data(body):
 class CfquantWebHandler(BaseHTTPRequestHandler):
     server_version = WEB_VERSION
 
+    def handle_one_request(self):
+        # BaseHTTPRequestHandler can reuse an instance for keep-alive requests.
+        self._scoped_key = None
+        self._scoped_body = None
+        self._access_audit_id = None
+        self._access_audit_done = False
+        return super().handle_one_request()
+
+    def _access_admin(self, parsed):
+        if self._provided_api_key(parsed):
+            return self._api_key_valid(parsed)  # Scoped keys can never manage keys.
+        if self._web_token_valid(parsed):
+            return True
+        if WEB_CONFIG.web_auth_enabled():
+            return False
+        # Preserve local console setup when Web login has not been enabled.
+        origin = self.headers.get("Origin") or ""
+        return (is_loopback_host(self.client_address[0])
+                and self.headers.get("Sec-Fetch-Site") != "cross-site"
+                and (not origin or urllib.parse.urlparse(origin).netloc == self.headers.get("Host")))
+
+    def _access_account_rows(self):
+        return {account_key_for(row.get("account_id"), row.get("account_type"), row.get("bridge_id")): row
+                for row in WEB_CONFIG.account_configs().values()
+                if isinstance(row, dict) and row.get("account_id") and account_config_is_enabled(row)}
+
+    def _scope_account_payload(self, key, path, payload):
+        rows = self._access_account_rows()
+        allowed = rows if key["all_accounts"] else {k: v for k, v in rows.items() if k in key["account_keys"]}
+        if path in ACCOUNT_OPTIONAL:
+            return payload, []
+        # Require unambiguous selectors; never route an allowed account key with
+        # a conflicting account_id/type/bridge or silently choose another binding.
+        selectors = {field: str(payload.get(field) or "").strip()
+                     for field in ("account_key", "account_id", "account_type", "bridge_id")}
+        for prefix, forced_type in (("/api/credit/", "CREDIT"), ("/api/future/", "FUTURE"),
+                                    ("/api/future-option/", "FUTURE_OPTION"), ("/api/stock-option/", "STOCK_OPTION")):
+            if path.startswith(prefix):
+                if selectors["account_type"] and selectors["account_type"] != forced_type:
+                    raise AccessDenied("account_forbidden", "账户类型与目标接口不一致")
+                selectors["account_type"] = forced_type
+        candidates = []
+        for account_key, row in allowed.items():
+            values = {"account_key": account_key, "account_id": str(row.get("account_id")),
+                      "account_type": normalize_account_type(row.get("account_type")),
+                      "bridge_id": normalize_bridge_id(row.get("bridge_id"))}
+            if all(not value or value == values[field] for field, value in selectors.items()):
+                candidates.append(values)
+        if len(candidates) != 1:
+            raise AccessDenied("account_forbidden", "账号未授权、已停用或不唯一，请明确指定绑定的 account_key 或账号与 bridge_id")
+        target = candidates[0]
+        if payload.get("channel") not in (None, "", "normal", "trade"):
+            raise AccessDenied("channel_forbidden", "受限 Key 不能指定自定义通信通道")
+        # Children of a batch must not smuggle different account selectors.
+        def check_children(value, depth=0):
+            if depth > 12:
+                raise AccessDenied("invalid_request", "参数嵌套过深", 400)
+            if isinstance(value, dict):
+                for field, item in value.items():
+                    if field in target and str(item or "").strip() not in ("", target[field]):
+                        raise AccessDenied("account_forbidden", "批次内账号与授权账号不一致")
+                    check_children(item, depth+1)
+            elif isinstance(value, list):
+                for item in value:
+                    check_children(item, depth+1)
+        for field, value in payload.items():
+            if isinstance(value, (dict, list)):
+                check_children(value)
+        return dict(payload, **target), [target["account_key"]]
+
+    def _managed_access_gate(self, parsed):
+        if not (parsed.path.startswith("/api/") or parsed.path.startswith("/ws/")):
+            return True
+        provided = self._provided_api_key(parsed)
+        if not provided or self._api_key_valid(parsed):
+            return True
+        try:
+            key = ACCESS_KEYS.authenticate(provided)
+            action = permission_for(self.command, parsed.path)
+            self._access_audit_id = ACCESS_KEYS.begin_audit(key or {}, self.command, parsed.path,
+                                                         self.client_address[0], action or "denied")
+            payload = {}
+            if self.command == "POST" and action:
+                length = int(self.headers.get("Content-Length") or 0)
+                if not 0 <= length <= 1024 * 1024:
+                    raise AccessDenied("invalid_request", "请求体不能超过 1 MiB", 400)
+                payload = self._read_json_body()
+                if not isinstance(payload, dict):
+                    raise AccessDenied("invalid_request", "参数必须为 JSON 对象", 400)
+            elif self.command == "GET":
+                values = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+                if any(len(items) != 1 for items in values.values()):
+                    raise AccessDenied("invalid_request", "不能重复提供查询参数", 400)
+                payload = {field: items[0] for field, items in values.items()}
+            from cfquant.api_access import audit_parameters
+            with ACCESS_KEYS._db(audit=True) as db:
+                db.execute("UPDATE api_audit SET parameters=? WHERE id=?",
+                           (json.dumps(audit_parameters(payload), ensure_ascii=False), self._access_audit_id))
+            if key is None:
+                raise AccessDenied("invalid_api_key", "API Key 无效或已删除", 401)
+            if key.get("deleted"):
+                raise AccessDenied("key_deleted", "API Key 已删除", 401)
+            orders = payload.get("orders")
+            if orders is not None and (not isinstance(orders, list) or not 1 <= len(orders) <= 100):
+                raise AccessDenied("invalid_request", "每批委托数量必须为 1 到 100", 400)
+            weight = len(orders) if isinstance(orders, list) else 1
+            ACCESS_KEYS.consume(key, action, weight=weight)
+            if not action or action not in key["permissions"]:
+                raise AccessDenied("permission_denied", "此 Key 没有该操作权限；管理、配置与未开放接口禁止访问")
+            payload, accounts = self._scope_account_payload(key, parsed.path, payload)
+            with ACCESS_KEYS._db(audit=True) as db:
+                db.execute("UPDATE api_audit SET accounts=? WHERE id=?", (json.dumps(accounts), self._access_audit_id))
+            self._scoped_key, self._scoped_body = key, payload
+            return True
+        except AccessDenied as error:
+            headers = [("Retry-After", str(error.retry_after))] if error.retry_after else []
+            self._write_json({"ok": False, "code": error.code, "error": str(error)}, error.status, headers)
+        except (ValueError, json.JSONDecodeError):
+            self._write_json({"ok": False, "code": "invalid_request", "error": "请求参数格式无效"}, 400)
+        except Exception:
+            # Do not dispatch if the credential, limiter or audit store is unavailable.
+            self._write_json({"ok": False, "code": "access_store_unavailable", "error": "鉴权或审计存储不可用，请联系管理员"}, 503)
+        return False
+
+    def _handle_access_keys(self, parsed):
+        if not parsed.path.startswith("/api/access-keys"):
+            return False
+        if not self._access_admin(parsed):
+            self._write_json(fail("需要管理员登录或管理 Key", 403), 403)
+            return True
+        try:
+            query = urllib.parse.parse_qs(parsed.query)
+            if self.command == "GET" and parsed.path == "/api/access-keys":
+                rows = self._access_account_rows()
+                accounts = [{"account_key": key, "account_id": row.get("account_id"),
+                             "account_type": row.get("account_type"), "bridge_id": row.get("bridge_id"),
+                             "name": row.get("display_name") or row.get("name") or row.get("account_name") or ""} for key, row in rows.items()]
+                self._write_json(ok({"items": ACCESS_KEYS.list_keys(), "accounts": accounts, "defaults": DEFAULT_LIMITS}))
+            elif self.command == "GET" and parsed.path == "/api/access-keys/audit":
+                self._write_json(ok(ACCESS_KEYS.audit((query.get("key_id") or [""])[0],
+                                                    (query.get("offset") or [0])[0], (query.get("limit") or [50])[0])))
+            elif self.command == "POST" and parsed.path in (
+                    "/api/access-keys", "/api/access-keys/reveal", "/api/access-keys/delete"):
+                body = self._read_json_body()
+                if not isinstance(body, dict):
+                    raise ValueError("参数必须为对象")
+                key_id = str(body.get("id") or "")
+                operation = "update" if key_id else "create"
+                if parsed.path.endswith("/reveal"):
+                    operation = "reveal"
+                elif parsed.path.endswith("/delete"):
+                    operation = "delete"
+                self._access_audit_id = ACCESS_KEYS.begin_audit(
+                    {"id": key_id or "administrator", "name": "管理员"}, self.command, parsed.path,
+                    self.client_address[0], "key."+operation, payload=body)
+                if operation == "reveal":
+                    data = {"id": key_id, "api_key": ACCESS_KEYS.reveal(key_id)}
+                elif operation == "delete":
+                    ACCESS_KEYS.delete(key_id)
+                    data = {"id": key_id, "deleted": True}
+                else:
+                    if not WEB_CONFIG.web_auth_enabled() and not WEB_CONFIG.api_key():
+                        raise ValueError("请先配置网页登录或管理员 API Key，再创建受限 Key")
+                    data = ACCESS_KEYS.save(body, self._access_account_rows())
+                    # Associate creation with the resulting key for future filtering.
+                    with ACCESS_KEYS._db(audit=True) as db:
+                        db.execute("UPDATE api_audit SET key_id=? WHERE id=?", (data["id"], self._access_audit_id))
+                self._write_json(ok(data))
+            else:
+                self._write_json(fail("not found", 404), 404)
+        except (ValueError, TypeError) as error:
+            self._write_json(fail(error, 400), 400)
+        except Exception:
+            self._write_json(fail("Key 管理或审计存储不可用", 503), 503)
+        return True
+
     def _handle_remote_agent(self, parsed):
         from cfquant.remote_adapter import LOCAL_PATHS, handle
         try:
@@ -18513,6 +18867,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
         if not self._request_allowed():
             self._write_json(fail("request host is not allowed", 403), status=403)
             return
+        if not self._managed_access_gate(parsed):
+            return
+        if self._handle_access_keys(parsed):
+            return
         if parsed.path.startswith("/api/remote-agent/"):
             self._handle_remote_agent(parsed)
         elif parsed.path == "/ws/callbacks":
@@ -18546,6 +18904,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             return
         if not parsed.path.startswith("/api/"):
             self._write_json(fail("not found", 404), status=404)
+            return
+        if not self._managed_access_gate(parsed):
+            return
+        if self._handle_access_keys(parsed):
             return
         if parsed.path.startswith("/api/remote-agent/"):
             self._handle_remote_agent(parsed)
@@ -18894,6 +19256,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             trade_guard.__exit__(None, None, None)
 
     def _read_json_body(self):
+        if getattr(self, "_scoped_body", None) is not None:
+            return self._scoped_body
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
         return json.loads(raw.decode("utf-8"))
@@ -18916,12 +19280,13 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
 
     def _provided_api_key(self, parsed):
         query = urllib.parse.parse_qs(parsed.query)
+        headers = getattr(self, "headers", {})
         provided = (
-            self.headers.get("X-API-Key")
-            or self.headers.get("x-api-key")
+            headers.get("X-API-Key")
+            or headers.get("x-api-key")
             or (query.get("apikey") or query.get("api_key") or [""])[0]
         )
-        auth = self.headers.get("Authorization") or ""
+        auth = headers.get("Authorization") or ""
         if not provided and auth.lower().startswith("bearer "):
             provided = auth[7:].strip()
         return str(provided or "").strip()
@@ -18975,7 +19340,7 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
     def _api_key_valid(self, parsed):
         api_key = WEB_CONFIG.api_key()
         provided = self._provided_api_key(parsed)
-        return bool(api_key and provided) and secrets.compare_digest(provided, api_key)
+        return bool(api_key and provided) and secrets.compare_digest(provided.encode("utf-8"), api_key.encode("utf-8"))
 
     def _internal_api_key_valid(self, parsed):
         if parsed.path not in INTERNAL_API_PATHS:
@@ -19005,6 +19370,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             return False
 
     def _authorized(self, parsed):
+        if getattr(self, "_scoped_key", None):
+            return True  # Gate already checked method, scope, account and rate.
         if parsed.path == "/api/remote-management" and not is_loopback_host(self.client_address[0]):
             return self._has_access_token(parsed)
         if parsed.path.startswith("/api/management/") or parsed.path in (
@@ -19016,8 +19383,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             return True
         if parsed.path in INTERNAL_API_PATHS:
             return self._internal_api_key_valid(parsed) or self._has_access_token(parsed)
-        if parsed.path == "/api/apikey" and not WEB_CONFIG.web_auth_enabled():
-            return True
+        if parsed.path == "/api/apikey":
+            return self._access_admin(parsed)
         if WEB_CONFIG.web_auth_enabled():
             return self._has_access_token(parsed)
         api_key = WEB_CONFIG.api_key()
@@ -19166,6 +19533,19 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self._write_json(fail("invalid credentials", 401), status=401)
             return
         query = urllib.parse.parse_qs(parsed.query)
+        scoped = getattr(self, "_scoped_key", None)
+        if scoped:
+            query = {field: [str(value)] for field, value in self._scoped_body.items()}
+            if parsed.path == "/api/config":
+                rows = self._access_account_rows()
+                permitted = {key: {field: row.get(field) for field in
+                                   ("account_id", "account_type", "bridge_id", "enabled", "name")}
+                             for key, row in rows.items() if scoped["all_accounts"] or key in scoped["account_keys"]}
+                for key, row in permitted.items():
+                    row["account_key"] = key
+                self._write_json(ok({"account_configs": permitted, "scoped_access": True,
+                                     "permissions": scoped["permissions"], "limits": scoped["limits"]}))
+                return
         try:
             if parsed.path == "/api/health":
                 self._write_json(ok({"status": "ok"}))
@@ -19178,8 +19558,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/internal/runtime-route":
                 self._write_json(ok(internal_runtime_route_info()))
             elif parsed.path == "/api/config":
-                has_access = self._has_access_token(parsed)
-                auth_required = WEB_CONFIG.web_auth_enabled() and not has_access
+                has_access = self._has_access_token(parsed) or self._access_admin(parsed)
+                auth_required = bool(WEB_CONFIG.web_auth_enabled() or WEB_CONFIG.api_key()) and not has_access
                 if auth_required:
                     access = server_access_info(include_auth_details=False)
                     self._write_json(ok({
@@ -19688,6 +20068,8 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             self._write_json(fail("not found", 404), status=404)
             return
         content_type = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
+        if rel_path in PUBLIC_AI_DOCUMENT_PATHS:
+            content_type = "text/markdown; charset=utf-8"
         try:
             self.send_response(200)
             self.send_header("Content-Type", content_type)
@@ -19733,6 +20115,23 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             safe_print("client disconnected while writing media response: %s" % e)
 
     def _write_json(self, payload, status=200, extra_headers=None):
+        audit_id = getattr(self, "_access_audit_id", None)
+        if audit_id and not getattr(self, "_access_audit_done", False):
+            self._access_audit_done = True
+            try:
+                # Record request completion, not fills. Keep only bounded order
+                # identifiers; never serialize full responses containing secrets.
+                data = payload.get("data") if isinstance(payload, dict) else None
+                from cfquant.api_access import audit_result
+                result_summary = audit_result(data) if isinstance(data, dict) else {}
+                ACCESS_KEYS.finish_audit(audit_id, status, payload.get("code", ""), result_summary,
+                                         business_ok=payload.get("ok", False))
+            except Exception:
+                payload = {"ok": False, "code": "audit_write_failed",
+                           "error": "操作结果的审计写入失败，操作可能已执行，请核对委托，勿重复提交"}
+                status = 503
+        if getattr(self, "_scoped_key", None) or getattr(self, "path", "").split("?", 1)[0].startswith("/api/access-keys"):
+            extra_headers = list(extra_headers or []) + [("Cache-Control", "no-store")]
         started = time.perf_counter()
         raw = web_json_bytes(payload)
         encoded_ms = (time.perf_counter() - started) * 1000
@@ -19750,7 +20149,10 @@ class CfquantWebHandler(BaseHTTPRequestHandler):
             safe_print("client disconnected while writing json response: %s" % e)
 
     def log_message(self, fmt, *args):
-        safe_print("%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), fmt % args))
+        message = fmt % args
+        message = re.sub(r"([?&](?:apikey|api_key|web_token|web_auth_token)=)[^&\s\"]+", r"\1[REDACTED]", message, flags=re.I)
+        message = re.sub(r"cfqm_[A-Za-z0-9_-]+", "[REDACTED]", message)
+        safe_print("%s %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), message))
 
     def _send_cors_headers(self):
         origin = self.headers.get("Origin") or ""
@@ -19948,6 +20350,7 @@ def main(argv=None):
     QMT_STRATEGIES.start()
     QMT_STRATEGY_RECOVERY.start()
     QMT_AUTO_LOGIN_RESTART_SCHEDULER.start()
+    QMT_PROCESS_WATCHDOG.start()
     ACCOUNT_CACHE.start()
     CALLBACKS.start()
     QUOTES.start()
@@ -19971,6 +20374,7 @@ def main(argv=None):
         STATUS_MONITOR.close()
         MONITOR_NOTIFICATIONS.close()
         QMT_AUTO_LOGIN_RESTART_SCHEDULER.close()
+        QMT_PROCESS_WATCHDOG.close()
         QMT_STRATEGY_RECOVERY.close()
         QMT_STRATEGIES.close()
         ACCOUNT_CACHE.close()

@@ -36,13 +36,15 @@ def updated_source(source, lite=False):
     bridge_name = '_normal_bridge' if '_normal_bridge = None' in source else '_cf_bridge'
     helper = '''def _publish_inner_callback(name, *args):
     bridge = globals().get(%r)
-    if bridge is not None:
+%s    if bridge is not None:
         %s
         try:
             publish_inner_callback(bridge, name, *args)
         except Exception as error:
             print('cfquant inner callback failed: %%s' %% error)
-''' % (bridge_name, 'pass' if lite else 'from cfquant.qmt_inner_runtime import publish_inner_callback')
+''' % (bridge_name,
+       "    if globals().get('_LITE_ROLE') == 'trade':\n        return\n" if lite else '',
+       'pass' if lite else 'from cfquant.qmt_inner_runtime import publish_inner_callback')
     block = BEGIN + (embedded_runtime() + '\n' if lite else '') + helper + END
     if lite:
         source = source.replace('class TxTradeBridge(object):', block + 'class TxTradeBridge(object):', 1)

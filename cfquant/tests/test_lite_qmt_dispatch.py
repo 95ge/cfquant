@@ -84,7 +84,8 @@ def lite(request, monkeypatch):
     exec(compile(ast.Module(body=body, type_ignores=[]), str(request.param), 'exec'), namespace)
     namespace.update(_LOG_ENABLED=False, _QMT_BOUND_LOG_ENABLED=False, DEFAULT_ACCOUNT_ID='TEST_ONLY', DEFAULT_ACCOUNT_TYPE='CREDIT',
                      BRIDGE_CHANNELS={'normal': 'test.normal', 'trade': 'test.trade', 'callback': 'test.callback'},
-                     _ENTRY_VERSION=namespace['LITE_ENTRY_VERSION'], TRADE_LOOP_IN_THREAD=False)
+                     _ENTRY_VERSION=namespace['LITE_ENTRY_VERSION'], TRADE_LOOP_IN_THREAD=False,
+                     RUNTIME_CONFIG={}, _LITE_ROLE='combined', _LITE_REQUEST_CHANNEL='test.normal')
     transport = Transport()
 
     def start(bridge):

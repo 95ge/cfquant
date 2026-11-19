@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261118_04">
+  <link rel="stylesheet" href="/styles.css?v=web_20261119_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -211,16 +211,17 @@
               <span>运行模式</span>
               <select id="setupMode" name="mode">
                 <option value="lite" selected>极致模式（默认）</option>
+                <option value="lite_advanced" hidden>高级模式（ctypes）</option>
                 <option value="ctypes" hidden>通用模式（已有配置）</option>
                 <option value="lttx" hidden>高级模式（已有配置）</option>
               </select>
               <small>适配当前 QMT 版本，新绑定使用极致模式。</small>
             </label>
             <label class="field wide">
-              <span>cfquant Python 环境</span>
-              <select id="setupPythonEnvironmentMode"><option value="default">使用默认 Python 环境</option><option value="custom">使用指定 Python 解释器</option></select>
+              <span>CFQuant SDK 安装环境</span>
+              <select id="setupPythonEnvironmentMode"><option value="default">仅使用程序自带环境</option><option value="custom">安装 SDK 到指定 Python</option></select>
               <input id="setupPythonExecutable" autocomplete="off" placeholder="例如 D:\Python311\python.exe">
-              <small>后续 Web、PipeHub、LTtx 和更新安装操作都使用此解释器。</small>
+              <small>指定安装 CFQuant SDK 的目标 Python；程序服务始终使用自带的 Python。</small>
             </label>
             <label id="setupQmtTradeDirField" class="field wide hidden">
               <span>极速交易端 QMT 安装目录或核心目录</span>
@@ -1125,7 +1126,45 @@
                 </div>
               </section>
               <section class="settings-section active" data-settings-tab="api-key">
-                <h3>API Key</h3>
+                <h3>MCP / API Key 管理</h3>
+                <p class="metric-note">为每个 AI 客户端创建独立 Key。查询、交易和账号范围由服务端校验；受限 Key 无权修改设置或管理其他 Key。</p>
+                <p id="accessKeyMessage" role="status" aria-live="polite"></p>
+                <form id="accessKeyForm" class="access-key-form">
+                  <input id="accessKeyId" type="hidden">
+                  <label class="field"><span>名称 · 必填</span><input id="accessKeyName" required maxlength="80" placeholder="例如：研究助手、交易客户端" autocomplete="off"></label>
+                  <fieldset><legend>操作权限 · 至少一项</legend>
+                    <label class="checkbox-field"><input id="accessKeyQuery" type="checkbox" checked>查询</label>
+                    <label class="checkbox-field"><input id="accessKeyTrade" type="checkbox">交易（含撤单）</label>
+                  </fieldset>
+                  <fieldset class="access-key-wide"><legend>可访问账号 · 必填</legend>
+                    <label class="checkbox-field"><input id="accessKeyAllAccounts" type="checkbox">全部已绑定账号（含后续新增）</label>
+                    <div id="accessKeyAccounts" class="access-key-accounts"></div>
+                  </fieldset>
+                  <label class="field"><span>每分钟请求数 · 必填</span><input id="accessKeyPerMinute" type="number" min="1" max="100000" step="1" value="60" required></label>
+                  <label class="field"><span>每秒请求数 · 必填</span><input id="accessKeyPerSecond" type="number" min="1" max="100000" step="1" value="5" required></label>
+                  <label class="field"><span>每分钟交易笔数 · 必填</span><input id="accessKeyTrades" type="number" min="1" max="100000" step="1" value="10" required></label>
+                  <p class="metric-note access-key-wide">三个滑动窗口同时生效；每批委托按实际笔数计入交易额度。超限返回 429 和 Retry-After，不会排队执行。</p>
+                  <label class="checkbox-field"><input id="accessKeyEnabled" type="checkbox" checked>启用此 Key</label>
+                  <div class="form-actions access-key-wide">
+                    <button id="saveAccessKeyBtn" class="primary" type="submit">创建 Key</button>
+                    <button id="resetAccessKeyBtn" type="button">清空 / 新建</button>
+                    <button id="refreshAccessKeysBtn" type="button">刷新列表</button>
+                  </div>
+                </form>
+                <div id="accessKeySecretPanel" class="access-key-secret" hidden>
+                  <label class="field"><span id="accessKeySecretLabel">Key 明文</span><input id="accessKeySecret" type="password" readonly autocomplete="off" spellcheck="false"></label>
+                  <div class="form-actions"><button id="showAccessKeySecretBtn" type="button">显示</button><button id="copyAccessKeySecretBtn" type="button">复制</button><button id="hideAccessKeySecretBtn" type="button">关闭并清除</button></div>
+                  <p class="metric-note">仅管理员可查看；查看操作也会留痕。密钥按当前 Windows 用户加密保存，请勿粘贴到 AI 对话中。</p>
+                </div>
+                <div class="access-key-table-wrap"><table class="access-key-table"><thead><tr><th>名称 / Key</th><th>权限 / 账号范围</th><th>限流</th><th>状态 / 最近使用</th><th>操作</th></tr></thead><tbody id="accessKeyRows"></tbody></table></div>
+                <h3>独立操作审计</h3>
+                <p class="metric-note">记录请求、账号、业务参数、结果、拒绝和限流。停用或删除 Key 不删除历史；请求成功表示接口完成，不代表已成交。pending 表示尚未写入完成结果，需核查。</p>
+                <div class="form-actions"><label class="field"><span>按 Key 筛选</span><select id="accessAuditKeyFilter"><option value="">全部 Key（含已删除）</option></select></label><button id="refreshAccessAuditBtn" type="button">刷新审计</button></div>
+                <p id="accessAuditStatus" role="status"></p>
+                <div class="access-key-table-wrap access-audit-table-wrap"><table class="access-key-table"><thead><tr><th>时间 / 来源</th><th>Key / 账号</th><th>操作 / 接口</th><th>结果 / 详情</th></tr></thead><tbody id="accessAuditRows"></tbody></table></div>
+                <div class="form-actions"><button id="previousAccessAuditBtn" type="button">上一页</button><button id="nextAccessAuditBtn" type="button">下一页</button></div>
+                <details class="access-key-legacy"><summary>管理员 Key（原有兼容入口）</summary>
+                <p class="metric-note">管理员 Key 拥有完整管理权限，请勿交给 MCP 客户端；上方创建的独立 Key 用于细分授权。首次创建前请先配置本 Key 或启用网页登录。</p>
                 <form id="apiKeyForm" class="api-keybar">
                   <label class="field">
                     <span>API Key</span>
@@ -1137,6 +1176,7 @@
                   <button id="saveApiKeyBtn" class="primary" type="button">保存 API Key</button>
                   <span id="apiKeyStatus" class="metric-note"></span>
                 </form>
+                </details>
               </section>
               <section class="settings-section" data-settings-tab="remote-management">
                 <h3>官网远程管理</h3>
@@ -1299,12 +1339,12 @@
                 </form>
               </section>
               <section class="settings-section" data-settings-tab="python-environment">
-                <h3>Python 环境</h3>
-                <p class="settings-note">选择后，PipeHub、LTtx、更新安装和重启流程都会使用该解释器。</p>
+                <h3>CFQuant SDK 安装环境</h3>
+                <p class="settings-note">此设置指定 CFQuant SDK 的安装目标。程序启动、子服务和重启始终使用自带的 Python。</p>
                 <form id="pythonEnvironmentForm" class="api-serverbar">
                   <label class="field">
-                    <span>运行环境</span>
-                    <select id="settingsPythonEnvironmentMode"><option value="default">使用默认 Python 环境</option><option value="custom">使用指定 Python 解释器</option></select>
+                    <span>SDK 安装目标</span>
+                    <select id="settingsPythonEnvironmentMode"><option value="default">仅使用程序自带环境</option><option value="custom">安装 SDK 到指定 Python</option></select>
                   </label>
                   <label class="field wide">
                     <span>Python 解释器路径</span>
@@ -1516,6 +1556,10 @@
                   <strong>Python 接入</strong>
                   <span>新旧调用对照、完整示例、迁移排查</span>
                 </button>
+                <button class="tutorial-menu-item" type="button" data-guide="ai_agent">
+                  <strong>AI 接入文档</strong>
+                  <span>复制给 AI，读取 Markdown 原文</span>
+                </button>
                 <button class="tutorial-menu-item" type="button" data-guide="cftrader">
                   <strong>cftrader 批量交易与撤单</strong>
                   <span>批量下单、批量撤单、原回调</span>
@@ -1555,6 +1599,35 @@
               </aside>
 
               <section class="tutorial-content">
+                <article class="tutorial-topic" data-guide-panel="ai_agent">
+                  <div class="guide-section">
+                    <h3>AI 接入文档</h3>
+                    <p>选择你的使用方式，分别查看接入步骤、代码示例和验证方法。</p>
+                    <div class="ai-agent-paths" role="group" aria-label="AI 接入方式">
+                      <button type="button" class="active" data-ai-document="mcp" aria-pressed="true" aria-controls="aiAgentDocumentText">
+                        <strong>通过 MCP 查询与交易</strong>
+                        <span>连接 AI 客户端，查询账户并在确认后交易</span>
+                      </button>
+                      <button type="button" data-ai-document="migration" aria-pressed="false" aria-controls="aiAgentDocumentText">
+                        <strong>改造原有策略</strong>
+                        <span>让 AI 将 xtquant 策略适配为 cfquant</span>
+                      </button>
+                    </div>
+                    <div class="guide-callout">
+                      <strong>交给 AI 阅读</strong>
+                      <span>本机运行的 AI 可以直接读取下面的地址；其他设备上的 AI 请使用“复制全文”后粘贴到对话中。</span>
+                    </div>
+                    <p><a id="aiAgentDocumentUrl" href="/docs/AI_MCP_TRADING.md" target="_blank" rel="noopener">Markdown 原文</a> · <a href="/docs/API_REFERENCE.md" target="_blank" rel="noopener">API 参考原文</a> · <a href="/docs/AI_AGENT_INTEGRATION.md" target="_blank" rel="noopener">两种路径总览</a></p>
+                    <div class="form-actions">
+                      <button type="button" id="copyAiAgentDocument">复制全文</button>
+                      <button type="button" id="copyAiAgentDocumentUrl">复制文档地址</button>
+                      <button type="button" id="reloadAiAgentDocument">重新加载</button>
+                      <button type="button" id="openAiAccessKeys">管理 MCP / API Key</button>
+                    </div>
+                    <p id="aiAgentDocumentStatus" role="status" aria-live="polite"></p>
+                    <div id="aiAgentDocumentText" class="ai-agent-document"></div>
+                  </div>
+                </article>
                 <article class="tutorial-topic" data-guide-panel="onboarding">
                   <div class="guide-section">
                     <h3>先把 cfquant 跑起来</h3>
@@ -1651,7 +1724,8 @@
                             <span>运行模式</span>
                             <select id="onboardingMode">
                               <option value="lite" selected>极致模式（默认）</option>
-                              <option value="ctypes" hidden>通用模式（已有配置）</option>
+                              <option value="lite_advanced" hidden>高级模式（ctypes）</option>
+                <option value="ctypes" hidden>通用模式（已有配置）</option>
                               <option value="lttx" hidden>高级模式（已有配置）</option>
                             </select>
                             <small>适配当前 QMT 版本，新绑定使用极致模式。</small>
@@ -1662,10 +1736,10 @@
                             <small>保存后系统会自动同步项目代码、QMT 内部策略代码和身份配置；无需手工复制，请先完成 QMT Python 库下载。</small>
                           </label>
                           <label class="field wide">
-                            <span>cfquant Python 环境</span>
-                            <select id="onboardingPythonEnvironmentMode"><option value="default">使用默认 Python 环境</option><option value="custom">使用指定 Python 解释器</option></select>
+                            <span>CFQuant SDK 安装环境</span>
+                            <select id="onboardingPythonEnvironmentMode"><option value="default">仅使用程序自带环境</option><option value="custom">安装 SDK 到指定 Python</option></select>
                             <input id="onboardingPythonExecutable" autocomplete="off" placeholder="例如 D:\Python311\python.exe">
-                            <small>后续 Web、PipeHub、LTtx 和更新安装操作都使用此解释器。</small>
+                            <small>指定安装 CFQuant SDK 的目标 Python；程序服务始终使用自带的 Python。</small>
                           </label>
                           <label id="onboardingQmtTradeDirField" class="field wide hidden">
                             <span>第二个 QMT 安装目录或核心目录</span>
@@ -2705,7 +2779,7 @@ else:
                         </div>
                         <div class="guide-callout">
                           <strong>等待退出或部署失败</strong>
-                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或模型账号 Key 后重新保存。</span>
+                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或 QMT 登录状态 后重新保存。</span>
                         </div>
                         <figure class="guide-image-card">
                           <img src="/image/qmt_deploy/image-10.png" alt="通用模式账号绑定示意">
@@ -2729,7 +2803,7 @@ else:
                         </div>
                         <div class="guide-callout">
                           <strong>等待退出或部署失败</strong>
-                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或模型账号 Key 后重新保存。</span>
+                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或 QMT 登录状态 后重新保存。</span>
                         </div>
                         <figure class="guide-image-card">
                           <img src="/image/qmt_deploy/image-13.png" alt="极致模式账号绑定示意">
@@ -2753,7 +2827,7 @@ else:
                         </div>
                         <div class="guide-callout">
                           <strong>等待退出或部署失败</strong>
-                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或模型账号 Key 后重新保存。</span>
+                          <span>提示等待退出时，请正常退出 QMT，保持 cfquant 运行，等待模型配置完成后再启动。部署失败时，按错误提示修正目录、权限或 QMT 登录状态 后重新保存。</span>
                         </div>
                         <p>两个 QMT 都需要完成登录。自动启动选项仅启动绑定的主 QMT 目录，极速交易端需单独启动并登录。</p>
                         <figure class="guide-image-card">
@@ -3264,6 +3338,15 @@ else:
             <button id="bindingPythonRuntimeRefreshBtn" type="button">重新检测</button>
           </div>
           <div id="bindingPythonRuntimeStatus" class="binding-python-runtime-status" role="status" aria-live="polite">尚未检测</div>
+          <div id="bindingPythonRuntimeTargets" class="binding-python-runtime-status" role="status" aria-live="polite"></div>
+          <label id="bindingPythonRuntimeTargetField" class="field hidden">
+            <span>配置哪个 QMT</span>
+            <select id="bindingPythonRuntimeTarget">
+              <option value="normal">普通端（行情与回调）</option>
+              <option value="trade">交易端</option>
+            </select>
+            <small>两个 QMT 分别检测和安装 Python 环境；下方执行器与下载按钮仅作用于当前选择的目录。任务执行期间请等待完成后再切换。</small>
+          </label>
           <label class="field">
             <span>QMT Python 执行器</span>
             <select id="bindingPythonRuntimeSelect" disabled aria-describedby="bindingPythonRuntimeHint bindingPythonRuntimeChoiceHint">
@@ -3334,10 +3417,19 @@ else:
           <span>账号模式</span>
           <select id="bindingMode" name="mode">
             <option value="lite" selected>极致模式（默认）</option>
+            <option value="lite_advanced">高级模式</option>
             <option value="ctypes" hidden>通用模式（已有配置）</option>
-            <option value="lttx" hidden>高级模式（已有配置）</option>
+            <option value="lttx" hidden>高级模式</option>
           </select>
-          <small>适配当前 QMT 版本，新绑定使用极致模式。</small>
+          <small>极致模式使用一个 QMT；高级模式使用两个 QMT，将行情与回调和交易分开运行。</small>
+        </label>
+        <label id="bindingAdvancedTransportField" class="field wide hidden">
+          <span>高级模式通信类型</span>
+          <select id="bindingAdvancedTransport">
+            <option value="ctypes" selected>ctypes（默认，基于极致模式）</option>
+            <option value="socket">socket（原高级模式）</option>
+          </select>
+          <small>普通端负责行情与回调，交易端负责下单、撤单和账户查询。两个 QMT 需要分别登录同一资金账号，且安装目录不能相同。</small>
         </label>
         <label id="bindingQmtTradeDirField" class="field wide hidden">
           <span>高级模式极速交易端 QMT 安装目录或核心目录</span>
@@ -3650,7 +3742,7 @@ else:
   <script src="/trading-monitor.js?v=20261111_runtime_window_01"></script>
   <script src="/navigation.js?v=web_20261108_nav_03"></script>
   <script src="/activity-log.js?v=web_20261108_logs_01"></script>
-  <script src="/app.js?v=web_20261118_04"></script>
+  <script src="/app.js?v=web_20261119_01"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

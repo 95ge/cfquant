@@ -29,10 +29,6 @@ call :log "start_cfquant.bat invoked"
 set "PYTHON_EXE=python"
 if defined CFQUANT_PYTHON_EXE if exist "%CFQUANT_PYTHON_EXE%" set "PYTHON_EXE=%CFQUANT_PYTHON_EXE%"
 if exist "%~dp0.venv\Scripts\python.exe" set "PYTHON_EXE=%~dp0.venv\Scripts\python.exe"
-set "CFQUANT_START_ROOT=%~dp0"
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$root=$env:CFQUANT_START_ROOT; $files=@((Join-Path $root 'runtime\config\cfquant_web_config.json'), (Join-Path $root 'cfquant_web_config.json')); foreach ($f in $files) { if (Test-Path -LiteralPath $f) { try { $c=Get-Content -Raw -LiteralPath $f | ConvertFrom-Json; if ($c.python_executable) { Write-Output ([string]$c.python_executable) }; break } catch {} } }"`) do set "CFQUANT_CONFIG_PYTHON=%%P"
-if defined CFQUANT_CONFIG_PYTHON if exist "%CFQUANT_CONFIG_PYTHON%" set "PYTHON_EXE=%CFQUANT_CONFIG_PYTHON%"
-set "CFQUANT_CONFIG_PYTHON="
 rem If PATH does not contain Python (common with Anaconda/Miniconda), probe
 rem standard Conda installations before reporting that Python is unavailable.
 set "CFQUANT_START_ROOT=%~dp0"
@@ -42,6 +38,8 @@ for /f "usebackq delims=" %%P in (`powershell -NoProfile -NonInteractive -Execut
 )
 set "CFQUANT_START_ROOT="
 if defined CFQUANT_PYTHON_EXE if exist "%CFQUANT_PYTHON_EXE%" set "PYTHON_EXE=%CFQUANT_PYTHON_EXE%"
+rem Packaged service always runs with its adjacent bundled Python.
+if exist "%~dp0..\python312\python.exe" set "PYTHON_EXE=%~dp0..\python312\python.exe"
 call :log "selected python executable=%PYTHON_EXE%"
 if not exist "%~dp0cfquant_web_server.py" (
     echo [ERROR] cfquant_web_server.py not found in "%~dp0".
@@ -54,7 +52,7 @@ if not exist "%~dp0cfquant_web_server.py" (
 
 "%PYTHON_EXE%" --version >>"%START_LOG%" 2>&1
 if errorlevel 1 (
-    echo [ERROR] Python is not available. Set python_executable in the Web setup or install Python/Conda.
+    echo [ERROR] Python is not available. Repair the bundled runtime or install Python/Conda for source startup.
     echo [ERROR] Tried: "%PYTHON_EXE%"
     call :log "python unavailable"
     call :show_logs

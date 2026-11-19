@@ -79,6 +79,8 @@ def test_web_startup_starts_saved_qmt_bindings_once(web_config, monkeypatch, tmp
 
 def test_initialize_web_setup_persists_custom_python_environment(web_config, monkeypatch, tmp_path):
     web, config = web_config
+    installs = []
+    monkeypatch.setattr(web, "install_python_sdk", lambda executable: installs.append(executable))
     python_exe = tmp_path / "python.exe"
     python_exe.write_bytes(b"")
     monkeypatch.setattr(web, "auto_deploy_qmt_core_for_account", lambda *args, **kwargs: {"summary": {"ok": True}, "results": []})
@@ -95,7 +97,39 @@ def test_initialize_web_setup_persists_custom_python_environment(web_config, mon
     })
     assert result["python_environment"]["mode"] == "custom"
     assert config.python_executable() == str(python_exe)
-    assert web.PIPE_HUB._python_exe() == str(python_exe)
+    assert installs == [str(python_exe)]
+    assert web.PIPE_HUB._python_exe() == web.sys.executable
+
+
+def test_sdk_install_failure_preserves_settings(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    executable = tmp_path / "python.exe"
+    executable.touch()
+    def fail(*args, **kwargs):
+        return {"ok": False, "output": "test pip failure"}
+    monkeypatch.setattr(web._editable_install, "_run_pip_command", fail)
+    with pytest.raises(RuntimeError, match="test pip failure"):
+        web.save_python_environment({"mode": "custom", "python_executable": str(executable)})
+    assert config.python_environment_info()["mode"] == "default"
+    assert web.runtime_python_executable() == web.sys.executable
+
+
+def test_sdk_settings_install_into_target_only(web_config, monkeypatch, tmp_path):
+    web, config = web_config
+    executable = tmp_path / "python.exe"
+    executable.touch()
+    calls = []
+    def install(command, root, **kwargs):
+        calls.append(command)
+        return {"ok": True}
+    monkeypatch.setattr(web._editable_install, "_run_pip_command", install)
+    web.save_python_environment({"mode": "custom", "python_executable": str(executable)})
+    assert calls[0][:4] == [str(executable), "-m", "pip", "install"]
+    assert "--no-deps" not in calls[0]
+    assert web.runtime_python_executable() == web.sys.executable
+    assert config.python_environment_info()["runtime_executable"] == web.sys.executable
+    web.save_python_environment({"mode": "default"})
+    assert len(calls) == 1
 
 
 def test_web_reload_info_uses_target_port_and_preserves_previous_listener(web_config, monkeypatch):

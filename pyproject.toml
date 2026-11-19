@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cfquant"
-version = "0.2.80"
+version = "0.2.81"
 description = "QMT local bridge and xtquant-compatible Python client."
 license = {text = "MIT"}
 readme = "README.md"
@@ -58,6 +58,7 @@ namespaces = true
   "*.svg",
   "avatars/*.svg",
   "vendor/*.js",
+  "docs/*.md",
   "image/*/*.png",
 ]
 "qmt_scripts" = [

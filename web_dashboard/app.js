@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261118_04';
+const FRONTEND_VERSION = 'web_20261119_01';
 
 const state = {
   accountId: '',
@@ -135,6 +135,7 @@ const state = {
   bindingActionBusyKey: '',
   bindingActionBusyType: '',
   bindingPythonRuntime: null,
+  bindingPythonRuntimeContexts: {},
   bindingPythonRuntimeChoice: '',
   bindingPythonRuntimeChoiceDirty: false,
   bindingPythonRuntimeContext: '',
@@ -329,6 +330,7 @@ const DEFAULT_BINDING_MODE = 'lite';
 
 function normalizeTransportMode(mode) {
   const value = String(mode || 'ctypes').trim().toLowerCase();
+  if (value === 'lite_advanced') return value;
   if (['lite', 'extreme', 'extreme_lite', 'lite_extreme', 'lite_extreme_pipe', 'extreme_pipe', 'cfquant_lite', 'ultimate'].includes(value)) return 'lite';
   if (['lttx', 'socket', 'normal', 'default'].includes(value)) return 'lttx';
   return 'ctypes';
@@ -338,8 +340,13 @@ function isCtypesTransportMode(mode) {
   return normalizeTransportMode(mode) !== 'lttx';
 }
 
+function isAdvancedTransportMode(mode) {
+  return ['lttx', 'lite_advanced'].includes(normalizeTransportMode(mode));
+}
+
 function transportModeLabel(mode, short = false) {
   const value = normalizeTransportMode(mode);
+  if (value === 'lite_advanced') return short ? '高级' : '高级模式';
   if (value === 'lite') return short ? '极致' : '极致模式';
   if (value === 'lttx') return short ? '高级' : '高级模式';
   return short ? '通用' : '通用模式';
@@ -347,6 +354,7 @@ function transportModeLabel(mode, short = false) {
 
 function transportModeDetailLabel(mode) {
   const value = normalizeTransportMode(mode);
+  if (value === 'lite_advanced') return 'ctypes 行情回调 / 独立交易双端';
   if (value === 'lite') return '纯 ctypes 自包含版';
   if (value === 'lttx') return 'LTtx 普通/极速双桥';
   return 'ctypes 通用版';
@@ -354,6 +362,7 @@ function transportModeDetailLabel(mode) {
 
 function transportModeRequestScope(mode) {
   const value = normalizeTransportMode(mode);
+  if (value === 'lite_advanced') return 'ctypes 行情回调端 + 交易端';
   if (value === 'lite') return '纯 ctypes 单文件双通道';
   if (value === 'lttx') return '普通桥 + 交易桥';
   return '单文件双通道';
@@ -373,7 +382,7 @@ function qmtDeploymentTargets(values = {}) {
       role: `${QMT_MARKET_LABELS[market]} QMT`, qmt_dir: qmtDeploymentPath(routes[market].qmt_dir || ''),
     }));
   }
-  if (normalizeTransportMode(values.mode) === 'lttx') {
+  if (isAdvancedTransportMode(values.mode)) {
     return [
       { role: '普通端 QMT', qmt_dir: qmtDeploymentPath(values.qmt_dir || '') },
       { role: '极速交易端 QMT', qmt_dir: qmtDeploymentPath(values.qmt_trade_dir || '') },
@@ -428,7 +437,7 @@ function strategyDeployTargetDetail(target = {}) {
     waiting_import_save: '策略已导入但模型配置尚未保存；请退出 QMT，等待配置完成后再启动',
     waiting_start: '策略配置已写入；请启动并登录 QMT，等待托管策略上线',
     waiting_manual_start: '策略已导入；请在 QMT 的模型交易中手动运行托管策略',
-    waiting_account: '等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成策略部署。仍无法识别时再补充模型账号 Key',
+    waiting_account: '等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成策略部署。仍无法识别时，请检查 QMT 登录状态并联系技术支持。',
   };
   let reason = stateMessages[target.state] || reasons.find((value) => !['error', '策略部署失败'].includes(value))
     || reasons[0] || target.state || '';
@@ -2843,14 +2852,20 @@ function syncAdvancedQmtDirField(inputId, mode) {
   const input = $(inputId);
   if (!input) return;
   const field = input.closest('.field');
-  const advanced = normalizeTransportMode(mode) === 'lttx';
+  const advanced = isAdvancedTransportMode(mode);
   if (field) field.classList.toggle('hidden', !advanced);
   input.required = advanced;
   if (inputId === 'bindingQmtTradeDir') {
+    $('bindingAdvancedTransportField')?.classList.toggle('hidden', !advanced);
+    if ($('bindingAdvancedTransport')) $('bindingAdvancedTransport').value = mode === 'lttx' ? 'socket' : 'ctypes';
+    const socket = normalizeTransportMode(mode) === 'lttx';
     const runtime = $('bindingRuntimeSettings');
-    if (runtime) runtime.classList.toggle('hidden', advanced);
-    if ($('bindingQmtTimerInterval')) $('bindingQmtTimerInterval').disabled = advanced;
-    if ($('bindingQmtLogEnabled')) $('bindingQmtLogEnabled').disabled = advanced;
+    if (runtime) runtime.classList.toggle('hidden', socket);
+    if ($('bindingQmtTimerInterval')) $('bindingQmtTimerInterval').disabled = socket;
+    if ($('bindingQmtLogEnabled')) $('bindingQmtLogEnabled').disabled = socket;
+    const label = $('bindingQmtDir')?.closest('.field')?.querySelector(':scope > span');
+    if (label?.firstChild) label.firstChild.textContent = advanced
+      ? '普通端 QMT 目录（行情与回调）' : 'QMT 安装目录或核心目录';
   }
 }
 
@@ -2904,6 +2919,7 @@ function readBindingVmSettings() {
       || (octets[0] & 1) || !octets.some(value => value))) || (settings.inject_mac && !mac)) {
     setBindingVmSettingsOpen(true);
     setBindingNotice('请填写有效的非零单播 MAC 地址，例如 02-11-22-33-44-55。', 'error', { autoHide: false });
+    revealBindingControl($('bindingMacAddress'));
     $('bindingMacAddress')?.focus();
     return null;
   }
@@ -2920,7 +2936,7 @@ function verifySavedBindingVmSettings(account, requested) {
 }
 
 function qmtDirsAreSame(first, second) {
-  const normalize = (value) => qmtDeploymentPath(value).replace(/[\\/]+$/, '').toLowerCase();
+  const normalize = (value) => qmtDeploymentPath(value).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   return normalize(first) && normalize(first) === normalize(second);
 }
 
@@ -3206,12 +3222,7 @@ function mountQmtStrategySettings() {
       <label class="field"><span>模型运行方式</span><select id="${prefix}StrategyRunMode"><option value="1" selected>实盘运行</option><option value="0">模拟运行</option></select></label>
       <label class="toggle"><input id="${prefix}StrategyAutorun" type="checkbox" checked><span>QMT 启动后自动运行</span></label>
       <label class="field"><span>主图品种</span><input id="${prefix}StrategyStock" value="SH000300" autocomplete="off"></label>
-      <details class="wide"><summary>模型账号 Key（自动识别，通常无需填写）</summary>
-        <small>新装 QMT 在启用自动启动、自动输入账号密码及策略管理后，会自动完成首次登录、退出、账户识别和重新启动。</small>
-        <div class="qmt-strategy-account-keys">${[['normal', '普通端'], ['trade', '高级模式交易端'], ['SH', '上海交易端'], ['SZ', '深圳交易端']].map(([role, label]) => `
-          <label class="field"><span>${label}</span><input id="${prefix}StrategyKey_${role}" autocomplete="off" placeholder="自动识别"></label>`).join('')}
-        </div>
-      </details>`;
+      <small class="wide">系统自动识别 QMT 账号。新装 QMT 启用自动启动、自动输入账号密码及策略管理后，会自动完成首次登录、退出、账户识别和重新启动。</small>`;
     const toggle = $(`${prefix}StrategyEnabled`);
     toggle.addEventListener('change', () => syncQmtStrategyControls(prefix));
   });
@@ -3233,9 +3244,8 @@ function fillQmtStrategySettings(prefix, settings) {
   $(`${prefix}StrategyRunMode`).value = value.live !== false ? '1' : '0';
   $(`${prefix}StrategyAutorun`).checked = value.autorun !== false;
   $(`${prefix}StrategyStock`).value = value.stock || 'SH000300';
-  ['normal', 'trade', 'SH', 'SZ'].forEach((role) => {
-    $(`${prefix}StrategyKey_${role}`).value = (value.account_keys || {})[role] || '';
-  });
+  // Preserve existing overrides without asking users to edit internal account identifiers.
+  $(`${prefix}StrategySettings`).legacyAccountKeys = { ...(value.account_keys || {}) };
   syncQmtStrategyControls(prefix);
 }
 
@@ -3247,7 +3257,7 @@ function readQmtStrategySettings(prefix) {
     live: $(`${prefix}StrategyRunMode`).value === '1',
     autorun: $(`${prefix}StrategyAutorun`).checked,
     stock: $(`${prefix}StrategyStock`).value.trim(),
-    account_keys: Object.fromEntries(['normal', 'trade', 'SH', 'SZ'].map((role) => [role, $(`${prefix}StrategyKey_${role}`).value.trim()])),
+    account_keys: { ...($(`${prefix}StrategySettings`).legacyAccountKeys || {}) },
   };
 }
 
@@ -3286,7 +3296,7 @@ function bindingSaveSummary({
   } else {
     parts.push(qmtDir ? 'QMT目录已记录' : 'QMT目录未填写');
   }
-  if (normalizeTransportMode(mode) === 'lttx') {
+  if (isAdvancedTransportMode(mode)) {
     parts.push(qmtDir && qmtTradeDir ? '高级模式两个 QMT 目录已记录' : '高级模式需要两个 QMT 目录');
   }
   if (qmtAutoLogin) parts.push('QMT 自动启动已启用');
@@ -5182,6 +5192,173 @@ function xttraderCompatDocHtml() {
     </div>`;
 }
 
+let managedAccessKeys = [];
+let managedAccessAccounts = [];
+let accessAuditOffset = 0;
+let accessAuditTotal = 0;
+
+function accessKeyMessage(text) { $('accessKeyMessage').textContent = text; }
+function accessTime(value) { return value ? new Date(value * 1000).toLocaleString() : '尚未使用'; }
+
+function clearAccessKeySecret() {
+  $('accessKeySecret').value = '';
+  $('accessKeySecret').type = 'password';
+  $('showAccessKeySecretBtn').textContent = '显示';
+  $('accessKeySecretPanel').hidden = true;
+}
+
+function renderAccessAccountChoices(selected = []) {
+  const all = $('accessKeyAllAccounts').checked;
+  $('accessKeyAccounts').innerHTML = managedAccessAccounts.length ? managedAccessAccounts.map(row =>
+    `<label class="checkbox-field"><input type="checkbox" data-access-account="${esc(row.account_key)}" ${selected.includes(row.account_key) ? 'checked' : ''} ${all ? 'disabled' : ''}><span>${row.name ? esc(row.name) + ' · ' : ''}${esc(row.account_id)} · ${esc(row.account_type)} · ${esc(row.bridge_id)}</span></label>`
+  ).join('') : '<p class="metric-note">尚无可授权账号，请先完成绑定。</p>';
+}
+
+function editAccessKey(key = null) {
+  clearAccessKeySecret();
+  $('accessKeyForm').reset();
+  $('accessKeyId').value = key?.id || '';
+  $('accessKeyName').value = key?.name || '';
+  $('accessKeyQuery').checked = key ? key.permissions.includes('query') : true;
+  $('accessKeyTrade').checked = key ? key.permissions.includes('trade') : false;
+  $('accessKeyAllAccounts').checked = !!key?.all_accounts;
+  $('accessKeyEnabled').checked = key ? key.enabled : true;
+  $('accessKeyPerMinute').value = key?.limits.requests_per_minute || 60;
+  $('accessKeyPerSecond').value = key?.limits.requests_per_second || 5;
+  $('accessKeyTrades').value = key?.limits.trades_per_minute || 10;
+  $('saveAccessKeyBtn').textContent = key ? '保存修改' : '创建 Key';
+  renderAccessAccountChoices(key?.account_keys || []);
+}
+
+async function refreshAccessKeys() {
+  const data = await api('/api/access-keys');
+  managedAccessKeys = data.items || [];
+  managedAccessAccounts = data.accounts || [];
+  clearAccessKeySecret();
+  const selected = [...document.querySelectorAll('[data-access-account]:checked')].map(input => input.dataset.accessAccount);
+  renderAccessAccountChoices(selected);
+  $('accessKeyRows').innerHTML = managedAccessKeys.length ? managedAccessKeys.map(key => {
+    const accounts = key.all_accounts ? '全部账号（含后续新增）' : key.account_keys.join('\n');
+    return `<tr><td><strong>${esc(key.name)}</strong><br><code>${esc(key.masked)}</code></td>
+      <td>${key.permissions.map(p => p === 'query' ? '查询' : '交易').join(' / ')}<div class="access-key-account-summary">${esc(accounts)}</div></td>
+      <td>${key.limits.requests_per_minute} 次/分钟<br>${key.limits.requests_per_second} 次/秒<br>交易 ${key.limits.trades_per_minute} 笔/分钟</td>
+      <td>${key.enabled ? '已启用' : '已停用'}<br>${esc(accessTime(key.last_used_at))}</td>
+      <td><div class="access-key-actions">${[['edit','编辑'],['reveal','查看 Key'],['toggle',key.enabled ? '停用' : '启用'],['audit','记录'],['delete','删除']].map(([action,label]) => `<button type="button" data-access-key-action="${action}" data-key-id="${esc(key.id)}">${label}</button>`).join('')}</div></td></tr>`;
+  }).join('') : '<tr><td colspan="5">尚未创建独立 Key，默认不会向 AI 开放交易。</td></tr>';
+  const filter = $('accessAuditKeyFilter');
+  const current = filter.value;
+  filter.innerHTML = '<option value="">全部 Key（含已删除）</option>' + managedAccessKeys.map(key => `<option value="${esc(key.id)}">${esc(key.name)}</option>`).join('');
+  if (current && !managedAccessKeys.some(key => key.id === current)) filter.add(new Option(`历史 Key ${current}`, current));
+  filter.value = current;
+}
+
+async function refreshAccessAudit(reset = false) {
+  if (reset) accessAuditOffset = 0;
+  const params = new URLSearchParams({key_id: $('accessAuditKeyFilter').value, offset: String(accessAuditOffset), limit: '30'});
+  const data = await api(`/api/access-keys/audit?${params}`);
+  accessAuditTotal = data.total || 0;
+  const labels = {succeeded: '接口成功', denied: '已拒绝', failed: '执行失败', pending: '待核查 / 执行中'};
+  $('accessAuditRows').innerHTML = data.items.length ? data.items.map(item => `<tr>
+    <td>${esc(accessTime(item.at))}<br>${esc(item.ip)}</td><td>${esc(item.key_name)}<br><code>${esc(item.key_id)}</code><div class="access-key-account-summary">${esc(item.accounts.join('\n') || '—')}</div></td>
+    <td>${esc(item.action)}<br><code>${esc(item.method)} ${esc(item.path)}</code></td>
+    <td>${esc(labels[item.outcome] || item.outcome)} · ${esc(String(item.status || '—'))}<br>${esc(item.code || '')}
+    <details><summary>参数与结果</summary><pre>${esc(JSON.stringify({parameters:item.parameters, result:item.result, completed_at:item.completed_at}, null, 2))}</pre></details></td></tr>`).join('') : '<tr><td colspan="4">暂无审计记录。</td></tr>';
+  $('accessAuditStatus').textContent = `共 ${accessAuditTotal} 条，本页 ${accessAuditTotal ? accessAuditOffset + 1 : 0}–${Math.min(accessAuditOffset + data.items.length, accessAuditTotal)}`;
+  $('previousAccessAuditBtn').disabled = accessAuditOffset === 0;
+  $('nextAccessAuditBtn').disabled = accessAuditOffset + 30 >= accessAuditTotal;
+}
+
+async function saveManagedAccessKey(event) {
+  event.preventDefault();
+  const permissions = [];
+  if ($('accessKeyQuery').checked) permissions.push('query');
+  if ($('accessKeyTrade').checked) permissions.push('trade');
+  const accounts = [...document.querySelectorAll('[data-access-account]:checked')].map(input => input.dataset.accessAccount);
+  if (!permissions.length) return accessKeyMessage('请至少选择查询或交易权限。');
+  if (!$('accessKeyAllAccounts').checked && !accounts.length) return accessKeyMessage('请选择可访问账号，或明确授权全部账号。');
+  const body = {id: $('accessKeyId').value, name: $('accessKeyName').value.trim(), permissions,
+    account_keys: accounts, all_accounts: $('accessKeyAllAccounts').checked, enabled: $('accessKeyEnabled').checked,
+    limits: {requests_per_minute: Number($('accessKeyPerMinute').value), requests_per_second: Number($('accessKeyPerSecond').value), trades_per_minute: Number($('accessKeyTrades').value)}};
+  if (!body.name) return accessKeyMessage('请填写 Key 名称。');
+  const button = $('saveAccessKeyBtn');
+  button.disabled = true;
+  try {
+    await api('/api/access-keys', {method:'POST', body:JSON.stringify(body)});
+    editAccessKey();
+    await refreshAccessKeys();
+    await refreshAccessAudit(true);
+    accessKeyMessage(body.id ? 'Key 配置已保存，即刻生效。' : 'Key 已创建。点击列表中的“查看 Key”获取密钥。');
+  } catch (error) { accessKeyMessage(error.message); }
+  finally { button.disabled = false; }
+}
+
+async function handleManagedAccessKey(event) {
+  const button = event.target.closest('[data-access-key-action]');
+  if (!button) return;
+  const key = managedAccessKeys.find(item => item.id === button.dataset.keyId);
+  if (!key) return;
+  const action = button.dataset.accessKeyAction;
+  button.disabled = true;
+  try {
+    if (action === 'edit') {
+      editAccessKey(key);
+      $('accessKeyName').focus();
+      accessKeyMessage(`正在编辑：${key.name}`);
+    } else if (action === 'reveal') {
+      clearAccessKeySecret();
+      const data = await api('/api/access-keys/reveal', {method:'POST', body:JSON.stringify({id:key.id})});
+      $('accessKeySecret').value = data.api_key;
+      $('accessKeySecretLabel').textContent = `${key.name} · Key 明文`;
+      $('accessKeySecretPanel').hidden = false;
+      $('accessKeySecretPanel').scrollIntoView({block:'nearest'});
+      await refreshAccessAudit(true);
+    } else if (action === 'audit') {
+      $('accessAuditKeyFilter').value = key.id;
+      await refreshAccessAudit(true);
+      $('accessAuditStatus').scrollIntoView({block:'nearest'});
+    } else {
+      if (action === 'delete' && !window.confirm(`删除“${key.name}”后，此 Key 将立即失效，操作历史保留。确定删除？`)) return;
+      const path = action === 'delete' ? '/api/access-keys/delete' : '/api/access-keys';
+      const body = action === 'delete' ? {id:key.id} : {id:key.id, enabled:!key.enabled};
+      await api(path, {method:'POST', body:JSON.stringify(body)});
+      if ($('accessKeyId').value === key.id) editAccessKey();
+      await refreshAccessKeys();
+      await refreshAccessAudit(true);
+      accessKeyMessage(action === 'delete' ? 'Key 已删除，审计记录已保留。' : 'Key 状态已更新。');
+    }
+  } catch (error) { accessKeyMessage(error.message); }
+  finally { button.disabled = false; }
+}
+
+function wireManagedAccessKeys() {
+  $('openAiAccessKeys').addEventListener('click', () => {
+    if (state.tutorialReaderSession) closeTutorialReader();
+    setView('settings');
+    setSettingsTab('api-key');
+  });
+  $('accessKeyForm').addEventListener('submit', saveManagedAccessKey);
+  $('resetAccessKeyBtn').addEventListener('click', () => editAccessKey());
+  $('refreshAccessKeysBtn').addEventListener('click', () => refreshAccessKeys().catch(error => accessKeyMessage(error.message)));
+  $('accessKeyRows').addEventListener('click', handleManagedAccessKey);
+  $('accessKeyAllAccounts').addEventListener('change', () => {
+    document.querySelectorAll('[data-access-account]').forEach(input => { input.disabled = $('accessKeyAllAccounts').checked; });
+  });
+  $('showAccessKeySecretBtn').addEventListener('click', () => {
+    const show = $('accessKeySecret').type === 'password';
+    $('accessKeySecret').type = show ? 'text' : 'password';
+    $('showAccessKeySecretBtn').textContent = show ? '隐藏' : '显示';
+  });
+  $('copyAccessKeySecretBtn').addEventListener('click', async () => {
+    try { await copyTextWithFallback($('accessKeySecret').value); accessKeyMessage('Key 已复制。'); }
+    catch { accessKeyMessage('复制失败，请手动复制。'); }
+  });
+  $('hideAccessKeySecretBtn').addEventListener('click', clearAccessKeySecret);
+  $('refreshAccessAuditBtn').addEventListener('click', () => refreshAccessAudit(true).catch(error => accessKeyMessage(error.message)));
+  $('accessAuditKeyFilter').addEventListener('change', () => refreshAccessAudit(true).catch(error => accessKeyMessage(error.message)));
+  $('previousAccessAuditBtn').addEventListener('click', () => { accessAuditOffset = Math.max(0, accessAuditOffset - 30); refreshAccessAudit().catch(error => accessKeyMessage(error.message)); });
+  $('nextAccessAuditBtn').addEventListener('click', () => { accessAuditOffset += 30; refreshAccessAudit().catch(error => accessKeyMessage(error.message)); });
+}
+
 function renderApiKeyStatus(info) {
   const input = $('apiKeyInput');
   const status = $('apiKeyStatus');
@@ -5507,7 +5684,7 @@ function renderTransport(info) {
 }
 
 function syncTopStatusDisplay() {
-  const universal = isCtypesTransportMode(activeAccountMode());
+  const universal = isCtypesTransportMode(activeAccountMode()) && !isAdvancedTransportMode(activeAccountMode());
   ['lttxStatus', 'normalStatus', 'tradeStatus'].forEach((id) => {
     const node = $(id);
     if (node) node.style.display = universal && id !== 'lttxStatus' ? 'none' : '';
@@ -5524,7 +5701,9 @@ function syncTransportChannelControls() {
   [query, trade].forEach((node) => {
     if (!node) return;
     node.disabled = universal || lttx;
-    node.title = universal
+    node.title = isAdvancedTransportMode(mode)
+      ? '高级模式行情与回调走普通端，下单、撤单和账户查询走交易端'
+      : universal
       ? `${modeLabel}由 ctypes 单桥自动路由`
       : '高级模式交易和账户查询固定走交易端；下载和行情订阅固定走普通 QMT';
   });
@@ -5968,7 +6147,7 @@ async function submitSetupForm(event) {
     if (input) input.focus();
     return;
   }
-  if (normalizeTransportMode(body.mode) === 'lttx') {
+  if (isAdvancedTransportMode(body.mode)) {
     if (!body.qmt_dir || !body.qmt_trade_dir) {
       if (status) status.textContent = '请填写两个 QMT 目录';
       const input = body.qmt_dir ? $('setupQmtTradeDir') : $('setupQmtDir');
@@ -5988,7 +6167,7 @@ async function submitSetupForm(event) {
   try {
     const processTargets = [
       { label: 'QMT', path: body.qmt_dir },
-      ...(normalizeTransportMode(body.mode) === 'lttx'
+      ...(isAdvancedTransportMode(body.mode)
         ? [{ label: '交易端 QMT', path: body.qmt_trade_dir }] : []),
     ].filter((item) => item.path);
     if (status) status.textContent = '正在检测 QMT...';
@@ -8701,6 +8880,7 @@ function scheduleQuoteRender(force = false) {
 
 let viewNavigation = 0;
 function setView(view, monitorAuthorized = false) {
+  if (view !== 'settings') clearAccessKeySecret();
   // The API test workbench replaced the old documentation shortcut. Redirect
   // persisted links and bookmarks so existing sessions land on the new entry.
   if (view === 'docs') view = 'api';
@@ -9993,6 +10173,7 @@ async function saveCurrentAccountPair() {
   const qmtAutoLogin = qmtAutoLoginSettings.enabled;
   const qmtLoginError = qmtLoginValidationError('binding', qmtAutoLoginSettings, qmtDir);
   if (qmtLoginError) {
+    revealBindingControl($('bindingQmtAutoLogin'));
     setBindingNotice(qmtLoginError, 'error', { autoHide: false });
     return;
   }
@@ -10014,7 +10195,7 @@ async function saveCurrentAccountPair() {
     log('账号为空，无法保存配对');
     return;
   }
-  if (enabled && normalizeTransportMode(mode) === 'lttx') {
+  if (enabled && isAdvancedTransportMode(mode)) {
     if (!qmtDir || !qmtTradeDir) {
       setBindingNotice('高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error', { autoHide: false });
       return;
@@ -10233,6 +10414,7 @@ function readBindingWebhookSettings() {
   const secret = $('bindingWebhookSecret').value.trim();
   if (!url && (panel.dataset.urlConfigured !== 'true' || provider !== panel.dataset.provider)) {
     setBindingNotice('请填写 Webhook 推送地址；更换平台时需重新填写。', 'error', { autoHide: false });
+    revealBindingControl($('bindingWebhookUrl'));
     $('bindingWebhookUrl').focus();
     return null;
   }
@@ -10241,6 +10423,7 @@ function readBindingWebhookSettings() {
       const parsed = new URL(url);
       if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.hash || /\s/.test(url)) throw new Error();
     } catch (_) {
+      revealBindingControl($('bindingWebhookUrl'));
       setBindingNotice('Webhook 地址格式无效，请填写完整的 HTTP(S) 地址。', 'error', { autoHide: false });
       return null;
     }
@@ -10345,12 +10528,14 @@ function readBindingQmtProxySettings() {
   if (enabled && (!host || !Number.isInteger(port) || port < 1 || port > 65535)) {
     setBindingQmtProxyOpen(true);
     setBindingNotice('启用代理时请填写有效的代理主机和端口。', 'error', { autoHide: false });
+    revealBindingControl($('bindingQmtProxyHost'));
     $('bindingQmtProxyHost')?.focus();
     return null;
   }
   if (enabled && type === 'ssh' && (!Number.isInteger(localPort) || localPort < 1 || localPort > 65535)) {
     setBindingQmtProxyOpen(true);
     setBindingNotice('SSH 本地 SOCKS 端口必须是 1–65535 的整数。', 'error', { autoHide: false });
+    revealBindingControl($('bindingQmtProxyLocalPort'));
     $('bindingQmtProxyLocalPort')?.focus();
     return null;
   }
@@ -10457,7 +10642,229 @@ function fillBindingForm(values = {}) {
   }
 }
 
+// Keep the original controls in the same form so saving and editing retain all values.
+function bindingRequiredFields() {
+  const form = $('bindingForm');
+  const enabled = $('bindingEnabled').checked;
+  const autoLogin = $('bindingQmtAutoLogin').checked;
+  const credentials = autoLogin && qmtAutoFillCredentials('binding');
+  const strategy = enabled && !!$('bindingStrategyEnabled')?.checked;
+  const market = strategy && $('bindingMarketRoutingEnabled').checked;
+  const proxy = $('bindingQmtProxyEnabled').checked;
+  const webhook = $('bindingWebhookEnabled').checked;
+  const webhookPanel = $('bindingWebhookSettings');
+  const savedWebhook = webhookPanel.dataset.urlConfigured === 'true'
+    && $('bindingWebhookProvider').value === webhookPanel.dataset.provider;
+  return {
+    bindingAccountId: true,
+    bindingQmtDir: autoLogin || (enabled && isAdvancedTransportMode(form.mode.value)) || (strategy && !market),
+    bindingQmtTradeDir: enabled && isAdvancedTransportMode(form.mode.value),
+    bindingQmtLoginAccount: credentials,
+    bindingQmtLoginPassword: credentials && !canReuseQmtLoginPassword('binding',
+      $('bindingQmtLoginAccount').value.trim(), $('bindingQmtDir').value),
+    bindingMarketShQmtDir: market,
+    bindingMarketSzQmtDir: market,
+    bindingQmtTimerInterval: form.mode.value !== 'lttx',
+    bindingQmtProxyHost: proxy,
+    bindingQmtProxyPort: proxy,
+    bindingQmtProxyLocalPort: proxy && $('bindingQmtProxyType').value === 'ssh',
+    bindingWebhookUrl: webhook && !savedWebhook,
+    bindingMacAddress: $('bindingInjectMac').checked,
+  };
+}
+
+function syncBindingFieldRequirements() {
+  const form = $('bindingForm');
+  if (!form) return;
+  const requiredFields = bindingRequiredFields();
+  form.querySelectorAll('.field').forEach((field) => {
+    const control = field.querySelector('input:not([type=checkbox]), select, textarea');
+    const label = field.querySelector(':scope > span, :scope > label');
+    if (!control || !label) return;
+    const required = !control.disabled && (requiredFields[control.id] ?? (control.tagName === 'SELECT'));
+    control.required = required;
+    control.setAttribute('aria-required', String(required));
+    let badge = label.querySelector('.binding-field-requirement');
+    if (!badge) {
+      badge = document.createElement('small');
+      badge.className = 'binding-field-requirement';
+      label.append(badge);
+    }
+    badge.textContent = required ? '必填' : '选填';
+    badge.classList.toggle('is-required', required);
+  });
+}
+
+function validateBindingFieldsAfterEdit() {
+  $('bindingForm').querySelectorAll('[aria-invalid="true"]').forEach(control => {
+    if (control.disabled || ((!control.required || control.value.trim()) && control.validity.valid)) {
+      control.removeAttribute('aria-invalid');
+      const hint = control.closest('.field')?.querySelector('.binding-field-error');
+      if (hint) hint.textContent = '';
+    }
+  });
+}
+
+function validateBindingFields() {
+  syncBindingFieldRequirements();
+  const form = $('bindingForm');
+  const errors = [];
+  form.querySelectorAll('input:not([type=checkbox]), select, textarea').forEach((control) => {
+    if (control.disabled) return;
+    const missing = control.required && !control.value.trim();
+    const invalid = missing || !control.validity.valid;
+    control.setAttribute('aria-invalid', String(invalid));
+    const field = control.closest('.field');
+    let hint = field?.querySelector('.binding-field-error');
+    const label = field?.querySelector(':scope > span, :scope > label');
+    const name = label ? Array.from(label.childNodes).filter(node => node.nodeType === Node.TEXT_NODE)
+      .map(node => node.textContent).join('').replace(/（.*?）/g, '').trim() : '此项';
+    const message = missing ? `请填写${name}` : `请检查${name}的格式或取值范围`;
+    if (invalid && field) {
+      if (!hint) {
+        hint = document.createElement('small');
+        hint.className = 'binding-field-error';
+        hint.id = `${control.id}-error`;
+        field.append(hint);
+        const describedBy = control.getAttribute('aria-describedby') || '';
+        control.setAttribute('aria-describedby', `${describedBy} ${hint.id}`.trim());
+      }
+      hint.textContent = message;
+    } else if (hint) hint.textContent = '';
+    if (invalid) errors.push({ control, message });
+  });
+  if ($('bindingEnabled').checked && isAdvancedTransportMode(form.mode.value)
+      && form.qmt_dir.value.trim() && form.qmt_trade_dir.value.trim()
+      && qmtDirsAreSame(form.qmt_dir.value, form.qmt_trade_dir.value)) {
+    form.qmt_trade_dir.setAttribute('aria-invalid', 'true');
+    errors.push({ control: form.qmt_trade_dir, message: '普通端和交易端必须选择不同的 QMT 安装目录' });
+  }
+  if (form.mode.value === 'lite_advanced' && $('bindingMarketRoutingEnabled').checked) {
+    errors.push({ control: $('bindingMarketRoutingEnabled'), message: 'ctypes 高级模式使用两个 QMT，请关闭同账号独立市场路由' });
+  }
+  if (!errors.length) return true;
+  setBindingNotice(`有 ${errors.length} 项需要完善：${errors.map(error => error.message).join('；')}。`, 'error', { autoHide: false });
+  revealBindingControl(errors[0].control);
+  errors[0].control.scrollIntoView({ block: 'center' });
+  errors[0].control.focus({ preventScroll: true });
+  return false;
+}
+
+function initBindingNavigation() {
+  const form = $('bindingForm');
+  if (!form || $('bindingNavigation')) return;
+  const children = Array.from(form.children);
+  const groups = [
+    ['account', '账号与目录', '填写资金账号并选择对应的 QMT 目录。'],
+    ['environment', '运行环境', '检测并安装 QMT 所需的 Python 运行库。'],
+    ['login', '启动与登录', '设置 QMT 启动、登录方式和交易日重启时间。'],
+    ['market', '独立市场', '仅在上海、深圳分别使用不同 QMT 时配置。'],
+    ['proxy', 'QMT 网络代理', '按需为此绑定配置网络代理。'],
+    ['runtime', '调度与日志', '调整调度间隔，或在排查问题时开启桥接日志。'],
+    ['webhook', '消息推送', '配置此资金账号的默认消息推送。'],
+    ['other', '其他设置', '虚拟机、MAC 与共享行情等辅助设置。'],
+  ];
+  const nav = document.createElement('nav');
+  nav.id = 'bindingNavigation';
+  nav.className = 'binding-navigation';
+  nav.setAttribute('aria-label', '绑定配置');
+  const main = document.createElement('div');
+  main.className = 'binding-workspace';
+  const extra = document.createElement('details');
+  extra.className = 'binding-navigation-extra';
+  const summary = document.createElement('summary');
+  summary.textContent = '更多设置';
+  extra.append(summary);
+  const panels = {};
+  groups.forEach(([key, title, description], index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.bindingPage = key;
+    button.textContent = index < 3 ? `${index + 1}. ${title}` : title;
+    button.setAttribute('aria-controls', `bindingPage-${key}`);
+    button.addEventListener('click', () => selectBindingPage(key));
+    (index < 3 ? nav : extra).append(button);
+    const panel = document.createElement('section');
+    panel.id = `bindingPage-${key}`;
+    panel.className = 'binding-page';
+    panel.hidden = true;
+    const heading = document.createElement('header');
+    heading.className = 'binding-page-heading';
+    const label = document.createElement('h3');
+    label.id = `bindingPageTitle-${key}`;
+    label.textContent = title;
+    const hint = document.createElement('p');
+    hint.textContent = description;
+    heading.append(label, hint);
+    panel.setAttribute('aria-labelledby', label.id);
+    panel.append(heading);
+    panels[key] = panel;
+    main.append(panel);
+  });
+  nav.append(extra);
+  children.forEach((child) => {
+    if (child.id === 'bindingSaveStatus' || child.classList.contains('binding-dialog-actions')) return;
+    let key = 'account';
+    if (child.id === 'bindingPythonRuntimePanel') key = 'environment';
+    else if (child.id.startsWith('bindingQmtAutoLogin') || child.id === 'bindingQmtDependencies'
+      || child.querySelector('#bindingQmtAutoLogin') || child.classList.contains('qmt-login-prerequisite')) key = 'login';
+    else if (child.id === 'bindingQmtProxySettings') key = 'proxy';
+    else if (child.id === 'bindingRuntimeSettings') key = 'runtime';
+    else if (child.id === 'bindingWebhookSettings') key = 'webhook';
+    else if (child.classList.contains('market-routing-panel')) { key = 'market'; child.open = true; }
+    else if (child.id === 'bindingVmSettings' || child.querySelector('#bindingDataProvider')) key = 'other';
+    else if (child.id === 'bindingStrategySettings' || child.classList.contains('binding-script-preview')) key = 'environment';
+    panels[key].append(child);
+  });
+  form.prepend(nav, main);
+  const directoryField = $('bindingQmtDir').closest('.field');
+  panels.account.insertBefore($('bindingMode').closest('.field'), directoryField);
+  panels.account.insertBefore($('bindingAdvancedTransportField'), directoryField);
+  form.classList.add('binding-form-navigated');
+  form.noValidate = true;
+  const updateRequirements = () => {
+    syncBindingFieldRequirements();
+    if (form.dataset.validationAttempted === 'true') validateBindingFieldsAfterEdit();
+  };
+  form.addEventListener('input', updateRequirements);
+  form.addEventListener('change', updateRequirements);
+  form.addEventListener('invalid', (event) => revealBindingControl(event.target), true);
+  selectBindingPage('account');
+}
+
+function selectBindingPage(key) {
+  document.querySelectorAll('#bindingForm .binding-page').forEach((panel) => {
+    panel.hidden = panel.id !== `bindingPage-${key}`;
+  });
+  document.querySelectorAll('#bindingNavigation button').forEach((button) => {
+    const selected = button.dataset.bindingPage === key;
+    if (selected) {
+      button.setAttribute('aria-current', 'step');
+      const extra = button.closest('details');
+      if (extra) extra.open = true;
+    } else button.removeAttribute('aria-current');
+  });
+}
+
+function revealBindingControl(control) {
+  const panel = control?.closest('.binding-page');
+  if (panel) selectBindingPage(panel.id.replace('bindingPage-', ''));
+  if (control?.closest('#bindingQmtProxyBody')) {
+    syncBindingQmtProxySettings();
+    setBindingQmtProxyOpen(true);
+  }
+  if (control?.closest('#bindingVmSettingsBody')) setBindingVmSettingsOpen(true);
+}
+
 function openBindingDialog(options = {}) {
+  initBindingNavigation();
+  delete $('bindingForm').dataset.validationAttempted;
+  $('bindingForm').querySelectorAll('[aria-invalid]').forEach(control => control.removeAttribute('aria-invalid'));
+  $('bindingForm').querySelectorAll('.binding-field-error').forEach(hint => { hint.textContent = ''; });
+  window.setTimeout(syncBindingFieldRequirements, 0);
+  selectBindingPage('account');
+  const extraSettings = document.querySelector('#bindingNavigation details');
+  if (extraSettings) extraSettings.open = false;
   const overlay = $('bindingDialogOverlay');
   const form = $('bindingForm');
   if (!overlay || !form) return;
@@ -10811,16 +11218,75 @@ async function ensureBindingQmtStopped(targets, options = {}) {
   })));
 }
 
-function bindingPythonRuntimeFormValues() {
+function bindingPythonRuntimeTargets() {
   const form = $('bindingForm');
-  const qmtDir = form && form.qmt_dir ? qmtDeploymentPath(form.qmt_dir.value) : '';
-  const accountId = form && form.account_id ? form.account_id.value.trim() : '';
-  return { qmtDir, accountId };
+  const accountId = form?.account_id?.value.trim() || '';
+  const targets = [{ role: 'normal', label: '普通端', qmtDir: qmtDeploymentPath(form?.qmt_dir?.value || ''), accountId }];
+  if (isAdvancedTransportMode(form?.mode?.value)) {
+    targets.push({ role: 'trade', label: '交易端', qmtDir: qmtDeploymentPath(form?.qmt_trade_dir?.value || ''), accountId });
+  }
+  return targets;
+}
+
+function bindingPythonRuntimeTargetKey(target) {
+  return JSON.stringify([target.qmtDir.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase(), target.accountId]);
+}
+
+function storeBindingPythonRuntimeContext() {
+  if (!state.bindingPythonRuntimeContext) return;
+  state.bindingPythonRuntimeContexts[state.bindingPythonRuntimeContext] = {
+    status: state.bindingPythonRuntime, choice: state.bindingPythonRuntimeChoice,
+    dirty: state.bindingPythonRuntimeChoiceDirty, deferred: state.bindingPythonRuntimeDeferred,
+    error: state.bindingPythonRuntimeError,
+  };
+}
+
+function restoreBindingPythonRuntimeContext(context) {
+  storeBindingPythonRuntimeContext();
+  const cached = state.bindingPythonRuntimeContexts[context] || {};
+  state.bindingPythonRuntimeContext = context;
+  state.bindingPythonRuntime = cached.status || null;
+  state.bindingPythonRuntimeChoice = cached.choice || '';
+  state.bindingPythonRuntimeChoiceDirty = !!cached.dirty;
+  state.bindingPythonRuntimeDeferred = !!cached.deferred;
+  state.bindingPythonRuntimeError = cached.error || null;
+}
+
+function bindingPythonRuntimeFormValues() {
+  const targets = bindingPythonRuntimeTargets();
+  const role = $('bindingPythonRuntimeTarget')?.value;
+  return targets.find(target => target.role === role) || targets[0];
+}
+
+function renderBindingPythonRuntimeTargets() {
+  const targets = bindingPythonRuntimeTargets();
+  const selector = $('bindingPythonRuntimeTarget');
+  $('bindingPythonRuntimeTargetField')?.classList.toggle('hidden', targets.length < 2);
+  if (selector) selector.disabled = !!state.bindingPythonRuntimeJobId;
+  const summary = $('bindingPythonRuntimeTargets');
+  if (!summary) return;
+  summary.hidden = targets.length < 2;
+  summary.replaceChildren();
+  targets.forEach(target => {
+    const context = bindingPythonRuntimeTargetKey(target);
+    const cached = context === state.bindingPythonRuntimeContext
+      ? { status: state.bindingPythonRuntime, error: state.bindingPythonRuntimeError, dirty: state.bindingPythonRuntimeChoiceDirty }
+      : state.bindingPythonRuntimeContexts[context] || {};
+    const binding = bindingPythonRuntimeBinding(cached.status);
+    const installed = Object.values(binding.runtimes || {}).some(runtime => runtime.installed);
+    const message = state.bindingPythonRuntimeJobId && context === state.bindingPythonRuntimeJobContext ? '正在下载或配置运行库'
+      : !target.qmtDir ? '未填写目录' : cached.error ? '检测失败，请选择此端重试'
+      : cached.dirty ? '所选执行器尚未应用'
+      : !cached.status ? '待检测' : binding.state === 'ready' && binding.runtimes?.[binding.selected_runtime]?.installed
+        ? '已就绪' : installed ? '运行库已安装，需确认执行器配置' : '运行库未安装';
+    const row = document.createElement('div');
+    row.textContent = `${target.label}：${message} · ${target.qmtDir || '请填写目录'}`;
+    summary.append(row);
+  });
 }
 
 function bindingPythonRuntimeContextKey() {
-  const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
-  return JSON.stringify([qmtDir.replace(/\\/g, '/').replace(/\/$/, '').toLowerCase(), accountId]);
+  return bindingPythonRuntimeTargetKey(bindingPythonRuntimeFormValues());
 }
 
 function bindingPythonRuntimeName(runtime) {
@@ -10891,6 +11357,8 @@ function renderBindingPythonRuntimeProgress() {
 }
 
 function renderBindingPythonRuntimeStatus(status = state.bindingPythonRuntime, error = null) {
+  if (state.bindingPythonRuntimeContext === bindingPythonRuntimeContextKey()) storeBindingPythonRuntimeContext();
+  renderBindingPythonRuntimeTargets();
   const statusNode = $('bindingPythonRuntimeStatus');
   const hint = $('bindingPythonRuntimeHint');
   const button = $('bindingPythonRuntimeDownloadBtn');
@@ -11081,11 +11549,7 @@ async function refreshBindingPythonRuntime(options = {}) {
   const { qmtDir, accountId } = bindingPythonRuntimeFormValues();
   const context = bindingPythonRuntimeContextKey();
   if (state.bindingPythonRuntimeContext !== context) {
-    state.bindingPythonRuntime = null;
-    state.bindingPythonRuntimeChoice = '';
-    state.bindingPythonRuntimeChoiceDirty = false;
-    state.bindingPythonRuntimeDeferred = false;
-    state.bindingPythonRuntimeContext = context;
+    restoreBindingPythonRuntimeContext(context);
   }
   state.bindingPythonRuntimeError = null;
   if (!qmtDir) {
@@ -11099,9 +11563,30 @@ async function refreshBindingPythonRuntime(options = {}) {
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), 15000);
   try {
-    const query = new URLSearchParams({ qmt_dir: qmtDir, account_id: accountId, runtime: 'py36', refresh: '0' });
-    const data = await api(`/api/qmt/python-runtime?${query.toString()}`, { signal: controller.signal });
+    const targets = bindingPythonRuntimeTargets().filter(target => target.qmtDir);
+    const reports = await Promise.allSettled(targets.map(target => {
+      const query = new URLSearchParams({ qmt_dir: target.qmtDir, account_id: target.accountId, runtime: 'py36', refresh: '0' });
+      return api(`/api/qmt/python-runtime?${query.toString()}`, { signal: controller.signal });
+    }));
     if (token !== state.bindingPythonRuntimeCheckToken || context !== bindingPythonRuntimeContextKey()) return null;
+    let data, selectedError;
+    reports.forEach((report, index) => {
+      const key = bindingPythonRuntimeTargetKey(targets[index]);
+      const cached = state.bindingPythonRuntimeContexts[key] || {};
+      state.bindingPythonRuntimeContexts[key] = { ...cached,
+        status: report.status === 'fulfilled' ? report.value : null,
+        error: report.status === 'rejected' ? report.reason : null };
+      if (report.status === 'fulfilled') {
+        const detected = bindingPythonRuntimeBinding(report.value);
+        if (detected.state === 'ready' && detected.selected_runtime === cached.choice
+            && detected.runtimes?.[cached.choice]?.installed) state.bindingPythonRuntimeContexts[key].dirty = false;
+      }
+      if (key === context) {
+        if (report.status === 'fulfilled') data = report.value;
+        else selectedError = report.reason;
+      }
+    });
+    if (selectedError) throw selectedError;
     state.bindingPythonRuntime = data;
     const binding = bindingPythonRuntimeBinding(data);
     const available = binding.py312_supported ? ['py36', 'py312'] : ['py36'];
@@ -11138,12 +11623,7 @@ function scheduleBindingPythonRuntimeCheck(delay = 350) {
   state.bindingPythonRuntimeCheckToken += 1;
   const context = bindingPythonRuntimeContextKey();
   if (state.bindingPythonRuntimeContext !== context) {
-    state.bindingPythonRuntime = null;
-    state.bindingPythonRuntimeChoice = '';
-    state.bindingPythonRuntimeChoiceDirty = false;
-    state.bindingPythonRuntimeDeferred = false;
-    state.bindingPythonRuntimeError = null;
-    state.bindingPythonRuntimeContext = context;
+    restoreBindingPythonRuntimeContext(context);
   }
   state.bindingPythonRuntimeChecking = !!bindingPythonRuntimeFormValues().qmtDir;
   renderBindingPythonRuntimeStatus();
@@ -11204,6 +11684,8 @@ async function downloadBindingPythonRuntime() {
 
 async function submitBindingForm(event) {
   event.preventDefault();
+  event.currentTarget.dataset.validationAttempted = 'true';
+  if (!validateBindingFields()) return;
   const notificationWebhook = readBindingWebhookSettings();
   if (!notificationWebhook) return;
   const qmtProxy = readBindingQmtProxySettings();
@@ -11218,22 +11700,30 @@ async function submitBindingForm(event) {
   const qmtTradeDir = form.qmt_trade_dir ? qmtDeploymentPath(form.qmt_trade_dir.value) : '';
   const mode = form.mode ? form.mode.value : DEFAULT_BINDING_MODE;
   const qmtRuntime = readBindingRuntimeSettings(form);
-  if (state.bindingPythonRuntimeJobId && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
+  const runtimeTargets = bindingPythonRuntimeTargets();
+  const runtimeJobInBinding = runtimeTargets.some(target => bindingPythonRuntimeTargetKey(target) === state.bindingPythonRuntimeJobContext);
+  if (state.bindingPythonRuntimeJobId && runtimeJobInBinding) {
     await refreshBindingPythonRuntimeJob(state.bindingPythonRuntimeJobId);
     if (!state.bindingPythonRuntimeJobId) await refreshBindingPythonRuntime();
   }
-  if (state.bindingPythonRuntimeJobId && state.bindingPythonRuntimeJobContext === bindingPythonRuntimeContextKey()) {
+  if (state.bindingPythonRuntimeJobId && runtimeJobInBinding) {
     setBindingNotice('Python 执行器正在配置，请等待任务完成后再保存绑定。', 'warn', { autoHide: false });
     return;
   }
-  if (state.bindingPythonRuntimeChoiceDirty) {
+  storeBindingPythonRuntimeContext();
+  const pendingRuntime = runtimeTargets.find(target => state.bindingPythonRuntimeContexts[bindingPythonRuntimeTargetKey(target)]?.dirty);
+  if (pendingRuntime) {
+    $('bindingPythonRuntimeTarget').value = pendingRuntime.role;
+    restoreBindingPythonRuntimeContext(bindingPythonRuntimeTargetKey(pendingRuntime));
+    renderBindingPythonRuntimeStatus();
     setBindingNotice('所选 Python 执行器尚未应用，请先点击运行库区域的下载或切换按钮，完成后再保存绑定。', 'warn', { autoHide: false });
+    revealBindingControl($('bindingPythonRuntimePanel'));
     $('bindingPythonRuntimePanel')?.scrollIntoView({ block: 'center' });
     return;
   }
   if (normalizeTransportMode(mode) !== 'lttx' && !qmtRuntime) {
     setBindingNotice('QMT 调度间隔必须是 1–1000 ms 的整数。', 'error', { autoHide: false });
-    form.qmt_timer_interval_ms.focus();
+    revealBindingControl(form.qmt_timer_interval_ms); form.qmt_timer_interval_ms.focus();
     return;
   }
   const dataProvider = !!(form.data_provider && form.data_provider.checked);
@@ -11242,10 +11732,11 @@ async function submitBindingForm(event) {
   const qmtAutoLogin = qmtAutoLoginSettings.enabled;
   const qmtLoginError = qmtLoginValidationError('binding', qmtAutoLoginSettings, qmtDir);
   if (qmtLoginError) {
+    revealBindingControl($('bindingQmtAutoLogin'));
     setBindingNotice(qmtLoginError, 'error', { autoHide: false });
     return;
   }
-  if (enabled && normalizeTransportMode(mode) === 'lttx') {
+  if (enabled && isAdvancedTransportMode(mode)) {
     if (!qmtDir || !qmtTradeDir) {
       setBindingNotice('高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error', { autoHide: false });
       return;
@@ -11271,7 +11762,7 @@ async function submitBindingForm(event) {
   };
   if (!accountId) {
     setBindingNotice('请填写资金账号后再保存绑定。', 'error', { autoHide: false });
-    if (form.account_id) form.account_id.focus();
+    if (form.account_id) { revealBindingControl(form.account_id); form.account_id.focus(); }
     log('账号为空，无法保存绑定');
     return;
   }
@@ -11281,7 +11772,7 @@ async function submitBindingForm(event) {
     if (missingMarkets.length) {
       setBindingNotice(`自动导入策略需要填写 ${missingMarkets.join('/')} 市场的 QMT 目录；单个 QMT 请关闭同账号独立市场路由。`, 'error', { autoHide: false });
       const input = form[`market_${missingMarkets[0].toLowerCase()}_qmt_dir`];
-      if (input) input.focus();
+      if (input) { revealBindingControl(input); input.focus(); }
       return;
     }
   }
@@ -11513,7 +12004,9 @@ async function savePythonEnvironmentFromUi(event) {
     state.pythonEnvironment = data.python_environment || null;
     state.setup = data.setup || state.setup;
     renderPythonEnvironmentSettings(state.pythonEnvironment);
-    if (status) status.textContent = '已保存；新启动的子服务将使用该环境。';
+    if (status) status.textContent = mode === 'custom'
+      ? '指定环境的 SDK 已安装；程序继续使用自带的 Python。'
+      : '已保存；程序使用自带的 Python。';
     log('Python 环境设置已保存', { mode, configured: !!executable });
   } catch (error) {
     if (status) status.textContent = `保存失败：${error.message}`;
@@ -11709,7 +12202,7 @@ function bindingStatusRowHtml(item, status, error, withVerify, options = {}) {
   const marketStatusText = configuredMarketLines.map((row) => row.text).join(' / ');
   const qmtDirText = config && config.qmt_dir ? config.qmt_dir : '未填写（自动更新不可用）';
   const qmtTradeDirText = config && config.qmt_trade_dir ? config.qmt_trade_dir : '';
-  const qmtDisplayText = normalizeTransportMode(preferred) === 'lttx'
+  const qmtDisplayText = isAdvancedTransportMode(preferred)
     ? `${qmtDirText} / 极速端：${qmtTradeDirText || '未填写'}`
     : qmtDirText;
   const title = !enabled ? '该绑定账号已禁用' : (error ? error.message : (stale ? '上次状态，正在后台刷新' : ''));
@@ -12248,6 +12741,9 @@ async function loadConfig() {
 async function startAuthenticatedApp() {
   if (state.appStarted) return;
   state.appStarted = true;
+  if (state.currentView === 'settings' && state.settingsTab === 'api-key') {
+    refreshAccessKeys().then(() => refreshAccessAudit(true)).catch(error => accessKeyMessage(error.message));
+  }
   renderApiDocs();
   refreshBindingStatuses().catch((error) => log('绑定状态初始化失败', { error: error.message }));
   refreshVisibleBindings();
@@ -14389,7 +14885,7 @@ function onboardingSavedQmtTradeDir(config = onboardingCurrentConfig()) {
   const selectedTradeDir = accountConfigQmtTradeDir(selected && selected.config || {});
   if (selectedTradeDir) return selectedTradeDir;
   const advanced = entries.filter((item) => (
-    normalizeTransportMode(item.config && item.config.mode) === 'lttx'
+    isAdvancedTransportMode(item.config && item.config.mode)
     && accountConfigQmtTradeDir(item.config)
   ));
   return advanced.length === 1 ? accountConfigQmtTradeDir(advanced[0].config) : '';
@@ -14398,7 +14894,7 @@ function onboardingSavedQmtTradeDir(config = onboardingCurrentConfig()) {
 function fillOnboardingQmtTradeDirFromSaved() {
   const input = $('onboardingQmtTradeDir');
   const modeInput = $('onboardingMode');
-  if (!input || normalizeTransportMode(modeInput && modeInput.value) !== 'lttx') return false;
+  if (!input || !isAdvancedTransportMode(modeInput && modeInput.value)) return false;
   if (input.value.trim()) return false;
   const saved = onboardingSavedQmtTradeDir();
   if (!saved) return false;
@@ -14503,7 +14999,7 @@ function onboardingBridgeReadiness(data, values = currentOnboardingBindingValues
   const modeStatus = mode === 'lttx'
     ? ((((data || {}).modes || {}).lttx || {}).status || ((data || {}).status || {}))
     : ((((data || {}).modes || {}).ctypes || {}).status || ((data || {}).status || data || {}));
-  const requirements = mode === 'lttx'
+  const requirements = isAdvancedTransportMode(mode)
     ? [
       { label: '普通端 QMT', detail: '查询通道', online: !!(modeStatus.normal && modeStatus.normal.online) },
       { label: '极速交易端 QMT', detail: '交易通道', online: !!(modeStatus.trade && modeStatus.trade.online) },
@@ -14754,7 +15250,7 @@ async function saveOnboardingConfig(event) {
     if (input) input.focus();
     return;
   }
-  if (normalizeTransportMode(values.mode) === 'lttx') {
+  if (isAdvancedTransportMode(values.mode)) {
     if (!values.qmt_dir || !values.qmt_trade_dir) {
       setOnboardingStatus('onboardingConfigStatus', '高级模式必须填写普通端和极速交易端两个 QMT 核心目录。', 'error');
       return;
@@ -15203,7 +15699,175 @@ function setTutorialTopic(name) {
     setDeployModeTab(deployTab || localStorage.getItem(DEPLOY_MODE_TAB_KEY) || 'ctypes');
   }
   if (name === 'onboarding') syncOnboardingWizard();
+  if (name === 'ai_agent') loadAiAgentDocument().catch(() => {});
   if (state.currentView === 'tutorial' || state.tutorialReaderSession) renderActiveTutorialMermaid();
+}
+
+const AI_AGENT_DOCUMENTS = {
+  mcp: { file: 'AI_MCP_TRADING.md', title: '通过 MCP 查询与交易' },
+  migration: { file: 'AI_STRATEGY_MIGRATION.md', title: '改造原有策略' },
+};
+let aiAgentDocumentMode = 'mcp';
+const aiAgentDocumentRequests = new Map();
+
+function aiAgentDocumentUrl(mode = aiAgentDocumentMode) {
+  return new URL(`/docs/${AI_AGENT_DOCUMENTS[mode].file}`, window.location.href).href;
+}
+
+function selectAiAgentDocument(mode) {
+  if (!AI_AGENT_DOCUMENTS[mode]) return;
+  aiAgentDocumentMode = mode;
+  document.querySelectorAll('[data-ai-document]').forEach((button) => {
+    const active = button.dataset.aiDocument === mode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  $('aiAgentDocumentText').replaceChildren();
+  loadAiAgentDocument().catch(() => {});
+}
+
+// Render the public guide's Markdown using DOM nodes. Raw HTML stays text.
+function renderAiAgentDocument(markdown) {
+  const fragment = document.createDocumentFragment();
+  function inline(parent, text) {
+    const pattern = /`([^`]+)`|\[([^\]]+)\]\(([^\s)]+)\)|\*\*([^*]+)\*\*/g;
+    let offset = 0;
+    for (const match of text.matchAll(pattern)) {
+      parent.appendChild(document.createTextNode(text.slice(offset, match.index)));
+      let node;
+      if (match[1] !== undefined) {
+        node = document.createElement('code');
+        node.textContent = match[1];
+      } else if (match[2] !== undefined) {
+        const url = new URL(match[3], new URL('/docs/AI_AGENT_INTEGRATION.md', location.href));
+        if (!['http:', 'https:'].includes(url.protocol)) {
+          parent.appendChild(document.createTextNode(match[0]));
+          offset = match.index + match[0].length;
+          continue;
+        }
+        node = document.createElement('a');
+        node.href = url.href;
+        node.target = '_blank';
+        node.rel = 'noopener noreferrer';
+        node.textContent = match[2];
+      } else {
+        node = document.createElement('strong');
+        node.textContent = match[4];
+      }
+      parent.appendChild(node);
+      offset = match.index + match[0].length;
+    }
+    parent.appendChild(document.createTextNode(text.slice(offset)));
+  }
+  const lines = String(markdown).replace(/\r\n?/g, '\n').split('\n');
+  let paragraph = [];
+  let list = null;
+  function flushParagraph() {
+    if (!paragraph.length) return;
+    const p = document.createElement('p');
+    inline(p, paragraph.join(' '));
+    fragment.appendChild(p);
+    paragraph = [];
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('```')) {
+      flushParagraph();
+      list = null;
+      const language = line.slice(3).trim();
+      const content = [];
+      while (++i < lines.length && !lines[i].startsWith('```')) content.push(lines[i]);
+      const pre = document.createElement('pre');
+      pre.className = 'guide-code';
+      pre.tabIndex = 0;
+      pre.setAttribute('aria-label', language ? `${language} 代码` : '代码');
+      const code = document.createElement('code');
+      code.textContent = content.join('\n');
+      pre.appendChild(code);
+      fragment.appendChild(pre);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    const item = line.match(/^\s*(?:(\d+)\.\s+|[-*+]\s+)(.+)$/);
+    if (heading) {
+      flushParagraph();
+      list = null;
+      // The containing tutorial already has its own page heading.
+      const h = document.createElement(`h${Math.min(6, heading[1].length + 2)}`);
+      inline(h, heading[2]);
+      fragment.appendChild(h);
+    } else if (item) {
+      flushParagraph();
+      const type = item[1] ? 'ol' : 'ul';
+      if (!list || list.localName !== type) {
+        list = document.createElement(type);
+        if (item[1]) list.start = Number(item[1]);
+        fragment.appendChild(list);
+      }
+      const li = document.createElement('li');
+      inline(li, item[2]);
+      list.appendChild(li);
+    } else if (!line.trim()) {
+      flushParagraph();
+      list = null;
+    } else {
+      list = null;
+      paragraph.push(line);
+    }
+  }
+  flushParagraph();
+  $('aiAgentDocumentText').replaceChildren(fragment);
+}
+
+async function loadAiAgentDocument(mode = aiAgentDocumentMode) {
+  const url = aiAgentDocumentUrl(mode);
+  if (mode === aiAgentDocumentMode) {
+    $('aiAgentDocumentUrl').href = url;
+    $('aiAgentDocumentUrl').textContent = url;
+    $('aiAgentDocumentStatus').textContent = '正在加载文档…';
+    $('aiAgentDocumentText').setAttribute('aria-busy', 'true');
+  }
+  if (!aiAgentDocumentRequests.has(mode)) {
+    const request = (async () => {
+      const response = await fetch(url, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.text();
+    })();
+    aiAgentDocumentRequests.set(mode, request);
+    request.catch(() => {
+      if (aiAgentDocumentRequests.get(mode) === request) aiAgentDocumentRequests.delete(mode);
+    });
+  }
+  try {
+    const text = await aiAgentDocumentRequests.get(mode);
+    if (mode === aiAgentDocumentMode) {
+      renderAiAgentDocument(text);
+      $('aiAgentDocumentStatus').textContent = `“${AI_AGENT_DOCUMENTS[mode].title}”已加载，可复制全文交给 AI。`;
+    }
+    return text;
+  } catch (error) {
+    if (mode === aiAgentDocumentMode) {
+      $('aiAgentDocumentStatus').textContent = `文档加载失败（${error.message}），请点击“重新加载”。`;
+    }
+    throw error;
+  } finally {
+    if (mode === aiAgentDocumentMode) $('aiAgentDocumentText').setAttribute('aria-busy', 'false');
+  }
+}
+
+async function copyAiAgentDocument(button, fullText) {
+  const label = button.textContent;
+  button.disabled = true;
+  try {
+    const text = fullText ? await loadAiAgentDocument() : aiAgentDocumentUrl();
+    await copyTextWithFallback(text);
+    button.textContent = '已复制';
+  } catch {
+    $('aiAgentDocumentStatus').textContent = '复制失败，请打开 Markdown 原文手动复制。';
+  } finally {
+    button.disabled = false;
+    setTimeout(() => { button.textContent = label; }, 1500);
+  }
 }
 
 function setDeployModeTab(mode) {
@@ -15400,6 +16064,7 @@ function openOnboardingGuide(options = {}) {
 }
 
 function setSettingsTab(name, shouldPersist = true) {
+  clearAccessKeySecret();
   if (!document.querySelector(`.settings-menu-item[data-settings-tab="${name}"]`)) {
     name = 'api-key';
   }
@@ -15415,6 +16080,9 @@ function setSettingsTab(name, shouldPersist = true) {
   document.querySelectorAll('.settings-section').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.settingsTab === name);
   });
+  if (name === 'api-key' && state.appStarted) {
+    refreshAccessKeys().then(() => refreshAccessAudit(true)).catch(error => accessKeyMessage(error.message));
+  }
 }
 
 function openTutorialReader(opener) {
@@ -15484,6 +16152,16 @@ function wireTutorialReader() {
 }
 
 function wireTutorialNavigation() {
+  document.querySelectorAll('[data-ai-document]').forEach((button) => {
+    button.addEventListener('click', () => selectAiAgentDocument(button.dataset.aiDocument));
+  });
+  $('copyAiAgentDocument')?.addEventListener('click', (event) => copyAiAgentDocument(event.currentTarget, true));
+  $('copyAiAgentDocumentUrl')?.addEventListener('click', (event) => copyAiAgentDocument(event.currentTarget, false));
+  $('reloadAiAgentDocument')?.addEventListener('click', () => {
+    if ($('aiAgentDocumentText').getAttribute('aria-busy') === 'true') return;
+    aiAgentDocumentRequests.delete(aiAgentDocumentMode);
+    loadAiAgentDocument().catch(() => {});
+  });
   document.querySelectorAll('[data-algo-example]').forEach(block => {
     const entry = (window.CFQUANT_CFTRADER_API || []).find(item => item.name === block.dataset.algoExample);
     if (entry) block.textContent = entry.example;
@@ -15787,6 +16465,10 @@ async function boot() {
     setBindingNotice('推送配置已标记清除，保存绑定后生效。', 'warn', { autoHide: false });
   });
   const bindingMode = $('bindingMode');
+  $('bindingAdvancedTransport')?.addEventListener('change', () => {
+    bindingMode.value = $('bindingAdvancedTransport').value === 'socket' ? 'lttx' : 'lite_advanced';
+    bindingMode.dispatchEvent(new Event('change', { bubbles: true }));
+  });
   if (bindingMode) {
     bindingMode.addEventListener('change', () => {
       syncAdvancedQmtDirField('bindingQmtTradeDir', bindingMode.value);
@@ -15880,7 +16562,7 @@ async function boot() {
       || !binding.runtimes?.[state.bindingPythonRuntimeChoice]?.installed;
     renderBindingPythonRuntimeStatus();
   });
-  ['bindingQmtDir', 'bindingAccountId'].forEach((id) => {
+  ['bindingQmtDir', 'bindingQmtTradeDir', 'bindingAccountId', 'bindingMode', 'bindingPythonRuntimeTarget'].forEach((id) => {
     const input = $(id);
     if (!input) return;
     input.addEventListener('input', () => scheduleBindingPythonRuntimeCheck());
@@ -16041,6 +16723,7 @@ async function boot() {
     }
   });
   $('openSettingsBtn').addEventListener('click', () => setView('settings'));
+  wireManagedAccessKeys();
   $('generateApiKeyBtn').addEventListener('click', () => saveApiKey({ generate: true }).catch((error) => log('API Key 生成失败', { error: error.message })));
   $('saveApiKeyBtn').addEventListener('click', () => saveApiKey().catch((error) => log('API Key 保存失败', { error: error.message })));
   $('toggleApiKeyBtn').addEventListener('click', toggleApiKeyVisible);

@@ -63,8 +63,10 @@ def _pipe_sync_retry_delay(failures):
 
 
 SCRIPTS = {"ctypes": "CFQUANT_CTYPE_ALL_LOWLAT.py", "lite": "CFQUANT_LITE.py",
+           "lite_advanced": "CFQUANT_LITE.py",
            "lttx": "CFQUANT.py"}
 MODE_ALIASES = {
+    "lite_advanced": "lite_advanced",
     "ctypes": "ctypes", "pipe": "ctypes", "named_pipe": "ctypes",
     "lite": "lite", "extreme": "lite", "extreme_lite": "lite",
     "lite_extreme": "lite", "ultimate": "lite",
@@ -82,7 +84,7 @@ STATES = {
     "waiting_start": "QMT 已启动，等待托管策略启动及通道连接",
     "waiting_manual_start": "QMT 已启动，自启未开启，请在模型交易中运行托管策略",
     "running": "托管策略已运行",
-    "waiting_account": "等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成策略部署。仍无法识别时再补充模型账号 Key",
+    "waiting_account": "等待 QMT 登录生成账号绑定键；首次登录后请正常退出 QMT，再重新启动以完成策略部署。仍无法识别时，请检查 QMT 登录状态并联系技术支持。",
     "configured": "模型已配置，等待下次启动 QMT 生效",
     "disabled": "自动运行已关闭，托管策略已禁用",
     "error": "策略部署失败",
@@ -167,7 +169,7 @@ def qmt_root(directory, validate=False):
 
 def account_qmt_roots(row):
     paths = [row.get("qmt_dir")]
-    if row.get("mode") == "lttx":
+    if row.get("mode") in ("lttx", "lite_advanced"):
         paths.append(row.get("qmt_trade_dir"))
     if row.get("market_routing_enabled"):
         paths = [route.get("qmt_dir") for route in (row.get("market_bridges") or {}).values()
@@ -382,7 +384,7 @@ def _ascii_entry_source(source):
 
 def managed_source(source_path, identity_path, identity, descriptor):
     source = read_entry_source(source_path)
-    fileless = normalize_strategy_mode(descriptor["mode"]) in ("ctypes", "lite")
+    fileless = normalize_strategy_mode(descriptor["mode"]) in ("ctypes", "lite", "lite_advanced")
     lines = source.splitlines(keepends=True)
     tree = ast.parse(source)
     replacements = []
@@ -456,16 +458,21 @@ def configured_pipe_source(source, identity):
     raise ValueError("QMT Pipe entry is missing EMBEDDED_RUNTIME_CONFIG")
 
 
+def strategy_request_channel(identity):
+    from .channels import channels_for_bridge
+    role = "trade" if identity.get("mode") == "lite_advanced" and identity.get("qmt_role") == "trade" else "normal"
+    return ((identity.get("channels") or {}).get(role) or identity.get(role + "_channel")
+            or channels_for_bridge(identity.get("bridge_id"))[role])
+
+
 class PipeStrategyController:
     """External Web-side client; QMT receives desired state without opening files."""
     def __init__(self):
         self.clients = {}
 
     def __call__(self, identity, desired):
-        from .channels import channels_for_bridge
         from .pipe_client import PipeRpcClient
-        channel = ((identity.get("channels") or {}).get("normal") or identity.get("normal_channel")
-                   or channels_for_bridge(identity.get("bridge_id"))["normal"])
+        channel = strategy_request_channel(identity)
         key = (identity.get("pipe_name"), channel)
         client = self.clients.get(key)
         if client is None:
@@ -786,8 +793,6 @@ class QmtStrategyManager:
     def _sync_pipe_runtime(self, job):
         if self.runtime_request is None:
             return
-        from .channels import channels_for_bridge
-
         desired = self._desired(job)
         for role in job.get("retired_roles", []):
             try:
@@ -808,9 +813,7 @@ class QmtStrategyManager:
                 sync["next_retry_at"] = retry_at
                 continue
             sync.update(last_attempt_at=time.time(), pipe_name=identity.get("pipe_name"),
-                        request_channel=((identity.get("channels") or {}).get("normal")
-                                         or identity.get("normal_channel")
-                                         or channels_for_bridge(identity.get("bridge_id"))["normal"]))
+                        request_channel=strategy_request_channel(identity))
             try:
                 report = self.runtime_request(identity, desired)
                 if (not isinstance(report, dict) or report.get("runtime_key") != desired["runtime_key"]
@@ -851,8 +854,7 @@ class QmtStrategyManager:
     @staticmethod
     def _role_endpoint(role):
         identity = role.get("identity") or {}
-        return (identity.get("pipe_name"), (identity.get("channels") or {}).get("normal")
-                or identity.get("normal_channel") or identity.get("bridge_id"))
+        return (identity.get("pipe_name"), strategy_request_channel(identity))
 
     def reconcile(self, accounts):
         with self.lock:

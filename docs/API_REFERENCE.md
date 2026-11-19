@@ -33,8 +33,51 @@ trader.subscribe(account)
 
 - 浏览器会话：使用初始化接口返回的 Web Token，放在 `X-CFQUANT-WEB-TOKEN` 或 HttpOnly Cookie。
 - API 客户端：使用 `X-API-Key: <key>`，也接受 `Authorization: Bearer <key>`。
-- 内部接口：按接口要求使用 `X-CFQUANT-INTERNAL-API-KEY`。
+- 内部接口：按接口要求使用 `X-CFQuant-Internal-Key`。
 - `/api/health`、`/api/config` 等公开读取接口不要求认证；交易、配置、远程管理和生命周期接口必须认证。
+
+## MCP / 多 API Key 管理
+
+“系统设置 → API Key”支持独立 Key 的创建、编辑、启用、停用、查看、复制和删除。每个客户端建议使用不同 Key，通过 `X-API-Key` 或 `Authorization: Bearer` 传入；原有管理员 Key 保留兼容，拥有完整权限，应仅用于可信管理，不能作为 AI 客户端日常凭据。
+
+管理接口只允许管理员网页登录会话或管理员 Key；未启用网页登录时本机控制台可管理。首次创建独立 Key 前，必须先配置管理员 Key 或启用网页登录。受限 Key 即使与有效网页 Cookie 同时传入也不会继承管理员权限。
+
+- `GET /api/access-keys`：列表、可授权账号及默认限流；不返回密钥明文。
+- `POST /api/access-keys`：不含 `id` 为新建，含 `id` 为编辑；未传的字段保留原值。
+- `POST /api/access-keys/reveal`：提交 `{"id":"KEY_ID"}`，管理员查看密钥；此操作也审计，响应禁止缓存。
+- `POST /api/access-keys/delete`：提交 `{"id":"KEY_ID"}`，立即撤销密钥，保留历史审计。
+- `GET /api/access-keys/audit?key_id=KEY_ID&offset=0&limit=50`：按 Key 分页查询，省略 `key_id` 为全部（含已删除 Key）；`limit` 上限 200。
+
+创建示例：
+
+```json
+{
+  "name": "行情研究助手",
+  "permissions": ["query"],
+  "account_keys": ["YOUR_BRIDGE_ID:STOCK:YOUR_ACCOUNT_ID"],
+  "all_accounts": false,
+  "enabled": true,
+  "limits": {
+    "requests_per_minute": 60,
+    "requests_per_second": 5,
+    "trades_per_minute": 10
+  }
+}
+```
+
+`account_keys` 来自已有绑定，不能自行猜测；`all_accounts=true` 表示明确授权全部当前及未来绑定。未选全部时必须至少选一个账号。相同资金账号的不同 `bridge_id` 或 `account_type` 分开授权。请求选择器必须一致；只指定已授权 `account_key` 可以补齐其他选择器，多个候选绑定时拒绝猜测。自定义内部通道禁止传入，批次内也不能覆盖账号。
+
+`query` 可用接口：`GET /api/health`、`/api/config`、`/api/account`、`/api/order/actions`、`/api/credit/actions`；以及 `POST /api/data/full-tick`、`/api/data/market`、`/api/data/market-ex`、`/api/data/instrument`、`/api/data/sector`、`/api/data/trading-dates`、`/api/data/financial`、`/api/credit/query`。
+
+`trade` 可用接口：普通、信用、期货、期货期权、股票期权的 `/api/.../order`、`/api/.../order_async`、`/api/.../orders/batch`，以及 `/api/cancel`。单独授予交易不会自动授予查询；常见交易助手应同时选择两项以便核查委托。受限 Key 暂不开放算法单、条件单、订单计划、订阅、WebSocket、cftrader 批量封装、数据下载及管理操作。
+
+受限 Key 的 `/api/config` 仅返回已授权绑定的基本路由字段、权限及限流；不返回其他账号、QMT 路径、管理员 Key、密码或系统配置。其他账户查询按授权绑定读取。
+
+速率为持久化滑动窗口，默认总请求 60 次/分钟、5 次/秒，交易 10 笔/分钟；每项可设 1 到 100000，三个窗口同时生效。批量最多 100 笔并按实际笔数消耗交易额度，额度不足整批拒绝。被拒绝的请求不会派发；不提供异步排队补执行。服务端返回 `429` 和 `Retry-After`；账号或权限拒绝为 `403`，无效、停用或已删除 Key 为 `401`。
+
+密钥保存在 `runtime/config/api_keys.sqlite3`，明文经创建它的 Windows 用户 DPAPI 加密。审计独立保存到 `runtime/audit/api_keys.sqlite3`，记录受限 Key 调用及 Key 创建、编辑、明文查看、删除；不保存密钥或认证头，不随普通日志清理或 Key 删除而清除。路径以实际运行状态目录为准；管理员 Key 的兼容业务调用不属于受限 Key 审计与限流，应给 MCP 使用独立 Key。
+
+审计在派发前持久化为 `pending`，完成后记录 HTTP 状态及允许的业务结果字段。无法建立审计记录时返回 `503`，不执行操作；执行后无法补写结果时也返回 `503` 并提示核查。`pending` 或异常返回不能据此断言未提交，须核查委托与成交。审计“接口成功”也不代表已成交。
 
 ## 只读接口
 
@@ -81,4 +124,3 @@ trader.subscribe(account)
 ## 错误与幂等
 
 `400` 表示参数或业务校验失败，`401` 表示认证失败，`404` 表示路径不存在，`409` 表示更新、交易或策略恢复正在进行。网络重试前先查询状态；下单和启动类请求不要盲目重试。
-

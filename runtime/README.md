@@ -2,7 +2,8 @@
 
 This directory is reserved for local runtime files and is not part of the source package.
 
-- `config/`: local runtime JSON configuration.
+- `config/`: local runtime configuration and encrypted credentials.
+- `audit/`: isolated API Key operation audit database; not removed by ordinary log cleanup.
 - `cache/`: local generated caches moved out of the project root.
 - `db/`: local SQLite settings databases.
 - `lttx/`: LTtx file transfer and DataFrame cache files.
