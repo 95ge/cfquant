@@ -8,6 +8,8 @@
 
 调用方 SDK 和后台服务都需要包含所用接口。升级后台不会替换第三方进程已经导入的 SDK；升级 SDK 后需重启调用方进程，升级后台后需重启后台服务。
 
+`pip install -U cfquant` 不会覆盖已经创建的 `home/service` 独立服务目录；请使用该实例的 `runtime.updates.ensure_latest()` 或 `apply()` 更新服务。`runtime.restart()` 会重新启动 A 和业务工作进程，等待新的启动标识并核对运行版本；如果只重启了业务进程或运行版本与目标不符，会抛出 `ManagementError(code="restart_incomplete")`。0.2.82/0.2.83 的旧发布服务不具备完整的 A 重启验证，首次升级到包含此修复的版本时仍应核对 A 的进程和运行版本。
+
 ```python
 from cfquant.management import RuntimeManager, ManagementError
 
@@ -39,11 +41,13 @@ try:
 except ManagementError as error:
     print(error.code, str(error))
 else:
-    # 配置当前进程的 SDK 连接到此后台服务的 LTtx 路由。
+    # 配置当前进程的 SDK 通过 LTtx 连接独立中心 A。
     runtime.configure_client()
     from cfquant import xtdata
     print(xtdata.get_full_tick(["000001.SZ"]))
 ```
+
+`configure_client()` 当前配置 `transport="center"`，基础行情和交易请求走 `SDK → LTtx → A → QMT`；管理 API 由 A 的业务工作进程提供，原有 HTTP 路径和认证保持兼容。Web 页面可以关闭，后台任务和管理接口继续运行。0.2.82/0.2.83 发布包中的该方法仍配置旧 Web 路由，使用这些版本时请在它之后、创建行情或交易客户端之前执行 `cfquant.configure(transport="center")`。
 
 QMT 的安装、登录、必要的终端组件下载和权限仍需完成。`strategy_autorun` 控制桥接策略自运行，`auto_start_qmt` 控制 QMT 进程启动，两者独立。自动启动不表示自动处理验证码或登录密码。
 
@@ -59,6 +63,8 @@ QMT 的安装、登录、必要的终端组件下载和权限仍需完成。`str
 | `runtime.restart()` | 保留本次服务的启动策略 |
 
 服务启动时的统一策略优先于账号设置；不会修改账号保存的设置。若现有服务策略与 `start()` 请求不同，会返回 `policy_mismatch`，需显式调用 `restart()`。多个绑定使用同一 QMT 目录时，启动阶段会去重。高级模式的独立交易终端仍按既有部署规则配置。
+
+显式调用 `restart(auto_start_qmt=True/False/None)` 时，新业务进程会应用该启动策略。日常重启中的这一步不会重新覆盖 QMT 核心包或策略文件；未显式传入该参数的日常重启及异常恢复继续保留现有 QMT 进程。
 
 命令行也支持：
 

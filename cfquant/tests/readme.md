@@ -20,12 +20,12 @@ Level2 专项：[`29_Level2行情测试.py`](29_Level2行情测试.py) 是只读
 
 [`28_Level2接口适配测试.py`](28_Level2接口适配测试.py) 是对应离线回归，包含 SDK、Web 首包转发、共用桥、旧桥及三份 LITE 内嵌实现。参见 [Level2 行情适配说明](../../docs/Level2行情适配说明.md)。
 
-脚本默认走 `auto` 自动路由模式，普通用户不需要选择通信模式。`cfquant` 会优先自动发现 Web LTtx 统一路由；如果现场只有旧的通用 PipeHub，再回退到 `ctypes`。
+脚本默认使用 `auto`，基础行情和交易请求固定通过 LTtx 进入独立中心 A；A 不可用时不会回退 Web 或直连 PipeHub。旧的 `web` / `web_lttx` 配置也映射到 A。0.2.82/0.2.83 发布包需显式使用 `center`，避免旧的自动回退。
 
 使用默认模式时要求：
 
 - 当前 Python 能导入本项目的 `cfquant` 包。
-- Web 控制台或 QMT 侧桥接已启动，并且至少有一种可用通信入口在线。
+- A、LTtx 和对应 QMT 桥接已启动；页面可关闭。
 
 多数手工脚本在顶部提供这些通信配置，时间配置均以秒为单位：
 
@@ -35,7 +35,7 @@ BRIDGE_ID = "default"
 REQUEST_TIMEOUT = 15.0
 ```
 
-排查链路时在代码中修改 `TRANSPORT` 为 `ctypes`、`web_lttx` 或 `lttx`。18 号脚本专用于高级模式，固定检查默认账号的交易桥和普通桥。4、6、8 号的 `ACCOUNT_ID` 留空时，在运行时读取环境变量或 Web 默认账号；填写则优先使用代码配置。
+排查链路时在代码中修改 `TRANSPORT` 为 `center`、`ctypes` 或 `lttx`。18 号脚本专用于高级模式，固定检查默认账号的交易桥和普通桥。4、6、8 号的 `ACCOUNT_ID` 留空时，在运行时读取环境变量或 Web 默认账号；填写则优先使用代码配置。
 
 ## 1. 行情接收测试
 
@@ -45,7 +45,7 @@ REQUEST_TIMEOUT = 15.0
 xtdata.subscribe_whole_quote(["SH", "SZ", "BJ"], callback=on_whole_quote)
 ```
 
-全推不设市场或证券代码白名单，列表会传给 QMT。例如可以把 `MARKETS` 改为 `"SH,SZ,BJ"`，或用 `xtdata.subscribe_whole_quote(["830799.BJ"], callback=on_whole_quote)` 订阅单只证券的全推。具体可用市场、代码和行情权限由券商 QMT 决定；期货等代码的大小写应按 QMT 要求填写。返回订阅号不代表当前时段一定有行情回调。
+全推列表用于本地筛选 LTtx `all_gp_hq` 频道数据，不新增 QMT 全推订阅。例如可把 `MARKETS` 改为 `"SH,SZ,BJ"`，或用 `xtdata.subscribe_whole_quote(["830799.BJ"], callback=on_whole_quote)` 筛选单只证券。实际市场范围取决于 QMT 源端配置与行情权限。返回订阅号不代表当前时段一定有行情回调。
 
 离线回归见 [`26_全推订阅测试.py`](26_全推订阅测试.py) 和 [`27_全推订阅页面测试.py`](27_全推订阅页面测试.py)，覆盖高级、通用、自包含极致模式以及网页参数提交，不执行真实交易。
 

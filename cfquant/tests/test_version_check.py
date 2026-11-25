@@ -47,7 +47,7 @@ def test_version_http_separates_release_refresh_and_qmt_probe(service, monkeypat
 
 
 def test_failed_release_cache_recovers_sooner_than_successful_cache(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     cache, calls = {}, []
     monkeypatch.setattr(web, "_PROJECT_VERSION_CACHE", cache)

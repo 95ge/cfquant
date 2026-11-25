@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 
 def test_public_github_check_uses_https_api_without_git(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     class Response:
         def __enter__(self):
@@ -42,7 +42,7 @@ def test_public_github_check_uses_https_api_without_git(monkeypatch):
 
 
 def test_git_fallback_disables_terminal_and_gui_prompts(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     monkeypatch.setattr(web.urllib.request, "urlopen", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")))
     calls = []

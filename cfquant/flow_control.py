@@ -99,23 +99,30 @@ class OrderedSender(object):
 
 class KeyedExecutor(object):
     """Parallel independent requests, FIFO for every shared resource key."""
-    def __init__(self, workers=8, max_pending=1024):
+    def __init__(self, workers=8, max_pending=1024, name="cfquant-request"):
         self.workers = max(1, int(workers))
         self.max_pending = max(1, int(max_pending))
+        self.name = name
         self._condition = threading.Condition()
         self._pending = deque()
         self._active = set()
         self._threads = []
         self._closed = False
+        self._running = {}
+        self._completed = 0
+        self._rejected = 0
+        self._last_queue_ms = 0.0
+        self._last_run_ms = 0.0
 
     def submit(self, keys, run, reject):
         with self._condition:
             if self._closed or len(self._pending) >= self.max_pending:
-                raise BufferError("Web route request queue is closed or full")
+                self._rejected += 1
+                raise BufferError("%s request queue is closed or full" % self.name)
             self._pending.append((frozenset(keys), run, reject, time.monotonic()))
             if not self._threads:
                 for _ in range(self.workers):
-                    thread = threading.Thread(target=self._run, name="cfquant-web-route")
+                    thread = threading.Thread(target=self._run, name=self.name)
                     thread.daemon = True
                     self._threads.append(thread)
                     thread.start()
@@ -127,6 +134,7 @@ class KeyedExecutor(object):
             if not blocked.intersection(item[0]):
                 self._pending.remove(item)
                 self._active.update(item[0])
+                self._running[id(item)] = time.monotonic()
                 return item
             # A later request cannot overtake an earlier request sharing a key.
             blocked.update(item[0])
@@ -142,12 +150,17 @@ class KeyedExecutor(object):
                 if item is None:
                     return
             try:
+                started = time.monotonic()
                 item[1]()
             except Exception as error:
                 self._reject(item, error)
             finally:
                 with self._condition:
                     self._active.difference_update(item[0])
+                    self._running.pop(id(item), None)
+                    self._completed += 1
+                    self._last_queue_ms = (started - item[3]) * 1000
+                    self._last_run_ms = (time.monotonic() - started) * 1000
                     self._condition.notify_all()
 
     def close(self):
@@ -157,15 +170,22 @@ class KeyedExecutor(object):
             self._pending.clear()
             self._condition.notify_all()
         for item in pending:
-            self._reject(item, RuntimeError("Web route stopped before request dispatch"))
+            self._reject(item, RuntimeError("request executor stopped before dispatch"))
 
     def _reject(self, item, error):
+        with self._condition:
+            self._rejected += 1
         try:
             item[2](error)
         except Exception:
-            get_logger(__name__).exception("Web route could not deliver request failure")
+            get_logger(__name__).exception("request executor could not deliver failure")
 
     def status(self):
         with self._condition:
             return {"queued_requests": len(self._pending), "active_keys": len(self._active),
+                    "running_requests": len(self._running), "workers": self.workers,
+                    "max_pending": self.max_pending, "completed_requests": self._completed,
+                    "rejected_requests": self._rejected,
+                    "oldest_running_ms": round((time.monotonic() - min(self._running.values())) * 1000, 3) if self._running else 0,
+                    "last_queue_ms": round(self._last_queue_ms, 3), "last_run_ms": round(self._last_run_ms, 3),
                     "oldest_age_ms": round((time.monotonic() - self._pending[0][3]) * 1000, 3) if self._pending else 0}

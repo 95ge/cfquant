@@ -158,14 +158,15 @@ order_id = trader.order_stock(
 
 默认 `CFQUANT_TRANSPORT=auto`，通常不需要手动调用 `configure()`。
 
-自动路由规则：
+默认路由规则：
 
-- 同步升级后的独立桥接中心 A 通过 LTtx 写入 `cfquant.center`，SDK 优先发现有效 A，请求进入 `cfquant.center.request`。
+- SDK 的基础行情和交易请求固定通过 LTtx 的 `cfquant.center.request` 进入独立桥接中心 A；`auto` 和 `center` 使用相同入口。
 - A 根据保存的资金账号和桥接配置路由基础查询、交易请求，不需要 Web 进程参与。
-- 找不到有效 A 时，保留 `cfquant.runtime` 对应的旧 Web 路由和直连 PipeHub 回退。
+- A 未启动或暂时不可用时，请求会报错或超时，入口保持为 A，不再回退 Web 或直连 PipeHub。A 的登记仅供状态观察，不决定 SDK 的请求入口。
+- 旧配置 `web`、`web_lttx`、`lttx_web`、`web-lttx`、`lttx-web` 兼容映射到 A；`RuntimeManager.configure_client()` 同样配置为 `center`。本段描述当前源码行为；0.2.82/0.2.83 发布包仍有旧回退逻辑，应在创建客户端前显式配置 `transport="center"`。
 - `xtdata.subscribe_whole_quote` 直接订阅 LTtx 的 `all_gp_hq`，每个订阅有独立内存队列和线程，不再进入通用回调落盘队列。需要同步升级 A、QMT 脚本和 SDK。
 
-频道协议、启动和监控见 [独立桥接中心与 LTtx 频道接入](bridge_center.md)。算法任务和通知等应用服务仍由 Web 承载。
+频道协议、启动和监控见 [独立桥接中心与 LTtx 频道接入](bridge_center.md)。当前源码的算法任务、条件单和通知也统一进入 A，由 A 管理的业务工作进程执行，不依赖页面运行。
 
 这样外部代码不需要选择或感知 QMT 运行模式。
 
@@ -175,17 +176,16 @@ order_id = trader.order_stock(
 
 固定使用独立 A：`configure(transport="center")`。全推订阅始终使用 LTtx 公共频道，下面的强制路由选项用于其他 RPC 请求。
 
-强制走 Web 统一路由：
+配置独立 A 使用的 LTtx 地址：
 
 ```python
 from cfquant import configure
 
 configure(
-    transport="web_lttx",
+    transport="center",
     host="127.0.0.1",
     port=2049,
     token="LTtx",
-    web_request_channel="cfquant.web.request",
 )
 ```
 
@@ -250,7 +250,7 @@ LTtx、Web LTtx 路由和管道客户端将收包与用户回调分开：RPC 应
 
 ### 连接与路由
 
-- 极致模式下，前端负责启动 QMT、安装运行环境并部署自包含入口；接口测试需要查询通道和交易通道均在线。
-- 外部自动发现依赖 LTtx 变量，因此本地服务默认会启动 LTtx；Web 重启和定时重启会保留 LTtx，避免外部 `cfquant` Python 库通信入口中断。
+- 极致模式下，A 负责启动 QMT、安装运行环境并部署自包含入口，页面提供操作入口；接口测试需要查询通道和交易通道均在线。
+- 外部 SDK 通过 LTtx 连接 A，本地服务默认会启动 LTtx。A 的业务进程重启保留 LTtx；行情、交易、算法和通知均不依赖页面或 Web 自动发现登记。
 - 不建议外部程序直接探测 `8765` HTTP 端口；端口可能被用户改掉，LTtx 注册信息更稳定。
 - 多账号时请先在 Web“绑定”页配置资金账号、QMT 核心目录和共享行情数据源；默认使用极致模式，也可配置双 QMT 高级模式。

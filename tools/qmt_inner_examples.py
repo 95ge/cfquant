@@ -2,12 +2,12 @@
 import textwrap
 
 PARAMETER_HELP = {
-    'bridge_id': '内部通道覆盖项；仅直连或同账号多绑定时使用。Web 路由通常不需要填写。',
+    'bridge_id': '内部通道覆盖项；仅直连或同账号多绑定时使用。通过独立中心 A 通常不需要填写。',
     'account_id': '可选字符串，填写 cfquant“账号绑定”中登记的券商资金账号。例如 "12345678"（仅格式示例），请保留账号的前导零；省略时使用当前设置的行情源。',
     'account_type': '账号类型：普通证券账户填 "STOCK"，信用账户填 "CREDIT"；应与 cfquant“账号绑定”中的类型一致。',
     'account_key': '可选的完整绑定键；同一资金账号有多个绑定时，用它指定具体绑定。通常填写 account_id 和 account_type 即可。',
-    'transport': '可选 ctypes、lttx、web_lttx；省略时沿用自动选择。',
-    'request_channel': '直连时需要明确指定普通桥频道；Web 路由通常自动选择。',
+    'transport': '默认 auto 与 center 均通过 LTtx 连接独立中心 A；旧的 web_lttx 等别名映射到 A。ctypes、lttx 仅供显式直连。',
+    'request_channel': '直连时需要明确指定普通桥频道；通过独立中心 A 通常自动选择。',
     'timeout': '单次 RPC 等待秒数；超时不会自动重发交易。',
     'client': '可注入已有 RPC 客户端；关闭会话时不关闭外部传入的连接。',
     'accountid': 'QMT 原生账号 ID。', 'accountID': 'QMT 原生账号 ID。', 'accountId': 'QMT 原生账号 ID。',
@@ -38,7 +38,7 @@ PARAMETER_HELP = {
 }
 
 SESSION_HELP = ('以下参数在创建 QmtInnerApi(...) 时传入，该会话下的所有接口共用。'
-                'account_id 可省略；省略时 Web 路由使用当前设置的行情源。'
+                'account_id 可省略；省略时独立中心 A 使用当前设置的行情源。'
                 '填写时请使用 cfquant“账号绑定”中的券商资金账号。')
 ACCOUNT_EXAMPLE_COMMENT = ('# 将 YOUR_ACCOUNT_ID 替换为 cfquant“账号绑定”中的券商资金账号（字符串，保留前导零）\n'
                            '# account_type 与绑定一致：普通证券账户 STOCK，信用账户 CREDIT\n')

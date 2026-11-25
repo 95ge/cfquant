@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from cfquant import notify, webhook
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 
 
 @pytest.fixture
@@ -167,7 +167,7 @@ def test_exact_account_resolution_and_override(config, delivery):
     assert config.account_webhook(account_key=first["account_key"])[0] == TARGET
 
 
-def test_sdk_account_mode_forces_web_route_and_never_fetches_secrets(config, delivery, monkeypatch):
+def test_sdk_account_mode_uses_service_router_and_never_fetches_secrets(config, delivery, monkeypatch):
     from cfquant import client
     row = bind(config, notification_webhook=TARGET)
     created, requests = [], []
@@ -179,7 +179,7 @@ def test_sdk_account_mode_forces_web_route_and_never_fetches_secrets(config, del
     monkeypatch.setattr(notify, "_client", None)
     result = notify.send("SDK message", account_id="TEST")
     assert result["account_key"] == row["account_key"]
-    assert created == [{"transport": "web_lttx"}]
+    assert created == [{"transport": "center"}]
     assert requests[0][2] == 13
     assert "PRIVATE" not in str(requests)
 

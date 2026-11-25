@@ -185,7 +185,7 @@ def test_center_batches_route_in_order_and_do_not_retry_unknown_writes(asynchron
 
 
 def test_web_default_callback_listener_uses_only_lttx(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     from cfquant.tests.test_callback_recovery import MemoryTx
     tx = MemoryTx()
     monkeypatch.setattr(web, 'lttx_server_reachable', lambda: True)
@@ -271,18 +271,24 @@ def test_center_source_filter_and_account_recovery(tmp_path):
         center.close()
 
 
-def test_auto_discovery_prefers_live_independent_center(monkeypatch):
+@pytest.mark.parametrize('transport', ['auto', 'center', 'web', 'web_lttx', 'lttx_web', 'web-lttx', 'lttx-web'])
+def test_sdk_routes_to_center_without_registry_or_web_fallback(monkeypatch, transport):
     from cfquant import client
     from cfquant.center_client import CenterRpcClient
-    registry = dict(center={'enabled': True}, updated_at=time.time())
-    monkeypatch.setattr(client, 'load_lttx_registry', lambda cfg=None, key=None: registry if key else {})
-    rpc = client.create_rpc_client(transport='auto')
+    # Missing, stale or concurrently changing registries must not change the
+    # SDK's request destination while services are starting/reconnecting.
+    monkeypatch.setattr(client, 'load_lttx_registry', lambda *a, **kw: pytest.fail('SDK consulted a legacy registry'))
+    rpc = client.create_rpc_client(transport=transport)
     assert isinstance(rpc, CenterRpcClient)
     assert rpc.request_channel == 'cfquant.center.request'
     rpc.close()
-    registry['updated_at'] = 0
+
+
+def test_pipe_transport_remains_explicit_diagnostic_option(monkeypatch):
+    from cfquant import client
     from cfquant.pipe_client import PipeRpcClient
-    rpc = client.create_rpc_client(transport='auto')
+    monkeypatch.setattr(client, 'load_lttx_registry', lambda *a, **kw: pytest.fail('unexpected discovery'))
+    rpc = client.create_rpc_client(transport='ctypes')
     assert isinstance(rpc, PipeRpcClient)
     rpc.close()
 
@@ -352,8 +358,12 @@ def test_real_pipe_center_lttx_fanout_requests_and_trade(broker, tmp_path, monke
     qmt = PipeTxClient(pipe_name=pipe, request_channels=['cfquant.normal.request', 'cfquant.trade.request'],
                        bridge_id='default', show=False)
     stop = threading.Event()
-    client1 = CenterRpcClient(client_id='fixture-one')
-    client2 = CenterRpcClient(client_id='fixture-two')
+    from cfquant.client import create_rpc_client
+    # SDKs may start before A publishes a registry, and must use this same
+    # center connection once it is ready. No Web process is started here.
+    client1 = create_rpc_client(transport='auto', client_id='fixture-one')
+    client2 = create_rpc_client(transport='web_lttx', client_id='fixture-two')
+    assert type(client1) is type(client2) is CenterRpcClient
     quotes1, quotes2, events1, events2, registrations = [], [], [], [], set()
     raw_tx = _load_txl()('127.0.0.1', broker, 'LTtx', show=False)
     sub1 = sub2 = None

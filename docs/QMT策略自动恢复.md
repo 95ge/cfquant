@@ -121,4 +121,4 @@ python -m cfquant.qmt_strategy_recovery --account-id YOUR_ACCOUNT --ensure
 python -m cfquant.qmt_strategy_recovery --account-id YOUR_ACCOUNT --watch --report runtime/status/qmt_strategy_watch.json
 ```
 
-独立检测器每轮重新读取绑定及部署配置，不写回这些配置。`--parent-pid WEB_PID` 可将临时检测器生命周期绑定到当前 Web 进程，Web 退出后检测器退出，由下一次启动的内置线程接管。不要为同一账号额外启动多个独立检测器。
+独立检测器每轮重新读取绑定及部署配置，不写回这些配置。`--parent-pid` 可将临时检测器生命周期绑定到 A 的业务工作进程 PID（管理状态接口中的 `pid`），该进程退出后检测器退出，由下一次启动的内置线程接管。关闭浏览器不停止恢复检测。不要为同一账号额外启动多个独立检测器。

@@ -14,6 +14,7 @@ from .protocol import dumps_message, loads_message, pack_response, pack_event
 from .pipe_transport import loads_pipe_message
 from .xtconstant import ACCOUNT_TYPE_DICT
 from .batch_orders import CFTRADER_BATCH_ACTIONS
+from .center_services import SERVICE_ACTIONS, SERVICE_CHANNEL, ServiceQueues, service_token
 
 CENTER_CHANNEL = 'cfquant.center.request'
 
@@ -34,8 +35,9 @@ def request_market(params):
 
 class _CenterGuard:
     """One center per endpoint in this Windows session; never run active replicas."""
-    def __init__(self):
+    def __init__(self, identity=None, label='LTtx endpoint'):
         self.handle = None
+        self.identity, self.label = identity, label
 
     def acquire(self):
         if os.name != 'nt':
@@ -43,7 +45,7 @@ class _CenterGuard:
         import ctypes
         from ctypes import wintypes
         cfg = get_config()
-        identity = '%s:%s:%s' % (cfg['host'], cfg['port'], CENTER_CHANNEL)
+        identity = self.identity or '%s:%s:%s' % (cfg['host'], cfg['port'], CENTER_CHANNEL)
         name = 'Local\\CFQuantCenter-' + hashlib.sha256(identity.encode()).hexdigest()
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)
         kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
@@ -57,7 +59,7 @@ class _CenterGuard:
             raise ctypes.WinError(error)
         if error == 183:
             kernel.CloseHandle(handle)
-            raise RuntimeError('another bridge center already owns this LTtx endpoint')
+            raise RuntimeError('another bridge center already owns this %s' % self.label)
         self.kernel, self.handle = kernel, handle
 
     def close(self):
@@ -244,7 +246,11 @@ class BridgeCenter:
         self.tx = None
         self.stop_event = threading.Event()
         self.thread = None
-        self.executor = KeyedExecutor(workers=8, max_pending=1024)
+        self.executor = KeyedExecutor(workers=8, max_pending=1024, name='cfquant-center-query')
+        self.trade_executor = KeyedExecutor(workers=8, max_pending=512, name='cfquant-center-trade')
+        self.control_executor = KeyedExecutor(workers=2, max_pending=128, name='cfquant-center-control')
+        self.service_queues = ServiceQueues()
+        self.service_clients = {}
         self.clients = {}
         self.event_channels = set()
         self.legacy_clients = {}
@@ -310,6 +316,9 @@ class BridgeCenter:
                         registered = time.monotonic()
                         self.error = ''
                         self._reap_clients()
+                        # Service readiness and queue telemetry must refresh
+                        # even while QMT has no pipe traffic.
+                        getattr(self.hub, '_write_status', lambda: None)()
                     try:
                         raw = tx.Q.get(timeout=.2)
                     except queue.Empty:
@@ -328,7 +337,7 @@ class BridgeCenter:
                         continue
                     def reject(error, message=msg):
                         self._reply(message, error=error)
-                    self.executor.submit([client], lambda message=msg: self.handle(message), reject)
+                    self.enqueue(msg, reject)
             except Exception as error:
                 self.error = str(error)
                 self.hub._log('bridge center LTtx failed: %s' % error)
@@ -336,11 +345,48 @@ class BridgeCenter:
                 if tx is not None:
                     tx.close()
                 self.tx = None
+                getattr(self.hub, '_write_status', lambda: None)()
             self.stop_event.wait(1)
 
     def _reply(self, msg, result=None, error=None):
         self.publish('response', pack_response(msg.get('id'), ok=error is None, result=result, error=error),
                      msg.get('client_id') or msg.get('reply_channel'))
+
+    def enqueue(self, msg, reject):
+        entered = time.monotonic()
+        action = str(msg.get('action') or '')
+        def execute():
+            remaining = float(msg.get('timeout') or 15) - (time.monotonic() - entered)
+            if remaining <= 0:
+                raise TimeoutError('request expired in center queue before execution')
+            self.handle(dict(msg, timeout=remaining))
+        try:
+            if action in SERVICE_ACTIONS:
+                self.service_queues.submit(msg, execute, reject)
+            elif action in ('cfquant.ping', 'cfquant.center.route', 'cfquant.account_subscription_status'):
+                self.control_executor.submit([msg.get('client_id')], execute, reject)
+            elif action.startswith(('xttrader.', 'cftrader.')) and not action.startswith('xttrader.query_'):
+                params = msg.get('params') or {}
+                account = params.get('account') or {}
+                key = (params.get('account_key') or account.get('account_key') or
+                       params.get('account_id') or account.get('account_id') or 'default',
+                       params.get('account_type') or account.get('account_type') or 'STOCK')
+                self.trade_executor.submit([key], execute, reject)
+            else:
+                self.executor.submit([msg.get('client_id')], execute, reject)
+        except Exception as error:
+            reject(error)
+
+    def _service_request(self, action, params, timeout):
+        from .client import LTtxRpcClient
+        lane = 'notification' if action == 'cfquant.notify.send' else 'algorithm'
+        with self.lock:
+            client = self.service_clients.get(lane)
+            if client is None:
+                client = self.service_clients[lane] = LTtxRpcClient(request_channel=SERVICE_CHANNEL)
+        body = dict(params, _center_service_token=service_token())
+        body.pop('_center_request_channel', None)
+        return client.request(action, body, timeout=timeout)
 
     def _reap_clients(self):
         # A dead SDK must not leave one reply sender/thread per historical ID.
@@ -367,6 +413,8 @@ class BridgeCenter:
     def handle(self, msg):
         try:
             action, params = msg.get('action', ''), dict(msg.get('params') or {})
+            if action in SERVICE_ACTIONS:
+                return self._reply(msg, self._service_request(action, params, float(msg.get('timeout') or 15)))
             if action == 'cfquant.subscriptions':
                 return self._reply(msg, self.subscription_manager().handle(
                     params, msg.get('client_id') or msg.get('reply_channel')))
@@ -490,6 +538,9 @@ class BridgeCenter:
                     publication_failures=self.publication_failures, error=self.error,
                     send_queue=tx.tx_que.qsize() if tx else 0,
                     requests=self.executor.status(), event_channels=len(self.event_channels),
+                    trade_requests=self.trade_executor.status(), control_requests=self.control_executor.status(),
+                    service_requests=self.service_queues.status(),
+                    services=self.hub.services.status() if getattr(self.hub, 'services', None) else None,
                     reply_clients=len(self.clients))
 
     def close(self):
@@ -497,6 +548,11 @@ class BridgeCenter:
         if self.tx:
             self.tx.close()
         self.executor.close()
+        self.trade_executor.close()
+        self.control_executor.close()
+        self.service_queues.close()
+        for client in list(self.service_clients.values()):
+            client.close()
         if self._subscriptions is not None:
             self._subscriptions.close()
         self._subscription_adapter.close()

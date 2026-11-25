@@ -46,7 +46,7 @@
 
 ### 4. 使用方式
 
-完成部署后，大 QMT 负责运行桥接入口和实际交易，`cfquant` 负责提供本地通信、接口转换和兼容对象。外部 Python 程序继续使用 MiniQMT 风格的接口访问大 QMT；Web 控制台用于账号绑定、状态检查、接口测试、策略部署和日常运维。
+完成部署后，大 QMT 负责运行桥接入口和实际交易，独立中心 A 负责通信分发、账号配置、算法任务及后台维护。外部 Python 程序使用 MiniQMT 风格的接口，经 LTtx 连接 A；Web 控制台提供配置、状态和操作展示。关闭页面不停止后台任务，架构与并发说明见 [独立桥接中心](docs/bridge_center.md)。
 
 ### 5. 部署建议
 
@@ -165,13 +165,13 @@ python -m pip install --upgrade cfquant
 python -m pip install --upgrade "cfquant[zmq]"
 ```
 
-安装完成后，可以直接启动 Web 控制台：
+安装完成后，可以直接启动带可选 Web 展示的独立中心 A：
 
 ```powershell
 cfquant run
 ```
 
-也可以使用 `cfquant serve` 或 `cfquant-web`；三者启动的是同一个本地 Web 服务。首次启动后访问 <http://127.0.0.1:8765/>，在初始化向导中配置 QMT 目录和账号。保存绑定后，前端自动启动 QMT、安装运行环境并部署极致模式入口，无需手工导出或导入 QMT 策略：
+也可以使用 `cfquant serve`、`cfquant center` 或 `cfquant-web`，这些入口均启动独立中心 A。仅运行后台可用 `cfquant center --no-web`，管理 API 仍可调用。首次部署通常保留页面，访问 <http://127.0.0.1:8765/> 配置 QMT 目录和账号；保存绑定后，由 A 自动启动 QMT、安装运行环境并部署极致模式入口，无需手工导出或导入 QMT 策略：
 
 ```powershell
 cfquant qmt-scripts --output D:\QMT\cfquant
@@ -200,7 +200,7 @@ cfquant run
 - 使用 Anaconda/Miniconda：优先在目标 Conda 环境中执行 `python -m pip install`，不要使用未激活环境的裸 `pip`。
 - 源码包和 PyPI 包不要在同一个解释器中反复混用；源码开发时使用 `python -m pip install --editable .`，正式使用时使用 PyPI 版本。
 
-启动后打开 <http://127.0.0.1:8765/>，按网页中的“新手初始化向导”完成账号和 QMT 目录配置。保存绑定后，前端自动安装 QMT Python 环境、启动 QMT 并部署极致模式入口，再验证资金、持仓、委托和行情。流程见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
+启动后打开 <http://127.0.0.1:8765/>，按网页中的“新手初始化向导”完成账号和 QMT 目录配置。保存绑定后，A 自动安装 QMT Python 环境、启动 QMT 并部署极致模式入口，再验证资金、持仓、委托和行情。流程见 [Web 账号运行配置说明](docs/Web账号运行配置说明.md)。
 
 重点：
 
@@ -341,7 +341,7 @@ trader.disconnect()
 
 `XtQuantTrader`、`StockAccount`、常用行情查询和交易方法保持接近 `xtquant` 的调用方式，原有回调类通常可以继续使用。仍有部分 QMT 专有接口、字段和返回结构存在兼容边界，使用前请查看 [xtquant 原版接口适配清单](docs/xtquant原版接口适配清单.md) 和 [QMT 函数封装能力清单](docs/QMT函数封装能力清单.md)。
 
-账号订阅成功后，SDK 会在后台约每两秒重新确认订阅。用户程序保持运行时，QMT、cfquant Web 或通信服务重启后，待桥接策略恢复授权、通道可用，SDK 会自动恢复该账号的新回调；默认 Web 路由和直接 Pipe/LTtx 连接均适用。主动 `unsubscribe(account)` 后不会再恢复该账号，`stop()` / `disconnect()` 会停止后台恢复。此机制只恢复账号订阅，不补发停机期间的回调，也不重试委托或撤单。升级 SDK 后需先重启一次用户程序加载新代码，此后无需随 QMT 重启用户程序。
+账号订阅成功后，SDK 会在后台约每两秒重新确认订阅。用户程序保持运行时，QMT、独立中心 A 或通信服务重启后，待桥接策略恢复授权、通道可用，SDK 会自动恢复该账号的新回调；默认 A 路由和显式配置的 Pipe/LTtx 直连均适用。主动 `unsubscribe(account)` 后不会再恢复该账号，`stop()` / `disconnect()` 会停止后台恢复。此机制只恢复账号订阅，不补发停机期间的回调，也不重试委托或撤单。升级 SDK 后需先重启一次用户程序加载新代码，此后无需随 QMT 重启用户程序。
 
 推荐迁移顺序：**行情查询 → 资金/持仓 → 回调 → 模拟委托 → 模拟撤单 → 正式策略**。每一步都先在 Web 控制台接口测试和日志中确认，再进入下一步。
 
@@ -372,7 +372,7 @@ restart_cfquant.bat     重启
 | 批量异步 `order_stock_batch_async` | 1 | 7.093 ms | 7.122 ms |
 | 单笔异步循环 `order_stock_async` x100 | 100 | 9.053 ms | 9.186 ms |
 
-批量接口用于组合调仓、批量止盈止损和撤掉一组未成委托。它的原理是外部 Python 只发一次批量 RPC，Web/LTtx/ctypes 将整批请求路由到 QMT 后，由 QMT 本地连续调用 `passorder` 或 `cancel`，减少逐笔跨进程往返。`cftrader` 目前提供 `order_stock_batch`、`order_stock_batch_async`、`cancel_order_stock_batch` 和 `cancel_order_stock_batch_async`；批量返回只表示请求提交情况，最终成交或撤成仍以委托查询和回调为准。
+批量接口用于组合调仓、批量止盈止损和撤掉一组未成委托。它的原理是外部 Python 只发一次批量 RPC，默认通过 LTtx 交给独立中心 A 路由到 QMT 后，由 QMT 本地连续调用 `passorder` 或 `cancel`，减少逐笔跨进程往返。`cftrader` 目前提供 `order_stock_batch`、`order_stock_batch_async`、`cancel_order_stock_batch` 和 `cancel_order_stock_batch_async`；批量返回只表示请求提交情况，最终成交或撤成仍以委托查询和回调为准。
 
 ## cftrader 模拟账号实测
 

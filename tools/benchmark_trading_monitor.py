@@ -33,7 +33,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix='cfquant-monitor-benchmark-') as folder:
         os.environ['CFQUANT_HOME'] = folder
         os.environ['CFQUANT_RUNTIME_DIR'] = str(Path(folder) / 'runtime')
-        import cfquant_web_server as web
+        from cfquant import runtime_services as web
         from cfquant.trading_monitor import TradingMonitor, day_text
         monitor = TradingMonitor(Path(folder) / 'benchmark.sqlite3', account_type_normalizer=web.normalize_account_type)
         monitor.update_accounts([{'account_key':'benchmark:STOCK:SYNTHETIC', 'bridge_id':'benchmark',

@@ -101,7 +101,7 @@ def test_embedded_probe_does_not_need_qmt_timer_or_native_setup(lite):
 
 
 def test_web_probe_bypasses_same_client_query_and_needs_both_registrations(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     monkeypatch.setattr(web, "WEB_CONFIG", None)
     monkeypatch.setattr(web, "resolve_bridge_id", lambda **kw: "test")
     route = web.LttxWebRouteServer()
@@ -200,7 +200,7 @@ def test_probe_failure_does_not_trigger_mutation_or_capability_downgrade(error):
 
 
 def test_new_web_preserves_old_qmt_unsupported_action_for_sdk(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     monkeypatch.setattr(web, "WEB_CONFIG", None)
     monkeypatch.setattr(web, "resolve_bridge_id", lambda **kw: "test")
     monkeypatch.setattr(web, "resolve_account_mode", lambda *a, **kw: "ctypes")
@@ -213,7 +213,7 @@ def test_new_web_preserves_old_qmt_unsupported_action_for_sdk(monkeypatch):
 
 
 def test_failed_web_subscribe_cannot_create_a_healthy_probe(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     route = web.LttxWebRouteServer()
     for result in (False, -1):
         route._remember_external_subscription("xttrader.subscribe", {"client_id": "test", "params": PARAMS}, result)

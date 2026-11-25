@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant import xtconstant, xtdata
 from cfquant.normal_bridge import NormalQmtBridge
 from cfquant.pipe_bridge import PipeNormalQmtBridge, PipeTradeBridge

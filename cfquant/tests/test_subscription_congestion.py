@@ -14,7 +14,7 @@ from cfquant.tests.test_lite_qmt_dispatch import lite, enqueue
 @pytest.mark.parametrize('renewal', [False, True])
 @pytest.mark.parametrize('action', ['xttrader.subscribe', 'cfquant.account_subscription_status'])
 def test_web_subscription_timeout_does_not_cool_down_or_close_trading_channel(monkeypatch, renewal, action):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = web.GlobalTxClient()
     calls = []
     def request(request_action, *args, **kwargs):

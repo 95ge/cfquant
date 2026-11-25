@@ -4,7 +4,8 @@ import json
 from cfquant.runtime_report import publish_qmt_runtime_marker, read_qmt_runtime_markers
 
 
-def test_publish_qmt_runtime_marker_writes_configured_dir(tmp_path):
+def test_publish_qmt_runtime_marker_writes_configured_dir(tmp_path, monkeypatch):
+    monkeypatch.delenv('CFQUANT_RUNTIME_DIR', raising=False)
     marker_dir = tmp_path / "qmt_runtime"
     result = publish_qmt_runtime_marker(
         reason="test_start",

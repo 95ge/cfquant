@@ -158,7 +158,7 @@ def test_trade_runtime_job_switches_and_restarts_only_trade_qmt(tmp_path, monkey
     from types import SimpleNamespace
     from unittest.mock import Mock
     import cfquant.qmt_credentials as credentials
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     normal = runtime_fixture(tmp_path / "normal", configured="py312")
     trade = runtime_fixture(tmp_path / "trade", configured="py312")
     normal_config = normal.qmt_dir / "userdata/users/TEST_ONLY/Config.xml"
@@ -204,7 +204,7 @@ def test_trade_runtime_job_switches_and_restarts_only_trade_qmt(tmp_path, monkey
 
 
 def test_two_qmt_runtime_capabilities_are_checked_independently(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     normal = runtime_fixture(tmp_path / "normal", version="2.1.33.0")
     trade = runtime_fixture(tmp_path / "trade", version="2.1.32.0", installed=("py36",))
     first = web.qmt_python_runtime_status(dict(qmt_dir=str(normal.qmt_dir), account_id="TEST_ONLY", runtime="py36", refresh=False))
@@ -345,7 +345,7 @@ def test_missing_account_config_invokes_managed_restart_callback(tmp_path, monke
 
 
 def test_runtime_status_without_account_still_exposes_capabilities(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = runtime_fixture(tmp_path)
     monkeypatch.setattr(QmtPythonRuntime, "_client_version", lambda self: "2.1.33.0")
     status = web.qmt_python_runtime_status({"qmt_dir": str(manager.qmt_dir), "runtime": "py36", "refresh": False})
@@ -354,7 +354,7 @@ def test_runtime_status_without_account_still_exposes_capabilities(tmp_path, mon
 
 
 def test_runtime_job_allows_install_before_first_qmt_login(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     root = tmp_path / "qmt"
     (root / "bin.x64").mkdir(parents=True)
     jobs = {}
@@ -370,7 +370,7 @@ def test_runtime_job_allows_install_before_first_qmt_login(tmp_path, monkeypatch
 
 def test_runtime_jobs_forward_reuse_and_reject_concurrent_directory(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = runtime_fixture(tmp_path)
     jobs, calls, events = {}, [], []
     monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
@@ -396,7 +396,7 @@ def test_runtime_jobs_forward_reuse_and_reject_concurrent_directory(tmp_path, mo
 
 
 def test_runtime_job_rejects_unsupported_selection_before_scheduling(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = runtime_fixture(tmp_path, version="2.1.19.0")
     jobs = {}
     monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
@@ -407,7 +407,7 @@ def test_runtime_job_rejects_unsupported_selection_before_scheduling(tmp_path, m
 
 
 def test_runtime_job_completion_survives_notification_failure(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = runtime_fixture(tmp_path)
     jobs = {}
     monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", jobs)
@@ -442,7 +442,7 @@ def test_runtime_job_completion_survives_notification_failure(tmp_path, monkeypa
 
 
 def test_runtime_job_initialization_failure_is_terminal(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = runtime_fixture(tmp_path)
     monkeypatch.setattr(web, "QMT_PYTHON_RUNTIME_JOBS", {})
     monkeypatch.setattr(web.threading.Thread, "start", lambda self: None)
@@ -458,7 +458,7 @@ def test_runtime_job_initialization_failure_is_terminal(tmp_path, monkeypatch):
 
 def test_blocked_progress_subscriber_cannot_stall_installation(tmp_path, monkeypatch):
     import threading
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = runtime_fixture(tmp_path)
     blocked, release, delivered = threading.Event(), threading.Event(), threading.Event()
     events = []
@@ -499,7 +499,7 @@ def test_blocked_progress_subscriber_cannot_stall_installation(tmp_path, monkeyp
 
 
 def test_new_binding_install_finishes_without_launching_qmt(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     root = tmp_path / "fresh-qmt"
     (root / "bin.x64").mkdir(parents=True)
     manager = QmtPythonRuntime(root, account_id="TEST_ONLY")
@@ -530,7 +530,7 @@ def test_new_binding_install_finishes_without_launching_qmt(tmp_path, monkeypatc
 @pytest.mark.parametrize("restart_failed", [False, True])
 def test_runtime_job_uses_managed_restart_without_inline_login_or_bypassing_errors(tmp_path, monkeypatch, restart_failed):
     from types import SimpleNamespace
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager = runtime_fixture(tmp_path)
     row = {"account_id": "TEST_ONLY", "qmt_dir": str(manager.qmt_dir)}
     monkeypatch.setattr(web, "WEB_CONFIG", SimpleNamespace(account_configs=lambda: {"test": row}))
@@ -557,7 +557,7 @@ def test_runtime_job_uses_managed_restart_without_inline_login_or_bypassing_erro
 
 def test_runtime_bootstrap_starts_stops_and_starts_managed_qmt(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     row = {
         "account_key": "bootstrap-account",

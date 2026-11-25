@@ -2,8 +2,19 @@
 import os
 import sys
 import types
+import pytest
 
 from cfquant import cli
+
+
+@pytest.fixture(autouse=True)
+def isolate_startup_configuration(monkeypatch):
+    from cfquant import config
+    monkeypatch.setattr(config, '_config', dict(config._config))
+    for key in ('CFQUANT_HOME', 'CFQUANT_RUNTIME_DIR', 'CFQUANT_PIPE_NAME',
+                'CFQUANT_WEB_CONFIG_FILE', 'CFQUANT_LTTX_HOST', 'CFQUANT_LTTX_PORT',
+                'CFQUANT_WEB_ENABLED'):
+        monkeypatch.setenv(key, os.environ.get(key, ''))
 
 
 def test_cli_dry_run_applies_web_runtime_paths(monkeypatch, tmp_path, capsys):
@@ -117,4 +128,5 @@ def test_pipe_hub_cli_applies_runtime_paths_before_import(monkeypatch, tmp_path)
         "pipe_name": r"\\.\pipe\cfquant_test",
         "show": False,
         "default_request_channel": "cfquant.normal.request",
+        "core_services": True,
     }]

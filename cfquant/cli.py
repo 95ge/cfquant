@@ -104,6 +104,8 @@ def _apply_web_environment(args):
             os.environ[variable] = _path(value) if variable.endswith(("_DIR", "_FILE", "_HOME")) else str(value)
     if getattr(args, "lttx_port", None):
         os.environ["CFQUANT_LTTX_PORT"] = str(args.lttx_port)
+    if getattr(args, "home", None) and not getattr(args, "runtime_dir", None):
+        os.environ["CFQUANT_RUNTIME_DIR"] = os.path.join(_path(args.home), "runtime")
 
 
 def _serve_parser(prog="cfquant"):
@@ -111,13 +113,14 @@ def _serve_parser(prog="cfquant"):
     if prog == "cfquant":
         epilog = (
             "常用命令:\n"
-            "  cfquant                                启动本地 Web 控制台。\n"
-            "  cfquant run                            启动本地 Web 控制台。\n"
-            "  cfquant serve                          启动本地 Web 控制台。\n"
+            "  cfquant                                启动中心 A 和本地控制台。\n"
+            "  cfquant run                            启动中心 A 和本地控制台。\n"
+            "  cfquant serve                          启动中心 A 和本地控制台。\n"
+            "  cfquant center --no-web                只运行中心 A，关闭网页展示。\n"
             "  cfquant qmt-scripts                    查看已安装的 QMT 入口脚本目录。\n"
             "  cfquant qmt-scripts --open             在资源管理器中打开 QMT 入口脚本目录。\n"
             "  cfquant qmt-scripts --output DIRECTORY 导出 QMT 入口脚本到指定目录。\n"
-            "  cfquant pipe-hub [options]             只启动 named-pipe hub。\n"
+            "  cfquant pipe-hub [options]             启动 A；--bridge-only 仅用于桥接诊断。\n"
             "  cfquant version                        显示安装版本和目录。\n"
             "使用 '%s' 查看 Web 启动参数。" % help_command
         )
@@ -125,7 +128,7 @@ def _serve_parser(prog="cfquant"):
         epilog = "使用 '%s' 查看 Web 启动参数。" % help_command
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="启动 cfquant 本地 Web 控制台。",
+        description="启动 cfquant 独立中心 A，可选提供本地 Web 控制台。",
         epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -145,6 +148,7 @@ def _serve_parser(prog="cfquant"):
     parser.add_argument("--lttx-port", type=_port, help="LTtx 端口。默认 2049。")
     parser.add_argument("--account-id", help="Web 初始化完成前使用的默认资金账号。")
     parser.add_argument("--open-browser", action="store_true", help="服务就绪后自动打开浏览器。")
+    parser.add_argument("--no-web", action="store_true", help="不提供网页展示，独立中心 A 和管理接口继续运行。")
     qmt_start = parser.add_mutually_exclusive_group()
     qmt_start.add_argument("--auto-start-qmt", dest="auto_start_qmt", action="store_true",
                            help="自动启动已启用绑定的 QMT。")
@@ -201,15 +205,14 @@ def _resolve_web_address(args):
         return host, port
 
     try:
-        from cfquant_web_server import WEB_CONFIG, normalize_web_port
+        from .center_services import runtime_root
+        path = Path(os.environ.get("CFQUANT_WEB_CONFIG_FILE") or runtime_root() / "config/cfquant_web_config.json")
+        config = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
         if not host:
-            host = "0.0.0.0" if WEB_CONFIG.allow_remote() else "127.0.0.1"
+            host = "0.0.0.0" if config.get("allow_remote") else "127.0.0.1"
         if port is None:
-            port = normalize_web_port(
-                os.environ.get("CFQUANT_WEB_PORT"),
-                default=WEB_CONFIG.web_port(),
-            )
+            port = int(os.environ.get("CFQUANT_WEB_PORT") or config.get("web_port") or 8765)
     except Exception:
         if not host:
             host = "127.0.0.1"
@@ -266,6 +269,8 @@ def _serve(argv, prog="cfquant"):
     from cfquant_web_server import main as web_main
 
     server_args = []
+    if args.no_web:
+        server_args.append("--no-web")
     if args.host:
         server_args.extend(["--host", args.host])
     if args.port:
@@ -381,7 +386,7 @@ def main(argv=None):
     if not argv:
         return _serve([])
     command = argv[0]
-    if command in ("run", "serve", "web"):
+    if command in ("run", "serve", "web", "center"):
         return _serve(argv[1:])
     if command == "pipe-hub":
         from cfquant_pipe_hub import main as pipe_hub_main

@@ -8,7 +8,7 @@ import time
 import pandas as pd
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant import protocol
 from cfquant import tx_trade_bridge as core
 from cfquant import normal_bridge

@@ -42,7 +42,7 @@ def assert_lite_package(manager, root):
 
 @pytest.fixture
 def web_deployment(deployment, tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     manager, row, infos, running, root = deployment
     row['qmt_auto_login'] = {'enabled': False}
     config = web.WebRuntimeConfig(str(tmp_path / "web.json"), str(tmp_path / "web.db"))

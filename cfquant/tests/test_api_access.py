@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from cfquant.api_access import ApiAccessStore, AccessDenied
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 
 
 A = "bridge-a:STOCK:10001"

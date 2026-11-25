@@ -5,7 +5,7 @@ import pytest
 
 @pytest.fixture
 def project_updater(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     project_root = tmp_path / "project"
     (project_root / "cfquant").mkdir(parents=True)
@@ -155,7 +155,7 @@ def test_project_update_operation_blocks_new_trade_requests(project_updater):
 
 
 def test_project_system_info_reports_start_script_and_version_date(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -187,7 +187,7 @@ def test_project_system_info_reports_start_script_and_version_date(tmp_path, mon
 
 
 def test_project_system_info_reports_installed_python_sdk_version(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     monkeypatch.setattr(
         web,

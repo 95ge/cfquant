@@ -16,7 +16,7 @@ from cfquant import protocol
 
 
 def web_helpers():
-    tree = ast.parse((ROOT / 'cfquant_web_server.py').read_text(encoding='utf-8'))
+    tree = ast.parse((ROOT / 'cfquant/runtime_services.py').read_text(encoding='utf-8'))
     names = {'to_jsonable', 'jsonable_key', 'JsonReadyResponse', 'web_json_bytes', 'ok'}
     body = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef)) and n.name in names]
     namespace = dict(json=json, math=math, base64=base64, time=time,

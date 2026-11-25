@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant.batch_orders import (
     batch_cancel_result_rows,
     batch_result,

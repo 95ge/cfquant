@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant import xtdata
 from cfquant import level2
 from cfquant.normal_bridge import COALESCED_QUERY_ACTIONS, NormalQmtBridge

@@ -165,8 +165,8 @@ class QmtCallbacks:
 class QmtInnerApi:
     """Independent native API session over cfquant RPC and the normal route.
 
-    ``account_id``/``account_type`` select the Web route when supplied. If
-    ``account_id`` is omitted, the Web route uses the currently configured
+    ``account_id``/``account_type`` select the center route when supplied. If
+    ``account_id`` is omitted, center A uses the currently configured
     market-data provider. ``bridge_id`` is an internal compatibility override
     for a direct transport or for disambiguating multiple bindings of one
     account; it is not sent by default.
@@ -174,7 +174,7 @@ class QmtInnerApi:
     one. ``client`` may inject an existing RPC client; its connection remains
     owned by the caller. close() releases this session's native quote
     subscriptions and schedule_run timers. ``recovery='lease'`` opts into the
-    Web-managed persistent subscription manifest; it returns stable cfquant
+    center-managed persistent subscription manifest; it returns stable cfquant
     subscription IDs and is unavailable on direct transports.
     """
     def __init__(self, account_id=None, account_type='STOCK', account_key=None,
@@ -199,10 +199,10 @@ class QmtInnerApi:
         self._client = client or create_rpc_client(transport=transport, timeout=timeout,
                                                    request_channel=channel, bridge_id=channel_bridge_id)
         if recovery == 'lease' and not hasattr(self._client, '_subscription_raw_request'):
-            raise ValueError("managed subscription recovery requires the Web transport")
+            raise ValueError("managed subscription recovery requires a subscription-capable transport (center)")
         account_id = str(account_id or '').strip()
         account_key = str(account_key or '').strip()
-        # Leave the internal bridge empty unless explicitly overridden. The Web
+        # Leave the internal bridge empty unless explicitly overridden. The center
         # route then resolves an account binding, or (when no account was
         # supplied) the currently configured market-data provider. The local
         # transport still uses channel_bridge_id selected above.

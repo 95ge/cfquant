@@ -90,6 +90,29 @@ def test_project_reload_waits_for_health_before_marking_progress_done(page, fron
     assert errors == []
 
 
+def test_project_reload_verifies_new_boot_and_all_component_versions(page, frontend_url):
+    _, errors = open_app(page, frontend_url, setup_required=False)
+    healthy = dict(status='ok', ready=True, boot_id='new-boot', center_pid=200, restart_required=False,
+                   running_core_version='0.2.83', running_center_version='0.2.83')
+    snapshots = [dict(healthy, boot_id='old-boot'),
+                 dict(healthy, center_pid=100),
+                 dict(healthy, running_center_version='0.2.82'),
+                 dict(healthy, ready=False), healthy]
+    requests = []
+
+    def health(route):
+        requests.append(route.request.url)
+        route.fulfill(json={'ok': True, 'data': snapshots[min(len(requests) - 1, len(snapshots) - 1)]})
+
+    page.route('**/api/health*', health)
+    result = page.evaluate("""async () => waitForProjectReloadHealth({
+        restart_scope: 'center', previous_boot_id: 'old-boot', previous_center_pid: 100, expected_core_version: '0.2.83'
+    }, {initialDelayMs: 0, pollIntervalMs: 100, timeoutMs: 5000})""")
+    assert result['ok'] is True and result['attempts'] == 5
+    assert len(requests) == 5
+    assert errors == []
+
+
 def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, frontend_url, tmp_path):
     requests, errors = open_app(page, frontend_url)
     page.evaluate("""() => {

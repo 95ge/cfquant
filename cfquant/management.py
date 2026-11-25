@@ -39,6 +39,18 @@ def _path(value):
     return Path(os.path.expandvars(str(value))).expanduser().resolve()
 
 
+def _verify_reloaded_service(service, expected_version=None):
+    running = service.get("running_core_version") or service.get("core_version")
+    installed = service.get("installed_core_version")
+    center = service.get("running_center_version")
+    if (service.get("restart_required") or service.get("ready") is False
+            or (installed and running != installed) or (center and center != running)
+            or (expected_version and running != expected_version)):
+        raise ManagementError("Service restart did not load the expected version in every reported component",
+                              "restart_incomplete", details=service)
+    return service
+
+
 def summarize_update_status(state):
     """Shared by the SDK and conditional-update HTTP endpoint."""
     version = state.get("version_info") or {}
@@ -310,7 +322,11 @@ class RuntimeManager:
         before = self.status()
         body = {} if auto_start_qmt is _UNSET else {"auto_start_qmt": auto_start_qmt}
         self._request("POST", "/api/management/restart", body)
-        return self._wait_service(timeout, previous_boot=before["boot_id"])
+        result = self._wait_service(timeout, previous_boot=before["boot_id"])
+        if before.get("center_pid") and result.get("center_pid") == before["center_pid"]:
+            raise ManagementError("Only the application worker restarted; center A is still the old process",
+                                  "restart_incomplete", details=result)
+        return _verify_reloaded_service(result)
 
     def initialize(self, account_id, qmt_dir, **options):
         """Initialize the first binding; subsequent calls upsert that binding."""
@@ -345,10 +361,10 @@ class RuntimeManager:
                               "qmt_not_ready", details=last)
 
     def configure_client(self):
-        """Point cfquant's data/trading clients at this service's LTtx router."""
+        """Point data/trading clients at center A through this service's LTtx."""
         info = self.status()
         from . import configure
-        configure(host=info["lttx_host"], port=info["lttx_port"], transport="web_lttx")
+        configure(host=info["lttx_host"], port=info["lttx_port"], transport="center")
 
 
 class RemoteManager:
@@ -491,7 +507,8 @@ class UpdateManager:
         result = self.runtime._request("POST", "/api/project-updates/ensure-latest",
                                        {"auto_close_qmt": auto_close_qmt, "reload": False}, timeout=timeout)
         if restart and result.get("restart_required") and result["status"] != "check_failed":
-            result["service"] = self.runtime.restart(timeout=restart_timeout)
+            result["service"] = _verify_reloaded_service(self.runtime.restart(timeout=restart_timeout),
+                                                          result.get("current_version"))
             result["running_version"] = result["service"].get("running_core_version") or result["service"].get("core_version")
             result["restart_required"] = False
             if result["status"] == "restart_required":
@@ -517,7 +534,8 @@ class UpdateManager:
             body["site_url"] = site_url
         result = self.runtime._request("POST", "/api/project-updates/" + source, body, timeout=timeout)
         if restart:
-            result["service"] = self.runtime.restart(timeout=restart_timeout)
+            result["service"] = _verify_reloaded_service(self.runtime.restart(timeout=restart_timeout),
+                                                          result.get("current_version"))
         return result
 
     def rollback(self, backup, *, auto_close_qmt=False, restart=True, timeout=300):
@@ -527,5 +545,5 @@ class UpdateManager:
                                        {"backup": backup, "reload": False, "auto_close_qmt": auto_close_qmt},
                                        timeout=timeout)
         if restart:
-            result["service"] = self.runtime.restart()
+            result["service"] = _verify_reloaded_service(self.runtime.restart(), result.get("current_version"))
         return result

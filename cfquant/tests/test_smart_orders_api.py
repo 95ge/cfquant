@@ -74,7 +74,7 @@ def test_sdk_shortcuts_and_plan_controls_share_account_and_stable_request(monkey
 
 
 def test_http_routes_authentication_plan_workflow_and_rpc(env, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     monkeypatch.setattr(web, "WEB_CONFIG", SimpleNamespace(web_auth_enabled=lambda: False, api_key=lambda: "test-smart-key"))
     monkeypatch.setattr(web, "resolve_bridge_id", lambda **kwargs: "")
     monkeypatch.setattr(web, "account_key_for", lambda *args: "")

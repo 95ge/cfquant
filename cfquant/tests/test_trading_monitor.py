@@ -170,7 +170,7 @@ def test_locked_database_does_not_block_callback_and_recovers(monitor):
 
 
 def test_web_request_wrapper_preserves_return_error_and_no_retries(monkeypatch, monitor):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     monkeypatch.setattr(web, 'TRADING_MONITOR', monitor)
     client = web.GlobalTxClient()
     calls = []
@@ -191,7 +191,7 @@ def test_web_request_wrapper_preserves_return_error_and_no_retries(monkeypatch, 
 
 
 def test_web_callback_integration(monkeypatch, monitor):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     from types import SimpleNamespace
     monkeypatch.setattr(web, 'TRADING_MONITOR', monitor)
     monkeypatch.setattr(web, 'ACCOUNT_CACHE', SimpleNamespace(update_from_event=lambda event: None))
@@ -346,7 +346,7 @@ def test_malformed_callback_does_not_drop_adjacent_events(monitor):
 
 
 def test_monitor_endpoint_requires_authorization_and_validates_filters(monkeypatch, monitor):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     from urllib.parse import urlparse
     monkeypatch.setattr(web, 'TRADING_MONITOR', monitor)
     monitor.record_callback(callback())
@@ -490,7 +490,7 @@ def test_settings_save_error_keeps_previous_state(monitor, monkeypatch):
 
 
 def test_disabled_request_bypasses_monitor_work(monkeypatch, tmp_path):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     instance = TradingMonitor(tmp_path / 'off.sqlite3')
     monkeypatch.setattr(web, 'TRADING_MONITOR', instance)
     monkeypatch.setattr(instance, 'record_request', lambda *a, **kw: pytest.fail('disabled collector invoked'))
@@ -502,7 +502,7 @@ def test_disabled_request_bypasses_monitor_work(monkeypatch, tmp_path):
 
 
 def test_settings_http_authentication_validation_and_toggle(monkeypatch, tmp_path):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     instance = TradingMonitor(tmp_path / 'endpoint.sqlite3')
     monkeypatch.setattr(web, 'TRADING_MONITOR', instance)
     handler = object.__new__(web.CfquantWebHandler)
@@ -615,7 +615,7 @@ def test_scope_corruption_does_not_enable_collector(tmp_path):
 
 
 def test_web_binding_scope_normalizes_types_routes_and_updates_on_save(monkeypatch, tmp_path):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     instance = TradingMonitor(tmp_path / 'scope.sqlite3', account_type_normalizer=web.normalize_account_type)
     config = web.WebRuntimeConfig(str(tmp_path / 'web.json'), settings_db_path=str(tmp_path / 'settings.sqlite3'))
     monkeypatch.setattr(web, 'TRADING_MONITOR', instance)
@@ -655,7 +655,7 @@ def test_removed_nodes_keep_history_but_no_longer_report_live_collection(monitor
 
 
 def test_settings_api_validates_bound_keys_and_roundtrips_selected_scope(monkeypatch, tmp_path):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     instance = TradingMonitor(tmp_path / 'scope-http.sqlite3')
     monkeypatch.setattr(web, 'TRADING_MONITOR', instance)
     monkeypatch.setattr(web, 'refresh_monitor_accounts', lambda: instance.update_accounts(bound_accounts()))

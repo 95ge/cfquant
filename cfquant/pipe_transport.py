@@ -46,7 +46,7 @@ def is_windows():
 
 def normalize_pipe_name(pipe_name=None):
     pipe_name = str(pipe_name or DEFAULT_PIPE_NAME)
-    if pipe_name.startswith("\\\\.\\pipe\\"):
+    if pipe_name.lower().startswith("\\\\.\\pipe\\"):
         return pipe_name
     name = pipe_name.strip("\\/")
     return r"\\.\pipe\%s" % name

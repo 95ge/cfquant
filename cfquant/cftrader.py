@@ -21,7 +21,7 @@ def _algo_rpc(action, params):
         if _algo_client is None:
             import atexit
             from .client import create_rpc_client
-            _algo_client = create_rpc_client(transport="web_lttx")
+            _algo_client = create_rpc_client(transport="center")
             atexit.register(_algo_client.close)
         client = _algo_client
     return client.request(action, params)

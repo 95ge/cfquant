@@ -44,7 +44,7 @@ def send(message, account_id=None, *, title="", webhook_url=None, provider=None,
     with _client_lock:
         if _client is None:
             from .client import create_rpc_client
-            _client = create_rpc_client(transport="web_lttx")
+            _client = create_rpc_client(transport="center")
         client = _client
     return client.request("cfquant.notify.send", params, timeout=timeout + 5)
 

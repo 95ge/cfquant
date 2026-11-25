@@ -26,7 +26,7 @@ def test_module_initialization_survives_corrupt_runtime_cache(tmp_path, content)
     })
     result = subprocess.run(
         [sys.executable, '-c',
-         'import cfquant_web_server as web; assert not web.RUNTIME_VERSIONS._reports'],
+         'from cfquant import runtime_services as web; assert not web.RUNTIME_VERSIONS._reports'],
         cwd=ROOT, env=env, capture_output=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')

@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def web_config(tmp_path, monkeypatch):
     monkeypatch.setenv("CFQUANT_RUNTIME_DIR", str(tmp_path / "runtime"))
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     config = web.WebRuntimeConfig(str(tmp_path / "web.json"), str(tmp_path / "settings.db"))
     monkeypatch.setattr(web, "WEB_CONFIG", config)
     return web, config

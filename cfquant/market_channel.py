@@ -64,8 +64,17 @@ class ChannelSubscription:
         self.tx = (factory or _load_txl())(cfg['host'], cfg['port'], cfg['token'], show=False)
         self.tx.Q = MemoryChannelQueue()
         self.thread = None
+        self._start_lock = threading.Lock()
 
     def start(self):
+        with self._start_lock:
+            if self.closed.is_set():
+                raise RuntimeError('channel subscription is closed')
+            if self.thread is not None:
+                return self
+            return self._start()
+
+    def _start(self):
         try:
             self.tx.start_txg(self.channel)
             if self.closed.is_set():

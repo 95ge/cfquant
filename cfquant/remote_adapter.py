@@ -44,6 +44,9 @@ def resources(web):
 
 def register_runtime(web):
     record = dict(resources(web), process=process_identity(os.getpid()), config=norm(web.WEB_CONFIG.path))
+    parent_pid = int(os.environ.get("CFQUANT_CENTER_PARENT_PID") or 0)
+    if parent_pid:
+        record["parent"] = process_identity(parent_pid)
     atomic_json(registry_dir() / (token_for(record["config"])+".json"), record)
     return record
 
@@ -51,12 +54,16 @@ def register_runtime(web):
 def check_conflicts(web, qmt_dir=None):
     own = register_runtime(web)
     known = {os.getpid()}
+    if own.get("parent") and same_process(own["parent"]):
+        known.add(own["parent"]["pid"])
     for path in registry_dir().glob("*.json"):
         other = read_json(path)
         identity = other.get("process")
         if not identity or not same_process(identity):
             continue
         known.add(identity["pid"])
+        if other.get("parent") and same_process(other["parent"]):
+            known.add(other["parent"]["pid"])
         if other.get("config") == own["config"]:
             continue
         conflict = (directory_key(qmt_dir) in other.get("qmt_dirs", []) if qmt_dir else
@@ -74,12 +81,13 @@ def check_conflicts(web, qmt_dir=None):
 
 
 def launch_settings(web):
-    launch_env = {k: v for k, v in os.environ.items() if k.startswith("CFQUANT_") and k != "CFQUANT_REMOTE_PRESERVE_QMT"}
+    launch_env = {k: v for k, v in os.environ.items() if k.startswith("CFQUANT_") and
+                  k not in ("CFQUANT_REMOTE_PRESERVE_QMT", "CFQUANT_CENTER_PARENT_PID")}
     launch_env.update(CFQUANT_BASE_DIR=web.BASE_DIR, CFQUANT_STATE_DIR=web.STATE_DIR,
                       CFQUANT_RUNTIME_DIR=web.RUNTIME_DIR, CFQUANT_WEB_CONFIG_FILE=web.WEB_CONFIG.path,
                       CFQUANT_WEB_SETTINGS_DB_FILE=web.WEB_CONFIG.settings_db_path,
                       CFQUANT_LTTX_PORT=str(web.LTTX_PORT))
-    return {"args": [web.runtime_python_executable(), str(Path(web.__file__).resolve()),
+    return {"args": [web.runtime_python_executable(), str(Path(web.BASE_DIR) / 'cfquant_web_server.py'),
                      "--host", web.WEB_BOUND_HOST or "127.0.0.1", "--port", str(web.WEB_BOUND_PORT or web.WEB_CONFIG.web_port())],
             "env": launch_env, "cwd": web.BASE_DIR, "port": web.WEB_BOUND_PORT or web.WEB_CONFIG.web_port(),
             "resources": resources(web)}
@@ -178,6 +186,18 @@ def service_plan(web, boot_id):
         raise RemoteError("resource_busy", "更新任务正在执行")
     check_conflicts(web)
     identities = [process_identity(os.getpid())]
+    parent_pid = int(os.environ.get("CFQUANT_CENTER_PARENT_PID") or 0)
+    if parent_pid:
+        try:
+            parent = psutil.Process(parent_pid)
+            parent_runtime = parent.environ().get("CFQUANT_RUNTIME_DIR")
+            identity = process_identity(parent_pid)
+            if (psutil.Process(os.getpid()).ppid() != parent_pid or not identity or not parent_runtime
+                    or norm(parent_runtime) != norm(web.RUNTIME_DIR)):
+                raise RemoteError("resource_conflict", "无法确认中心父进程归属")
+            identities.append(identity)
+        except psutil.Error:
+            raise RemoteError("resource_conflict", "无法核对中心父进程身份") from None
     entries = {norm(web.PIPE_HUB_ENTRY), norm(web.LTTX_ENTRY)}
     for p in psutil.process_iter(["pid", "cmdline"]):
         try:
@@ -192,7 +212,7 @@ def service_plan(web, boot_id):
             if not belongs:
                 continue
             identity = process_identity(p.pid)
-            if identity:
+            if identity and identity not in identities:
                 identities.append(identity)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             raise RemoteError("resource_conflict", "无法核对相关进程归属，停止操作已拒绝") from None
@@ -203,9 +223,11 @@ def handle(web, operation, data):
     config = require(web)
     if operation == "snapshot":
         items, _ = bindings(web)
+        services = getattr(web, "CENTER_SERVICES", None)
+        ready = web.MANAGEMENT_READY and (services is None or services.ready())
         return {"instance_id": config["instance_id"], "snapshot": {
             "boot_id": web.MANAGEMENT_BOOT_ID, "version": web.CORE_VERSION,
-            "service_state": "running" if web.MANAGEMENT_READY else "starting", "checked_at": time.time(), "bindings": items}}
+            "service_state": "running" if ready else "starting", "checked_at": time.time(), "bindings": items}}
     if operation in {"service-plan", "service-stop"}:
         return service_plan(web, data.get("boot_id"))
     require(web, "queries" if operation == "query" else "qmt_control",

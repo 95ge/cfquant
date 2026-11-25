@@ -135,7 +135,7 @@ def build(source_dir):
             name=name, title=title, description=title, status='native', source=catalog['INNER_DOC_ROOT'] + 'start_now.html',
             signature=signature, nativeSignature='', parameters=parameters, usage='from cfquant import QmtInnerApi；独立于 XtQuantTrader 使用。',
             note='面向外部数据查询、研究和实盘交易。已登记 %s 个原生方法及 %s 个回调；核心查询、行情订阅和定时器已通过华泰模拟终端实测，未对全部方法实测。' % (len(catalog['INNER_METHODS']), len(catalog['INNER_CALLBACKS'])),
-            resultHelp='默认自动选择通信方式。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。',
+            resultHelp='默认通过 LTtx 连接独立中心 A。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。',
             resultRows=[['capabilities()', '逐分类返回方法是否存在；存在性不等于已实测或当前模型可执行。'],
                         ['close()', '清理本会话行情订阅、schedule_run 定时器和回调；失败可再次关闭。'],
                         ['ContextInfo', 'qmt.context 是桥接策略上下文代理，不是新建的独立策略。']],

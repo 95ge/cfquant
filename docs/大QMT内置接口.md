@@ -54,7 +54,7 @@ with QmtInnerApi(account_id="YOUR_ACCOUNT_ID", account_type="STOCK") as qmt:
     print(bars["000001.SZ"])  # pandas.DataFrame
 ```
 
-默认沿用 cfquant 的自动通信选择。可传 `transport="ctypes"`、`"lttx"`、`"web_lttx"`，也可注入已有 RPC `client`。实例仅关闭自己创建的连接。通过 Web 路由时优先按 `account_id`、`account_type`、`account_key` 选择绑定；直连时才需要用 `bridge_id` 或 `request_channel` 指定内部通道。
+默认通过 LTtx 连接独立中心 A，`transport="auto"` 和 `"center"` 使用同一入口，旧的 `"web_lttx"` 等别名也映射到 A。A 按 `account_id`、`account_type`、`account_key` 选择绑定。排查时仍可显式传 `transport="ctypes"` 或 `"lttx"`，通过 `bridge_id` 或 `request_channel` 指定内部通道；也可注入已有 RPC `client`，实例仅关闭自己创建的连接。0.2.82/0.2.83 发布包应显式指定 `transport="center"`，避免旧的自动回退。
 
 通过 Web 路由时，构造参数 `account_id`、`account_type`、`account_key` 用于选择绑定，路由层会自动找到对应的 `bridge_id`；`bridge_id` 只作为直连或同账号多绑定时的显式覆盖。交易函数中的 `accountid` 等参数仍需按大 QMT 文档传入。会话按账号绑定选定桥接策略，不自动换行情提供者，也不在失败后换传输重发。
 
@@ -119,7 +119,7 @@ with QmtInnerApi(account_id="YOUR_ACCOUNT_ID", account_type="STOCK") as qmt:
 
 `close()` 清理本会话创建的行情订阅、`schedule_run` 定时器及外部回调。清理失败时保留状态并抛出异常，可再次 `close()`。进程被强制终止无法执行清理，需重启对应桥接策略释放遗留资源。外部 Python 定时回调使用 `schedule_run`。
 
-默认 `QmtInnerApi` 保持原生订阅 ID 语义，不会把行情订阅写入持久化清单。默认 Web 路径下如需在 cfquant/QMT 重启后恢复行情订阅，可显式创建 `QmtInnerApi(recovery='lease')`；该模式使用 SQLite 清单和 45 秒租约，重连后按当前会话重新确认并恢复，返回的是稳定的 cfquant 逻辑 ID。数据库不会保存 Python 回调函数；外部程序自身重启后仍需重新注册回调。下单、撤单和 `schedule_run` 不进入自动恢复。
+默认 `QmtInnerApi` 保持原生订阅 ID 语义，不会把行情订阅写入持久化清单。通过 A 如需在 cfquant/QMT 重启后恢复行情订阅，可显式创建 `QmtInnerApi(recovery='lease')`；该模式使用 SQLite 清单和 45 秒租约，重连后按当前会话重新确认并恢复，返回的是稳定的 cfquant 逻辑 ID。数据库不会保存 Python 回调函数；外部程序自身重启后仍需重新注册回调。下单、撤单和 `schedule_run` 不进入自动恢复。
 
 ## 运行边界与维护
 

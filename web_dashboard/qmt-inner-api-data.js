@@ -9,7 +9,7 @@ window.CFQUANT_QMT_INNER_API = {
   },
   "methodCount": 80,
   "callbackCount": 8,
-  "sessionHelp": "以下参数在创建 QmtInnerApi(...) 时传入，该会话下的所有接口共用。account_id 可省略；省略时 Web 路由使用当前设置的行情源。填写时请使用 cfquant“账号绑定”中的券商资金账号。",
+  "sessionHelp": "以下参数在创建 QmtInnerApi(...) 时传入，该会话下的所有接口共用。account_id 可省略；省略时独立中心 A 使用当前设置的行情源。填写时请使用 cfquant“账号绑定”中的券商资金账号。",
   "sessionParameters": [
     {
       "name": "account_id",
@@ -28,7 +28,7 @@ window.CFQUANT_QMT_INNER_API = {
     }
   ],
   "catalogSha256": "f03025f6c3330cc3fd9af2bdc3e4ae3c8b72fb6fe8a2dbe964d21492d6cac896",
-  "sdkSha256": "5c4ac7504e44c37260014dd2631088abfe554274ffabe8d135074b307d1b7f53",
+  "sdkSha256": "ac610c2fb25fa0cf17310614eb83f2f9e2664b6fa4204096e22d430950117cef",
   "entries": [
     {
       "id": "qmt_inner.system.QmtInnerApi",
@@ -61,12 +61,12 @@ window.CFQUANT_QMT_INNER_API = {
         {
           "name": "transport",
           "default": "None",
-          "help": "可选 ctypes、lttx、web_lttx；省略时沿用自动选择。"
+          "help": "默认 auto 与 center 均通过 LTtx 连接独立中心 A；旧的 web_lttx 等别名映射到 A。ctypes、lttx 仅供显式直连。"
         },
         {
           "name": "request_channel",
           "default": "None",
-          "help": "直连时需要明确指定普通桥频道；Web 路由通常自动选择。"
+          "help": "直连时需要明确指定普通桥频道；通过独立中心 A 通常自动选择。"
         },
         {
           "name": "timeout",
@@ -86,7 +86,7 @@ window.CFQUANT_QMT_INNER_API = {
       ],
       "usage": "from cfquant import QmtInnerApi；独立于 XtQuantTrader 使用。",
       "note": "面向外部数据查询、研究和实盘交易。已登记 80 个原生方法及 8 个回调；核心查询、行情订阅和定时器已通过华泰模拟终端实测，未对全部方法实测。",
-      "resultHelp": "默认自动选择通信方式。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
+      "resultHelp": "默认通过 LTtx 连接独立中心 A。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
       "resultRows": [
         [
           "capabilities()",
@@ -4164,7 +4164,7 @@ window.CFQUANT_QMT_INNER_API = {
       "parameters": [],
       "usage": "from cfquant import QmtInnerApi；独立于 XtQuantTrader 使用。",
       "note": "面向外部数据查询、研究和实盘交易。已登记 80 个原生方法及 8 个回调；核心查询、行情订阅和定时器已通过华泰模拟终端实测，未对全部方法实测。",
-      "resultHelp": "默认自动选择通信方式。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
+      "resultHelp": "默认通过 LTtx 连接独立中心 A。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
       "resultRows": [
         [
           "capabilities()",
@@ -4202,7 +4202,7 @@ window.CFQUANT_QMT_INNER_API = {
       "parameters": [],
       "usage": "from cfquant import QmtInnerApi；独立于 XtQuantTrader 使用。",
       "note": "面向外部数据查询、研究和实盘交易。已登记 80 个原生方法及 8 个回调；核心查询、行情订阅和定时器已通过华泰模拟终端实测，未对全部方法实测。",
-      "resultHelp": "默认自动选择通信方式。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
+      "resultHelp": "默认通过 LTtx 连接独立中心 A。account_id / account_type 可选；填写后按账号绑定路由，省略 account_id 时使用当前设置的行情源。交易函数仍按原生要求传入账号。",
       "resultRows": [
         [
           "capabilities()",

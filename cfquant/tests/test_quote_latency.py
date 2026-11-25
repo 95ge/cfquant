@@ -7,7 +7,7 @@ import pytest
 
 from cfquant import diagnostics, xtdata
 from cfquant.protocol import loads_message, pack_request
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 
 
 STAMP = 1792112400000.0

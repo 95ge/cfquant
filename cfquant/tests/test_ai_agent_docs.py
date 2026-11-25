@@ -6,7 +6,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 
 
 ROOT = Path(__file__).resolve().parents[2]

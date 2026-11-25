@@ -14,7 +14,7 @@ from cfquant.log_management import (
 def test_component_log_dirs_create_stable_subdirectories(tmp_path):
     root = tmp_path / "log"
     dirs = component_log_dirs(root)
-    assert set(dirs) == {"web", "startup", "lttx", "pipe_hub", "qmt_bridge"}
+    assert set(dirs) == {"web", "center", "startup", "lttx", "pipe_hub", "qmt_bridge"}
     assert all(Path(path).is_dir() for path in dirs.values())
     assert component_log_dir(root, "LTtx") == dirs["lttx"]
 

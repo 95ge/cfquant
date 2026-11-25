@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 
 
 def _status(online, mode):
@@ -215,7 +215,7 @@ def test_internal_http_api_enforces_its_own_scope(monkeypatch):
         thread.join(timeout=2)
 
     assert health_status == 200
-    assert health["data"] == {"status": "ok"}
+    assert health["data"]["status"] == "ok"
     assert denied_status == 401
     assert route_status == 200
     assert route["data"]["mode"] == "lite"
@@ -242,26 +242,36 @@ def test_cfquant_web_available_rejects_non_cfquant_payload():
         _close_probe_server(server, thread)
 
 
-def test_web_main_reuses_existing_cfquant_port(monkeypatch):
+def test_web_main_reuses_existing_cfquant_port(monkeypatch, tmp_path):
+    from cfquant_web_server import main
+    monkeypatch.setenv('CFQUANT_WEB_HOST', '')
+    monkeypatch.setenv('CFQUANT_WEB_PORT', '')
+    status_file = tmp_path / 'running-center.json'
+    status_file.write_text('{"pid": 123, "running": true}', encoding='utf-8')
+    monkeypatch.setenv('CFQUANT_PIPE_HUB_STATUS_FILE', str(status_file))
     server, thread = _start_probe_server({"ok": True, "data": {"status": "ok"}})
     calls = []
     monkeypatch.setattr(web, "static_assets_available", lambda: True)
     monkeypatch.setattr(web, "ensure_lttx_started", lambda reason: calls.append(reason))
     try:
-        assert web.main(["--host", "127.0.0.1", "--port", str(server.server_address[1])]) == 0
+        assert main(["--host", "127.0.0.1", "--port", str(server.server_address[1])]) == 0
         assert calls == []
+        assert status_file.read_text(encoding='utf-8') == '{"pid": 123, "running": true}'
     finally:
         _close_probe_server(server, thread)
 
 
 def test_web_main_rejects_non_cfquant_port_owner(monkeypatch):
+    from cfquant_web_server import main
+    monkeypatch.setenv('CFQUANT_WEB_HOST', '')
+    monkeypatch.setenv('CFQUANT_WEB_PORT', '')
     server, thread = _start_probe_server({"ok": True, "data": {"status": "other"}})
     calls = []
     monkeypatch.setattr(web, "static_assets_available", lambda: True)
     monkeypatch.setattr(web, "ensure_lttx_started", lambda reason: calls.append(reason))
     try:
         with pytest.raises(RuntimeError, match="already occupied by another process"):
-            web.main(["--host", "127.0.0.1", "--port", str(server.server_address[1])])
+            main(["--host", "127.0.0.1", "--port", str(server.server_address[1])])
         assert calls == []
     finally:
         _close_probe_server(server, thread)

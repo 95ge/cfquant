@@ -112,6 +112,8 @@ class Supervisor:
             if not identity or not same_process(identity):
                 continue
             known.add(identity["pid"])
+            if other.get("parent") and same_process(other["parent"]):
+                known.add(other["parent"]["pid"])
             if (other.get("config") == norm(self.store.web_config) or own["lttx_port"] == other.get("lttx_port")
                     or own["pipe"] == other.get("pipe")):
                 raise RemoteError("resource_conflict", "目标资源已被运行中的部署占用")

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant.tests.test_cftrader_web import routing, order
 from cfquant.tx_trade_bridge import TxTradeBridge
 

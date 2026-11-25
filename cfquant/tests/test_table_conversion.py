@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant import level2, protocol
 
 

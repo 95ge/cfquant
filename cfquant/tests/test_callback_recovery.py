@@ -71,7 +71,7 @@ def environment(monkeypatch, tmp_path):
     monkeypatch.setenv("CFQUANT_HOME", str(tmp_path))
     monkeypatch.setenv("CFQUANT_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setenv("CFQUANT_LOG_DIR", str(tmp_path / "log"))
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
 
     hub = MemoryHub()
     monkeypatch.setattr(pipe_client, "connect_pipe", hub.connect)
@@ -156,8 +156,12 @@ def test_same_channel_refresh_wakes_repair_and_keeps_healthy_listener(environmen
         store.refresh_channels(["saved.callback"])
     assert hub.receivers["saved.callback"] is healthy
     assert len(hub.connections) == 2
+    # Hold the outage until the receive loop has observed EOF. A queued wake
+    # from the healthy refreshes must not hide that state by reconnecting first.
+    hub.available = False
     healthy.close()
     wait_until(lambda: not store._pipe_clients["saved.callback"]._started)
+    hub.available = True
     store.refresh_channels(["saved.callback"])
     wait_until(lambda: hub.receivers["saved.callback"] is not healthy)
     hub.emit("saved.callback", 99)

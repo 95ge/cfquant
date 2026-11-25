@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant.client import CfquantTimeout
 
 

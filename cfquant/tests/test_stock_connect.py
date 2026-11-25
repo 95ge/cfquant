@@ -5,7 +5,7 @@ from xml.dom import minidom
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant import account_routing, order_meta
 from cfquant.stock_connect import connect_account_type
 from cfquant.qmt_bridge import CfquantQmtBridge

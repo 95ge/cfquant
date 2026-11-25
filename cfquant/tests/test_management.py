@@ -16,7 +16,7 @@ from cfquant.tests.test_qmt_strategy_web import login_credentials
 
 @pytest.fixture
 def service(tmp_path, monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     root = tmp_path / 'service'
     root.mkdir()
     key = tmp_path / 'management.key'
@@ -135,6 +135,7 @@ def test_restart_waits_for_new_boot_and_preserves_listener(service, monkeypatch)
     assert result['boot_id'] == 'new-boot'
     assert result['auto_start_qmt'] is False
     assert requests[0]['port'] == service.server.server_port
+    assert requests[0]['apply_qmt_start_policy'] is True
 
 
 def test_update_and_rollback_over_http(service, monkeypatch):
@@ -285,7 +286,7 @@ def test_failed_remote_check_is_not_reported_as_up_to_date(service, monkeypatch)
 
 
 def test_no_auto_start_blocks_qmt_launch_and_scheduled_restart(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     monkeypatch.setenv('CFQUANT_QMT_AUTO_START', '0')
     monkeypatch.setattr(web, '_qmt_auto_login_update_session', lambda *a: None)
     monkeypatch.setattr(web, '_qmt_auto_login_paths', lambda *a: pytest.fail('Must not access QMT'))
@@ -315,6 +316,8 @@ def test_updates_reject_truthy_strings_that_could_close_qmt(tmp_path, operation)
 
 @pytest.fixture
 def release_state(service, monkeypatch):
+    monkeypatch.setattr(service.web, 'CORE_VERSION', '0.2.45')
+    monkeypatch.setattr(service.web, 'current_core_version', lambda: service.web.CORE_VERSION)
     state = {'current_version': '0.2.45', 'version_info': {
         'imported_core_version': '0.2.45', 'core_comparison': 'same',
         'remote': {'version': '0.2.45', 'sha256': 'same-hash'}},
@@ -353,6 +356,7 @@ def test_ensure_latest_applies_when_needed_and_restarts(service, release_state, 
     def install():
         assert service.web.PROJECT_UPDATER.is_busy()
         calls.append('install')
+        monkeypatch.setattr(service.web, 'CORE_VERSION', state['version_info']['remote']['version'])
         return {'updated': True, 'update_completed': True,
                 'current_version': state['version_info']['remote']['version']}
     monkeypatch.setattr(service.web, 'qmt_update_preflight', lambda **kw: calls.append(kw['body']))
@@ -470,6 +474,47 @@ def test_same_version_install_still_requires_restart(service, monkeypatch):
     assert service.runtime.version_info(include_remote=False)['restart_required'] is True
 
 
+@pytest.mark.parametrize('reported, expected', [
+    ({'running_core_version': '0.2.83', 'installed_core_version': '0.2.83', 'running_center_version': '0.2.82'}, None),
+    ({'running_core_version': '0.2.83', 'restart_required': True}, None),
+    ({'running_core_version': '0.2.82', 'installed_core_version': '0.2.82'}, '0.2.83'),
+])
+def test_restart_verification_rejects_stale_components(reported, expected):
+    from cfquant.management import _verify_reloaded_service
+    with pytest.raises(ManagementError) as error:
+        _verify_reloaded_service(reported, expected)
+    assert error.value.code == 'restart_incomplete'
+
+
+def test_restart_rejects_new_worker_boot_when_center_did_not_restart(monkeypatch):
+    runtime = RuntimeManager(base_url='http://127.0.0.1:1')
+    monkeypatch.setattr(runtime, 'status', lambda: {'boot_id': 'old-worker', 'center_pid': 123})
+    monkeypatch.setattr(runtime, '_request', lambda *a, **k: {})
+    monkeypatch.setattr(runtime, '_wait_service', lambda *a, **k: {
+        'boot_id': 'new-worker', 'center_pid': 123, 'ready': True})
+    with pytest.raises(ManagementError) as error:
+        runtime.restart()
+    assert error.value.code == 'restart_incomplete'
+
+
+def test_management_detects_old_center_even_when_worker_is_updated(service, monkeypatch, tmp_path):
+    web = service.web
+    status_file = tmp_path / 'center-status.json'
+    monkeypatch.setenv('CFQUANT_CENTER_PARENT_PID', '123')
+    monkeypatch.setenv('CFQUANT_PIPE_HUB_STATUS_FILE', str(status_file))
+    monkeypatch.setattr(web, 'CORE_VERSION', '0.2.83')
+    monkeypatch.setattr(web, 'current_core_version', lambda: '0.2.83')
+    status_file.write_text(json.dumps(dict(pid=123, running=True, core_version='0.2.82', process_created=100)), encoding='utf-8')
+    result = service.runtime.status()
+    assert result['running_core_version'] == '0.2.83'
+    assert result['running_center_version'] == '0.2.82' and result['restart_required']
+    assert web.public_service_health()['status'] == 'restart_required'
+    status_file.write_text(json.dumps(dict(pid=123, running=True, core_version='0.2.83', process_created=100)), encoding='utf-8')
+    assert not service.runtime.status()['restart_required']
+    monkeypatch.setattr(web.PROJECT_UPDATER, '_read_install_meta', lambda: {'updated_at': 200})
+    assert service.runtime.status()['center_restart_required']
+
+
 @pytest.mark.parametrize('managed', [True, False])
 def test_conditional_http_update_always_requires_credentials(service, monkeypatch, managed):
     if not managed:
@@ -481,13 +526,18 @@ def test_conditional_http_update_always_requires_credentials(service, monkeypatc
 
 def test_conditional_http_reloads_only_when_needed(service, release_state, monkeypatch):
     reloads = []
-    monkeypatch.setattr(service.web, 'schedule_web_reload', lambda server, info: reloads.append(info))
+    scheduled = threading.Event()
+    def schedule(server, info):
+        reloads.append(info)
+        scheduled.set()
+    monkeypatch.setattr(service.web, 'schedule_web_reload', schedule)
     latest = service.runtime._request('POST', '/api/project-updates/ensure-latest', {})
     assert latest['status'] == 'up_to_date' and reloads == []
     release_state['version_info']['remote']['sha256'] = 'new-hash'
     monkeypatch.setattr(service.web.PROJECT_UPDATER, '_update_from_official', lambda: {'update_completed': True})
     updated = service.runtime._request('POST', '/api/project-updates/ensure-latest', {})
     assert updated['status'] == 'updated'
+    assert scheduled.wait(1)  # The handler schedules reload after sending its response.
     assert reloads[0]['port'] == service.server.server_port
 
 

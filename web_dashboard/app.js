@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261125_02';
+const FRONTEND_VERSION = 'web_20261125_03';
 
 const state = {
   accountId: '',
@@ -7140,9 +7140,24 @@ async function waitForProjectReloadHealth(reloadInfo, options = {}) {
       }
       const payload = await response.json().catch(() => null);
       if (response.ok && payload && payload.ok && payload.data && payload.data.status === 'ok') {
-        return { ok: true, attempts };
+        const health = payload.data;
+        const verifyCenter = reloadInfo && reloadInfo.restart_scope === 'center';
+        const expectedVersion = reloadInfo && reloadInfo.expected_core_version;
+        if (health.ready === false || health.restart_required) {
+          lastError = '中心服务尚未就绪或仍有旧版本进程';
+        } else if (verifyCenter && (!health.boot_id || health.boot_id === reloadInfo.previous_boot_id)) {
+          lastError = '尚未确认新的中心服务进程';
+        } else if (verifyCenter && (!health.center_pid || health.center_pid === reloadInfo.previous_center_pid)) {
+          lastError = '尚未确认 A 程序完成重启';
+        } else if (expectedVersion && (health.running_core_version !== expectedVersion ||
+                   health.running_center_version !== expectedVersion)) {
+          lastError = '中心和业务进程的运行版本尚未与更新目标一致';
+        } else {
+          return { ok: true, attempts };
+        }
+      } else {
+        lastError = payload && payload.error ? payload.error : `HTTP ${response.status}：中心服务尚未恢复`;
       }
-      lastError = payload && payload.error ? payload.error : `HTTP ${response.status}`;
     } catch (error) {
       lastError = error && error.message ? error.message : String(error);
     }

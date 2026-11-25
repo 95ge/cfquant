@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 
 
 KEY = ("default", "trade", "default:STOCK:paper", "paper", "STOCK")

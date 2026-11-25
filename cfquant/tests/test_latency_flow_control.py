@@ -16,7 +16,7 @@ from cfquant.pipe_hub import CfquantPipeHub
 from cfquant.pipe_transport import PipeTxClient, loads_pipe_message
 from cfquant.pipe_transport import create_pipe_instance, connect_pipe, wait_for_pipe_client
 from cfquant.quote_history import QuoteHistory
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 
 
 def eventually(predicate, timeout=3):

@@ -10,7 +10,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 import cfquant.tx_trade_bridge as tx_trade_bridge_module
 from cfquant import order_meta
 from cfquant import xtconstant

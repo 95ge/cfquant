@@ -21,7 +21,11 @@ def main(argv=None):
     parser.add_argument("--home", "--state-dir", dest="home", help="Writable cfquant state directory.")
     parser.add_argument("--runtime-dir", help="Override the runtime directory.")
     parser.add_argument("--status-file", help="Override the PipeHub status JSON file.")
+    parser.add_argument("--bridge-only", action="store_true", help="Diagnostic transport only, without A application services.")
+    parser.add_argument("--no-web", action="store_true", help="Run core services without Web pages.")
     args = parser.parse_args(argv)
+    if args.pipe_name:
+        os.environ['CFQUANT_PIPE_NAME'] = args.pipe_name
     if args.home:
         home = _path(args.home)
         os.environ["CFQUANT_HOME"] = home
@@ -31,13 +35,21 @@ def main(argv=None):
         os.environ["CFQUANT_RUNTIME_DIR"] = _path(args.runtime_dir)
     if args.status_file:
         os.environ["CFQUANT_PIPE_HUB_STATUS_FILE"] = _path(args.status_file)
+    if args.no_web:
+        os.environ["CFQUANT_WEB_ENABLED"] = "0"
 
+    if not args.bridge_only:
+        from cfquant.center_services import configure_center_paths
+        configure_center_paths()
+    from cfquant.center_services import configure_center_transport
+    configure_center_transport()
     from cfquant.pipe_hub import run_pipe_hub
 
     run_pipe_hub(
-        pipe_name=args.pipe_name,
+        pipe_name=os.environ.get('CFQUANT_PIPE_NAME'),
         show=not args.quiet,
         default_request_channel=args.default_request_channel,
+        core_services=not args.bridge_only,
     )
 
 

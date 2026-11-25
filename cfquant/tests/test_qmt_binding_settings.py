@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
 from cfquant.pipe_bridge import PipeNormalQmtBridge
 from cfquant.diagnostic_context import versioned_message

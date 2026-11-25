@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 
 
-LOG_COMPONENTS = ("web", "startup", "lttx", "pipe_hub", "qmt_bridge")
+LOG_COMPONENTS = ("web", "center", "startup", "lttx", "pipe_hub", "qmt_bridge")
 
 
 def component_log_dirs(root, create=True):

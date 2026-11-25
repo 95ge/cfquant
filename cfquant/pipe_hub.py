@@ -34,7 +34,10 @@ class CfquantPipeHub(object):
     events back to the originating API client.
     """
 
-    def __init__(self, pipe_name=None, show=True, default_request_channel="cfquant.normal.request"):
+    def __init__(self, pipe_name=None, show=True, default_request_channel="cfquant.normal.request", core_services=False):
+        import psutil
+        self.process_created = psutil.Process().create_time()
+        self.state_dir = os.path.abspath(os.environ.get("CFQUANT_HOME") or os.getcwd())
         self.pipe_name = normalize_pipe_name(pipe_name or DEFAULT_PIPE_NAME)
         self.show = show
         self.verbose_rpc = str(os.environ.get("CFQUANT_PIPE_HUB_VERBOSE_RPC", "0")).lower() in ("1", "true", "yes", "on")
@@ -82,14 +85,30 @@ class CfquantPipeHub(object):
         self._status_thread = None
         self.status_interval = max(.05, float(os.environ.get("CFQUANT_PIPE_STATUS_INTERVAL", ".25")))
         self.center = None
+        self.services = None
+        self.core_services = core_services
+        self._owns_status = False
+        self._close_lock = threading.Lock()
+        self._pipe_guard = None
 
     def start(self):
         if self.running:
             return self
-        self.running = True
-        from .bridge_center import BridgeCenter
+        if self.core_services:
+            from .center_runtime import service_address_available
+            if not service_address_available():
+                return self
+        from .bridge_center import BridgeCenter, _CenterGuard
+        self._pipe_guard = _CenterGuard(identity='pipe:' + self.pipe_name.lower(), label='QMT named pipe')
+        self._pipe_guard.acquire()
         self.center = BridgeCenter(self)
         self.center.start()
+        self.running = True
+        self._owns_status = True
+        if self.core_services:
+            from .center_services import ServiceSupervisor
+            self.services = ServiceSupervisor(self)
+            self.services.start()
         self._status_stop.clear()
         self._status_thread = None
         self._log("pipe hub started pipe=%s" % self.pipe_name)
@@ -117,7 +136,13 @@ class CfquantPipeHub(object):
         return self
 
     def close(self):
+        with self._close_lock:
+            self._close()
+
+    def _close(self):
         self.running = False
+        if self.services is not None:
+            self.services.close()
         if self.center is not None:
             self.center.close()
         self._status_stop.set()
@@ -154,7 +179,11 @@ class CfquantPipeHub(object):
                 pass
         if self._status_thread is not None and self._status_thread is not threading.current_thread():
             self._status_thread.join(1)
-        self._persist_status()
+        if self._owns_status:
+            self._persist_status()
+            self._owns_status = False
+        if self._pipe_guard is not None:
+            self._pipe_guard.close()
 
     def _client_loop(self, conn):
         role = "api"
@@ -1033,6 +1062,8 @@ class CfquantPipeHub(object):
             "center": self.center.status() if self.center is not None else None,
             "running": self.running,
             "pid": os.getpid(),
+            "process_created": self.process_created,
+            "state_dir": self.state_dir,
             "qmt_channels": qmt_channels,
             "qmt_rx_channels": qmt_rx_channels,
             "qmt_tx_channels": qmt_tx_channels,
@@ -1048,6 +1079,8 @@ class CfquantPipeHub(object):
         }
 
     def _write_status(self):
+        if self.running:
+            self._owns_status = True
         self._status_dirty.set()
         with self._senders_lock:
             if self.running and self._status_thread is None:
@@ -1096,11 +1129,12 @@ class CfquantPipeHub(object):
                     pass
 
 
-def run_pipe_hub(pipe_name=None, show=True, default_request_channel="cfquant.normal.request"):
+def run_pipe_hub(pipe_name=None, show=True, default_request_channel="cfquant.normal.request", core_services=False):
     hub = CfquantPipeHub(
         pipe_name=pipe_name,
         show=show,
         default_request_channel=default_request_channel,
+        core_services=core_services,
     )
     try:
         return hub.start()

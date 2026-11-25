@@ -325,10 +325,10 @@ class LTtxRpcClient(object):
 
 class WebLttxRpcClient(LTtxRpcClient):
     """
-    外部 Python 默认路由客户端。
+    兼容旧 LTtx 路由的客户端，同时供中心客户端复用订阅协议。
 
-    请求仍然通过 LTtx 发送，但目标频道是 Web 服务注册的统一路由频道。
-    Web 服务再根据账号配置选择 ctypes 通用桥或 LTtx 高级桥。
+    SDK 行情、交易和应用服务请求统一由 CenterRpcClient 发往独立中心 A。
+    该类的旧频道发现仅供显式使用历史客户端的程序兼容。
     """
 
     def __init__(
@@ -391,41 +391,15 @@ class WebLttxRpcClient(LTtxRpcClient):
         super(WebLttxRpcClient, self).close()
 
 
-def _registry_has_web_route(registry):
-    if not isinstance(registry, dict):
-        return False
-    web_route = registry.get("web_route") if isinstance(registry.get("web_route"), dict) else {}
-    return bool(registry.get("web_request_channel") and web_route.get("enabled", True))
-
-
 def create_rpc_client(request_channel=None, timeout=None, client_id=None, transport=None, bridge_id=None):
     cfg = get_config()
-    mode = str(transport or cfg.get("transport") or "auto").lower()
-    registry = {}
-    if mode == "auto":
-        center = load_lttx_registry(cfg, key='cfquant.center')
-        if (center.get('center') or {}).get('enabled') and time.time() - center.get('updated_at', 0) < 15:
-            from .center_client import CenterRpcClient
-            return CenterRpcClient(timeout=timeout or cfg.get('timeout'), client_id=client_id,
-                                   request_channel=request_channel, registry=center)
-        registry = load_lttx_registry(cfg)
-        if _registry_has_web_route(registry):
-            return WebLttxRpcClient(
-                timeout=timeout or cfg.get("timeout"),
-                client_id=client_id,
-                registry=registry,
-            )
-        mode = str(registry.get("direct_fallback_transport") or "ctypes").lower()
-    if mode == 'center':
+    mode = str(transport or cfg.get("transport") or "auto").strip().lower()
+    # Discovery availability must not change the SDK's destination. Legacy Web
+    # settings also use A; application services are routed by CenterRpcClient.
+    if mode in ("auto", "center") + WEB_LTTX_TRANSPORTS:
         from .center_client import CenterRpcClient
         return CenterRpcClient(timeout=timeout or cfg.get('timeout'), client_id=client_id,
                                request_channel=request_channel)
-    if mode in WEB_LTTX_TRANSPORTS:
-        return WebLttxRpcClient(
-            timeout=timeout or cfg.get("timeout"),
-            client_id=client_id,
-            registry=registry or None,
-        )
     if mode in PIPE_TRANSPORTS:
         from .pipe_client import PipeRpcClient
 
@@ -455,8 +429,9 @@ def get_client():
     with _client_lock:
         if _default_client is None:
             cfg = get_config()
+            mode = str(cfg.get("transport") or "auto").strip().lower()
             _default_client = create_rpc_client(
-                request_channel=None if cfg.get("transport") in ("auto", "center") else cfg.get("request_channel"),
+                request_channel=None if mode in ("auto", "center") + WEB_LTTX_TRANSPORTS else cfg.get("request_channel"),
                 timeout=cfg.get("timeout"),
                 client_id=cfg.get("client_id"),
             )

@@ -38,7 +38,7 @@ notify.send(message, account_id=None, *, title="", webhook_url=None,
 
 - 同时提供 `webhook_url` 和 `provider` 时，完整使用本次配置；`secret` 只使用本次提供的值，不继承绑定的密钥，也不更新绑定。
 - 未覆盖地址时，必须传资金账号 `account_id` 或绑定唯一标识 `account_key`。按需用 `account_type`、`bridge_id` 消除同号多绑定的歧义。无匹配、多匹配、未启用账号推送或未配置地址均明确报错，不回退到其他账号或全局监控通知。
-- 显式地址由运行 SDK 的程序直接访问，无需 Web/QMT；账号配置方式通过已配置的 LTtx 进入 cfquant Web 服务，由服务端发送，不依赖 QMT 在线。远程服务仍使用 `cfquant.configure(host=..., port=..., token=...)` 配置连接。切换连接配置会重置通知连接。
+- 显式地址由运行 SDK 的程序直接访问；账号配置方式通过已配置的 LTtx 进入 A，由 A 的独立通知执行队列发送，不依赖页面或 QMT 在线。远程服务仍使用 `cfquant.configure(host=..., port=..., token=...)` 配置连接。切换连接配置会重置通知连接。
 - 这是同步接口，`timeout` 默认 8 秒、范围 1–30 秒；账号方式另预留 5 秒 RPC 等待余量。不自动重试，超时后先核对接收端，避免重复发送。不要在要求低延迟的行情/交易回调中同步等待网络，可放到自己的后台队列。
 - 返回 `sent=True` 表示 Webhook 平台确认接收，包含 `provider`、`source`（`explicit` / `account`）、`http_status`；账号方式额外返回 `account_key`。不代表最终用户已读。参数错误抛 `ValueError`；直接发送失败抛 `notify.WebhookError`；账号服务失败按 SDK 返回 `CfquantError` / `CfquantTimeout`。
 - 企业微信文本（含标题）最多 2048 个 UTF-8 字节，其余消息正文在本接口限制为 20000 字节；机器人自身的关键词、安全和频率规则仍生效。标题最多 200 字符。

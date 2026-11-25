@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-import cfquant_web_server as web
+from cfquant import runtime_services as web
 from cfquant import normal_bridge, protocol, tx_trade_bridge as core
 from cfquant.tests.test_market_timing import Clock, implementation, rpc
 from cfquant.tests.test_lite_qmt_dispatch import lite, enqueue

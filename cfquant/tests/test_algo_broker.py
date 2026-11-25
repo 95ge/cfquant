@@ -78,7 +78,7 @@ def test_sdk_algorithms_use_service_and_remember_account(monkeypatch):
 
 
 def test_order_reconciliation_queries_the_configured_market_bridge(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     calls = []
     monkeypatch.setattr(web, "account_market_route_config", lambda **kwargs: ({}, {"SH":{"bridge_id":"sh-child"}}))
     monkeypatch.setattr(web, "resolve_account_mode", lambda *args, **kwargs:"lite")
@@ -90,7 +90,7 @@ def test_order_reconciliation_queries_the_configured_market_bridge(monkeypatch):
 
 
 def test_external_algorithm_route_restores_account_identity(monkeypatch):
-    import cfquant_web_server as web
+    from cfquant import runtime_services as web
     submitted = []
     monkeypatch.setattr(web, "resolve_bridge_id", lambda **kwargs:"test-bridge")
     monkeypatch.setattr(web, "account_key_for", lambda *args:"test-key")

@@ -136,7 +136,7 @@ def test_cached_results_are_not_mutable_shared_state():
 
 @pytest.fixture
 def web(monkeypatch):
-    import cfquant_web_server as module
+    from cfquant import runtime_services as module
     def unexpected(*args, **kwargs):
         pytest.fail("calendar must not route to QMT or select an account")
     monkeypatch.setattr(module, "data_provider_candidates", unexpected)

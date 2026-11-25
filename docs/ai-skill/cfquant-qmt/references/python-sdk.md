@@ -61,26 +61,25 @@ from cfquant.xttype import StockAccount
 - `FUTURE_OPTION` for futures-option accounts.
 - `STOCK_OPTION` for stock/ETF option accounts.
 
-`session_id` is retained as a compatibility constructor argument in `XtQuantTrader`. If it is omitted or set to `0`, `cfquant` auto-assigns a positive integer for the trader instance. Real routing still comes from Web account binding, account type, account key, and `bridge_id`.
+`session_id` is retained as a compatibility constructor argument in `XtQuantTrader`. If it is omitted or set to `0`, `cfquant` auto-assigns a positive integer for the trader instance. Center A routes requests using saved account bindings, account type, account key, and `bridge_id`.
 
 ## Default Routing
 
 Default behavior is `CFQUANT_TRANSPORT=auto`; most users should not call `configure()` manually.
 
-Auto route flow from the docs:
+Current source routing:
 
-1. Web service starts and writes runtime registration to LTtx.
-2. External `cfquant` reads that registration when it starts.
-3. If discovery succeeds, requests enter the Web unified route channel.
-4. Web routes the request through the bound extreme-mode bridge.
-5. If Web discovery fails, `auto` falls back to the configured local PipeHub route.
+1. Basic market and trading requests use `SDK → LTtx → center A → QMT` through `cfquant.center.request`.
+2. Both `auto` and `center`, plus legacy `web` / `web_lttx` aliases, select A without consulting discovery records.
+3. If A is unavailable, requests fail or time out; the SDK keeps the same destination for subsequent requests. It does not fall back to Web or PipeHub.
+4. Whole quotes subscribe directly to LTtx's `all_gp_hq`. Algorithm tasks, conditional tasks, and notifications also enter A, which dispatches them to its independently managed application worker. Web display is optional.
+
+Published versions 0.2.82/0.2.83 still have the old auto fallback. With those versions, explicitly configure `transport="center"` before creating SDK clients.
 
 Relevant environment variables:
 
 ```text
 CFQUANT_TRANSPORT=auto
-CFQUANT_DISCOVERY_KEY=cfquant.runtime
-CFQUANT_WEB_REQUEST_CHANNEL=cfquant.web.request
 CFQUANT_LTTX_HOST=127.0.0.1
 CFQUANT_LTTX_PORT=2049
 CFQUANT_LTTX_TOKEN=LTtx
@@ -88,17 +87,16 @@ CFQUANT_LTTX_TOKEN=LTtx
 
 Manual routing should be treated as troubleshooting or special deployment.
 
-Web unified route:
+Explicit center route:
 
 ```python
 from cfquant import configure
 
 configure(
-    transport="web_lttx",
+    transport="center",
     host="127.0.0.1",
     port=2049,
     token="LTtx",
-    web_request_channel="cfquant.web.request",
 )
 ```
 

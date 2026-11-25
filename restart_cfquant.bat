@@ -31,8 +31,11 @@ if defined CFQUANT_RESTART_RESTART_LTTX (
 set "STOP_CODE=0"
 if errorlevel 1 set "STOP_CODE=1"
 if not "%STOP_CODE%"=="0" (
-    echo cfquant stop returned %STOP_CODE%. Will continue only if web port %WEB_PORT% is released.
-    call :log "stop returned code=%STOP_CODE%"
+    echo cfquant stop returned %STOP_CODE%. Restart aborted because old services may still be running.
+    call :log "restart aborted because stop failed code=%STOP_CODE%"
+    call :pause_on_error
+    endlocal
+    exit /b 1
 )
 
 set "CFQUANT_RESTART_WAIT_SECONDS=20"
