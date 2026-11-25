@@ -18,10 +18,22 @@ from .qmt_native_files import NativeWorkerFiles, sweep_worker_directories
 
 
 LOGIN_METHODS = frozenset(("already_logged_in", "state", "select_account", "submit",
+                           "configure_login", "complete_login",
                            "fill", "solve_captcha", "wait_outcome", "acknowledge_failure", "diagnostics",
                            "request_exit", "confirm_exit"))
 STRATEGY_METHODS = frozenset(("snapshot", "start_strategy", "notices", "dismiss_notice"))
 MAX_MESSAGE = 4 * 1024 * 1024
+
+
+def _worker_command():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--cfquant-native-worker"]
+    # Embedded Python ignores cwd/PYTHONPATH via its ._pth file. Pin the same
+    # package root as the host instead of silently loading an older wheel.
+    root = str(Path(__file__).resolve().parents[1])
+    bootstrap = ("import runpy, sys; sys.path.insert(0, %s); "
+                 "runpy.run_module('cfquant.qmt_native_worker', run_name='__main__')" % ascii(root))
+    return [sys.executable, "-u", "-c", bootstrap]
 
 
 class QmtAutomationError(VersionedErrorMixin, RuntimeError):
@@ -55,8 +67,7 @@ class NativeWorker:
         env.update(self.files.environment())
         worker_command = command
         if worker_command is None:
-            worker_command = ([sys.executable, "--cfquant-native-worker"] if getattr(sys, "frozen", False)
-                              else [sys.executable, "-u", "-m", "cfquant.qmt_native_worker"])
+            worker_command = _worker_command()
         try:
             self.process = subprocess.Popen(
                 worker_command,

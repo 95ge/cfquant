@@ -85,6 +85,25 @@ def test_already_logged_in_does_not_submit():
     assert not terminal.calls
 
 
+@pytest.mark.parametrize("logged_in", [False, True])
+@pytest.mark.parametrize("outcome", ["trading_account_not_found", "trading_account_login_failed",
+                                     "login_environment_unverified", "trading_account_pending"])
+def test_platform_login_is_not_success_until_target_account_is_ready(logged_in, outcome):
+    terminal = Terminal(logged_in=logged_in)
+    terminal.complete_login = lambda: {"ready": False, "outcome": outcome}
+    result = auto_login(terminal, lambda: "synthetic-fixture")
+    assert not result["login_succeeded"]
+    assert result["platform_logged_in"]
+    assert result["outcome"] == outcome
+    assert terminal.calls.count("submit") == (0 if logged_in else 1)
+
+
+def test_ready_target_account_allows_login_success():
+    terminal = Terminal()
+    terminal.complete_login = lambda: {"ready": True}
+    assert auto_login(terminal, lambda: "synthetic-fixture")["login_succeeded"]
+
+
 @pytest.mark.parametrize("notice", ["challenge", "network_error"])
 def test_existing_notice_blocks_submission(notice):
     terminal = Terminal(notice=notice)
@@ -335,6 +354,55 @@ def test_graceful_exit_verifies_logged_in_account_before_posting_close():
     assert messages == [(456, 0x0010, 0, 0)]
 
 
+@pytest.mark.parametrize("disappeared", [True, False])
+def test_exit_confirmation_skips_only_windows_destroyed_during_poll(disappeared):
+    from types import SimpleNamespace
+    from cfquant.qmt_component_login import QtLoginBackend
+    backend = QtLoginBackend.__new__(QtLoginBackend)
+    backend.main_hwnd = 100
+    backend.windows = lambda: [100, 101, 102]
+    backend.gui = SimpleNamespace(IsWindow=lambda hwnd: not disappeared)
+    calls = []
+    def confirm(hwnd):
+        calls.append(hwnd)
+        if hwnd == "101":
+            raise RuntimeError("Target window no longer exists")
+        return {"result": {"confirmed": True}}
+    backend.api = SimpleNamespace(confirmexit=confirm)
+    if disappeared:
+        assert backend.confirm_exit()["confirmed"]
+        assert calls == ["101", "102"]
+    else:
+        with pytest.raises(RuntimeError):
+            backend.confirm_exit()
+        assert calls == ["101"]
+
+
+@pytest.mark.parametrize("environment, marker, ready", [
+    ("live", 2, True), ("simulation", 1, True),
+    ("live", 1, False), ("simulation", 2, False), ("live", 0, False),
+])
+def test_fund_login_requires_matching_verified_environment(environment, marker, ready):
+    from types import SimpleNamespace
+    from cfquant.qmt_component_login import QtLoginBackend
+    backend = QtLoginBackend.__new__(QtLoginBackend)
+    calls = []
+    backend.api = SimpleNamespace(
+        broker=lambda: "guosen", environment=lambda *args: marker,
+        configurelogin=lambda environment: None,
+        completeaccount=lambda *args: calls.append(args) or {"result": {"ready": True}},
+    )
+    backend.configure_login(environment, "fixture-fund", "STOCK")
+    backend.main_hwnd, backend.timeout, backend.should_cancel = 456, 1, lambda: False
+    result = backend.complete_login()
+    assert result["ready"] is ready
+    if ready:
+        assert calls == [("456", "fixture-fund", "STOCK")]
+    else:
+        assert result["outcome"] == "login_environment_unverified"
+        assert calls == []
+
+
 def test_native_outcome_wait_can_be_cancelled_before_timeout(login_clock):
     from types import SimpleNamespace
     from cfquant.qmt_component_login import QtLoginBackend
@@ -368,6 +436,8 @@ def test_cli_uses_isolated_backend_and_closes_it(tmp_path, monkeypatch, capsys):
     calls = []
     class Backend:
         pid = 123
+        def configure_login(self, environment, account, account_type):
+            assert (environment, account, account_type) == ("live", "", "STOCK")
         def select_account(self, account, replace=False):
             calls.append((account, replace))
         def diagnostics(self):

@@ -6,6 +6,7 @@ import re
 import shutil
 import stat
 import threading
+import tempfile
 import time
 import uuid
 
@@ -143,3 +144,71 @@ class NativeWorkerFiles:
 
     def close(self):
         return remove_worker_directory(self.root, self.path)
+
+
+def cleanup_legacy_frida_temp(root=None, retention_days=1):
+    """Collect old Frida DLL bundles in system TEMP, never arbitrary temp files.
+
+    Legacy bundles have no cfquant owner marker. Require the exact known layout
+    and age every entry; Windows refuses deletion of DLLs still in use. Locked
+    files remain for the next maintenance pass.
+    """
+    root = Path(root if root is not None else tempfile.gettempdir()).resolve()
+    cutoff = time.time() - max(1, int(retention_days)) * 86400
+    result = dict(deleted_directories=0, deleted_files=0, deleted_bytes=0, failed_files=0)
+    if not root.is_dir():
+        return result
+    for directory in root.iterdir():
+        try:
+            if (not re.fullmatch(r"frida-[0-9a-f]{32}", directory.name)
+                    or _linked(directory) or not directory.is_dir()
+                    or directory.resolve().parent != root):
+                continue
+            # Enumerate only the known shallow structure, without following links.
+            entries = list(directory.iterdir())
+            files, directories = [], []
+            valid = directory.stat().st_mtime < cutoff
+            for entry in entries:
+                if _linked(entry) or entry.stat().st_mtime >= cutoff:
+                    valid = False
+                    break
+                if entry.is_dir():
+                    if entry.name not in ('arm64', 'x86', 'x86_64'):
+                        valid = False
+                        break
+                    directories.append(entry)
+                    children = list(entry.iterdir())
+                else:
+                    children = [entry]
+                for child in children:
+                    if (_linked(child) or not child.is_file()
+                            or child.name not in ('frida-agent.dll', 'dbghelp.dll', 'symsrv.dll')
+                            or child.stat().st_mtime >= cutoff):
+                        valid = False
+                        break
+                    files.append(child)
+                if not valid:
+                    break
+            if not valid:
+                continue
+            for file in files:
+                try:
+                    size = file.stat().st_size
+                    file.unlink()
+                    result['deleted_files'] += 1
+                    result['deleted_bytes'] += size
+                except OSError:
+                    result['failed_files'] += 1
+            for child in directories:
+                try:
+                    child.rmdir()
+                except OSError:
+                    pass
+            try:
+                directory.rmdir()
+                result['deleted_directories'] += 1
+            except OSError:
+                pass
+        except OSError:
+            continue
+    return result

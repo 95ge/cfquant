@@ -289,22 +289,27 @@ def test_actual_windows_blocked_pipe_can_be_cancelled_by_sender_watchdog(owner, 
             process.close()
 
 
-def test_quote_history_spill_compaction_filter_and_clear_keep_exact_values():
-    history = QuoteHistory(max_events=4, memory_bytes=200)
+def test_quote_history_memory_limit_filter_and_clear_keep_exact_values(monkeypatch):
+    monkeypatch.setattr('tempfile.TemporaryFile', lambda *a, **kw: pytest.fail('quote history spooled'))
+    history = QuoteHistory(max_events=4, memory_bytes=900000)
     expected = []
     for seq in range(20):
         event = {'seq': seq, 'subscribe_id': str(seq % 2), 'data': {'name': '测试', 'large': 2**63 + seq, 'rows': 'x' * 200000}}
         expected.append(event)
         history.append(event, json.dumps({'event': event}, ensure_ascii=False).encode())
-        assert history.status()['memory_bytes'] <= 200
+        assert history.status()['memory_bytes'] <= 900000
     assert history.latest(since=0, limit=4) == expected[-4:]
     assert history.latest(since=16, subscribe_id='1') == expected[17::2]
     status = history.status()
-    assert status['disk_bytes'] <= 1024 * 1024 + status['disk_live_bytes'] * 2
+    assert status['disk_bytes'] == status['disk_live_bytes'] == 0
+    assert status['evicted_batches'] == 16
     history.clear('1')
     assert history.latest(since=0) == [expected[16], expected[18]]
     history.clear()
-    assert len(history) == 0 and history.status()['disk_bytes'] == 0 and history._file is None
+    assert len(history) == 0 and history.status()['memory_bytes'] == 0
+    history.memory_limit = 200
+    history.append(expected[-1], json.dumps({'event': expected[-1]}).encode())
+    assert len(history) == 0 and history.status()['evicted_batches'] == 17
 
 
 def test_callback_backlog_spills_without_losing_order_and_closes_tempfile(monkeypatch):

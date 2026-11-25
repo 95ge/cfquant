@@ -123,4 +123,5 @@ def subscribe_whole_quote(code_list, callback, sample_limit=None):
         received_at_ms = time.time() * 1000.0
         callback(latency_report(payload, received_at_ms, sample_limit))
 
-    return xtdata._subscribe_quote_request(ACTION, {"code_list": code_list}, on_quote)
+    from .market_channel import subscribe
+    return subscribe(code_list, on_quote, diagnostic=True)

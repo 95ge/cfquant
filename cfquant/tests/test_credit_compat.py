@@ -450,3 +450,62 @@ def test_smt_missing_native_capability_reports_unavailable():
     _, trader = wire({})
     with pytest.raises(NotImplementedError, match="QMT does not expose"):
         trader.smt_negotiate_order_async(ACCOUNT, "SRC-1", "600000.SH", 7, 100, 0.02)
+
+
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("kind", ["order", "trade"])
+def test_credit_order_identity_survives_queries_and_callbacks(native, kind):
+    from cfquant.xttype import XtCreditOrder, XtCreditDeal
+
+    raw = dict(account_id="C123", account_type=3, stock_code="600000.SH",
+               order_status=50, contract_no="contract", stock_code1="600000.SH")
+    if native:
+        raw.update(m_nRef=123, m_strOrderSysID="000456",
+                   m_strStrategyName="alpha", m_strRemark="remark")
+    else:
+        raw.update(order_id=123, order_sysid="000456",
+                   strategy_name="alpha", order_remark="remark")
+    original = dict(raw)
+    trader = XtQuantTrader()
+    trader._trade_request = lambda *args, **kwargs: [dict(raw)]
+    received = []
+    trader.register_callback(SimpleNamespace(**{"on_stock_" + kind: received.append}))
+    try:
+        query = trader.query_stock_orders if kind == "order" else trader.query_stock_trades
+        row = query(ACCOUNT)[0]
+        trader._make_trader_handler("on_stock_" + kind)(dict(raw))
+        expected_type = XtCreditOrder if kind == "order" else XtCreditDeal
+        for result in [row, received[0], expected_type.from_any(row)]:
+            assert isinstance(result, expected_type)
+            assert result.account_type == xtconstant.CREDIT_ACCOUNT
+            assert result.order_id == 123
+            assert result.order_sysid == "000456"
+            assert result.strategy_name == "alpha"
+            assert result.order_remark == "remark"
+            assert result.contract_no == "contract"
+            assert result.stock_code1 == "600000.SH"
+            if native:
+                assert result.m_strOrderSysID == "000456"
+                assert result.m_strStrategyName == "alpha"
+        if kind == "order":
+            assert trader.query_stock_order(ACCOUNT, "000456").order_id == 123
+            requests = []
+            trader._trade_request = lambda action, params: requests.append((action, params)) or 0
+            assert trader.cancel_order_stock_sysid(ACCOUNT, 1, row.order_sysid) == 0
+            assert requests[0][1]["sysid"] == "000456"
+        assert raw == original
+    finally:
+        trader.stop()
+
+
+def test_credit_legacy_positional_constructors_remain_supported():
+    from cfquant.xttype import XtCreditOrder, XtCreditDeal
+
+    order = XtCreditOrder("C123", "600000.SH", 123, 0, 23, 100, 11,
+                          10.0, 0, 0.0, 50, "", "remark", "contract", "600000.SH")
+    trade = XtCreditDeal("C123", "600000.SH", "deal", 0, 10.0,
+                         100, 123, "contract", "600000.SH")
+    for result in (order, trade):
+        assert result.order_id == 123
+        assert result.account_type == xtconstant.CREDIT_ACCOUNT
+        assert result.contract_no == "contract"

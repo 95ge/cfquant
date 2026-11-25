@@ -49,7 +49,7 @@ def test_crash_recovery_debounces_deduplicates_and_backs_off(watchdog):
     assert len(job.run_pending()) == 1
 
 
-@pytest.mark.parametrize("block", ["disabled", "binding", "policy", "login", "runtime", "deploy"])
+@pytest.mark.parametrize("block", ["disabled", "binding", "policy", "login", "runtime", "deploy", "bootstrap_error"])
 def test_does_not_interfere_with_disabled_or_owned_transitions(watchdog, monkeypatch, block):
     web, _, row, job, running, calls, clock = watchdog
     job.run_pending()
@@ -64,6 +64,8 @@ def test_does_not_interfere_with_disabled_or_owned_transitions(watchdog, monkeyp
         web.QMT_COMPONENT_JOBS[web._qmt_component_job_key(row["qmt_dir"])] = SimpleNamespace(is_alive=lambda: True)
     elif block == "runtime":
         web.QMT_PYTHON_RUNTIME_JOBS["task"] = {"state": "running", "qmt_dir": row["qmt_dir"]}
+    elif block == "bootstrap_error":
+        web._qmt_auto_login_update_session(row, {"strategy_bootstrap_phase": "error", "pid": 123})
     else:
         web._qmt_auto_login_update_session(row, {"state": "waiting_deploy"})
     for clock[0] in (10, 20, 600):

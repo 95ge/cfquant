@@ -103,12 +103,12 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
     expect(page.locator('#bindingStrategyRunMode')).to_have_value('1')
     page.locator('#bindingAccountId').fill('1000000001')
     page.locator('#bindingQmtDir').fill('D:\\QMT-FAKE')
+    page.locator('#bindingMode').select_option('lite')
+    page.locator('#bindingNavigation [data-binding-page="login"]').click()
     page.locator('#bindingQmtLoginAccount').fill('fixture-login')
     page.locator('#bindingQmtLoginPassword').fill('synthetic-secret')
-    page.locator('#bindingMode').select_option('lite')
+    page.locator('#bindingNavigation [data-binding-page="environment"]').click()
     page.locator('#bindingStrategyRunMode').select_option('1')
-    page.locator('#bindingStrategySettings details summary').click()
-    page.locator('#bindingStrategyKey_normal').fill('2____101____201____49____1000000001____')
     page.locator('#bindingStrategySettings').scroll_into_view_if_needed()
     assert page.locator('#bindingForm').evaluate('(node) => node.scrollWidth <= node.clientWidth')
     page.screenshot(path=str(tmp_path / 'qmt-strategy-binding.png'))
@@ -131,8 +131,7 @@ def test_binding_sends_strategy_flags_and_displays_pending_deployment(page, fron
     assert len(saved) == 1
     assert saved[0]['qmt_dir'].endswith('\\bin.x64')
     assert saved[0]['qmt_strategy'] == {'enabled': True, 'live': True, 'autorun': True,
-        'stock': 'SH000300', 'account_keys': {'normal': '2____101____201____49____1000000001____',
-                                            'trade': '', 'SH': '', 'SZ': ''}}
+        'stock': 'SH000300', 'account_keys': {}}
     expect(page.locator('#bindingQmtGuideOverlay')).to_be_visible()
     expect(page.locator('#bindingQmtGuideInstruction')).to_contain_text('请完全退出')
     expect(page.locator('#bindingQmtGuideOverlay [data-qmt-script-copy]')).to_have_count(0)
@@ -273,6 +272,7 @@ def test_binding_dialog_help_tooltips_stay_in_viewport(page, frontend_url):
     expect(page.locator('#helpTooltipLayer')).to_contain_text('保存绑定后系统自动同步项目代码')
     assert_help_tooltip_in_viewport(page)
 
+    page.locator('#bindingNavigation [data-binding-page="login"]').click()
     auto_start_trigger = page.locator('#bindingQmtAutoLoginSettings .help-tooltip-trigger')
     auto_start_trigger.scroll_into_view_if_needed()
     auto_start_trigger.click()
@@ -295,7 +295,7 @@ def test_startup_reminders_distinguish_pending_failure_disabled_and_manual_run(p
         ({'qmt_auto_login': {'enabled': True, 'error': 'launch failed'}}, 'QMT 自动启动失败'),
         ({'qmt_strategy_deploy': {'error': 'permission denied'}}, '策略部署失败'),
         ({'qmt_strategy_deploy': {'targets': [{'state': 'error', 'error': 'invalid directory'}]}}, '策略部署失败'),
-        ({'qmt_strategy_deploy': {'targets': [{'state': 'waiting_account'}]}}, '补充模型账号 Key'),
+        ({'qmt_strategy_deploy': {'targets': [{'state': 'waiting_account'}]}}, '等待 QMT 登录生成账号绑定键'),
         ({'qmt_auto_login': {'enabled': True, 'strategy_bootstrap_phase': 'waiting_login',
                             'strategy_deploy_message': '正在自动完成首次登录和重新启动'},
           'qmt_strategy_deploy': {'targets': [{'state': 'waiting_account'}]}}, '正在自动完成首次登录'),
@@ -362,14 +362,15 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     }""")
     expect(page.locator('#bindingQmtAutoLogin')).to_be_checked()
     page.locator('#bindingDisplayName').fill('国金证券')
+    page.locator('#bindingAccountId').fill('8885060548')
+    page.locator('#bindingQmtDir').fill('D:\\国金证券QMT交易端\\bin.x64')
+    page.locator('#bindingNavigation [data-binding-page="login"]').click()
     expect(page.locator('#bindingQmtAutoLogin')).to_be_checked()
     expect(page.locator('#bindingQmtAutoLoginSettings')).to_be_visible()
     expect(page.locator('.binding-qmt-restart-time').nth(0)).to_have_value('09:00')
     page.locator('.binding-qmt-restart-time').nth(0).fill('06:30')
     page.locator('#addBindingQmtRestartTimeBtn').click()
     page.locator('.binding-qmt-restart-time').nth(1).fill('12:05')
-    page.locator('#bindingAccountId').fill('8885060548')
-    page.locator('#bindingQmtDir').fill('D:\\国金证券QMT交易端\\bin.x64')
     page.locator('#bindingQmtLoginAccount').fill('fixture-login')
     page.locator('#bindingQmtLoginPassword').fill('synthetic-secret')
     saved = []
@@ -395,7 +396,7 @@ def test_binding_sends_qmt_auto_start_request_with_restart_times(page, frontend_
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('自动输入账号和密码')
     expect(page.locator('#bindingQmtLoginReminder')).to_contain_text('A 股交易日')
     assert saved[0]['qmt_auto_login'] == {'enabled': True, 'restart_times': ['06:30', '12:05'],
-                                        'login_account': 'fixture-login', 'password': 'synthetic-secret', 'auto_fill_credentials': True, 'auto_update': True}
+                                        'login_account': 'fixture-login', 'password': 'synthetic-secret', 'auto_fill_credentials': True, 'auto_update': True, 'login_environment': 'live'}
     assert saved[0]['qmt_dir'].endswith('\\bin.x64')
     assert errors == []
 
@@ -535,6 +536,9 @@ def test_edit_preserves_flags_and_setup_onboarding_use_same_controls(page, front
     expect(page.locator('#bindingStrategyRunMode')).to_have_value('1')
     expect(page.locator('#bindingStrategyAutorun')).not_to_be_checked()
     expect(page.locator('#bindingStrategyStock')).to_have_value('SZ399001')
+    assert page.evaluate("readQmtStrategySettings('binding').account_keys") == {
+        'normal': '2____101____201____49____1000000001____'}
+    page.locator('#bindingNavigation [data-binding-page="environment"]').click()
     page.locator('#bindingStrategyEnabled').uncheck()
     expect(page.locator('#bindingStrategyRunMode')).to_be_disabled()
     expect(page.locator('#bindingStrategyAutorun')).to_be_disabled()
@@ -579,12 +583,16 @@ def test_managed_market_routes_validate_directories_before_sending(page, fronten
     page.route('**/api/account-config', respond)
     page.locator('#bindingAccountId').fill('1000000001')
     page.locator('#bindingQmtDir').fill('D:/FAKE-QMT')
+    page.locator('#bindingNavigation [data-binding-page="login"]').click()
     page.locator('#bindingQmtLoginAccount').fill('fixture-login')
     page.locator('#bindingQmtLoginPassword').fill('synthetic-secret')
+    page.locator('#bindingNavigation details summary').click()
+    page.locator('#bindingNavigation [data-binding-page="market"]').click()
     page.locator('#bindingMarketRoutingEnabled').check()
     page.locator('#bindingForm button[type="submit"]').click()
     expect(page.locator('#bindingDialogOverlay')).to_be_visible()
     expect(page.locator('#bindingMarketShQmtDir')).to_be_focused()
     assert saved == []
-    assert page.locator('body').inner_text().find('SH/SZ') >= 0
+    expect(page.locator('#bindingMarketShQmtDir')).to_have_attribute('aria-invalid', 'true')
+    expect(page.locator('#bindingMarketSzQmtDir')).to_have_attribute('aria-invalid', 'true')
     assert errors == []

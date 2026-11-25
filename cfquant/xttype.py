@@ -133,7 +133,7 @@ def _set_first_order_id(data, names, default=-1):
     current = data.get("order_id", _MISSING)
     if current is not _MISSING and not _is_empty(current) and current not in (0, "0", -1, "-1"):
         return
-    for name in names:
+    for name in _with_qmt_compact_aliases(*names):
         if name not in data:
             continue
         value = data.get(name)
@@ -711,7 +711,7 @@ class XtCreditOrder(XtOrder):
             "m_strStockCode1",
             "m_strUnderCode",
         ), default=data.get("stock_code", ""))
-        return cls(
+        result = cls(
             account_id=_coerce_text(data.get("account_id")),
             stock_code=_coerce_text(data.get("stock_code")),
             order_id=_coerce_int(data.get("order_id"), -1),
@@ -728,6 +728,11 @@ class XtCreditOrder(XtOrder):
             contract_no=_coerce_text(contract_no),
             stock_code1=_coerce_text(stock_code1),
         )
+        # Preserve normalized and native fields omitted by the legacy constructor.
+        fields = dict(data)
+        fields.update(vars(result))
+        result.__dict__.update(fields)
+        return result
 
     def __init__(self, account_id, stock_code, order_id, order_time, order_type,
                  order_volume, price_type, price, traded_volume, traded_price,
@@ -762,9 +767,18 @@ class XtTrade(DictObject):
             "m_nOrderType",
             "m_nBusinessType",
         ), default=0)
-        if data.get("order_type") in (None, "", 0, "0"):
+        # Zero is a valid futures operation (open long). Stock offset flags
+        # must never reinterpret derivative operations as STOCK_BUY/SELL.
+        stock_code = _coerce_text(data.get("stock_code"))
+        market = stock_code.rsplit(".", 1)[-1].upper() if "." in stock_code else ""
+        stock_account = data["account_type"] in (
+            xtconstant.SECURITY_ACCOUNT, xtconstant.CREDIT_ACCOUNT,
+            xtconstant.HUGANGTONG_ACCOUNT, xtconstant.SHENGANGTONG_ACCOUNT,
+        )
+        if (stock_account and market in ("", "SH", "SZ", "BJ", "HK", "HGT", "SGT")
+                and data.get("order_type") in (None, "", 0, "0")):
             try:
-                offset_flag = int(data.get("m_nOffsetFlag"))
+                offset_flag = int(_first_value(data, ("offset_flag", "m_nOffsetFlag"), None))
             except (TypeError, ValueError):
                 offset_flag = None
             if offset_flag in (48, 49):
@@ -883,7 +897,7 @@ class XtCreditDeal(DictObject):
             "m_strStockCode1",
             "m_strUnderCode",
         ), default=data.get("stock_code", ""))
-        return cls(
+        result = cls(
             account_id=_coerce_text(data.get("account_id")),
             stock_code=_coerce_text(data.get("stock_code")),
             traded_id=_coerce_text(data.get("traded_id")),
@@ -894,6 +908,11 @@ class XtCreditDeal(DictObject):
             contract_no=_coerce_text(contract_no),
             stock_code1=_coerce_text(stock_code1),
         )
+        # Preserve normalized and native fields omitted by the legacy constructor.
+        fields = dict(data)
+        fields.update(vars(result))
+        result.__dict__.update(fields)
+        return result
 
     def __init__(self, account_id, stock_code, traded_id, traded_time,
                  traded_price, traded_volume, order_id, contract_no, stock_code1):

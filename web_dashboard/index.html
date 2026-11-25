@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>cfquant 控制台</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-  <link rel="stylesheet" href="/styles.css?v=web_20261119_01">
+  <link rel="stylesheet" href="/styles.css?v=web_20261125_01">
 </head>
 <body>
   <div id="webAuthOverlay" class="auth-overlay hidden" aria-live="polite">
@@ -171,12 +171,13 @@
               <strong>交易账号</strong>
               <span>默认账号</span>
             </div>
-            <button type="button" class="help-tooltip-trigger" aria-label="交易账号说明" aria-expanded="false" data-help-text="这里填写 QMT 登录使用的资金账号和账户类型，不是网页登录管理员账号。">?</button>
+            <button type="button" class="help-tooltip-trigger" aria-label="交易账号说明" aria-expanded="false" data-help-text="这里填写用于资金、持仓查询和交易的资金账号及账户类型。QMT 登录账号用于登录客户端，两者可能相同，也可能不同；国信 iQuant 需分别填写。">?</button>
           </div>
           <div class="setup-fields-grid">
             <label class="field">
-              <span>账号</span>
+              <span>资金账号</span>
               <input id="setupAccountId" name="account_id" autocomplete="off" placeholder="请输入资金账号">
+              <small>用于资金、持仓查询和交易，可能与 QMT 登录账号不同。</small>
             </label>
             <label class="field">
               <span>账户类型</span>
@@ -241,7 +242,7 @@
             <small id="setupQmtAutoFillHint" class="wide">勾选后使用下方保存的账号密码登录，适合需要补填密码的客户端。若 QMT 已能自行自动登录，可取消勾选；项目仍会启动和定时重启 QMT，但不会填写账号密码或点击登录。仅“记住密码”不等于自动登录。</small>
             <label class="toggle wide"><input id="setupQmtAutoUpdate" type="checkbox" checked aria-describedby="setupQmtAutoUpdateHint"><span>允许 QMT 自动更新（新绑定默认开启）</span></label>
             <small id="setupQmtAutoUpdateHint" class="wide">勾选后在版本更新提示中选择“是”（取消勾选则选择“否”），等待下载和安装完成，再自动重启此绑定的 QMT，并按上方设置登录；更新期间暂时无法连接。无需模拟鼠标或键盘。未识别的更新提示会保留并提示人工处理。</small>
-            <label class="field"><span>QMT 登录账号（自动输入时必填）</span><input id="setupQmtLoginAccount" autocomplete="off" placeholder="QMT 登录界面的账号"></label>
+            <label class="field"><span>QMT 登录账号（自动输入时必填）</span><input id="setupQmtLoginAccount" autocomplete="off" placeholder="QMT 登录界面的账号，可能不同于资金账号"></label>
             <div class="field"><label for="setupQmtLoginPassword">QMT 登录密码</label><div class="qmt-password-input"><input id="setupQmtLoginPassword" type="password" autocomplete="new-password" placeholder="自动输入时必填，本机加密保存"><button id="setupQmtPasswordToggle" type="button" aria-controls="setupQmtLoginPassword" aria-pressed="false">显示密码</button></div><small id="setupQmtPasswordStatus">启用自动输入时必须填写登录账号和密码。</small></div>
             <div class="qmt-login-prerequisite wide" role="note">
               <div class="qmt-login-prerequisite-head">
@@ -1707,6 +1708,7 @@
                           <label class="field">
                             <span>资金账号</span>
                             <input id="onboardingAccountId" autocomplete="off" placeholder="请输入资金账号">
+                            <small>用于资金、持仓查询和交易，可能与 QMT 登录账号不同。</small>
                           </label>
                           <label class="field">
                             <span>账户类型</span>
@@ -1758,7 +1760,7 @@
                         <small id="onboardingQmtAutoFillHint" class="wide">勾选后使用保存的账号密码登录。若 QMT 已能自行自动登录，可取消勾选；项目仍会启动和定时重启，但不会填写账号密码或点击登录。仅记住密码的客户端仍需手动点击登录。</small>
                         <label class="toggle wide"><input id="onboardingQmtAutoUpdate" type="checkbox" checked aria-describedby="onboardingQmtAutoUpdateHint"><span>允许 QMT 自动更新（新绑定默认开启）</span></label>
                         <small id="onboardingQmtAutoUpdateHint" class="wide">勾选后在版本更新提示中选择“是”（取消勾选则选择“否”），等待下载和安装完成，再自动重启此绑定的 QMT，并按上方设置登录；更新期间暂时无法连接。无需模拟鼠标或键盘。未识别的更新提示会保留并提示人工处理。</small>
-                        <label class="field"><span>QMT 登录账号（自动输入时必填）</span><input id="onboardingQmtLoginAccount" autocomplete="off" placeholder="QMT 登录界面的账号"></label>
+                        <label class="field"><span>QMT 登录账号（自动输入时必填）</span><input id="onboardingQmtLoginAccount" autocomplete="off" placeholder="QMT 登录界面的账号，可能不同于资金账号"></label>
                         <div class="field"><label for="onboardingQmtLoginPassword">QMT 登录密码</label><div class="qmt-password-input"><input id="onboardingQmtLoginPassword" type="password" autocomplete="new-password" placeholder="自动输入时必填，本机加密保存"><button id="onboardingQmtPasswordToggle" type="button" aria-controls="onboardingQmtLoginPassword" aria-pressed="false">显示密码</button></div><small id="onboardingQmtPasswordStatus">启用自动输入时必须填写登录账号和密码。</small></div>
                           <label class="toggle wide">
                             <input id="onboardingQmtAutoLogin" type="checkbox" checked>
@@ -3240,8 +3242,9 @@ else:
           <input id="bindingDisplayName" name="display_name" placeholder="主账户 / 信用账户 / 家人账户" autocomplete="off">
         </label>
         <label class="field">
-          <span>账号</span>
+          <span>资金账号</span>
           <input id="bindingAccountId" name="account_id" placeholder="请输入资金账号" autocomplete="off">
+          <small>用于资金、持仓查询和交易。国信 iQuant 的资金账号与 QMT 登录账号不同，需分别填写。</small>
         </label>
         <label class="field">
           <span>账户类型</span>
@@ -3364,9 +3367,10 @@ else:
           </div>
         </section>
         <label class="toggle binding-dialog-wide-row">
-          <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox" checked>
+          <input id="bindingQmtAutoLogin" name="qmt_auto_login" type="checkbox" checked aria-describedby="bindingQmtAutoLoginHint">
           <span>自动启动并按交易日重启 QMT（默认 09:00）</span>
         </label>
+        <p id="bindingQmtAutoLoginHint" class="metric-note binding-dialog-wide-row" role="status">建议保持勾选，让项目自动启动 QMT，并在交易日按设定时间重启，减少忘记启动或长期运行带来的连接问题。</p>
         <div id="bindingQmtDependencies" class="qmt-dependency-status binding-dialog-wide-row hidden"></div>
         <div id="bindingQmtAutoLoginSettings" class="binding-qmt-autostart-settings binding-dialog-wide-row hidden">
           <label class="toggle">
@@ -3395,6 +3399,13 @@ else:
           </div>
           <div id="bindingQmtRestartTimes" class="binding-qmt-restart-times"></div>
           <button id="addBindingQmtRestartTimeBtn" type="button">添加重启时间</button>
+          <label>国信 iQuant 登录环境
+            <select id="bindingQmtLoginEnvironment">
+              <option value="live">实盘</option>
+              <option value="simulation">仿真</option>
+            </select>
+            <span class="metric-note">自动识别国信版本后生效；默认实盘，可切换为仿真。平台登录后只检查并登录本绑定的资金账号。</span>
+          </label>
         </div>
         <div class="qmt-login-prerequisite wide" role="note">
           <div class="qmt-login-prerequisite-head">
@@ -3742,7 +3753,7 @@ else:
   <script src="/trading-monitor.js?v=20261111_runtime_window_01"></script>
   <script src="/navigation.js?v=web_20261108_nav_03"></script>
   <script src="/activity-log.js?v=web_20261108_logs_01"></script>
-  <script src="/app.js?v=web_20261119_01"></script>
+  <script src="/app.js?v=web_20261125_01"></script>
   <script src="/remote-management.js?v=20261103"></script>
 </body>
 </html>

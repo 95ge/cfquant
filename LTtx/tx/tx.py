@@ -221,6 +221,7 @@ class txl:
                     self.clean_log()
                     for i in range(100):
                         data = data + self.log_que.get() +'\n'
+                self.clean_log()
                 with open(os.path.join(self.log_dir, '%s.log'%(self.get_nowdate())),'a+',encoding='utf-8') as f:
                     f.write(data)
             except:#过滤掉日志记录出错

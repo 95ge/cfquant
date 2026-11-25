@@ -217,8 +217,13 @@ def _cleanup_lttx_logs(log_dir):
         cutoff = time.time() - max(1, retention_days) * 86400
         for name in os.listdir(log_dir):
             path = os.path.join(log_dir, name)
-            if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
-                os.remove(path)
+            if os.path.splitext(name)[1].lower() not in ('.log', '.csv', '.txt'):
+                continue
+            try:
+                if not os.path.islink(path) and os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+            except OSError:
+                continue  # A locked log must not prevent cleaning the other files.
     except Exception:
         pass
 

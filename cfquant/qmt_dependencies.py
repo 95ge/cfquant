@@ -159,12 +159,17 @@ def check_login_dependencies(python_exe=None, refresh=False, timeout=15):
             run_kwargs = {}
             if os.name == "nt":
                 run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            completed = subprocess.run(
-                [executable, "-c", "MODULES = %r\nFRIDA_VERSION = %r\n" % (LOGIN_MODULES, FRIDA_VERSION) + _PROBE_CODE],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                errors="replace", timeout=timeout,
-                **run_kwargs,
-            )
+            from .qmt_native_files import NativeWorkerFiles
+            files = NativeWorkerFiles()
+            try:
+                completed = subprocess.run(
+                    [executable, "-c", "MODULES = %r\nFRIDA_VERSION = %r\n" % (LOGIN_MODULES, FRIDA_VERSION) + _PROBE_CODE],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                    errors="replace", timeout=timeout,
+                    env=dict(os.environ, **files.environment()), **run_kwargs,
+                )
+            finally:
+                files.close()
             if completed.returncode:
                 raise RuntimeError((completed.stderr or completed.stdout or "Python dependency probe failed")[-4000:])
             # Startup hooks may print before our JSON report.

@@ -51,9 +51,11 @@ def lite_bridge_class(path):
 class RecordingTx:
     def __init__(self):
         self.messages = []
+        self.channel_messages = []
 
     def push(self, kind, payload, client_id):
-        self.messages.append((kind, loads_message(payload), client_id))
+        target = self.channel_messages if client_id in ("all_gp_hq", "cfquant.center.quotes") else self.messages
+        target.append((kind, loads_message(payload), client_id))
 
     def close(self):
         pass
@@ -145,13 +147,13 @@ def test_context_keeps_one_native_feed_across_subscriber_lifetimes(bridge, monke
     assert bridge.quote_subscriptions == {}
 
     class IdleBatch(dict):
-        def items(self):
-            raise AssertionError("idle full-market quotes must not be traversed")
+        pass  # The center receives batches even without logical subscribers.
 
     bridge.worker_event.clear()
     bridge.context.callbacks[100](IdleBatch({"600000.SH": {"lastPrice": 10}}))
     assert bridge.worker_event.is_set()
     assert bridge.tx.messages == []
+    assert bridge.tx.channel_messages[-1][1]["event"] == "all_gp_hq"
 
     first = rpc(bridge, "xtdata.subscribe_whole_quote", {"code_list": ["SH"]})
     second = rpc(bridge, "xtdata.subscribe_whole_quote_latency", {"code_list": ["SH"]}, client="client-b")
@@ -187,6 +189,7 @@ def test_client_lease_expiry_keeps_qmt_callback_active(bridge, monkeypatch):
     bridge.context.callbacks[100]({"600000.SH": {"lastPrice": 11}})
     assert bridge.worker_event.is_set()
     assert bridge.tx.messages == []
+    assert bridge.tx.channel_messages[-1][1]["event"] == "all_gp_hq"
 
 
 def test_unsubscribe_releases_native_id_and_ignores_late_callbacks(bridge):
@@ -399,22 +402,22 @@ def test_legacy_single_quote_is_not_broken_by_whole_quote(bridge):
 
 
 def test_sdk_passes_list_and_registers_callback(monkeypatch, bridge):
-    callbacks = {}
-    client = SimpleNamespace(
-        request=lambda action, params: rpc(bridge, action, params),
-        add_callback=lambda event, callback: callbacks.update({event: callback}),
-        remove_callback=lambda event, callback: callbacks.pop(event),
-    )
-    monkeypatch.setattr(xtdata, "get_client", lambda: client)
-    monkeypatch.setattr(xtdata, "_subscription_callbacks", {})
+    from cfquant.tests.test_bridge_center import FakeTx, eventually
+    from cfquant import client
+    from cfquant.protocol import pack_whole_quote_event
+    transport = FakeTx()
+    monkeypatch.setattr(client, '_load_txl', lambda: lambda *a, **kw: transport)
+    monkeypatch.setattr(xtdata, 'get_client', lambda: pytest.fail('whole quote must not create RPC subscriptions'))
     received = []
-    sub_id = xtdata.subscribe_whole_quote(["BJ", "rb2610.SF"], callback=received.append)
-    bridge.context.callbacks[100]({"rb2610.SF": {"lastPrice": 3000}})
-    event = bridge.tx.messages[-1][1]
-    callbacks[event["event"]](event["data"])
-    assert received == [{"rb2610.SF": {"lastPrice": 3000}}]
-    xtdata.unsubscribe_quote(sub_id)
-    assert callbacks == {}
+    sub_id = xtdata.subscribe_whole_quote(['BJ', 'rb2610.SF'], callback=received.append)
+    try:
+        transport.Q.put(pack_whole_quote_event('all_gp_hq', {
+            'rb2610.SF': {'lastPrice': 3000}, '600000.SH': {'lastPrice': 10}}, 'all_gp_hq'))
+        eventually(lambda: bool(received))
+        assert received == [{'rb2610.SF': {'lastPrice': 3000}}]
+        assert bridge.context.subscribed == []
+    finally:
+        assert xtdata.unsubscribe_quote(sub_id)
 
 
 @pytest.mark.parametrize('plain', [True, False])

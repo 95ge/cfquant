@@ -165,3 +165,30 @@ def test_updater_restarts_through_hooks_even_if_installer_started_client(monkeyp
     processes = update.UpdateProcesses(tmp_path, 10, launch_client=lambda: calls.append('launch') or {'pid': 30})
     assert processes.restart() == 30
     assert calls == [('stop', 20 if installer_started else 10), 'launch']
+
+
+def test_preflight_uses_private_temp_and_removes_files(monkeypatch, tmp_path):
+    monkeypatch.setenv('CFQUANT_FRIDA_TEMP_DIR', str(tmp_path / 'frida'))
+    directories = []
+    def run(*args, **kwargs):
+        directory = Path(kwargs['env']['TEMP'])
+        assert kwargs['env']['TMP'] == str(directory)
+        assert kwargs['env']['TMPDIR'] == str(directory)
+        assert directory.parent == tmp_path / 'frida'
+        (directory / 'frida-agent.dll').write_bytes(b'fixture')
+        directories.append(directory)
+        return SimpleNamespace(returncode=0, stdout='{"ready": true}')
+    monkeypatch.setattr(runtime.subprocess, 'run', run)
+    assert runtime.preflight_feature_process(tmp_path, {'disable_vm': True}) == {'ready': True}
+    assert directories and not directories[0].exists()
+
+
+def test_launch_spawn_failure_removes_private_temp(monkeypatch, tmp_path):
+    monkeypatch.setenv('CFQUANT_FRIDA_TEMP_DIR', str(tmp_path / 'frida'))
+    def fail(*args, **kwargs):
+        assert Path(kwargs['env']['TEMP']).is_dir()
+        raise OSError('spawn failed')
+    monkeypatch.setattr(runtime.subprocess, 'Popen', fail)
+    with pytest.raises(OSError, match='spawn failed'):
+        runtime.start_feature_process(tmp_path, {'disable_vm': True})
+    assert list((tmp_path / 'frida').iterdir()) == []

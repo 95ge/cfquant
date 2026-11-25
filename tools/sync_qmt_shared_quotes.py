@@ -25,7 +25,8 @@ def updated_source(source):
         source = source[:index] + block + source[index:]
     normal = (ROOT / "cfquant/normal_bridge.py").read_text(encoding="utf-8")
     wanted = {"_get_whole_quote_feed", "_subscribe_native_quote", "_handle_quote_unsubscribe",
-              "_close_quote_subscriptions", "_subscribe_internal_whole_quote", "_expire_whole_quote_leases"}
+              "_close_quote_subscriptions", "_subscribe_internal_whole_quote", "_expire_whole_quote_leases",
+              "_on_whole_quote"}
     cls = next(n for n in parse_source(normal).body if isinstance(n, ast.ClassDef) and n.name == "NormalQmtBridge")
     lines = normal.splitlines(True)
     methods = {n.name: "".join(lines[n.lineno - 1:n.end_lineno]) + "\n"

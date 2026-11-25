@@ -86,7 +86,7 @@ def environment(monkeypatch, tmp_path):
     stores = []
 
     def make_store(channels=None, retry_interval=0.03):
-        store = web.CallbackEventStore(channels, retry_interval=retry_interval)
+        store = web.CallbackEventStore(channels, retry_interval=retry_interval, legacy_pipe=True)
         stores.append(store)
         return store
 

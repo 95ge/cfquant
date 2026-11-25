@@ -288,6 +288,7 @@ class txl:
                     break
                 lines.append(str(item) + '\n')
             try:
+                self.clean_log()
                 with open(os.path.join(self.log_dir, '%s.log'%(self.get_nowdate())),'a+',encoding='utf-8') as f:
                     f.write(''.join(lines))
             except Exception:#过滤掉日志记录出错

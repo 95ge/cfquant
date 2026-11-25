@@ -81,11 +81,15 @@ class CfquantPipeHub(object):
         self._status_stop = threading.Event()
         self._status_thread = None
         self.status_interval = max(.05, float(os.environ.get("CFQUANT_PIPE_STATUS_INTERVAL", ".25")))
+        self.center = None
 
     def start(self):
         if self.running:
             return self
         self.running = True
+        from .bridge_center import BridgeCenter
+        self.center = BridgeCenter(self)
+        self.center.start()
         self._status_stop.clear()
         self._status_thread = None
         self._log("pipe hub started pipe=%s" % self.pipe_name)
@@ -114,6 +118,8 @@ class CfquantPipeHub(object):
 
     def close(self):
         self.running = False
+        if self.center is not None:
+            self.center.close()
         self._status_stop.set()
         self._status_dirty.set()
         with self._senders_lock:
@@ -423,6 +429,16 @@ class CfquantPipeHub(object):
         raw = envelope.get("payload")
         # New QMT publishers explicitly identify already encoded events. The
         # original payload is forwarded unchanged; legacy publishers still parse.
+        if self.center is not None:
+            try:
+                if self.center.on_publish(envelope):
+                    return
+            except Exception as error:
+                self.center.error = str(error)
+                if time.monotonic() - getattr(self, '_last_center_error_log', 0) > 5:
+                    self._last_center_error_log = time.monotonic()
+                    self._log('center publication failed: %s' % error)
+                return
         if (envelope.get("event_passthrough") is True and envelope.get("key") == "event"
                 and isinstance(raw, str) and raw.startswith("cfquant:") and envelope.get("channel")):
             with self.state_lock:
@@ -1014,6 +1030,7 @@ class CfquantPipeHub(object):
             "pipe_name": self.pipe_name,
             "core_version": CORE_VERSION,
             "hub_status_schema": 3,
+            "center": self.center.status() if self.center is not None else None,
             "running": self.running,
             "pid": os.getpid(),
             "qmt_channels": qmt_channels,
@@ -1080,8 +1097,12 @@ class CfquantPipeHub(object):
 
 
 def run_pipe_hub(pipe_name=None, show=True, default_request_channel="cfquant.normal.request"):
-    return CfquantPipeHub(
+    hub = CfquantPipeHub(
         pipe_name=pipe_name,
         show=show,
         default_request_channel=default_request_channel,
-    ).start()
+    )
+    try:
+        return hub.start()
+    finally:
+        hub.close()

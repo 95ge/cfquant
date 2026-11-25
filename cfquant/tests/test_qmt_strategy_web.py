@@ -217,7 +217,7 @@ def test_new_binding_defaults_qmt_auto_login_to_enabled(web_config, tmp_path, lo
     _, config = web_config
     row = config.save_account_config("1000000001", qmt_dir=str(tmp_path), qmt_auto_login=login_credentials)
     assert row["qmt_auto_login"] == {"enabled": True, "restart_times": ["09:00"],
-                                     "login_account": "fixture-login", "password_saved": True, "auto_fill_credentials": True, "auto_update": True}
+                                     "login_account": "fixture-login", "password_saved": True, "auto_fill_credentials": True, "auto_update": True, "login_environment": "live"}
 
 
 def test_binding_preserves_explicitly_disabled_qmt_auto_login(web_config, tmp_path):
@@ -228,7 +228,7 @@ def test_binding_preserves_explicitly_disabled_qmt_auto_login(web_config, tmp_pa
         qmt_auto_login={"enabled": False},
     )
     row = config.save_account_config("1000000001", qmt_dir=str(tmp_path))
-    assert row["qmt_auto_login"] == {"enabled": False, "restart_times": [], "auto_fill_credentials": True, "auto_update": True}
+    assert row["qmt_auto_login"] == {"enabled": False, "restart_times": [], "auto_fill_credentials": True, "auto_update": True, "login_environment": "live"}
 
 
 def test_same_qmt_same_fund_has_one_mode_across_path_aliases_and_bindings(web_config, tmp_path):
@@ -373,7 +373,7 @@ def test_save_can_start_qmt_auto_login_and_persist_restart_times(web_config, mon
     })
     assert data["qmt_auto_login"]["pid"] == 1234
     settings = {"enabled": True, "restart_times": ["06:30", "18:05"],
-                "login_account": "fixture-login", "password_saved": True, "auto_fill_credentials": True, "auto_update": True}
+                "login_account": "fixture-login", "password_saved": True, "auto_fill_credentials": True, "auto_update": True, "login_environment": "live"}
     assert data["account"]["qmt_auto_login"] == settings
     assert calls == [("8885060548", {"enabled": True, "restart_times": ["6:30", "06:30", "18:05"], **login_credentials}, settings)]
 

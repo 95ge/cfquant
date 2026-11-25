@@ -93,7 +93,7 @@ def _normalize_registry(value):
     return value
 
 
-def load_lttx_registry(cfg=None):
+def load_lttx_registry(cfg=None, key=None):
     cfg = cfg or get_config()
     host = cfg.get("host") or "127.0.0.1"
     port = int(cfg.get("port") or 2049)
@@ -104,7 +104,7 @@ def load_lttx_registry(cfg=None):
         txl = _load_txl()
         tx = txl(host, port, cfg.get("token") or "LTtx", show=False)
         tx.start_tx()
-        value = tx.get(cfg.get("discovery_key") or "cfquant.runtime")
+        value = tx.get(key or cfg.get("discovery_key") or "cfquant.runtime")
         return _normalize_registry(value)
     except Exception:
         return {}
@@ -403,6 +403,11 @@ def create_rpc_client(request_channel=None, timeout=None, client_id=None, transp
     mode = str(transport or cfg.get("transport") or "auto").lower()
     registry = {}
     if mode == "auto":
+        center = load_lttx_registry(cfg, key='cfquant.center')
+        if (center.get('center') or {}).get('enabled') and time.time() - center.get('updated_at', 0) < 15:
+            from .center_client import CenterRpcClient
+            return CenterRpcClient(timeout=timeout or cfg.get('timeout'), client_id=client_id,
+                                   request_channel=request_channel, registry=center)
         registry = load_lttx_registry(cfg)
         if _registry_has_web_route(registry):
             return WebLttxRpcClient(
@@ -411,6 +416,10 @@ def create_rpc_client(request_channel=None, timeout=None, client_id=None, transp
                 registry=registry,
             )
         mode = str(registry.get("direct_fallback_transport") or "ctypes").lower()
+    if mode == 'center':
+        from .center_client import CenterRpcClient
+        return CenterRpcClient(timeout=timeout or cfg.get('timeout'), client_id=client_id,
+                               request_channel=request_channel)
     if mode in WEB_LTTX_TRANSPORTS:
         return WebLttxRpcClient(
             timeout=timeout or cfg.get("timeout"),
@@ -447,7 +456,7 @@ def get_client():
         if _default_client is None:
             cfg = get_config()
             _default_client = create_rpc_client(
-                request_channel=cfg.get("request_channel"),
+                request_channel=None if cfg.get("transport") in ("auto", "center") else cfg.get("request_channel"),
                 timeout=cfg.get("timeout"),
                 client_id=cfg.get("client_id"),
             )
@@ -456,6 +465,8 @@ def get_client():
 
 def close_client():
     """Close the default market-data client without creating a connection."""
+    from .market_channel import close_all
+    close_all()
     global _default_client
     with _client_lock:
         client, _default_client = _default_client, None
@@ -469,6 +480,8 @@ atexit.register(close_client)
 
 
 def configure(**kwargs):
+    from .market_channel import close_all
+    close_all()
     from .config import configure as configure_config
 
     configure_config(**kwargs)

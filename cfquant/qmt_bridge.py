@@ -51,6 +51,7 @@ class CfquantQmtBridge(object):
         self.port = int(port or cfg["port"])
         self.token = token or cfg["token"]
         self.request_channel = request_channel or cfg["request_channel"]
+        self.bridge_id = cfg.get('bridge_id') or 'default'
         self.show = show
         self.globals_dict = globals_dict or {}
         self.running = False
@@ -65,6 +66,7 @@ class CfquantQmtBridge(object):
         self.subscriptions = {}
         self.client_subscriptions = {}
         self._quote_bridge = None
+        self._quote_retry_at = 0
         self.auto_trade_callback_enabled = False
         self.pending_async_orders = []
         self.pending_async_orders_lock = threading.RLock()
@@ -116,6 +118,14 @@ class CfquantQmtBridge(object):
         self._log("cfquant QMT TX桥接已关闭")
 
     def poll(self, max_messages=20):
+        # poll runs on QMT's API thread. Start the publisher without waiting
+        # for an external subscription RPC, including legacy LTtx mode.
+        if self.context is not None and self.tx is not None and time.monotonic() >= self._quote_retry_at:
+            self._quote_retry_at = time.monotonic() + 5
+            try:
+                self._ensure_quote_bridge()
+            except Exception as error:
+                self._log('whole quote publisher startup failed: %s' % error)
         if self._quote_bridge is not None:
             self._quote_bridge._expire_whole_quote_leases()
         count = 0
@@ -383,17 +393,22 @@ class CfquantQmtBridge(object):
     def _subscribe_whole_quote(self, params, msg):
         return self._quote_dispatch("xtdata.subscribe_whole_quote", params, msg)
 
-    def _quote_dispatch(self, action, params, msg):
+    def _ensure_quote_bridge(self):
         if self._quote_bridge is None:
             from .normal_bridge import NormalQmtBridge
             self._quote_bridge = NormalQmtBridge(self.context, globals_dict=self.globals_dict,
-                                                show=False, schedule_timer=False, order_meta_enabled=False)
+                                                bridge_id=self.bridge_id, show=False,
+                                                schedule_timer=False, order_meta_enabled=False)
             self._quote_bridge._log = self._log
         bridge = self._quote_bridge
         bridge.context, bridge.tx = self.context, self.tx
         # Keep one bridge-owned whole-quote callback alive independently of
         # external logical subscribers. External leases only control delivery.
         bridge._subscribe_internal_whole_quote()
+        return bridge
+
+    def _quote_dispatch(self, action, params, msg):
+        bridge = self._ensure_quote_bridge()
         result = bridge._dispatch(action, params, msg)
         if action not in ("xtdata.unsubscribe_quote", "cfquant.shared_quote_status", "cfquant.quote_heartbeat"):
             self._remember_subscription(result["subscribe_id"], msg.get("client_id"), action, params)

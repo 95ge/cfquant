@@ -93,22 +93,24 @@ def test_missing_qmt_callback_timestamp_does_not_substitute_receiver_time(timest
 
 
 def test_sdk_diagnostic_callback_measures_before_user_work_and_unsubscribes(monkeypatch):
-    calls, callbacks, received = [], {}, []
-    def request(action, params):
-        calls.append((action, dict(params)))
-        return {"subscribe_id": 99, "callback_event": params["callback_event"]} if action == diagnostics.ACTION else True
-    client = SimpleNamespace(request=request, add_callback=lambda name, cb: callbacks.update({name: cb}),
-                             remove_callback=lambda name, cb: callbacks.pop(name))
-    monkeypatch.setattr(xtdata, "get_client", lambda: client)
-    monkeypatch.setattr(diagnostics.time, "time", lambda: (STAMP + 40) / 1000)
-    sub = diagnostics.subscribe_whole_quote(["SZ"], received.append)
-    assert calls[0][0] == diagnostics.ACTION
-    next(iter(callbacks.values()))(envelope())
-    assert received[0]["internal_latency_ms"] == 28
-    assert received[0]["samples"][0]["quote_latency_ms"] == 40
-    assert received[0]["samples"][0]["qmt_quote_latency_ms"] == 10
-    assert xtdata.unsubscribe_quote(sub) is True
-    assert callbacks == {}
+    from cfquant.tests.test_bridge_center import FakeTx, eventually
+    from cfquant import client, market_channel
+    from cfquant.protocol import pack_quote_latency_event
+    transport = FakeTx()
+    monkeypatch.setattr(client, '_load_txl', lambda: lambda *a, **kw: transport)
+    monkeypatch.setattr(xtdata, 'get_client', lambda: pytest.fail('whole quote must not use RPC'))
+    monkeypatch.setattr(diagnostics.time, 'time', lambda: (STAMP + 40) / 1000)
+    received = []
+    sub = diagnostics.subscribe_whole_quote(['SZ'], received.append)
+    try:
+        transport.Q.put(pack_quote_latency_event('all_gp_hq', envelope(), 'all_gp_hq'))
+        eventually(lambda: bool(received))
+        assert received[0]['internal_latency_ms'] == 28
+        assert received[0]['samples'][0]['quote_latency_ms'] == 40
+        assert received[0]['samples'][0]['qmt_quote_latency_ms'] == 10
+    finally:
+        assert xtdata.unsubscribe_quote(sub) is True
+    assert sub not in market_channel._subscriptions
 
 
 class DiagnosticService:

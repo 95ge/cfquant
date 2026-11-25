@@ -507,6 +507,34 @@ def test_first_login_can_start_and_next_start_prepares_real_binding(deployment):
     assert models(root)[role["name"]].getAttribute("m_strAccountKey") == ACCOUNT_KEY
 
 
+@pytest.mark.parametrize("account_type, kind", [("STOCK", "2"), ("HUGANGTONG", "7"), ("SHENGANGTONG", "11")])
+def test_guosen_live_binding_keeps_empty_third_field_and_selects_account_type(deployment, account_type, kind):
+    manager, row, infos, running, root = deployment
+    row.update(account_type=account_type, account_key="bridge:%s:%s" % (account_type, ACCOUNT))
+    config = root / "config" / "indexUserConfig.xml"
+    config.write_text('<ICUserConfigFile><FormulaCatalog/><strategyTrade/></ICUserConfigFile>', encoding="utf-8")
+    auth = root / "userdata" / "users" / "fixture" / "authAndConfig.xml"
+    auth.parent.mkdir(parents=True)
+    keys = ["%s____101________49____%s____" % (k, ACCOUNT) for k in ("2", "7", "11")]
+    auth.write_text('<TTAuthAndConfigFile>' + ''.join('<AccountAuth key="%s"/>' % key for key in keys)
+                    + '</TTAuthAndConfigFile>', encoding="utf-8")
+    manager.configure(row, infos)
+    assert not manager.prepare_for_start(root)["waiting_account"]
+    role = next(iter(manager.jobs.values()))["roles"][0]
+    model = models(root)[role["name"]]
+    assert model.getAttribute("m_strAccountKey") == "%s____101________49____%s____" % (kind, ACCOUNT)
+    assert model.getAttribute("accountType") == kind
+
+
+@pytest.mark.parametrize("index, value", [(0, ""), (1, ""), (2, "bad"), (3, ""), (4, ""), (4, "9999999999")])
+def test_guosen_live_binding_still_rejects_incomplete_or_wrong_identity(index, value):
+    document = minidom.parseString('<ICUserConfigFile/>')
+    fields = ["2", "101", "", "49", ACCOUNT, ""]
+    fields[index] = value
+    with pytest.raises(ValueError, match="Key"):
+        _account_binding(document, ACCOUNT, "STOCK", "____".join(fields))
+
+
 def test_first_start_has_a_credit_model_even_without_an_existing_model(deployment):
     manager, row, infos, running, root = deployment
     config = root / "config" / "indexUserConfig.xml"

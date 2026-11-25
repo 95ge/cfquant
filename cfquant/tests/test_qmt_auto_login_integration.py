@@ -119,6 +119,30 @@ def test_explicit_empty_schedule_stays_disabled(web_config, tmp_path, login_cred
     assert row["qmt_auto_login"]["restart_times"] == []
 
 
+@pytest.mark.parametrize("environment", [None, "live", "simulation"])
+def test_login_environment_survives_save_reload_and_partial_update(web_config, tmp_path, environment):
+    web, config = web_config
+    options = {"enabled": False}
+    if environment is not None:
+        options["login_environment"] = environment
+    row = config.save_account_config("fixture", qmt_dir=str(tmp_path), qmt_auto_login=options)
+    assert row["qmt_auto_login"]["login_environment"] == (environment or "live")
+    reloaded = web.WebRuntimeConfig(config.path, config.settings_db_path)
+    updated = reloaded.save_account_config("fixture", qmt_dir=str(tmp_path),
+                                          qmt_auto_login={"restart_times": []})
+    assert updated["qmt_auto_login"]["login_environment"] == (environment or "live")
+
+
+@pytest.mark.parametrize("environment", ["", None, "paper", "LIVE"])
+def test_invalid_login_environment_does_not_mutate_binding(web_config, tmp_path, environment):
+    _, config = web_config
+    before = config.snapshot()
+    with pytest.raises(ValueError, match="登录环境"):
+        config.save_account_config("fixture", qmt_dir=str(tmp_path),
+                                   qmt_auto_login={"enabled": False, "login_environment": environment})
+    assert config.snapshot() == before
+
+
 @pytest.mark.parametrize("settings,match", [
     (None, "登录账号"),
     ({"enabled": True, "password": "synthetic-secret"}, "登录账号"),
@@ -167,7 +191,7 @@ def test_saved_password_must_match_actual_account_and_directory(web_config, tmp_
 def test_disabling_auto_restart_needs_no_credentials(web_config):
     _, config = web_config
     row = config.save_account_config("test-fund", qmt_auto_login={"enabled": False}, qmt_strategy={"enabled": False})
-    assert row["qmt_auto_login"] == {"enabled": False, "restart_times": [], "auto_fill_credentials": True, "auto_update": True}
+    assert row["qmt_auto_login"] == {"enabled": False, "restart_times": [], "auto_fill_credentials": True, "auto_update": True, "login_environment": "live"}
 
 
 def test_reenabling_auto_restart_defaults_to_nine(web_config, tmp_path, login_credentials):
@@ -326,7 +350,9 @@ def test_worker_records_success_and_supplies_saved_password_only_on_request(web_
     monkeypatch.setattr(web, 'QMT_COMPONENT_JOBS', {web._qmt_component_job_key(str(tmp_path)): threading.current_thread()})
     web._qmt_auto_login_update_session(row, {"pid": 456})
     monkeypatch.setattr(QmtCredentialStore, "password", lambda *a: "synthetic-credential")
-    def login(directory, account, password_provider, expected_pid, startup_timeout, should_cancel, on_wait):
+    def login(directory, account, password_provider, expected_pid, startup_timeout, should_cancel, on_wait,
+              login_environment, trading_account, account_type):
+        assert (login_environment, trading_account, account_type) == ("live", "fixture", "STOCK")
         assert expected_pid == 456 and account == "fixture-login"
         assert startup_timeout is None and not should_cancel()
         on_wait("waiting_ready")
@@ -467,7 +493,7 @@ def test_force_stop_times_out_if_process_does_not_exit(web_config, monkeypatch, 
 
 def test_client_login_setting_survives_save_reload_and_partial_updates(web_config, tmp_path):
     web, config = web_config
-    options = {"enabled": True, "auto_fill_credentials": False, "auto_update": True, "restart_times": ["09:15"]}
+    options = {"enabled": True, "auto_fill_credentials": False, "auto_update": True, "restart_times": ["09:15"], "login_environment": "live"}
     row = config.save_account_config("fixture", qmt_dir=str(tmp_path), qmt_auto_login=options)
     assert row["qmt_auto_login"] == options
     assert not QmtCredentialStore(config.path).path.exists()

@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 
+from .qmt_native_files import NativeWorkerFiles
 from .qmt_vm_settings import normalize_qmt_vm_settings, qmt_vm_settings_enabled
 
 
@@ -30,9 +31,14 @@ def preflight_feature_process(qmt_dir, settings):
     if not qmt_vm_settings_enabled(settings):
         return None
     request = {'directory': str(qmt_dir), 'settings': settings}
-    result = subprocess.run(_worker_command(check=True), input=json.dumps(request),
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            timeout=120, **_worker_kwargs())
+    files = NativeWorkerFiles()
+    try:
+        result = subprocess.run(_worker_command(check=True), input=json.dumps(request),
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env=dict(os.environ, **files.environment()),
+                                timeout=120, **_worker_kwargs())
+    finally:
+        files.close()
     try:
         payload = json.loads(result.stdout)
     except (ValueError, TypeError):
@@ -52,8 +58,18 @@ def start_feature_process(qmt_dir, settings, *, qmt_args=None, env=None, timeout
     settings = normalize_qmt_vm_settings(settings, strict=True)
     if not qmt_vm_settings_enabled(settings):
         return None
-    process = subprocess.Popen(_worker_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.DEVNULL, **_worker_kwargs())
+    files = NativeWorkerFiles()
+    try:
+        process = subprocess.Popen(_worker_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL,
+                                   env=dict(os.environ, **files.environment()), **_worker_kwargs())
+        files.register(process.pid)
+    except BaseException:
+        if 'process' in locals():
+            process.kill()
+            process.wait()
+        files.close()
+        raise
     responses = queue.Queue()
 
     def read_responses():
@@ -100,7 +116,10 @@ def start_feature_process(qmt_dir, settings, *, qmt_args=None, env=None, timeout
         except OSError:
             pass
         def reap():
-            process.wait()
-            reader.join()
-            process.stdout.close()
+            try:
+                process.wait()
+                reader.join()
+                process.stdout.close()
+            finally:
+                files.close()
         threading.Thread(target=reap, name='qmt-launch-reaper', daemon=True).start()

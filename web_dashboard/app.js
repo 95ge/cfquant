@@ -1,4 +1,4 @@
-const FRONTEND_VERSION = 'web_20261119_01';
+const FRONTEND_VERSION = 'web_20261125_01';
 
 const state = {
   accountId: '',
@@ -1347,7 +1347,7 @@ function normalizeQmtRestartTimes(value) {
 
 function normalizeQmtAutoLoginSettings(value = {}) {
   if (!value || typeof value !== 'object') {
-    return { enabled: !!value, auto_fill_credentials: true, auto_update: false, restart_times: value ? ['09:00'] : [] };
+    return { enabled: !!value, auto_fill_credentials: true, auto_update: false, login_environment: 'live', restart_times: value ? ['09:00'] : [] };
   }
   const result = {
     enabled: configBool(value.enabled, true),
@@ -1355,6 +1355,7 @@ function normalizeQmtAutoLoginSettings(value = {}) {
     restart_times: normalizeQmtRestartTimes(value.restart_times ?? value.restartTimes ?? value.restart_time ?? value.restartTime ?? ['09:00']),
     login_account: String(value.login_account || ''),
     password_saved: !!value.password_saved,
+    login_environment: value.login_environment ?? 'live',
   };
   if (Object.prototype.hasOwnProperty.call(value, 'auto_update')) result.auto_update = configBool(value.auto_update, false);
   return result;
@@ -2948,7 +2949,12 @@ function bindingQmtAutoLoginSettingsEnabled() {
 
 function syncBindingQmtAutoLoginSettingsVisibility() {
   const panel = $('bindingQmtAutoLoginSettings');
-  if (panel) panel.classList.toggle('hidden', !bindingQmtAutoLoginSettingsEnabled());
+  const enabled = bindingQmtAutoLoginSettingsEnabled();
+  if (panel) panel.classList.toggle('hidden', !enabled);
+  const hint = $('bindingQmtAutoLoginHint');
+  if (hint) hint.textContent = enabled
+    ? '建议保持勾选，让项目自动启动 QMT，并在交易日按设定时间重启，减少忘记启动或长期运行带来的连接问题。'
+    : '提醒：尚未开启自动启动和交易日重启，需自行启动并维护 QMT。建议勾选上方选项，由项目自动管理启动与重启。';
   syncQmtLoginCredentialFields('binding');
 }
 
@@ -2990,6 +2996,8 @@ function readBindingQmtAutoLoginSettings(form = $('bindingForm')) {
     restart_times: enabled ? readBindingQmtRestartTimes(form) : [],
   };
   const autoUpdate = $('bindingQmtAutoUpdate');
+  const environment = $('bindingQmtLoginEnvironment');
+  if (environment) result.login_environment = environment.value;
   if (autoUpdate?.checked || autoUpdate?.dataset.configured === 'true') result.auto_update = !!autoUpdate.checked;
   const account = form.qmt_login_account ? form.qmt_login_account.value.trim() : '';
   if (result.auto_fill_credentials && (account || form.dataset.qmtLoginAccount)) result.login_account = account;
@@ -3001,6 +3009,8 @@ function readBindingQmtAutoLoginSettings(form = $('bindingForm')) {
 function fillBindingQmtLoginCredentials(settings = {}) {
   const form = $('bindingForm');
   if (!form) return;
+  const environment = $('bindingQmtLoginEnvironment');
+  if (environment) environment.value = settings.login_environment || 'live';
   form.dataset.qmtLoginAccount = settings.login_account || '';
   fillQmtLoginCredentials('binding', settings, form.qmt_dir ? form.qmt_dir.value : '', form.dataset.accountKey);
 }

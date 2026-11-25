@@ -99,9 +99,8 @@ def subscribe_quote(stock_code, period="1d", start_time="", end_time="", count=0
 
 
 def subscribe_whole_quote(code_list, callback=None):
-    return _subscribe_quote_request("xtdata.subscribe_whole_quote", {
-        "code_list": code_list,
-    }, callback)
+    from .market_channel import subscribe
+    return subscribe(code_list, callback)
 
 
 def subscribe_quote2(stock_code, period="1d", start_time="", end_time="", count=0, dividend_type=None, callback=None):
@@ -150,6 +149,9 @@ def _subscribe_quote_request(action, params, callback):
 
 
 def unsubscribe_quote(seq):
+    from .market_channel import owns, unsubscribe
+    if owns(seq):
+        return unsubscribe(seq)
     client = get_client()
     if getattr(client, "_closed", False):
         from .quote_leases import forget
@@ -642,3 +644,5 @@ def run():
             time.sleep(.2)
     finally:
         client.close()
+        from .market_channel import close_all
+        close_all()

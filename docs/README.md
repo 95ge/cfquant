@@ -18,6 +18,7 @@
 - [QMT Python 运行时管理接口](qmt_python_runtime.md)
 - [QMT 虚拟机与 MAC 设置](qmt_launch_settings.md)
 - [运维与更新](运维与更新.md)
+- [独立桥接中心与 LTtx 频道接入](bridge_center.md)
 - [官网远程管理使用说明](官网远程管理使用说明.md)
 - [Web 账号运行配置说明](Web账号运行配置说明.md)
 - [QMT 策略自动恢复](QMT策略自动恢复.md)

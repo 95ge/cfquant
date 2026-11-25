@@ -17,6 +17,13 @@ import math
 import mimetypes
 import os
 from pathlib import Path
+# Embedded Python's ._pth can omit the entry script directory. Select the
+# adjacent package before the first cfquant import; adjusting sys.path later
+# cannot replace a stale package that is already cached in sys.modules.
+_ENTRY_PACKAGE_ROOT = Path(__file__).resolve().parent
+if (_ENTRY_PACKAGE_ROOT / "cfquant" / "__init__.py").is_file():
+    sys.path.insert(0, str(_ENTRY_PACKAGE_ROOT))
+
 from cfquant.diagnostics import latency_report, SCHEMA as QUOTE_LATENCY_SCHEMA
 from cfquant.stock_connect import connect_account_type, normalize_connect_code, validate_connect_order, validate_connect_market
 from cfquant.qmt_binding_settings import normalize_qmt_runtime_settings, qmt_runtime_identity
@@ -1824,6 +1831,10 @@ def normalize_qmt_auto_login_settings(value=None, existing=None):
         "restart_times": normalize_qmt_auto_login_restart_times(restart_source),
     }
     source = value if isinstance(value, dict) else {}
+    environment = source.get("login_environment", existing.get("login_environment", "live"))
+    if environment not in ("simulation", "live"):
+        raise ValueError("QMT 登录环境必须为 simulation（仿真）或 live（实盘）")
+    result["login_environment"] = environment
     result["auto_fill_credentials"] = parse_config_bool(
         source.get("auto_fill_credentials"), parse_config_bool(existing.get("auto_fill_credentials"), True)
     )
@@ -4655,7 +4666,7 @@ class GlobalTxClient(object):
             try:
                 result = client.request(
                     action,
-                    params or {},
+                    dict(params or {}, bridge_id=bridge_id, _center_transport_mode=mode),
                     timeout=timeout,
                     request_channel=channels[channel_key],
                     **request_options,
@@ -4729,22 +4740,12 @@ class GlobalTxClient(object):
         with self._lock:
             client = self._clients.get(mode)
             if client is None:
-                if client_mode == "ctypes":
-                    cfg = get_cfquant_config()
-                    from cfquant.pipe_client import PipeRpcClient
-
-                    client = PipeRpcClient(
-                        pipe_name=os.environ.get("CFQUANT_PIPE_NAME") or cfg.get("pipe_name") or DEFAULT_PIPE_NAME,
-                        request_channel=CHANNELS["normal"],
-                        timeout=cfg.get("timeout"),
-                        client_id="%s_%s" % (self.client_id, mode),
-                        connect_timeout_ms=cfg.get("pipe_connect_timeout_ms"),
-                    )
-                else:
-                    client = LTtxRpcClient(
-                        request_channel=CHANNELS["normal"],
-                        client_id="%s_lttx" % self.client_id,
-                    )
+                from cfquant.center_client import CenterRpcClient
+                cfg = get_cfquant_config()
+                client = CenterRpcClient(
+                    timeout=cfg.get("timeout"),
+                    client_id="%s_%s" % (self.client_id, mode),
+                )
                 self._clients[mode] = client
                 for event, callbacks in self._callbacks.items():
                     for callback in callbacks:
@@ -5784,6 +5785,7 @@ class PipeHubManager(object):
             env.setdefault("CFQUANT_LOG_RETENTION_DAYS", str(LOG_RETENTION_DAYS))
             env.setdefault("CFQUANT_PIPE_HUB_STATUS_FILE", PIPE_HUB_STATUS_FILE)
             env.setdefault("CFQUANT_RUNTIME_DIR", RUNTIME_DIR)
+            env.setdefault("CFQUANT_WEB_CONFIG_FILE", WEB_CONFIG_FILE)
             stdout = open(PIPE_HUB_STDOUT_LOG, "a", encoding="utf-8", buffering=1)
             stderr = open(PIPE_HUB_STDERR_LOG, "a", encoding="utf-8", buffering=1)
             try:
@@ -7553,40 +7555,53 @@ class QuoteSubscriptionStore(object):
         return value
 
 
+_CENTER_QUOTE_SUBSCRIPTIONS = {}
+_CENTER_QUOTE_LOCK = threading.RLock()
+
+
 def _shared_quote_subscribe(params, source):
-    # Pin one provider for the lifetime of the feed, including uncertain RPCs.
-    # A failed subscription is reconciled on that provider, never replayed on
-    # another account/bridge by the generic data-provider fallback loop.
-    if not source.get("_resolved"):
-        candidates = data_provider_candidates()
-        account = next((row for row in candidates
-                        if (not source.get("account_key") or row.get("account_key") == source["account_key"])
-                        and (not source.get("account_id") or row.get("account_id") == source["account_id"])
-                        and (not source.get("bridge_id") or row.get("bridge_id") == source["bridge_id"])), None)
-        if account is None:
-            raise RuntimeError("no configured provider matches the shared quote source")
-        account_id = str(account.get("account_id") or "")
-        account_type = normalize_account_type(account.get("account_type") or "STOCK")
-        bridge_id = normalize_bridge_id(source.get("bridge_id") or account.get("bridge_id") or DEFAULT_BRIDGE_ID)
-        mode = resolve_account_mode(account_id, account_type=account_type, bridge_id=bridge_id,
-                                    account_key=account.get("account_key"))
-        source.update(account_id=account_id, account_type=account_type, account_key=account.get("account_key") or "",
-                      bridge_id=bridge_id, mode=mode, channel=source.get("channel") or "normal", _resolved=True)
-    result = CLIENTS.request(source["bridge_id"], source["channel"], "xtdata.subscribe_whole_quote_latency", params,
-                             timeout=12.0, mode=source["mode"], ignore_cooldown=True)
-    return dict(source, result=result)
+    from cfquant.market_channel import ChannelSubscription
+    from cfquant.bridge_center import CenterRoutes
+    route = CenterRoutes(WEB_CONFIG_FILE).quote_route()
+    for key in ('bridge_id', 'account_id', 'account_key'):
+        if source.get(key) and route.get(key) != source[key]:
+            raise ValueError('all_gp_hq uses the configured quote provider; requested source differs')
+    event = params['callback_event']
+    def receive(message):
+        PROJECT_QUOTES._on_quote(dict(message, event=event))
+    subscription = ChannelSubscription(receive, event=True, config=get_cfquant_config())
+    identity = int(uuid.uuid4().hex[:12], 16)
+    with _CENTER_QUOTE_LOCK:
+        _CENTER_QUOTE_SUBSCRIPTIONS[identity] = subscription
+    try:
+        subscription.start()
+    except BaseException:
+        with _CENTER_QUOTE_LOCK:
+            _CENTER_QUOTE_SUBSCRIPTIONS.pop(identity, None)
+        raise
+    route.update(channel='normal', mode='center', _resolved=True)
+    return dict(route, result=dict(subscribe_id=identity))
 
 
 def _shared_quote_unsubscribe(handle):
-    return CLIENTS.request(handle["bridge_id"], handle["channel"], "xtdata.unsubscribe_quote",
-                           {"subscribe_id": handle["subscribe_id"], "shared_lease_key": handle["shared_lease_key"]},
-                           timeout=8.0, mode=handle["mode"], ignore_cooldown=True)
+    with _CENTER_QUOTE_LOCK:
+        subscription = _CENTER_QUOTE_SUBSCRIPTIONS.pop(handle['subscribe_id'], None)
+    if subscription:
+        subscription.close()
+    return True
 
 
 def _shared_quote_probe(handle):
-    return CLIENTS.request(handle["bridge_id"], handle["channel"], "cfquant.shared_quote_status",
-                           {"shared_lease_key": handle["shared_lease_key"]},
-                           timeout=3.0, mode=handle["mode"], ignore_cooldown=True)
+    with _CENTER_QUOTE_LOCK:
+        subscription = _CENTER_QUOTE_SUBSCRIPTIONS.get(handle['subscribe_id'])
+    return dict(ready=bool(subscription and subscription.status()['connected'] and not subscription.closed.is_set()),
+                lease_keys=[handle['shared_lease_key']] if subscription else [])
+
+
+def _whole_quote_queue_status():
+    with _CENTER_QUOTE_LOCK:
+        subscriptions = list(_CENTER_QUOTE_SUBSCRIPTIONS.items())
+    return {str(key): subscription.status() for key, subscription in subscriptions}
 
 
 PROJECT_QUOTES = ProjectQuoteService(
@@ -7690,10 +7705,11 @@ WS_QUOTES.on_empty = _release_quote_subscription_on_empty
 
 
 class CallbackEventStore(object):
-    def __init__(self, channels=None, max_events=500, retry_interval=3.0):
+    def __init__(self, channels=None, max_events=500, retry_interval=3.0, legacy_pipe=False):
         # The global store is constructed before WEB_CONFIG. Resolve saved
         # binding channels when starting, after configuration has been loaded.
         self._follow_config = channels is None
+        self._legacy_pipe = legacy_pipe
         self.channels = list(channels or [])
         self.max_events = int(max_events)
         self._retry_interval = float(retry_interval)
@@ -7722,24 +7738,26 @@ class CallbackEventStore(object):
             elif self._follow_config:
                 self.channels = callback_channels()
             self.channels = list(dict.fromkeys(str(c or "").strip() for c in self.channels if str(c or "").strip()))
-            self._mode = "mixed"
+            self._mode = "mixed" if self._legacy_pipe else "lttx"
             self._running = True
             self._stop_event = threading.Event()
             self._retry_event = threading.Event()
             CLIENTS.add_callback("__event__", self._on_client_event)
-            self._retry_thread = threading.Thread(
-                target=self._maintain_pipe_listeners, args=(self._stop_event, self._retry_event),
-                name="cfquant-callback-reconnect", daemon=True,
-            )
+            if self._legacy_pipe:
+                self._retry_thread = threading.Thread(
+                    target=self._maintain_pipe_listeners, args=(self._stop_event, self._retry_event),
+                    name="cfquant-callback-reconnect", daemon=True,
+                )
             # LTtx has its own blocking connection/retry code. Keep it separate
             # so an unavailable LTtx service cannot stall Pipe listener repair.
             self._thread = threading.Thread(
                 target=self._start_lttx_client, args=(self._stop_event, tuple(self.channels)),
                 name="cfquant-callback-lttx", daemon=True,
             )
-            self._retry_thread.start()
+            if self._retry_thread is not None:
+                self._retry_thread.start()
             self._thread.start()
-            safe_print("cfquant callback listeners started in mixed mode channels=%s" % ",".join(self.channels))
+            safe_print("cfquant callback listeners started mode=%s channels=%s" % (self._mode, ",".join(self.channels)))
 
     def close(self):
         with self._lifecycle_lock:
@@ -7958,6 +7976,9 @@ class CallbackEventStore(object):
         if not isinstance(event, dict):
             return
         if event.get("type") != "event":
+            return
+        if not self._legacy_pipe and str(event.get('event') or '').startswith('trader:'):
+            # The bridge event channel already delivers these to Web once.
             return
         self._append(event, source="client")
 
@@ -12624,6 +12645,9 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
             "expected_pid": current_pid, "startup_timeout": None,
             "should_cancel": should_cancel, "on_wait": on_wait,
         }
+        kwargs.update(login_environment=settings.get("login_environment", "live"),
+                      trading_account=row.get("account_id", ""),
+                      account_type=row.get("account_type", "STOCK"))
         if before_poll is not None:
             kwargs["before_poll"] = before_poll
         try:
@@ -12682,6 +12706,13 @@ def _qmt_component_login_worker(row, paths, pid, config_path):
             "timeout": "QMT 登录超时，下个交易日仍会按计划重新启动登录",
             "startup_timeout": "QMT 登录界面未就绪，请检查客户端启动状态",
             "login_not_ready": "QMT 正在登录或登录按钮尚未就绪",
+            "login_environment_unverified": "国信 iQuant 已打开，但无法确认实盘或仿真环境，请通过本绑定重新启动登录",
+            "trading_account_required": "国信平台已登录，请在绑定中填写目标资金账号",
+            "trading_account_not_found": "国信平台已登录，但账号管理中未找到本绑定的资金账号及账号类型，请核对登录环境和绑定",
+            "trading_account_login_failed": "国信资金账号登录失败，请检查账号密码、权限及客户端提示",
+            "trading_account_pending": "国信平台已登录，目标资金账号尚未登录成功，请检查账号管理",
+            "account_type_unsupported": "国信资金账号类型暂不支持自动登录",
+            "account_ui_unsupported": "国信账号管理界面与已适配版本不一致，请手动检查资金账号登录状态",
             "process_exited": "QMT 已退出，自动登录已停止，请重新启动该绑定 QMT",
             "client_login": "由 QMT 自行登录，未自动填写账号密码或点击登录；连接状态以策略回连为准",
             "update_manual_required": "QMT 出现尚未适配的更新或安装提示，请手动处理后重启此绑定",
@@ -13195,7 +13226,10 @@ class QmtProcessWatchdog(QmtAutoLoginRestartScheduler):
                                 task.get("state") in ("queued", "running")
                                 and _qmt_component_job_key(task.get("qmt_dir") or "") == key
                                 for task in QMT_PYTHON_RUNTIME_JOBS.values())
-                        if runtime_busy or session.get("state") == "waiting_deploy":
+                        if (runtime_busy or session.get("state") == "waiting_deploy"
+                                or session.get("strategy_bootstrap_phase") == "error"):
+                            # A failed first-time setup can intentionally leave
+                            # QMT closed. Retrying it as a crash loops logins.
                             state.pop("missing_since", None)
                             continue
                         missing = state.setdefault("missing_since", now)
@@ -13808,6 +13842,7 @@ def lttx_status():
         "stop_policy": "Web 重启和定时重启保留 LTtx；完整退出 cfquant 时停止 LTtx",
         "request_queue": executor.status() if executor is not None else {"queued_requests": 0, "active_keys": 0},
         "callback_queues": {mode: client.callback_status() for mode, client in rpc_clients if hasattr(client, "callback_status")},
+        "whole_quote_queues": _whole_quote_queue_status(),
         "checked_at": now,
         "checked_at_text": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
     }
@@ -14381,6 +14416,14 @@ class LogCleanupManager(object):
                 "bridges": [],
             },
         }
+        try:
+            from cfquant.qmt_native_files import (
+                sweep_worker_directories, worker_temp_root, cleanup_legacy_frida_temp,
+            )
+            sweep_worker_directories(worker_temp_root())
+            result["frida"] = cleanup_legacy_frida_temp()
+        except Exception as e:
+            result["frida"] = {"error": str(e)}
         try:
             result["local"] = cleanup_cfquant_local_logs(configured_days)
         except Exception as e:

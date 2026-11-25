@@ -121,6 +121,15 @@ def auto_login(backend, password_provider, *, retry_not_ready=False, login_accou
         return captcha_solved
 
     def result(outcome):
+        if outcome in ("logged_in", "already_logged_in"):
+            complete = getattr(backend, "complete_login", None)
+            if callable(complete):
+                details = complete()
+                if details and not details.get("ready", False):
+                    return {"outcome": details.get("outcome", "trading_account_not_ready"),
+                            "login_succeeded": False, "platform_logged_in": True,
+                            "account_login": details, "attempts": attempts,
+                            "password_requested": password_requested}
         return {"outcome": outcome, "login_succeeded": outcome in ("logged_in", "already_logged_in"),
                 "attempts": attempts, "password_requested": password_requested}
 
@@ -234,6 +243,9 @@ class QtLoginBackend:
         self.session = None
         self.mutex = None
         self.messages = []
+        self.login_environment = "live"
+        self.trading_account = ""
+        self.trading_account_type = "STOCK"
         self.should_cancel = lambda: False
         self.foreground_before = win32gui.GetForegroundWindow()
         expected = Path(executable_path or (directory / "XtItClient.exe")).resolve()
@@ -351,6 +363,30 @@ class QtLoginBackend:
         if not self.api.submit(str(self.hwnd))["result"]["submitted"]:
             raise QmtNotReady("Login is not ready")
 
+    def configure_login(self, environment="live", trading_account="", account_type="STOCK"):
+        if environment not in ("simulation", "live"):
+            raise ValueError("QMT 登录环境必须为 simulation 或 live")
+        self.api.configurelogin(environment)
+        self.login_environment = environment
+        self.trading_account = str(trading_account or "")
+        self.trading_account_type = str(account_type or "STOCK")
+
+    def complete_login(self):
+        if self.api.broker() != "guosen":
+            return {"ready": True}
+        expected = 1 if self.login_environment == "simulation" else 2
+        if self.api.environment(str(self.main_hwnd), False) != expected:
+            return {"ready": False, "outcome": "login_environment_unverified"}
+        deadline = time.monotonic() + self.timeout
+        while True:
+            if self.should_cancel():
+                return {"ready": False, "outcome": "cancelled"}
+            result = self.api.completeaccount(str(self.main_hwnd), self.trading_account,
+                                              self.trading_account_type)["result"]
+            if result.get("outcome") != "trading_account_pending" or time.monotonic() >= deadline:
+                return result
+            time.sleep(0.5)
+
     def solve_captcha(self):
         """Fill a captcha only when the native agent can read it exactly."""
         if self.session.is_detached or not self.hwnd:
@@ -382,6 +418,9 @@ class QtLoginBackend:
                 caption = self.gui.GetWindowText(hwnd)
                 if self.identity and caption.startswith(self.identity + " - "):
                     if self.api.status(str(hwnd))["result"].get("is_main"):
+                        self.main_hwnd = hwnd
+                        if self.api.broker() == "guosen":
+                            self.api.environment(str(hwnd), True)
                         return "logged_in"
             for hwnd in windows:
                 if hwnd == self.hwnd:
@@ -425,7 +464,14 @@ class QtLoginBackend:
     def confirm_exit(self):
         for hwnd in self.windows():
             if hwnd != self.main_hwnd:
-                result = self.api.confirmexit(str(hwnd))["result"]
+                try:
+                    result = self.api.confirmexit(str(hwnd))["result"]
+                except Exception:
+                    # Native windows can disappear between enumeration and the
+                    # GUI-thread call while the client is saving and exiting.
+                    if not self.gui.IsWindow(hwnd):
+                        continue
+                    raise
                 if result.get("confirmed"):
                     return result
         return {"confirmed": False}
@@ -463,6 +509,8 @@ def main():
     row, directory = select_binding(args.config, args.binding)
     backend = IsolatedLoginBackend(directory, args.timeout)
     try:
+        backend.configure_login((row.get("qmt_auto_login") or {}).get("login_environment", "live"),
+                                row.get("account_id", ""), row.get("account_type", "STOCK"))
         backend.select_account((row.get("qmt_auto_login") or {}).get("login_account", ""), replace=True)
         def read_password():
             return getpass.getpass("QMT password (hidden): ") if args.prompt else sys.stdin.readline().rstrip("\r\n")
@@ -481,7 +529,8 @@ def main():
 def login_running_qmt(directory, login_account="", password_provider=lambda: "", expected_pid=None,
                       startup_timeout=60, timeout=40, *, should_cancel=lambda: False,
                       on_wait=lambda phase: None, before_poll=lambda: None, executable_path=None,
-                      on_challenge=None, challenge_retries=1):
+                      on_challenge=None, challenge_retries=1, login_environment=None,
+                      trading_account="", account_type="STOCK"):
     """Wait for QMT startup/updates and observe login until success or rejection.
 
     The web worker uses startup_timeout=None to wait while its process is alive.
@@ -525,6 +574,8 @@ def login_running_qmt(directory, login_account="", password_provider=lambda: "",
                 time.sleep(0.5)
         try:
             backend.should_cancel = should_cancel
+            if login_environment is not None or trading_account:
+                backend.configure_login("live" if login_environment is None else login_environment, trading_account, account_type)
             result = auto_login(backend, password_provider, retry_not_ready=True, login_account=login_account,
                                 should_cancel=should_cancel, on_wait=on_wait)
         except QmtAutomationCancelled:

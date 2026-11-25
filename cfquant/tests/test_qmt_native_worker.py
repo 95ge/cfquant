@@ -11,6 +11,21 @@ import pytest
 from cfquant.qmt_native_worker import NativeWorker, QmtAutomationError, QmtAutomationCancelled
 
 
+def test_worker_uses_host_package_even_with_isolated_python(tmp_path, monkeypatch):
+    import cfquant.qmt_native_worker as module
+    package = tmp_path / "host" / "cfquant"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    worker_file = package / "qmt_native_worker.py"
+    worker_file.write_text("print('host-package')", encoding="utf-8")
+    monkeypatch.setattr(module, "__file__", str(worker_file))
+    command = module._worker_command()
+    command.insert(1, "-I")
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "host-package"
+
+
 @pytest.fixture(autouse=True)
 def private_native_files(tmp_path, monkeypatch):
     monkeypatch.setenv("CFQUANT_FRIDA_TEMP_DIR", str(tmp_path / "native"))

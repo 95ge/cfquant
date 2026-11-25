@@ -133,3 +133,60 @@ def test_owner_record_failure_cleans_partially_created_directory(monkeypatch):
     with pytest.raises(OSError, match="disk full"):
         NativeWorkerFiles()
     assert list(worker_temp_root().iterdir()) == []
+
+
+def legacy_bundle(root, name='a' * 32):
+    directory = root / ('frida-' + name)
+    child = directory / 'x86_64'
+    child.mkdir(parents=True)
+    (child / 'frida-agent.dll').write_bytes(b'fixture')
+    old = time.time() - 2 * 86400
+    for path in (child / 'frida-agent.dll', child, directory):
+        os.utime(path, (old, old))
+    return directory
+
+
+def test_legacy_cleanup_requires_known_layout_and_old_files(tmp_path):
+    from cfquant.qmt_native_files import cleanup_legacy_frida_temp
+    old = legacy_bundle(tmp_path)
+    recent = legacy_bundle(tmp_path, 'b' * 32)
+    os.utime(recent / 'x86_64/frida-agent.dll', None)
+    unknown = legacy_bundle(tmp_path, 'c' * 32)
+    (unknown / 'notes.txt').write_text('keep')
+    result = cleanup_legacy_frida_temp(tmp_path)
+    assert not old.exists()
+    assert recent.exists() and unknown.exists()
+    assert result['deleted_directories'] == 1
+    assert result['deleted_bytes'] == len(b'fixture')
+
+
+def test_legacy_cleanup_skips_locked_files_and_continues(tmp_path, monkeypatch):
+    from cfquant.qmt_native_files import cleanup_legacy_frida_temp
+    locked = legacy_bundle(tmp_path)
+    other = legacy_bundle(tmp_path, 'b' * 32)
+    unlink = Path.unlink
+    def remove(path, *args, **kwargs):
+        if locked in path.parents:
+            raise PermissionError('loaded DLL')
+        return unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'unlink', remove)
+    result = cleanup_legacy_frida_temp(tmp_path)
+    assert locked.exists() and not other.exists()
+    assert result['failed_files'] == 1
+
+
+def test_legacy_cleanup_never_follows_links(tmp_path):
+    from cfquant.qmt_native_files import cleanup_legacy_frida_temp
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    keep = outside / 'frida-agent.dll'
+    keep.write_bytes(b'keep')
+    directory = legacy_bundle(tmp_path)
+    try:
+        (directory / 'x86').symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip('symlinks unavailable')
+    old = time.time() - 2 * 86400
+    os.utime(directory, (old, old))
+    cleanup_legacy_frida_temp(tmp_path)
+    assert keep.read_bytes() == b'keep' and directory.exists()

@@ -753,7 +753,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.81"
+CORE_VERSION = "0.2.82"
 
 # BEGIN GENERATED DIAGNOSTIC CONTEXT
 """Version context for cfquant diagnostics without changing application logging."""
@@ -7381,6 +7381,23 @@ class NormalQmtBridge(TxTradeBridge):
 
     def _on_whole_quote(self, data):
         self._release_worker("whole_quote")
+        # Publish one frozen native batch to the center, independent of consumers.
+        if self.tx is not None and isinstance(data, dict) and data:
+            self._channel_quote_sequence = getattr(self, '_channel_quote_sequence', 0) + 1
+            payload = dict(schema='cfquant.quote_latency.v1', quotes=data,
+                           bridge_id=self.bridge_id, sequence=self._channel_quote_sequence,
+                           generation=str(self.started_at),
+                           qmt_callback_at_ms=time.time() * 1000, qmt_push_at_ms=time.time() * 1000)
+            try:
+                event = pack_quote_latency_event('all_gp_hq', payload, 'all_gp_hq')
+            except (TypeError, ValueError):
+                payload['quotes'] = quote_plain(data)
+                event = pack_event('all_gp_hq', payload, 'all_gp_hq')
+            target = 'all_gp_hq' if hasattr(self.tx, 'pipe_name') else 'cfquant.center.quotes'
+            result = self.tx.push('event', event, target)
+            if isinstance(result, dict) and result.get('code', 0) < 0:
+                self._log('whole quote channel publish failed: %s' % result.get('msg'))
+
 
     def _on_timer(self, *args, **kwargs):
         self.on_timer(*args, **kwargs)

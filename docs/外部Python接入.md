@@ -160,17 +160,20 @@ order_id = trader.order_stock(
 
 自动路由规则：
 
-- Web 服务启动后，会通过 LTtx 的 `tx.put()` 写入 `cfquant.runtime`。
-- 外部 `cfquant` 启动时，会通过 `tx.get("cfquant.runtime")` 读取运行注册信息。
-- 如果读取成功，请求会进入 Web 统一路由频道 `cfquant.web.request`。
-- Web 根据账号绑定将请求路由到极致模式桥接入口。
-- 如果没有读到 Web 注册信息，`auto` 会回退为直连 PipeHub；需要先确认前端已完成绑定并启动 QMT。
+- 同步升级后的独立桥接中心 A 通过 LTtx 写入 `cfquant.center`，SDK 优先发现有效 A，请求进入 `cfquant.center.request`。
+- A 根据保存的资金账号和桥接配置路由基础查询、交易请求，不需要 Web 进程参与。
+- 找不到有效 A 时，保留 `cfquant.runtime` 对应的旧 Web 路由和直连 PipeHub 回退。
+- `xtdata.subscribe_whole_quote` 直接订阅 LTtx 的 `all_gp_hq`，每个订阅有独立内存队列和线程，不再进入通用回调落盘队列。需要同步升级 A、QMT 脚本和 SDK。
+
+频道协议、启动和监控见 [独立桥接中心与 LTtx 频道接入](bridge_center.md)。算法任务和通知等应用服务仍由 Web 承载。
 
 这样外部代码不需要选择或感知 QMT 运行模式。
 
 ## 强制指定通道
 
 一般不建议新用户强制指定通道。排查问题或特殊部署时可以使用。
+
+固定使用独立 A：`configure(transport="center")`。全推订阅始终使用 LTtx 公共频道，下面的强制路由选项用于其他 RPC 请求。
 
 强制走 Web 统一路由：
 
