@@ -27,6 +27,67 @@ def eventually(predicate, timeout=8):
     assert predicate()
 
 
+@pytest.mark.parametrize('numeric_type', ['python', 'int64', 'uint64'])
+def test_whole_quote_numpy_id_unsubscribes_locally(monkeypatch, numeric_type):
+    import numpy as np
+    from cfquant import xtdata, market_channel
+
+    sid = (1 << 52) + 123
+    closed = []
+    monkeypatch.setattr(market_channel, '_subscriptions', {sid: SimpleNamespace(close=lambda: closed.append(sid))})
+    monkeypatch.setattr(xtdata, 'get_client', lambda: pytest.fail('whole-quote unsubscribe made an RPC'))
+    key = sid if numeric_type == 'python' else getattr(np, numeric_type)(sid)
+    assert xtdata.unsubscribe_quote(key) is True
+    assert closed == [sid] and market_channel._subscriptions == {}
+
+
+@pytest.mark.parametrize('subscribe', ['subscribe_quote', 'subscribe_quote2'])
+def test_sdk_single_quote_initializes_center_store_and_unsubscribes(tmp_path, monkeypatch, subscribe):
+    from cfquant import xtdata
+    from cfquant.center_client import CenterRpcClient
+    from cfquant.client import CfquantError, LTtxRpcClient
+    from cfquant.tests.test_subscription_persistence import Adapter
+
+    runtime = tmp_path / '中文 runtime'
+    monkeypatch.setenv('CFQUANT_RUNTIME_DIR', str(runtime))
+    center = BridgeCenter(SimpleNamespace(), routes=CenterRoutes(tmp_path / 'absent.json'))
+    native = Adapter()
+    monkeypatch.setattr(center._subscription_adapter, 'control', native.control)
+    replies, actions = [], []
+    monkeypatch.setattr(center, 'publish', lambda key, raw, channel: replies.append(loads_message(raw)))
+    wire_lock = threading.Lock()
+
+    # Replace only LTtx transport IO. SDK negotiation, center dispatch, SQLite,
+    # lease reconciliation and native cancellation all use their real code.
+    def request(client, action, params=None, **kwargs):
+        actions.append((action, dict(params or {})))
+        with wire_lock:
+            center.handle(loads_message(pack_request(action, params, client_id=client.client_id,
+                                                    reply_channel=client.client_id)))
+            reply = replies.pop()
+        if not reply['ok']:
+            raise CfquantError(reply['error']['message'])
+        return reply['result']
+
+    monkeypatch.setattr(LTtxRpcClient, 'request', request)
+    client = CenterRpcClient(registry={'center_request_channel': 'test-center'}, timeout=3)
+    monkeypatch.setattr(xtdata, 'get_client', lambda: client)
+    try:
+        sid = getattr(xtdata, subscribe)('000001.SZ', 'tick')
+        assert sid > 0
+        assert actions[0] == ('cfquant.subscriptions', {'op': 'capabilities'})
+        assert (runtime / 'db/center-subscriptions.sqlite3').is_file()
+        assert len(native.native) == 1
+        rows = center.subscription_manager().store.rows()
+        assert rows[0]['spec']['params']['period'] == 'tick'
+        assert xtdata.unsubscribe_quote(sid) is True
+        eventually(lambda: not native.native)
+        assert center.subscription_manager().store.rows()[0]['desired'] == 0
+    finally:
+        client.close()
+        center.close()
+
+
 def test_route_reload_ambiguity_and_secret_free_registry(tmp_path):
     path = tmp_path / 'routes.json'
     path.write_text(json.dumps(dict(account_configs={'one': dict(account_id='100', bridge_id='b', password='secret')})))

@@ -1011,10 +1011,10 @@ class XtQuantTrader(object):
         )
 
     def query_data(self, account, result_path, data_type, start_time=None, end_time=None, user_param={}):
-        return self._compat_account_request("query_data", account, [result_path, data_type, start_time, end_time, user_param])
+        return self._compat_account_request("query_data", account, [os.fsdecode(result_path), data_type, start_time, end_time, user_param])
 
     def export_data(self, account, result_path, data_type, start_time=None, end_time=None, user_param={}):
-        return self._compat_account_request("export_data", account, [result_path, data_type, start_time, end_time, user_param])
+        return self._compat_account_request("export_data", account, [os.fsdecode(result_path), data_type, start_time, end_time, user_param])
 
     def sync_transaction_from_external(self, operation, data_type, account, deal_list):
         return self._compat_account_request("sync_transaction_from_external", account, [operation, data_type, deal_list])

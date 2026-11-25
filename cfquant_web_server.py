@@ -2497,8 +2497,8 @@ def detect_avatar_extension(filename, content_type, content):
 
 class WebRuntimeConfig(object):
     def __init__(self, path, settings_db_path=None):
-        self.path = path
-        self.settings_db_path = settings_db_path or WEB_SETTINGS_DB_FILE
+        self.path = os.fsdecode(path)
+        self.settings_db_path = os.fsdecode(settings_db_path or WEB_SETTINGS_DB_FILE)
         self._lock = threading.RLock()
         self._data = {
             "bridges": {},

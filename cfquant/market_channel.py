@@ -1,5 +1,6 @@
 """LTtx whole-market consumers. Memory only, one ordered worker per subscription."""
 import atexit
+from numbers import Integral
 import queue
 import sys
 import threading
@@ -173,7 +174,7 @@ def unsubscribe(key):
 
 
 def owns(key):
-    return isinstance(key, int) and key >= 1 << 52
+    return isinstance(key, Integral) and key >= 1 << 52
 
 
 def close_all():

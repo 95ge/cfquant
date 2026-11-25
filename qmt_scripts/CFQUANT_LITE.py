@@ -753,7 +753,7 @@ def _resolve_batch_order_ids(bridge, account, pending, before_ids):
         time.sleep(min(0.05, remaining))
 # END GENERATED CFTRADER BATCH
 
-CORE_VERSION = "0.2.82"
+CORE_VERSION = "0.2.83"
 
 # BEGIN GENERATED DIAGNOSTIC CONTEXT
 """Version context for cfquant diagnostics without changing application logging."""
@@ -1459,7 +1459,7 @@ def loads_message(raw):
         data = json.loads(raw[len(MESSAGE_PREFIX):])
     except Exception:
         return None
-    if data.get("protocol") != "cfquant":
+    if not isinstance(data, dict) or data.get("protocol") != "cfquant":
         return None
     return data
 
@@ -8206,7 +8206,7 @@ def loads_pipe_message(raw):
         data = json.loads(raw[len(PIPE_MESSAGE_PREFIX):])
     except Exception:
         return None
-    if data.get("protocol") != "cfquant_pipe":
+    if not isinstance(data, dict) or data.get("protocol") != "cfquant_pipe":
         return None
     return data
 

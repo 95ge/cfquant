@@ -12,7 +12,9 @@ FUNCTIONS = {"normalize_json_value", "dumps_message", "loads_message", "pack_req
 
 def main():
     functions = {}
-    for filename, names in (("cfquant/protocol.py", FUNCTIONS), ("cfquant/level2.py", {"quote_records"})):
+    for filename, names in (("cfquant/protocol.py", FUNCTIONS),
+                            ("cfquant/pipe_transport.py", {"loads_pipe_message"}),
+                            ("cfquant/level2.py", {"quote_records"})):
         source = (ROOT / filename).read_text(encoding="utf-8")
         source_lines = source.splitlines(keepends=True)
         functions.update({node.name: "".join(source_lines[node.lineno - 1:node.end_lineno]).replace("\n", "\r\n")

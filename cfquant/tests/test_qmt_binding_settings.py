@@ -25,6 +25,26 @@ def save(config, account='TEST', **changes):
     return config.save_account_config(**args)
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_config_path_objects_save_reload_and_migrate(tmp_path, legacy):
+    from cfquant.tests.test_qmt_binding_defaults import legacy_config
+
+    directory = tmp_path / '中文 配置'
+    directory.mkdir()
+    path, db = directory / 'settings.json', directory / 'settings.db'
+    if legacy:
+        path.write_text(json.dumps(legacy_config()), encoding='utf-8')
+        original = path.read_bytes()
+    config = web.WebRuntimeConfig(path, db)
+    row = save(config, display_name='Path 回归测试')
+    restored = web.WebRuntimeConfig(path, db)
+    assert restored.account_configs()[row['account_key']]['display_name'] == 'Path 回归测试'
+    assert not path.with_name(path.name + '.tmp').exists()
+    assert not path.with_name(path.name + '.automation.tmp').exists()
+    if legacy:
+        assert path.with_name(path.name + '.before-qmt-automation-0.2.59.bak').read_bytes() == original
+
+
 def test_binding_settings_preserve_partial_edits_and_reload(config):
     assert config.setup_info()['default_mode'] == 'lite'
     default = save(config)

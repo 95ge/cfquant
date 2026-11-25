@@ -30,11 +30,25 @@ def wire(request):
     if request.param is None:
         return protocol
     tree = ast.parse(request.param.read_text(encoding="gbk"), feature_version=(3, 6))
-    names = {"now_ms", "new_id", "normalize_json_value", "dumps_message", "loads_message", "pack_request"}
+    names = {"now_ms", "new_id", "normalize_json_value", "dumps_message", "loads_message", "pack_request", "loads_pipe_message"}
     tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
-    ns = dict(json=json, math=math, time=time, uuid=uuid, PROTOCOL_VERSION=1, MESSAGE_PREFIX="cfquant:")
+    from cfquant.pipe_transport import PIPE_MESSAGE_PREFIX
+    ns = dict(json=json, math=math, time=time, uuid=uuid, PROTOCOL_VERSION=1, MESSAGE_PREFIX="cfquant:",
+              PIPE_MESSAGE_PREFIX=PIPE_MESSAGE_PREFIX)
     exec(compile(tree, str(request.param), "exec"), ns)
     return SimpleNamespace(**ns)
+
+
+@pytest.mark.parametrize('value', [None, [], [1], 'text', 1, True])
+def test_nonobject_json_is_ignored_as_not_a_protocol_message(wire, value):
+    assert wire.loads_message('cfquant:' + json.dumps(value)) is None
+
+
+@pytest.mark.parametrize('value', [None, [], [1], 'text', 1, True])
+def test_nonobject_pipe_json_is_ignored_as_not_a_protocol_message(wire, value):
+    from cfquant.pipe_transport import PIPE_MESSAGE_PREFIX
+    parser = loads_pipe_message if wire is protocol else wire.loads_pipe_message
+    assert parser(PIPE_MESSAGE_PREFIX + json.dumps(value)) is None
 
 
 @pytest.mark.parametrize("value,expected", [

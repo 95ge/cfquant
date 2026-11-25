@@ -89,7 +89,7 @@ def loads_message(raw):
         data = json.loads(raw[len(MESSAGE_PREFIX):])
     except Exception:
         return None
-    if data.get("protocol") != "cfquant":
+    if not isinstance(data, dict) or data.get("protocol") != "cfquant":
         return None
     return data
 

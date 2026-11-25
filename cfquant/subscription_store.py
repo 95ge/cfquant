@@ -15,6 +15,8 @@ class SubscriptionStore:
     def __init__(self, path, clock=time.time, owner_limit=128, per_owner=512,
                  active_limit=5000, record_limit=100000, resume_seconds=86400,
                  history_seconds=604800):
+        # SQLite accepts PathLike values; normalize before building lock names.
+        path = os.fsdecode(path)
         self.clock, self.owner_limit, self.per_owner = clock, owner_limit, per_owner
         self.active_limit, self.record_limit = active_limit, record_limit
         self.resume_seconds, self.history_seconds = resume_seconds, history_seconds

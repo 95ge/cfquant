@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import datetime
+import os
 import time
 
 from .client import configure, get_client
@@ -84,7 +85,7 @@ def get_local_data(
         "dividend_type": dividend_type,
         "divid_type": divid_type if divid_type is not None else dividend_type,
         "fill_data": fill_data,
-        "data_dir": data_dir,
+        "data_dir": None if data_dir is None else os.fsdecode(data_dir),
     })
 
 
@@ -216,7 +217,7 @@ def get_l2thousand_queue(stock_code, gear_num=None, price=None):
 
 
 def download_history_data(stock_code, period, start_time="", end_time="", incrementally=None, callback=None):
-    if callback:
+    if callback is not None:
         return download_history_data2([stock_code], period, start_time, end_time, callback=callback, incrementally=incrementally)
     return get_client().request("xtdata.download_history_data", {
         "stock_code": stock_code,
@@ -238,12 +239,15 @@ def download_history_data2(
     keep_callback=False,
     download_batch_size=None,
 ):
+    if callback is not None and not callable(callback):
+        raise TypeError("callback must be callable")
+    client = get_client()
     event_name = None
-    if callback:
-        event_name = "download_history:%s:%s" % (period, int(time.time() * 1000))
-        get_client().add_callback(event_name, callback)
+    if callback is not None:
+        event_name = "download_history:%s:%s" % (period, new_id("job"))
+        client.add_callback(event_name, callback)
     try:
-        return get_client().request("xtdata.download_history_data2", {
+        return client.request("xtdata.download_history_data2", {
             "stock_list": stock_list,
             "period": period,
             "start_time": start_time,
@@ -255,8 +259,8 @@ def download_history_data2(
             "download_batch_size": download_batch_size,
         })
     finally:
-        if event_name and callback and not keep_callback:
-            get_client().remove_callback(event_name, callback)
+        if event_name and not keep_callback:
+            client.remove_callback(event_name, callback)
 
 
 def get_instrument_detail(stock_code, iscomplete=False):
@@ -406,12 +410,15 @@ def get_raw_financial_data(field_list, stock_list, start_time="", end_time="", r
 
 
 def download_financial_data(stock_list, table_list=None, start_time="", end_time="", callback=None, job_id=None, keep_callback=False):
+    if callback is not None and not callable(callback):
+        raise TypeError("callback must be callable")
+    client = get_client()
     event_name = None
-    if callback:
-        event_name = "download_financial:%s" % int(time.time() * 1000)
-        get_client().add_callback(event_name, callback)
+    if callback is not None:
+        event_name = "download_financial:%s" % new_id("job")
+        client.add_callback(event_name, callback)
     try:
-        return get_client().request("xtdata.download_financial_data", {
+        return client.request("xtdata.download_financial_data", {
             "stock_list": stock_list,
             "table_list": table_list or [],
             "start_time": start_time,
@@ -421,8 +428,8 @@ def download_financial_data(stock_list, table_list=None, start_time="", end_time
             "download_emit_lifecycle": bool(event_name),
         })
     finally:
-        if event_name and callback and not keep_callback:
-            get_client().remove_callback(event_name, callback)
+        if event_name and not keep_callback:
+            client.remove_callback(event_name, callback)
 
 
 def download_financial_data2(stock_list, table_list=None, start_time="", end_time="", callback=None, job_id=None, keep_callback=False):
@@ -568,14 +575,15 @@ def _generic_xtdata_request(action, *args, **kwargs):
             wire_args.append(_callback_placeholder())
         else:
             wire_args.append(value)
+    if callback is not None and not callable(callback):
+        raise TypeError("callback must be callable")
+    client = get_client()
     event_name = None
     if callback is not None:
-        if not callable(callback):
-            raise TypeError("callback must be callable")
-        event_name = "xtdata:%s:%s" % (action, int(time.time() * 1000))
-        get_client().add_callback(event_name, callback)
+        event_name = "xtdata:%s:%s" % (action, new_id("callback"))
+        client.add_callback(event_name, callback)
     try:
-        return get_client().request("xtdata.%s" % action, {
+        return client.request("xtdata.%s" % action, {
             "args": wire_args,
             "kwargs": kwargs,
             "callback_event": event_name,
@@ -583,8 +591,8 @@ def _generic_xtdata_request(action, *args, **kwargs):
             "callback_name": callback_name,
         }, timeout=timeout)
     finally:
-        if event_name and callback and not keep_callback:
-            get_client().remove_callback(event_name, callback)
+        if event_name and not keep_callback:
+            client.remove_callback(event_name, callback)
 
 
 def _make_generic_xtdata_func(action):

@@ -435,7 +435,9 @@ class AccountManager:
         if account_id is None or qmt_dir is None or not str(account_id).strip() or not str(qmt_dir).strip():
             raise ValueError("account_id and qmt_dir are required")
         body = dict(options, account_id=str(account_id).strip(), account_type=account_type,
-                    qmt_dir=str(qmt_dir), mode=mode, auto_close_qmt=auto_close_qmt)
+                    qmt_dir=os.fsdecode(qmt_dir), mode=mode, auto_close_qmt=auto_close_qmt)
+        if body.get("qmt_trade_dir") is not None:
+            body["qmt_trade_dir"] = os.fsdecode(body["qmt_trade_dir"])
         body["qmt_strategy"] = dict(options.get("qmt_strategy") or {}, enabled=deploy_strategy,
                                     autorun=strategy_autorun, live=live)
         body["qmt_auto_login"] = dict(options.get("qmt_auto_login") or {}, enabled=auto_start_qmt)

@@ -47,6 +47,7 @@ def elapsed_trading(windows, now):
 
 class AlgoStore:
     def __init__(self, path):
+        path = os.fsdecode(path)
         self._owner_file = None
         if path != ":memory:":
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)

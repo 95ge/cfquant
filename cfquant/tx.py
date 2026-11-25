@@ -369,6 +369,7 @@ class txl:
         提示信息
 
         '''
+        file_name = os.fsdecode(file_name)
         if os.path.isfile(file_name):
             if show_on:
                 self.sys_print('识别到文件存在')
@@ -383,7 +384,7 @@ class txl:
             file_hash = hash_md5.hexdigest()
             tem_dict = {'con_type':'file_mode',
                         'tocken':self.tocken,
-                        'file_name':file_name.rsplit('/',1)[-1],
+                        'file_name':os.path.basename(file_name),
                         'file_hash':file_hash,
                         'file_mode':'upload_file',
                         }
@@ -428,7 +429,8 @@ class txl:
         提示信息
 
         '''
-        file_path = self.current_dir
+        file_name = os.fsdecode(file_name)
+        target_path = os.path.join(os.fsdecode(self.current_dir), file_name)
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM) 
         client.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192*100)
         client.connect(('pc.zltnet.top',2099)) 
@@ -441,16 +443,16 @@ class txl:
         server_msg = client.recv(1024).decode()
         if server_msg == 'file exist':
             t1 = time.time()
-            file = open(file_path+file_name+'.tmp','wb')
+            file = open(target_path+'.tmp','wb')
             file_data = client.recv(1024)
             while file_data:
                 file.write(file_data)
                 file_data = client.recv(1024)
                
             file.close()
-            if os.path.isfile(file_path+file_name):
-                os.remove(file_path+file_name)
-            os.rename(file_path+file_name+ '.tmp', file_path+file_name)
+            if os.path.isfile(target_path):
+                os.remove(target_path)
+            os.rename(target_path+'.tmp', target_path)
             code = 0
             msg = '%s文件接收完成,用时%ss'%(file_name,round(time.time()-t1,6))
             if show_on:
@@ -483,8 +485,9 @@ class txl:
         提示信息
 
         '''
-        if file_path[-1] != '/':
-            file_path = file_path + '/'
+        file_path = os.fsdecode(file_path)
+        file_name = os.fsdecode(file_name)
+        target_path = os.path.join(file_path, file_name)
         if os.path.isdir(file_path):
             pass
         else:
@@ -505,7 +508,7 @@ class txl:
         server_msg = client.recv(1024).decode()
         if server_msg == 'file exist':
             t1 = time.time()
-            file = open(file_path+file_name+'.tmp','wb')
+            file = open(target_path+'.tmp','wb')
             file_data = client.recv(1024)
             while file_data:
                 file.write(file_data)
@@ -513,9 +516,9 @@ class txl:
             file.close()
             code = 0
             msg = ('%s文件接收完成,文件MD5检验通过'%(file_name))
-            if os.path.isfile(file_path+file_name):
-                os.remove(file_path+file_name)
-            os.rename(file_path+file_name+ '.tmp', file_path+file_name)
+            if os.path.isfile(target_path):
+                os.remove(target_path)
+            os.rename(target_path+'.tmp', target_path)
             code = 0
             msg = '%s文件接收完成,,用时%ss'%(file_name,round(time.time()-t1,6))
             if show_on:

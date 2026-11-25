@@ -68,7 +68,7 @@ def loads_pipe_message(raw):
         data = json.loads(raw[len(PIPE_MESSAGE_PREFIX):])
     except Exception:
         return None
-    if data.get("protocol") != "cfquant_pipe":
+    if not isinstance(data, dict) or data.get("protocol") != "cfquant_pipe":
         return None
     return data
 

@@ -80,6 +80,18 @@ def test_initialize_and_repeat_binding_over_http(service, tmp_path, auto_start, 
     assert len(runtime.accounts.list()) == 1
 
 
+def test_dual_qmt_path_objects_round_trip_over_http(service, tmp_path):
+    qmt_dir, trade_dir = tmp_path / '行情 QMT', tmp_path / '交易 QMT'
+    result = service.runtime.initialize('TEST_PATHS', qmt_dir, qmt_trade_dir=trade_dir,
+                                        mode='lite_advanced', deploy_strategy=False, live=False)
+    assert result['account']['qmt_dir'] == str(qmt_dir)
+    assert result['account']['qmt_trade_dir'] == str(trade_dir)
+    assert service.runtime.accounts.upsert('TEST_PATHS', qmt_dir, qmt_trade_dir=trade_dir,
+                                          mode='lite_advanced', deploy_strategy=False, live=False)['unchanged']
+    assert len(service.launches) == 1
+    assert len(service.runtime.accounts.list()) == 1
+
+
 def test_management_requires_credential_and_checks_instance(service, tmp_path):
     with pytest.raises(ManagementError) as error:
         RuntimeManager(base_url=service.runtime.base_url).status()
